@@ -109,8 +109,37 @@ impl Store {
             .map_err(|source| StoreError::Open { path: path.to_path_buf(), source })?;
 
         MIGRATOR.run(&pool).await?;
+        Self::populate_meta(&pool).await?;
 
         Ok(Self { pool, path: path.to_path_buf() })
+    }
+
+    /// Stamp the singleton `meta` row with the running binary's version,
+    /// the applied schema version (mirrored from `_sqlx_migrations`), and
+    /// a real `created_at` on first run. Subsequent opens leave
+    /// `created_at` untouched so it remains the install timestamp.
+    async fn populate_meta(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let agent_version = env!("CARGO_PKG_VERSION");
+        let max_migration: (Option<i64>,) =
+            sqlx::query_as("SELECT MAX(version) FROM _sqlx_migrations").fetch_one(pool).await?;
+        let schema_v = max_migration.0.unwrap_or(0);
+        sqlx::query(
+            "UPDATE meta SET \
+                 schema_version = ?1, \
+                 created_at = CASE WHEN created_at = 0 THEN ?2 ELSE created_at END, \
+                 agent_version = ?3 \
+             WHERE id = 1",
+        )
+        .bind(schema_v)
+        .bind(now_ms)
+        .bind(agent_version)
+        .execute(pool)
+        .await?;
+        Ok(())
     }
 
     pub fn pool(&self) -> &SqlitePool {
@@ -125,9 +154,20 @@ impl Store {
         self.pool.close().await;
     }
 
-    /// Current applied schema version (max(version_id) from `_sqlx_migrations`).
+    /// Current applied schema version. Reads `meta.schema_version`, which
+    /// is kept in sync with `MAX(_sqlx_migrations.version)` on every
+    /// `open` via [`populate_meta`]. In debug builds the two are
+    /// cross-checked; in release the `meta` row is authoritative.
     pub async fn schema_version(&self) -> Result<i64, StoreError> {
-        Ok(schema_version(&self.pool).await?)
+        let (meta_v,): (i64,) = sqlx::query_as("SELECT schema_version FROM meta WHERE id = 1")
+            .fetch_one(&self.pool)
+            .await?;
+        debug_assert_eq!(
+            meta_v,
+            schema_version(&self.pool).await?,
+            "meta.schema_version drift from _sqlx_migrations"
+        );
+        Ok(meta_v)
     }
 
     pub fn repos(&self) -> RepoStore<'_> {
@@ -185,6 +225,40 @@ mod tests {
         assert!(db_path.exists(), "state.db should be created");
         let v = store.schema_version().await.expect("schema_version");
         assert_eq!(v, CURRENT_SCHEMA_VERSION);
+    }
+
+    #[tokio::test]
+    async fn meta_row_populated_with_real_values() {
+        let (_tmp, store) = open_tmp().await;
+        let (schema_v, created_at, agent_version): (i64, i64, String) = sqlx::query_as(
+            "SELECT schema_version, created_at, agent_version FROM meta WHERE id = 1",
+        )
+        .fetch_one(store.pool())
+        .await
+        .expect("meta row");
+        assert_eq!(schema_v, CURRENT_SCHEMA_VERSION);
+        assert!(created_at > 0, "created_at must be real epoch ms, got {created_at}");
+        assert_eq!(agent_version, env!("CARGO_PKG_VERSION"));
+    }
+
+    #[tokio::test]
+    async fn meta_created_at_stable_across_reopens() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = Store::open(tmp.path()).await.expect("open");
+        let (first,): (i64,) = sqlx::query_as("SELECT created_at FROM meta WHERE id = 1")
+            .fetch_one(store.pool())
+            .await
+            .expect("created_at");
+        store.close().await;
+        assert!(first > 0);
+        // Sleep briefly so that any naive "always overwrite" would shift.
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        let store = Store::open(tmp.path()).await.expect("reopen");
+        let (second,): (i64,) = sqlx::query_as("SELECT created_at FROM meta WHERE id = 1")
+            .fetch_one(store.pool())
+            .await
+            .expect("created_at");
+        assert_eq!(first, second, "created_at must be preserved across reopens");
     }
 
     #[tokio::test]
