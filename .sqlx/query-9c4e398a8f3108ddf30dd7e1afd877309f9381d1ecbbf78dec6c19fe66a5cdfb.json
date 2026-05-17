@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            UPDATE budgets\n               SET spent_usd_micros = spent_usd_micros + ?\n             WHERE run_id = ? AND kind = ?\n             RETURNING spent_usd_micros AS \"spent!: i64\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "spent!: i64",
+        "ordinal": 0,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "9c4e398a8f3108ddf30dd7e1afd877309f9381d1ecbbf78dec6c19fe66a5cdfb"
+}

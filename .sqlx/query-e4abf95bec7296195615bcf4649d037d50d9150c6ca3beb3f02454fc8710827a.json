@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            INSERT INTO chains (\n                id, run_id, cross_repo, member_ids, rationale_blob,\n                attack_provenance, prompt_version\n            ) VALUES (?, ?, ?, ?, ?, ?, ?)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 7
+    },
+    "nullable": []
+  },
+  "hash": "e4abf95bec7296195615bcf4649d037d50d9150c6ca3beb3f02454fc8710827a"
+}

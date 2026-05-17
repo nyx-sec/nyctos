@@ -1,0 +1,80 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT id AS \"id!\", run_id AS \"run_id!\", repo AS \"repo!\",\n                   path AS \"path!\", line,\n                   cap AS \"cap!\", rule_hint, rationale, suggested_payload_hint,\n                   status AS \"status!\", prompt_version\n            FROM candidate_findings WHERE status = 'Pending'\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "run_id!",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "repo!",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "path!",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "line",
+        "ordinal": 4,
+        "type_info": "Integer"
+      },
+      {
+        "name": "cap!",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "rule_hint",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "rationale",
+        "ordinal": 7,
+        "type_info": "Text"
+      },
+      {
+        "name": "suggested_payload_hint",
+        "ordinal": 8,
+        "type_info": "Text"
+      },
+      {
+        "name": "status!",
+        "ordinal": 9,
+        "type_info": "Text"
+      },
+      {
+        "name": "prompt_version",
+        "ordinal": 10,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      true,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "74b265346b4fcd3c8ec668a2ea175d572e3ff7ce6d58d6ec12ad74f2ea40310b"
+}

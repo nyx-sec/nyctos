@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE runs SET total_ai_spend_usd_micros = total_ai_spend_usd_micros + ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "52e416c6cc8a1e41fb7bc2cc4d5a7954a8ca582c9a2ef0c0afc4e35ec4012873"
+}

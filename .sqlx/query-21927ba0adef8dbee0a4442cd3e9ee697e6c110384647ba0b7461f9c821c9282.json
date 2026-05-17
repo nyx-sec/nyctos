@@ -1,0 +1,44 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT id AS \"id!\", repo AS \"repo!\",\n                   hmac_secret_ref AS \"hmac_secret_ref!\",\n                   branch_filter,\n                   enabled AS \"enabled!: i64\"\n            FROM webhooks WHERE id = ?\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "repo!",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "hmac_secret_ref!",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "branch_filter",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "enabled!: i64",
+        "ordinal": 4,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "21927ba0adef8dbee0a4442cd3e9ee697e6c110384647ba0b7461f9c821c9282"
+}

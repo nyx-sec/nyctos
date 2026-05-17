@@ -1,0 +1,104 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT id AS \"id!\", finding_id,\n                   task_kind AS \"task_kind!\",\n                   runtime_name AS \"runtime_name!\",\n                   model AS \"model!\", prompt_version, conversation_jsonl_path,\n                   tokens_in       AS \"tokens_in!: i64\",\n                   tokens_out      AS \"tokens_out!: i64\",\n                   cost_usd_micros AS \"cost_usd_micros!: i64\",\n                   cache_hits      AS \"cache_hits!: i64\",\n                   cache_misses    AS \"cache_misses!: i64\",\n                   duration_ms,\n                   started_at      AS \"started_at!: i64\",\n                   finished_at\n            FROM agent_traces WHERE finding_id = ? ORDER BY started_at\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "finding_id",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "task_kind!",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "runtime_name!",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "model!",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "prompt_version",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "conversation_jsonl_path",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "tokens_in!: i64",
+        "ordinal": 7,
+        "type_info": "Integer"
+      },
+      {
+        "name": "tokens_out!: i64",
+        "ordinal": 8,
+        "type_info": "Integer"
+      },
+      {
+        "name": "cost_usd_micros!: i64",
+        "ordinal": 9,
+        "type_info": "Integer"
+      },
+      {
+        "name": "cache_hits!: i64",
+        "ordinal": 10,
+        "type_info": "Integer"
+      },
+      {
+        "name": "cache_misses!: i64",
+        "ordinal": 11,
+        "type_info": "Integer"
+      },
+      {
+        "name": "duration_ms",
+        "ordinal": 12,
+        "type_info": "Integer"
+      },
+      {
+        "name": "started_at!: i64",
+        "ordinal": 13,
+        "type_info": "Integer"
+      },
+      {
+        "name": "finished_at",
+        "ordinal": 14,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      true,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "8f1e84d468c7404a05ee5372922e5e8265526ecd976b7cb813379e83e0d0b5ae"
+}

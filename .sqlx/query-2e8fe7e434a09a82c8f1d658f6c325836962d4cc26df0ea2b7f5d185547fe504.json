@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            INSERT INTO findings (\n                id, run_id, repo, path, line, cap, rule, severity, status,\n                finding_origin, first_seen, last_seen, superseded_by,\n                triage_state, triage_assigned_to, verdict_blob, repro_path,\n                attack_provenance, prompt_version, chain_id\n            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)\n            ON CONFLICT(id) DO UPDATE SET\n                run_id             = excluded.run_id,\n                severity           = excluded.severity,\n                status             = excluded.status,\n                finding_origin     = excluded.finding_origin,\n                last_seen          = excluded.last_seen,\n                superseded_by      = excluded.superseded_by,\n                triage_state       = excluded.triage_state,\n                triage_assigned_to = excluded.triage_assigned_to,\n                verdict_blob       = excluded.verdict_blob,\n                repro_path         = excluded.repro_path,\n                attack_provenance  = excluded.attack_provenance,\n                prompt_version     = excluded.prompt_version,\n                chain_id           = excluded.chain_id\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 20
+    },
+    "nullable": []
+  },
+  "hash": "2e8fe7e434a09a82c8f1d658f6c325836962d4cc26df0ea2b7f5d185547fe504"
+}

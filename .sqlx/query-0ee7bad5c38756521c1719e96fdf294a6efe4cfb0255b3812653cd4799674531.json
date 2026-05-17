@@ -1,0 +1,56 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT id AS \"id!\", run_id AS \"run_id!\",\n                   cross_repo AS \"cross_repo!: i64\",\n                   member_ids AS \"member_ids!\",\n                   rationale_blob, attack_provenance, prompt_version\n            FROM chains WHERE id = ?\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "run_id!",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "cross_repo!: i64",
+        "ordinal": 2,
+        "type_info": "Integer"
+      },
+      {
+        "name": "member_ids!",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "rationale_blob",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "attack_provenance",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "prompt_version",
+        "ordinal": 6,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "0ee7bad5c38756521c1719e96fdf294a6efe4cfb0255b3812653cd4799674531"
+}

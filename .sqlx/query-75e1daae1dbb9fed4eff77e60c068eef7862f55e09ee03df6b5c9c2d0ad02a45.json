@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE repos SET last_scan_run_id = ?, updated_at = ? WHERE name = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "75e1daae1dbb9fed4eff77e60c068eef7862f55e09ee03df6b5c9c2d0ad02a45"
+}

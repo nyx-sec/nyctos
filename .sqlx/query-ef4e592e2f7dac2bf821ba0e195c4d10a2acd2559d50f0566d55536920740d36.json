@@ -1,0 +1,134 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT id AS \"id!\", run_id AS \"run_id!\", repo AS \"repo!\",\n                   path AS \"path!\", line,\n                   cap AS \"cap!\", rule AS \"rule!\", severity AS \"severity!\",\n                   status AS \"status!\", finding_origin AS \"finding_origin!\",\n                   first_seen AS \"first_seen!: i64\",\n                   last_seen  AS \"last_seen!: i64\",\n                   superseded_by, triage_state AS \"triage_state!\",\n                   triage_assigned_to, verdict_blob, repro_path,\n                   attack_provenance, prompt_version, chain_id\n            FROM findings WHERE run_id = ? ORDER BY last_seen DESC\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "run_id!",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "repo!",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "path!",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "line",
+        "ordinal": 4,
+        "type_info": "Integer"
+      },
+      {
+        "name": "cap!",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "rule!",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "severity!",
+        "ordinal": 7,
+        "type_info": "Text"
+      },
+      {
+        "name": "status!",
+        "ordinal": 8,
+        "type_info": "Text"
+      },
+      {
+        "name": "finding_origin!",
+        "ordinal": 9,
+        "type_info": "Text"
+      },
+      {
+        "name": "first_seen!: i64",
+        "ordinal": 10,
+        "type_info": "Integer"
+      },
+      {
+        "name": "last_seen!: i64",
+        "ordinal": 11,
+        "type_info": "Integer"
+      },
+      {
+        "name": "superseded_by",
+        "ordinal": 12,
+        "type_info": "Text"
+      },
+      {
+        "name": "triage_state!",
+        "ordinal": 13,
+        "type_info": "Text"
+      },
+      {
+        "name": "triage_assigned_to",
+        "ordinal": 14,
+        "type_info": "Text"
+      },
+      {
+        "name": "verdict_blob",
+        "ordinal": 15,
+        "type_info": "Text"
+      },
+      {
+        "name": "repro_path",
+        "ordinal": 16,
+        "type_info": "Text"
+      },
+      {
+        "name": "attack_provenance",
+        "ordinal": 17,
+        "type_info": "Text"
+      },
+      {
+        "name": "prompt_version",
+        "ordinal": 18,
+        "type_info": "Text"
+      },
+      {
+        "name": "chain_id",
+        "ordinal": 19,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "ef4e592e2f7dac2bf821ba0e195c4d10a2acd2559d50f0566d55536920740d36"
+}

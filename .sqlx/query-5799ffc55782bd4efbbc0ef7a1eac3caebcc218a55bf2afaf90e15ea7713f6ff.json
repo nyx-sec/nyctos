@@ -1,0 +1,44 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT id AS \"id!\", repo, cron_expr AS \"cron_expr!\",\n                   enabled AS \"enabled!: i64\", last_fired_at\n            FROM schedules WHERE id = ?\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "repo",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "cron_expr!",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "enabled!: i64",
+        "ordinal": 3,
+        "type_info": "Integer"
+      },
+      {
+        "name": "last_fired_at",
+        "ordinal": 4,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      true,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "5799ffc55782bd4efbbc0ef7a1eac3caebcc218a55bf2afaf90e15ea7713f6ff"
+}

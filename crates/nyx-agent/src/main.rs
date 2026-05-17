@@ -2,15 +2,10 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use nyx_agent_core::{Config, LogConfig, StateDir};
+use nyx_agent_core::{Config, LogConfig, StateDir, Store};
 
 #[derive(Debug, Parser)]
-#[command(
-    name = "nyx-agent",
-    version,
-    about = "Nyx repository agent",
-    propagate_version = true
-)]
+#[command(name = "nyx-agent", version, about = "Nyx repository agent", propagate_version = true)]
 struct Cli {
     /// Path to `nyx-agent.toml`. Defaults to `./nyx-agent.toml`.
     #[arg(long, global = true, value_name = "PATH")]
@@ -64,7 +59,14 @@ enum Command {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    match run(cli) {
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(r) => r,
+        Err(err) => {
+            eprintln!("error: tokio runtime: {err:#}");
+            return ExitCode::from(1);
+        }
+    };
+    match rt.block_on(run(cli)) {
         Ok(code) => code,
         Err(err) => {
             eprintln!("error: {err:#}");
@@ -73,7 +75,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(cli: Cli) -> anyhow::Result<ExitCode> {
+async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     let config_path = cli.config.clone().unwrap_or_else(|| PathBuf::from("nyx-agent.toml"));
     let config = Config::load_or_default(&config_path)?;
 
@@ -87,7 +89,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     let log_cfg = LogConfig::new(state_dir.logs(), cli.log_level.clone());
 
     match cli.command.unwrap_or(Command::Serve { listen: None }) {
-        Command::Doctor => doctor(&state_dir, &config_path, &log_cfg),
+        Command::Doctor => doctor(&state_dir, &config_path, &log_cfg).await,
         Command::Scan { .. }
         | Command::Reverify { .. }
         | Command::Inspect { .. }
@@ -99,7 +101,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     }
 }
 
-fn doctor(
+async fn doctor(
     state_dir: &StateDir,
     config_path: &std::path::Path,
     log_cfg: &LogConfig,
@@ -111,5 +113,9 @@ fn doctor(
     } else {
         println!("config not found at {} (using defaults)", config_path.display());
     }
+    let store = Store::open(state_dir.root()).await?;
+    let version = store.schema_version().await?;
+    println!("db OK at {} (schema v{})", store.path().display(), version);
+    store.close().await;
     Ok(ExitCode::SUCCESS)
 }

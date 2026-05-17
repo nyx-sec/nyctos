@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT run_id AS \"run_id!\", kind AS \"kind!\",\n                   cap_usd_micros AS \"cap_usd_micros!: i64\",\n                   spent_usd_micros AS \"spent_usd_micros!: i64\",\n                   halted AS \"halted!: i64\",\n                   halted_at\n            FROM budgets WHERE run_id = ?\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "run_id!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "kind!",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "cap_usd_micros!: i64",
+        "ordinal": 2,
+        "type_info": "Integer"
+      },
+      {
+        "name": "spent_usd_micros!: i64",
+        "ordinal": 3,
+        "type_info": "Integer"
+      },
+      {
+        "name": "halted!: i64",
+        "ordinal": 4,
+        "type_info": "Integer"
+      },
+      {
+        "name": "halted_at",
+        "ordinal": 5,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "d0e898035d19e7fc169442859decbd960ccecb38ab6b549194ce00f8fc0d3753"
+}

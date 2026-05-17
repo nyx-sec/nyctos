@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            INSERT INTO webhooks (id, repo, hmac_secret_ref, branch_filter, enabled)\n            VALUES (?, ?, ?, ?, ?)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "1dc70a846f8327b5379ed36b84964a3c9c0ddb7e4c9778fda78c4d2ac03fdfc6"
+}

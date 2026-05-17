@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            INSERT INTO budgets (\n                run_id, kind, cap_usd_micros, spent_usd_micros, halted, halted_at\n            ) VALUES (?, ?, ?, ?, ?, ?)\n            ON CONFLICT(run_id, kind) DO UPDATE SET\n                cap_usd_micros   = excluded.cap_usd_micros,\n                spent_usd_micros = excluded.spent_usd_micros,\n                halted           = excluded.halted,\n                halted_at        = excluded.halted_at\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "03a0d53946efadd86f578a80de5281a12f941bf5da9b25c7c3b89d6986c0b12e"
+}

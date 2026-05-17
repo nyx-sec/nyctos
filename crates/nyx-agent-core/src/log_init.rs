@@ -63,10 +63,8 @@ where
     let env_filter = EnvFilter::try_new(&cfg.level)
         .map_err(|_| LogInitError::InvalidLevel(cfg.level.clone()))?;
 
-    std::fs::create_dir_all(&cfg.log_dir).map_err(|source| LogInitError::OpenLog {
-        path: cfg.log_dir.clone(),
-        source,
-    })?;
+    std::fs::create_dir_all(&cfg.log_dir)
+        .map_err(|source| LogInitError::OpenLog { path: cfg.log_dir.clone(), source })?;
     let log_path = cfg.log_dir.join(&cfg.file_name);
     let file = OpenOptions::new()
         .create(true)
@@ -85,9 +83,7 @@ where
         .with_target(true)
         .with_writer(json_writer);
 
-    let human_layer = tracing_subscriber::fmt::layer()
-        .with_target(false)
-        .with_writer(human_writer);
+    let human_layer = tracing_subscriber::fmt::layer().with_target(false).with_writer(human_writer);
 
     tracing_subscriber::registry()
         .with(env_filter)

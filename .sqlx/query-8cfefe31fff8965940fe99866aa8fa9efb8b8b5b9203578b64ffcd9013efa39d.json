@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            UPDATE runs\n               SET finished_at   = ?,\n                   status        = ?,\n                   wall_clock_ms = ?\n             WHERE id = ?\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "8cfefe31fff8965940fe99866aa8fa9efb8b8b5b9203578b64ffcd9013efa39d"
+}

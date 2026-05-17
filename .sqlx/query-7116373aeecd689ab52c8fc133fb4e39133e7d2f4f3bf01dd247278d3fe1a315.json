@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            INSERT INTO payloads (\n                id, finding_id, cap, lang, vuln_bytes, benign_bytes,\n                oracle_blob, attack_provenance, prompt_version, created_at\n            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 10
+    },
+    "nullable": []
+  },
+  "hash": "7116373aeecd689ab52c8fc133fb4e39133e7d2f4f3bf01dd247278d3fe1a315"
+}

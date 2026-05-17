@@ -212,7 +212,10 @@ mod tests {
         let raw = "[[repo]]\nname = \"nyx-pro\"\npath = \"/srv/repos/nyx-pro\"\n";
         let cfg = Config::parse(raw, &PathBuf::from("<test>")).expect("parse");
         assert_eq!(cfg.repos.len(), 1);
-        assert!(cfg.repos[0].enabled, "declared repo without explicit enabled must default to true");
+        assert!(
+            cfg.repos[0].enabled,
+            "declared repo without explicit enabled must default to true"
+        );
     }
 
     #[test]

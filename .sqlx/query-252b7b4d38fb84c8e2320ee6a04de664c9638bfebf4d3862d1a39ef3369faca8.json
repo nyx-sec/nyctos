@@ -1,0 +1,56 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT id AS \"id!\", finding_id AS \"finding_id!\",\n                   path AS \"path!\", sha256 AS \"sha256!\",\n                   created_at AS \"created_at!: i64\",\n                   last_replay_at, last_replay_status\n            FROM repro_bundles WHERE id = ?\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "finding_id!",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "path!",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "sha256!",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at!: i64",
+        "ordinal": 4,
+        "type_info": "Integer"
+      },
+      {
+        "name": "last_replay_at",
+        "ordinal": 5,
+        "type_info": "Integer"
+      },
+      {
+        "name": "last_replay_status",
+        "ordinal": 6,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "252b7b4d38fb84c8e2320ee6a04de664c9638bfebf4d3862d1a39ef3369faca8"
+}

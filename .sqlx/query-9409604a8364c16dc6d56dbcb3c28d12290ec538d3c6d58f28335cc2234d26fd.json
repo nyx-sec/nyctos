@@ -1,0 +1,68 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT id            AS \"id!\",\n                   started_at    AS \"started_at!: i64\",\n                   finished_at, status         AS \"status!\",\n                   triggered_by  AS \"triggered_by!\",\n                   git_ref, parent_run_id, wall_clock_ms,\n                   total_ai_spend_usd_micros AS \"total_ai_spend_usd_micros!: i64\"\n            FROM runs WHERE id = ?\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "started_at!: i64",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "finished_at",
+        "ordinal": 2,
+        "type_info": "Integer"
+      },
+      {
+        "name": "status!",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "triggered_by!",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "git_ref",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "parent_run_id",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "wall_clock_ms",
+        "ordinal": 7,
+        "type_info": "Integer"
+      },
+      {
+        "name": "total_ai_spend_usd_micros!: i64",
+        "ordinal": 8,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      false,
+      true,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "9409604a8364c16dc6d56dbcb3c28d12290ec538d3c6d58f28335cc2234d26fd"
+}

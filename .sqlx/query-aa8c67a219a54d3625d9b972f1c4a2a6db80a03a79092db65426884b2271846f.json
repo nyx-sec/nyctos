@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            UPDATE repro_bundles\n               SET last_replay_at = ?, last_replay_status = ?\n             WHERE id = ?\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "aa8c67a219a54d3625d9b972f1c4a2a6db80a03a79092db65426884b2271846f"
+}

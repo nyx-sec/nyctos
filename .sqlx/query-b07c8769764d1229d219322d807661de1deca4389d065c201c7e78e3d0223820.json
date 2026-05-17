@@ -1,0 +1,44 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT id AS \"id!: i64\", finding_id AS \"finding_id!\",\n                   operator_verdict AS \"operator_verdict!\",\n                   notes,\n                   created_at AS \"created_at!: i64\"\n            FROM feedback WHERE finding_id = ? ORDER BY created_at\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!: i64",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "finding_id!",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "operator_verdict!",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "notes",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at!: i64",
+        "ordinal": 4,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "b07c8769764d1229d219322d807661de1deca4389d065c201c7e78e3d0223820"
+}

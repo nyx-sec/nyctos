@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            INSERT INTO runs (\n                id, started_at, finished_at, status, triggered_by,\n                git_ref, parent_run_id, wall_clock_ms, total_ai_spend_usd_micros\n            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 9
+    },
+    "nullable": []
+  },
+  "hash": "3943509a0753ba110161c3601c7d0fedd469360c575921688f21739f69987744"
+}

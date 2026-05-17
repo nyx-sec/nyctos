@@ -1,0 +1,74 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT id AS \"id!\", finding_id AS \"finding_id!\",\n                   cap AS \"cap!\", lang AS \"lang!\",\n                   vuln_bytes AS \"vuln_bytes!: Vec<u8>\",\n                   benign_bytes AS \"benign_bytes: Vec<u8>\",\n                   oracle_blob, attack_provenance, prompt_version,\n                   created_at AS \"created_at!: i64\"\n            FROM payloads WHERE finding_id = ? ORDER BY created_at\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "finding_id!",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "cap!",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "lang!",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "vuln_bytes!: Vec<u8>",
+        "ordinal": 4,
+        "type_info": "Blob"
+      },
+      {
+        "name": "benign_bytes: Vec<u8>",
+        "ordinal": 5,
+        "type_info": "Blob"
+      },
+      {
+        "name": "oracle_blob",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "attack_provenance",
+        "ordinal": 7,
+        "type_info": "Text"
+      },
+      {
+        "name": "prompt_version",
+        "ordinal": 8,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at!: i64",
+        "ordinal": 9,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "25af64365d30f21e961b0dde4b027f9d09b4df27be76e0cb7857140d41a2a33c"
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            INSERT INTO repro_bundles (\n                id, finding_id, path, sha256, created_at,\n                last_replay_at, last_replay_status\n            ) VALUES (?, ?, ?, ?, ?, ?, ?)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 7
+    },
+    "nullable": []
+  },
+  "hash": "0ef171bca324cf03933da41b93dc74f9cde907e097b1de63b47c4a6e7933c080"
+}
