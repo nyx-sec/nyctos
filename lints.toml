@@ -1,0 +1,24 @@
+# Workspace lint rules that do not fit cleanly inside `clippy.toml` or
+# `[workspace.lints]` in `Cargo.toml`. Today this file only documents the
+# custom `missing-instrument` rule; it will grow alongside later phases.
+#
+# Rules:
+#   missing-instrument
+#     Severity (Phase 02): warn
+#     Severity (Phase 29+): deny
+#     Implemented by: .ci/missing-instrument.sh
+#     Rule: every `pub fn` (including `pub async fn` / `pub const fn`)
+#       in any crate under `crates/*/src/` must carry
+#       `#[tracing::instrument(...)]`, or an explicit
+#       `// nyx: no-instrument` line directly above the signature.
+#     Why: every later phase relies on per-span structured fields
+#       (`run_id`, `repo`, `task_id`, `prompt_version`). Omitting
+#       instrumentation on a public entry point makes those fields
+#       silently absent in the JSON log stream.
+
+[missing-instrument]
+severity = "warn"
+phase_promoted_to_deny = 29
+script = ".ci/missing-instrument.sh"
+exempt_marker = "// nyx: no-instrument"
+applies_to = ["crates/*/src/**/*.rs"]
