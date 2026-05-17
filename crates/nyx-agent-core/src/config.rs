@@ -115,8 +115,12 @@ pub struct RepoConfig {
     pub path: PathBuf,
     #[serde(default)]
     pub default_branch: Option<String>,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Config {
@@ -201,6 +205,14 @@ mod tests {
     fn empty_string_parses_to_default() {
         let cfg = Config::parse("", &PathBuf::from("<test>")).expect("empty parses");
         assert_eq!(cfg, Config::default());
+    }
+
+    #[test]
+    fn repo_enabled_defaults_to_true_when_omitted() {
+        let raw = "[[repo]]\nname = \"nyx-pro\"\npath = \"/srv/repos/nyx-pro\"\n";
+        let cfg = Config::parse(raw, &PathBuf::from("<test>")).expect("parse");
+        assert_eq!(cfg.repos.len(), 1);
+        assert!(cfg.repos[0].enabled, "declared repo without explicit enabled must default to true");
     }
 
     #[test]
