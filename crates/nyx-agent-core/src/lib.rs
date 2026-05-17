@@ -6,8 +6,8 @@ pub mod state;
 pub mod store;
 
 pub use config::{
-    AiConfig, Config, ConfigError, GeneralConfig, PerformanceConfig, RepoConfig, SandboxConfig,
-    TriggersConfig, UiConfig,
+    AiConfig, Config, ConfigError, GeneralConfig, NyxConfig, PerformanceConfig, RepoConfig,
+    SandboxConfig, TriggersConfig, UiConfig,
 };
 pub use log_init::{init as init_logging, json_log_path, LogConfig, LogInitError};
 pub use state::{StateDir, StateError};

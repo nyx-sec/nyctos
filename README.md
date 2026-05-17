@@ -33,6 +33,18 @@ stack; the `nyx-agent` daemon in this repository is not.
 Early scaffolding. See `.pitboss/play/plan.md` for the phased delivery
 plan; this commit lands Phase 01 (cargo workspace + CI guards).
 
+## Upstream `nyx` scanner
+
+`nyx-agent` shells out to the upstream `nyx` static scanner; the agent has
+no FFI link against it. The `nyx` binary must be installed and discoverable:
+
+- by default on `PATH` (verify with `which nyx`), or
+- via `[nyx].binary_path = "/abs/path/to/nyx"` in `nyx-agent.toml`.
+
+`nyx-agent doctor` reports the resolved path, the detected version, and the
+minimum supported version. It exits non-zero when the binary is missing or
+below the minimum.
+
 ## Working with the SQLite store
 
 `nyx-agent-core` uses SQLx's compile-time-checked query macros against a

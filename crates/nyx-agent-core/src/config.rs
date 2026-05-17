@@ -36,6 +36,7 @@ pub struct Config {
     pub ai: AiConfig,
     pub ui: UiConfig,
     pub triggers: TriggersConfig,
+    pub nyx: NyxConfig,
     #[serde(rename = "repo", default)]
     pub repos: Vec<RepoConfig>,
 }
@@ -98,6 +99,17 @@ impl Default for UiConfig {
     fn default() -> Self {
         Self { listen_addr: "127.0.0.1:7878".to_string(), open_browser: false }
     }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct NyxConfig {
+    /// Override the discovered `nyx` binary. When `None`, the runner falls
+    /// back to a `PATH` lookup.
+    pub binary_path: Option<PathBuf>,
+    /// Override the built-in minimum-supported `nyx` version. Useful in
+    /// integration tests; production deployments should leave it unset.
+    pub min_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -181,6 +193,10 @@ mod tests {
                 on_push: true,
                 on_pr: true,
                 schedule_cron: Some("0 * * * *".to_string()),
+            },
+            nyx: NyxConfig {
+                binary_path: Some(PathBuf::from("/opt/nyx/bin/nyx")),
+                min_version: Some("0.2.0".to_string()),
             },
             repos: vec![RepoConfig {
                 name: "nyx-pro".to_string(),

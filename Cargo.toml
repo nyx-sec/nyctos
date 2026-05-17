@@ -38,6 +38,9 @@ rust-embed = "8"
 rayon = "1"
 ts-rs = "10"
 utoipa = "5"
+semver = "1"
+tempfile = "3"
+which = "6"
 
 [profile.release]
 lto = "thin"
