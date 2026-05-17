@@ -1,0 +1,20 @@
+[package]
+name = "nyx-agent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "nyx-agent"
+path = "src/main.rs"
+
+[dependencies]
+nyx-agent-core = { path = "../nyx-agent-core" }
+nyx-agent-types = { path = "../nyx-agent-types" }
+anyhow = { workspace = true }
+clap = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

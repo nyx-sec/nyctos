@@ -1,0 +1,24 @@
+# Curated banned-phrase list for nyx-pro voice-lint.
+# One phrase per line. Lines starting with `#` are comments.
+# Matching is case-insensitive literal substring.
+# To allow a phrase in a specific file, wrap the surrounding region in
+# `<!-- nyx: verbatim -->` / `<!-- /nyx: verbatim -->` markers.
+delve
+leverage
+seamless
+synergy
+robust
+cutting-edge
+world-class
+enterprise-grade
+industry-leading
+next-generation
+it is worth noting
+at the end of the day
+navigate the complexities
+in today's fast-paced
+as an AI
+I'd be happy to
+certainly,
+of course,
+powerful
