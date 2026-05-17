@@ -124,11 +124,29 @@ pub struct TriggersConfig {
 #[serde(deny_unknown_fields)]
 pub struct RepoConfig {
     pub name: String,
-    pub path: PathBuf,
+    /// Operator attestation that they own this repo and consent to scanning.
+    /// The daemon refuses to ingest a repo without `i_own_this = true`.
     #[serde(default)]
-    pub default_branch: Option<String>,
+    pub i_own_this: bool,
+    pub source: RepoSourceConfig,
     #[serde(default = "default_true")]
     pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum RepoSourceConfig {
+    /// Read-only clone of a remote git URL into `<state>/repos/<name>/`.
+    Git {
+        url: String,
+        #[serde(default)]
+        branch: Option<String>,
+        /// Auth descriptor: `ssh-key:<path>`, `token-env:<var>`, `gh-app:<id>`.
+        #[serde(default)]
+        auth: Option<String>,
+    },
+    /// Read-only snapshot of a directory already present on disk.
+    LocalPath { path: PathBuf },
 }
 
 fn default_true() -> bool {
@@ -198,12 +216,26 @@ mod tests {
                 binary_path: Some(PathBuf::from("/opt/nyx/bin/nyx")),
                 min_version: Some("0.2.0".to_string()),
             },
-            repos: vec![RepoConfig {
-                name: "nyx-pro".to_string(),
-                path: PathBuf::from("/srv/repos/nyx-pro"),
-                default_branch: Some("main".to_string()),
-                enabled: true,
-            }],
+            repos: vec![
+                RepoConfig {
+                    name: "nyx-pro".to_string(),
+                    i_own_this: true,
+                    source: RepoSourceConfig::Git {
+                        url: "git@github.com:nyx/nyx-pro.git".to_string(),
+                        branch: Some("main".to_string()),
+                        auth: Some("ssh-key:~/.ssh/work_ed25519".to_string()),
+                    },
+                    enabled: true,
+                },
+                RepoConfig {
+                    name: "monolith".to_string(),
+                    i_own_this: true,
+                    source: RepoSourceConfig::LocalPath {
+                        path: PathBuf::from("/Users/eli/code/monolith"),
+                    },
+                    enabled: true,
+                },
+            ],
         };
         let rendered = cfg.to_toml_string().expect("serialise");
         let parsed = Config::parse(&rendered, &PathBuf::from("<test>")).expect("parse");
@@ -225,12 +257,60 @@ mod tests {
 
     #[test]
     fn repo_enabled_defaults_to_true_when_omitted() {
-        let raw = "[[repo]]\nname = \"nyx-pro\"\npath = \"/srv/repos/nyx-pro\"\n";
+        let raw = "[[repo]]\nname = \"nyx-pro\"\ni_own_this = true\n\
+                   source = { kind = \"local-path\", path = \"/srv/repos/nyx-pro\" }\n";
         let cfg = Config::parse(raw, &PathBuf::from("<test>")).expect("parse");
         assert_eq!(cfg.repos.len(), 1);
         assert!(
             cfg.repos[0].enabled,
             "declared repo without explicit enabled must default to true"
+        );
+    }
+
+    #[test]
+    fn repo_source_git_parses_with_inline_table() {
+        let raw = "[[repo]]\nname = \"billing\"\ni_own_this = true\n\
+                   source = { kind = \"git\", url = \"git@github.com:org/billing.git\", \
+                              branch = \"main\", auth = \"ssh-key:~/.ssh/work_ed25519\" }\n";
+        let cfg = Config::parse(raw, &PathBuf::from("<test>")).expect("parse");
+        match &cfg.repos[0].source {
+            RepoSourceConfig::Git { url, branch, auth } => {
+                assert_eq!(url, "git@github.com:org/billing.git");
+                assert_eq!(branch.as_deref(), Some("main"));
+                assert_eq!(auth.as_deref(), Some("ssh-key:~/.ssh/work_ed25519"));
+            }
+            other => panic!("expected git source, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn repo_source_local_path_parses() {
+        let raw = "[[repo]]\nname = \"monolith\"\ni_own_this = true\n\
+                   source = { kind = \"local-path\", path = \"/home/eli/code/monolith\" }\n";
+        let cfg = Config::parse(raw, &PathBuf::from("<test>")).expect("parse");
+        match &cfg.repos[0].source {
+            RepoSourceConfig::LocalPath { path } => {
+                assert_eq!(path, &PathBuf::from("/home/eli/code/monolith"));
+            }
+            other => panic!("expected local-path source, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn repo_source_unknown_kind_rejected() {
+        let raw = "[[repo]]\nname = \"x\"\ni_own_this = true\n\
+                   source = { kind = \"hg\", path = \"/srv/x\" }\n";
+        let err = Config::parse(raw, &PathBuf::from("<test>")).expect_err("must reject");
+        assert!(matches!(err, ConfigError::Parse { .. }));
+    }
+
+    #[test]
+    fn repo_i_own_this_defaults_to_false_when_omitted() {
+        let raw = "[[repo]]\nname = \"x\"\nsource = { kind = \"local-path\", path = \"/srv/x\" }\n";
+        let cfg = Config::parse(raw, &PathBuf::from("<test>")).expect("parse");
+        assert!(
+            !cfg.repos[0].i_own_this,
+            "i_own_this must default to false so the daemon refuses unattested repos"
         );
     }
 

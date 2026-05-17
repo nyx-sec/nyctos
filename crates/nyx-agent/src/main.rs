@@ -2,7 +2,10 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use nyx_agent_core::{Config, LogConfig, StateDir, Store};
+use nyx_agent_core::{
+    ingest, Config, IngestError, LogConfig, Repo, RepoSource, StateDir, Store,
+};
+use nyx_agent_core::store::RepoRecord;
 use nyx_agent_nyx::{NyxError, NyxRunner, MINIMUM_NYX_VERSION};
 use semver::Version;
 
@@ -29,8 +32,10 @@ struct Cli {
 enum Command {
     /// Scan one or more repositories for findings.
     Scan {
-        /// Repositories to scan (by name from `nyx-agent.toml`).
-        #[arg(value_name = "REPO")]
+        /// Repositories to scan (by name from `nyx-agent.toml`). Pass
+        /// `--repo` once per repository, or omit to scan every enabled
+        /// repo.
+        #[arg(long = "repo", value_name = "REPO")]
         repos: Vec<String>,
     },
     /// Re-verify a previous finding by run/finding id.
@@ -92,8 +97,11 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
 
     match cli.command.unwrap_or(Command::Serve { listen: None }) {
         Command::Doctor => doctor(&state_dir, &config_path, &log_cfg, &config).await,
-        Command::Scan { .. }
-        | Command::Reverify { .. }
+        Command::Scan { repos } => {
+            nyx_agent_core::init_logging(&log_cfg)?;
+            scan(&state_dir, &config, &repos).await
+        }
+        Command::Reverify { .. }
         | Command::Inspect { .. }
         | Command::Budget
         | Command::Serve { .. } => {
@@ -101,6 +109,138 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             todo!("subcommand wiring lands in a later phase")
         }
     }
+}
+
+async fn scan(
+    state_dir: &StateDir,
+    config: &Config,
+    requested: &[String],
+) -> anyhow::Result<ExitCode> {
+    let selected = select_repos(config, requested)?;
+    if selected.is_empty() {
+        eprintln!("scan: no repositories selected; configure one in nyx-agent.toml");
+        return Ok(ExitCode::from(1));
+    }
+
+    let state_repos = state_dir.repos();
+    let store = Store::open(state_dir.root()).await?;
+    let run_id = run_id_now();
+    let mut had_error = false;
+
+    for repo in &selected {
+        match ingest(repo, &state_repos, &run_id).await {
+            Ok(ingested) => {
+                let now_ms = now_epoch_ms();
+                let rec = RepoRecord {
+                    name: ingested.name.clone(),
+                    source_kind: source_kind_str(&ingested.source).to_string(),
+                    source_url_or_path: source_url_or_path(&ingested.source),
+                    branch: branch_of(&ingested.source),
+                    auth_ref: auth_descriptor_of(&ingested.source),
+                    i_own_this: true,
+                    last_scan_run_id: None,
+                    created_at: now_ms,
+                    updated_at: now_ms,
+                };
+                store.repos().upsert(&rec).await?;
+                println!(
+                    "scan: ingested {} -> {} (backend: {})",
+                    ingested.name,
+                    ingested.workspace.display(),
+                    match ingested.snapshot_backend {
+                        Some(b) => format!("{b:?}"),
+                        None => "git-clone".to_string(),
+                    }
+                );
+                if let Some(remote) = &ingested.on_disk_git_remote {
+                    println!("  on-disk git remote: {remote}");
+                }
+            }
+            Err(err) => {
+                had_error = true;
+                report_ingest_error(&repo.name, &err);
+            }
+        }
+    }
+
+    store.close().await;
+    Ok(if had_error { ExitCode::from(1) } else { ExitCode::SUCCESS })
+}
+
+fn select_repos(config: &Config, requested: &[String]) -> anyhow::Result<Vec<Repo>> {
+    let mut out = Vec::new();
+    if requested.is_empty() {
+        for c in &config.repos {
+            if c.enabled {
+                out.push(Repo::from_config(c)?);
+            }
+        }
+        return Ok(out);
+    }
+    for name in requested {
+        let cfg = config
+            .repos
+            .iter()
+            .find(|r| &r.name == name)
+            .ok_or_else(|| anyhow::anyhow!("repo `{name}` not declared in nyx-agent.toml"))?;
+        if !cfg.enabled {
+            anyhow::bail!("repo `{name}` is declared but `enabled = false`");
+        }
+        out.push(Repo::from_config(cfg)?);
+    }
+    Ok(out)
+}
+
+fn report_ingest_error(name: &str, err: &IngestError) {
+    match err {
+        IngestError::NotAttested { .. } => {
+            eprintln!("scan: refusing repo `{name}`: {err}");
+        }
+        other => eprintln!("scan: repo `{name}` failed: {other}"),
+    }
+}
+
+fn source_kind_str(src: &RepoSource) -> &'static str {
+    match src {
+        RepoSource::Git { .. } => "git",
+        RepoSource::LocalPath { .. } => "local-path",
+    }
+}
+
+fn source_url_or_path(src: &RepoSource) -> String {
+    match src {
+        RepoSource::Git { url, .. } => url.clone(),
+        RepoSource::LocalPath { path } => path.display().to_string(),
+    }
+}
+
+fn branch_of(src: &RepoSource) -> Option<String> {
+    match src {
+        RepoSource::Git { branch, .. } => branch.clone(),
+        RepoSource::LocalPath { .. } => None,
+    }
+}
+
+fn auth_descriptor_of(src: &RepoSource) -> Option<String> {
+    match src {
+        RepoSource::Git { auth: Some(a), .. } => Some(format!("{a:?}")),
+        _ => None,
+    }
+}
+
+fn now_epoch_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+fn run_id_now() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!("run-{now}")
 }
 
 async fn doctor(

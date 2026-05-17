@@ -1198,6 +1198,7 @@ dependencies = [
  "dirs",
  "hex",
  "nyx-agent-types",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2",
