@@ -53,7 +53,15 @@ pub(super) async fn ingest_local(
 /// privileged backends require root that the daemon does not have by
 /// default.
 pub fn select_backend() -> SnapshotBackend {
-    match std::env::var("NYX_SNAPSHOT_BACKEND").ok().as_deref() {
+    select_backend_for(std::env::var("NYX_SNAPSHOT_BACKEND").ok().as_deref())
+}
+
+/// Pure variant of [`select_backend`]: maps an explicit override value
+/// to the chosen backend without touching process env. Exposed so tests
+/// can exercise the mapping without racing other tests on the shared
+/// `NYX_SNAPSHOT_BACKEND` environment variable.
+pub fn select_backend_for(value: Option<&str>) -> SnapshotBackend {
+    match value {
         Some("bind-mount") => SnapshotBackend::BindMount,
         Some("apfs") => SnapshotBackend::ApfsSnapshot,
         _ => SnapshotBackend::Copy,
@@ -152,7 +160,7 @@ fn take_bind_mount(name: &str, src: &Path, dst: &Path) -> Result<SnapshotBackend
 
 #[cfg(not(target_os = "linux"))]
 fn take_bind_mount(name: &str, _src: &Path, _dst: &Path) -> Result<SnapshotBackend, IngestError> {
-    Err(IngestError::Git {
+    Err(IngestError::Snapshot {
         name: name.to_string(),
         message: "bind-mount snapshot backend is only available on Linux".to_string(),
     })
@@ -170,7 +178,7 @@ fn take_apfs_snapshot(
     // by running the daemon with elevated privileges, which the MVP
     // does not require. For now we surface a clear error so the caller
     // falls back to `Copy`.
-    Err(IngestError::Git {
+    Err(IngestError::Snapshot {
         name: name.to_string(),
         message: "APFS snapshot backend requires root + mount_apfs wiring; \
                   unset NYX_SNAPSHOT_BACKEND to fall back to copy"
@@ -184,7 +192,7 @@ fn take_apfs_snapshot(
     _src: &Path,
     _dst: &Path,
 ) -> Result<SnapshotBackend, IngestError> {
-    Err(IngestError::Git {
+    Err(IngestError::Snapshot {
         name: name.to_string(),
         message: "APFS snapshot backend is only available on macOS".to_string(),
     })
@@ -200,7 +208,7 @@ fn run_blocking(name: &str, cmd: &mut std::process::Command) -> Result<(), Inges
     if output.status.success() {
         Ok(())
     } else {
-        Err(IngestError::Git {
+        Err(IngestError::Snapshot {
             name: name.to_string(),
             message: String::from_utf8_lossy(&output.stderr).trim().to_string(),
         })
@@ -502,17 +510,13 @@ mod tests {
     }
 
     #[test]
-    fn select_backend_honours_env_override() {
-        // SAFETY: cargo runs each test binary single-threaded under nextest;
-        // even with default test threading, this var is short-lived and
-        // the assertions read it synchronously.
-        std::env::set_var("NYX_SNAPSHOT_BACKEND", "bind-mount");
-        assert_eq!(select_backend(), SnapshotBackend::BindMount);
-        std::env::set_var("NYX_SNAPSHOT_BACKEND", "apfs");
-        assert_eq!(select_backend(), SnapshotBackend::ApfsSnapshot);
-        std::env::set_var("NYX_SNAPSHOT_BACKEND", "copy");
-        assert_eq!(select_backend(), SnapshotBackend::Copy);
-        std::env::remove_var("NYX_SNAPSHOT_BACKEND");
-        assert_eq!(select_backend(), SnapshotBackend::Copy);
+    fn select_backend_for_maps_explicit_value() {
+        // Pure function — no env mutation, so this test never races other
+        // tests in the same binary that depend on the default backend.
+        assert_eq!(select_backend_for(Some("bind-mount")), SnapshotBackend::BindMount);
+        assert_eq!(select_backend_for(Some("apfs")), SnapshotBackend::ApfsSnapshot);
+        assert_eq!(select_backend_for(Some("copy")), SnapshotBackend::Copy);
+        assert_eq!(select_backend_for(Some("unknown")), SnapshotBackend::Copy);
+        assert_eq!(select_backend_for(None), SnapshotBackend::Copy);
     }
 }

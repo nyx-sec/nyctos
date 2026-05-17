@@ -60,6 +60,19 @@ pub enum GitAuth {
 }
 
 impl GitAuth {
+    /// Render this auth value back as the `<scheme>:<value>` descriptor
+    /// string that [`GitAuth::parse`] accepts. Used as a stable
+    /// identifier for the `repos.auth_ref` audit column (the raw token
+    /// or key bytes are never persisted — only the descriptor that
+    /// names where they came from).
+    pub fn descriptor(&self) -> String {
+        match self {
+            GitAuth::SshKey(p) => format!("ssh-key:{}", p.display()),
+            GitAuth::TokenEnv(var) => format!("token-env:{var}"),
+            GitAuth::GhApp(id) => format!("gh-app:{id}"),
+        }
+    }
+
     /// Parse a config auth descriptor of the form `<scheme>:<value>`.
     pub fn parse(raw: &str) -> Result<Self, IngestError> {
         let (scheme, value) = raw
@@ -134,6 +147,12 @@ pub enum IngestError {
         source: anyhow::Error,
     },
 
+    #[error(
+        "GitHub token scope probe at `{url}` returned HTTP {status}; refusing to clone with an \
+         unvetted token (token may be revoked, rate-limited, or GitHub may be degraded)"
+    )]
+    AuthScopeStatus { url: String, status: u16 },
+
     #[error("`gh-app` auth is not yet implemented; configure `token-env` or `ssh-key` instead")]
     AuthGhAppUnsupported,
 
@@ -151,6 +170,9 @@ pub enum IngestError {
 
     #[error("git command failed for repo `{name}`: {message}")]
     Git { name: String, message: String },
+
+    #[error("snapshot backend failed for repo `{name}`: {message}")]
+    Snapshot { name: String, message: String },
 
     #[error("filesystem error while ingesting repo `{name}` at {path}: {source}")]
     Io {
@@ -279,6 +301,14 @@ mod tests {
     fn auth_parse_rejects_missing_colon() {
         let err = GitAuth::parse("token-env").expect_err("must reject");
         assert!(matches!(err, IngestError::AuthMalformed { .. }));
+    }
+
+    #[test]
+    fn auth_descriptor_round_trips() {
+        for raw in ["ssh-key:/home/eli/.ssh/key", "token-env:GH_TOKEN", "gh-app:12345"] {
+            let parsed = GitAuth::parse(raw).expect("parse");
+            assert_eq!(parsed.descriptor(), raw, "descriptor must echo original config string");
+        }
     }
 
     #[test]

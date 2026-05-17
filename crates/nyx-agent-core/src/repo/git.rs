@@ -265,6 +265,19 @@ pub async fn validate_token_scopes(token: &str) -> Result<GhScopeCheck, IngestEr
     .await
     .map_err(|e| IngestError::AuthScopeCheck { source: anyhow::anyhow!(e) })?;
 
+    // Fail closed on any non-success status. A 401/403 means the token is
+    // revoked or rate-limited; a 5xx means GitHub cannot tell us the
+    // scopes right now. In all of those cases the safe move is to refuse
+    // the clone rather than silently fall through to `NoScopeHeader` and
+    // accept a token of unknown power.
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(IngestError::AuthScopeStatus {
+            url: url.to_string(),
+            status: status.as_u16(),
+        });
+    }
+
     let header = resp.headers().get("x-oauth-scopes").cloned();
     match header {
         None => Ok(GhScopeCheck::NoScopeHeader),

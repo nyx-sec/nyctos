@@ -223,7 +223,7 @@ fn branch_of(src: &RepoSource) -> Option<String> {
 
 fn auth_descriptor_of(src: &RepoSource) -> Option<String> {
     match src {
-        RepoSource::Git { auth: Some(a), .. } => Some(format!("{a:?}")),
+        RepoSource::Git { auth: Some(a), .. } => Some(a.descriptor()),
         _ => None,
     }
 }
