@@ -40,8 +40,24 @@ stack; the `nyx-agent` daemon in this repository is not.
 
 ## Status
 
-Early scaffolding. See `.pitboss/play/plan.md` for the phased delivery
-plan; this commit lands Phase 01 (cargo workspace + CI guards).
+Pre-MVP. Phases 01-27 of `.pitboss/play/plan.md` have landed: the
+cargo workspace, SQLite store, `nyx` subprocess driver, parallel run
+aggregator, Axum HTTP/WebSocket API, the embedded SPA (first-launch
+wizard, project + repo manager, findings browser, live scan view,
+quarantine + AI trace viewer), two AI runtime adapters (Anthropic
+SDK and Claude Code) wired to four agent tasks (PayloadSynthesis,
+SpecDerivation, ChainReasoning, NovelFindingDiscovery), the sandbox
+fast lane (birdcage) and chain lane (libkrun / Firecracker / Docker
+with auto-selection), env-builder docker-compose spinup, the
+cross-repo chain runner, reports + repro bundles, the GitHub
+Actions composite for PR gating, and the cron + webhook scan
+triggers. Phase 28 (end-to-end demo fixture) is in flight; phases
+29 (MVP polish) and 30 (closed-beta packaging) follow before tag.
+
+`nyx-agent doctor` prints the runtime probes the daemon uses at
+startup:
+
+![nyx-agent doctor output showing state dir, config, SQLite schema v2, resolved nyx scanner version, claude-code adapter, sandbox chain lane on docker, sandbox fast lane on birdcage, scheduler and webhook status](assets/screenshots/cli-doctor.png)
 
 ## Documentation
 

