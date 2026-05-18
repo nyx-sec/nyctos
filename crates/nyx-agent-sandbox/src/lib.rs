@@ -446,7 +446,7 @@ pub fn probe(backend: BackendKind) -> Result<(), SandboxError> {
             backend::firecracker::FirecrackerSandbox::new().map(|_| ())
         }
         BackendKind::Docker => {
-            if which_on_path("docker").is_some() {
+            if backend::which_on_path("docker").is_some() {
                 Ok(())
             } else {
                 Err(SandboxError::BackendUnavailable {
@@ -458,16 +458,14 @@ pub fn probe(backend: BackendKind) -> Result<(), SandboxError> {
     }
 }
 
-fn which_on_path(bin: &str) -> Option<std::path::PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path) {
-        let candidate = dir.join(bin);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    None
-}
+/// Shared lock for tests that mutate process-wide env vars (notably
+/// `$NYX_LIBKRUN_RUNNER`). Tests in this crate run in the same lib-test
+/// binary and the default cargo test runner is multi-threaded, so two
+/// env-mutating tests can clobber each other's `set_var`/`remove_var`
+/// pairs mid-call. Hold this guard for the duration of any env
+/// mutation.
+#[cfg(test)]
+pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
 mod tests {
@@ -513,6 +511,7 @@ mod tests {
         // Force libkrun unavailable by pointing the env override at a
         // non-existent helper. The selector should fall back to the
         // auto-pick and stamp a reason explaining the downgrade.
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::set_var(
             "NYX_LIBKRUN_RUNNER",
             "/definitely/does/not/exist/libkrun-runner",

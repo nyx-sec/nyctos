@@ -6,12 +6,26 @@ pub mod libkrun;
 pub mod process;
 
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use tokio::process::Command;
 
 use crate::SandboxOpts;
+
+/// Resolve `bin` against `$PATH`, returning the first hit. Shared by
+/// the top-level `probe(Docker)` check and the libkrun/firecracker
+/// runner resolvers.
+pub(crate) fn which_on_path(bin: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        let candidate = dir.join(bin);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
 
 /// Build a [`tokio::process::Command`] from `opts` with the workspace as
 /// cwd, no inherited environment, and piped stdio. Backends overlay their

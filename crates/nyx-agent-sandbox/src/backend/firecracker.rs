@@ -263,24 +263,13 @@ fn resolve_runner_path() -> Result<PathBuf, SandboxError> {
             reason: format!("${RUNNER_PATH_ENV}={} is not a file", p.display()),
         });
     }
-    if let Some(p) = which_on_path(RUNNER_BINARY) {
+    if let Some(p) = super::which_on_path(RUNNER_BINARY) {
         return Ok(p);
     }
     Err(SandboxError::BackendUnavailable {
         backend: "firecracker",
         reason: format!("{RUNNER_BINARY} not found via ${RUNNER_PATH_ENV} or PATH"),
     })
-}
-
-fn which_on_path(bin: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path) {
-        let candidate = dir.join(bin);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    None
 }
 
 #[cfg(test)]

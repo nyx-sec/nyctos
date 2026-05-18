@@ -260,24 +260,13 @@ fn resolve_runner_path() -> Result<PathBuf, SandboxError> {
             reason: format!("${RUNNER_PATH_ENV}={} is not a file", p.display()),
         });
     }
-    if let Some(p) = which_on_path(RUNNER_BINARY) {
+    if let Some(p) = super::which_on_path(RUNNER_BINARY) {
         return Ok(p);
     }
     Err(SandboxError::BackendUnavailable {
         backend: "libkrun",
         reason: format!("{RUNNER_BINARY} not found via ${RUNNER_PATH_ENV} or PATH"),
     })
-}
-
-fn which_on_path(bin: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path) {
-        let candidate = dir.join(bin);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    None
 }
 
 #[cfg(test)]
@@ -306,6 +295,7 @@ mod tests {
     fn missing_runner_returns_backend_unavailable() {
         // Clear env override to a path we know does not exist so the
         // resolver hits its env-set-but-missing branch.
+        let _guard = crate::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::set_var(RUNNER_PATH_ENV, "/definitely/does/not/exist/libkrun-runner");
         let result = LibkrunSandbox::new();
         std::env::remove_var(RUNNER_PATH_ENV);
