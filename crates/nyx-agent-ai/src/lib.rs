@@ -21,6 +21,7 @@ pub use adapter::claude_code::{
 pub use runtime::{
     deterministic_seed, AiRuntime, BudgetTracker, InMemoryBudgetTracker, SharedBudgetTracker,
 };
+pub use tasks::chain_reasoning::{run as run_chain_reasoning, ChainReasoningOutcome};
 pub use tasks::payload_synthesis::{
     run as run_payload_synthesis, PayloadSynthesisOutcome,
 };

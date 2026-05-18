@@ -19,21 +19,26 @@
 //! diags. Successful outcomes land in the `harness_specs` table and
 //! the parent finding's `spec_id` back-link is stamped.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use nyx_agent_ai::{
-    read_spec_excerpt, run_payload_synthesis, run_spec_derivation, AnthropicSdkAdapter,
-    BudgetTracker, PayloadSynthesisOutcome, SharedBudgetTracker, SpecDerivationOutcome,
+    read_spec_excerpt, run_chain_reasoning, run_payload_synthesis, run_spec_derivation,
+    AnthropicSdkAdapter, BudgetTracker, ChainReasoningOutcome, PayloadSynthesisOutcome,
+    SharedBudgetTracker, SpecDerivationOutcome,
 };
-use nyx_agent_core::store::{HarnessSpecRecord, PayloadRecord, Store};
+use nyx_agent_core::store::{ChainRecord, HarnessSpecRecord, PayloadRecord, Store};
 use nyx_agent_core::{
     AiConfig, AiRuntime as ConfigAiRuntime, RepoOutcome, RunBundle, SecretStore, WorkspaceHandle,
 };
 use nyx_agent_nyx::Diag;
 use nyx_agent_types::agent::{AiError, BudgetKind};
+use nyx_agent_types::chain::{
+    ChainReasoningEdge, ChainReasoningInput, ChainReasoningNode, CHAIN_REASONING_DEFAULT_MAX,
+    NODE_KIND_ENTRY, NODE_KIND_FRAMEWORK, NODE_KIND_SINK,
+};
 use nyx_agent_types::event::EventSink;
 use nyx_agent_types::payload::{AttackProvenance, PayloadSynthesisInput};
 use nyx_agent_types::spec::SpecDerivationInput;
@@ -559,6 +564,343 @@ async fn apply_spec_outcome(
     Ok(())
 }
 
+/// Per-call cap for the ChainReasoning fan-out. Chain reasoning fires
+/// at most once per run; sizing matches the per-run default so the
+/// task can use the full budget when no other tasks have spent yet.
+const CHAIN_REASONING_PER_CALL_CAP_USD_MICROS: i64 = DEFAULT_RUN_BUDGET_USD_MICROS;
+
+/// Heuristic path fragments that mark a file as a vendored framework
+/// binding. The ChainReasoning prompt tags nodes whose source path
+/// matches any of these as `framework` so the model can recognise
+/// glue code that is not under the operator's control.
+const FRAMEWORK_PATH_FRAGMENTS: &[&str] = &[
+    "site-packages/",
+    "node_modules/",
+    "vendor/",
+    "/lib/",
+    "/framework/",
+    "/frameworks/",
+    ".cargo/registry/",
+    "_vendor/",
+];
+
+/// Counts surfaced by [`run_chain_reasoning_pass`].
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ChainReasoningPassReport {
+    pub chains_persisted: u32,
+    pub cross_repo_chains: u32,
+    pub members_stamped: u32,
+    pub spend_usd_micros: i64,
+    pub attempts: u64,
+    pub failed: u32,
+}
+
+/// Fan-out (single-call) ChainReasoning over the run's finding graph.
+/// No-op (returns a default report) when `config.runtime != Anthropic`,
+/// no API key is configured, or the bundle has fewer than two findings.
+pub async fn run_chain_reasoning_pass(
+    config: &AiConfig,
+    store: &Store,
+    secrets: &SecretStore,
+    bundle: &RunBundle<Diag>,
+    workspaces: &HashMap<String, WorkspaceHandle>,
+    events: EventSink,
+) -> anyhow::Result<ChainReasoningPassReport> {
+    if !matches!(config.runtime, ConfigAiRuntime::Anthropic) {
+        return Ok(ChainReasoningPassReport::default());
+    }
+    let api_key = match secrets.get(nyx_agent_core::secrets::ACCOUNT_AI_ANTHROPIC) {
+        Ok(Some(k)) => k,
+        Ok(None) => {
+            tracing::info!(
+                "chain reasoning: AI runtime is anthropic but no API key configured; skipping"
+            );
+            return Ok(ChainReasoningPassReport::default());
+        }
+        Err(e) => return Err(anyhow::anyhow!("secret store error: {e}")),
+    };
+    let _ = workspaces; // workspaces unused: the graph is built from bundle metadata only.
+    let input = match build_chain_input(bundle) {
+        Some(i) => i,
+        None => return Ok(ChainReasoningPassReport::default()),
+    };
+    tracing::info!(
+        nodes = input.nodes.len(),
+        edges = input.edges.len(),
+        repos = input.repos.len(),
+        "chain reasoning: dispatching"
+    );
+
+    let tracker: SharedBudgetTracker =
+        Arc::new(BudgetStoreTracker::new(store.clone(), DEFAULT_RUN_BUDGET_USD_MICROS));
+    let adapter = AnthropicSdkAdapter::new(api_key, tracker.clone());
+
+    let outcome = match run_chain_reasoning(
+        &adapter,
+        &input,
+        events,
+        CHAIN_REASONING_PER_CALL_CAP_USD_MICROS,
+    )
+    .await
+    {
+        Ok(o) => o,
+        Err(err) => {
+            tracing::warn!(error = %err, "chain reasoning call failed");
+            return Ok(ChainReasoningPassReport { failed: 1, ..Default::default() });
+        }
+    };
+
+    let mut report = ChainReasoningPassReport::default();
+    apply_chain_outcome(store, &input, outcome, &mut report).await?;
+    Ok(report)
+}
+
+/// Walk `bundle` and turn each diag into a `ChainReasoningNode`. Edges
+/// are derived from `Diag::flow_steps`: each step inside a diag that
+/// resolves to *another* diag's `(path, line)` produces a directed
+/// `Reaches` edge, with `cross_repo = true` when the two diags live in
+/// different repos. Public so the inner graph builder is unit-testable
+/// without spinning up an adapter.
+pub fn build_chain_input(bundle: &RunBundle<Diag>) -> Option<ChainReasoningInput> {
+    // Collect every node + an index keyed by (repo, path, line) so flow
+    // steps can resolve to a finding id without a quadratic scan.
+    let mut nodes: Vec<ChainReasoningNode> = Vec::new();
+    let mut by_location: HashMap<(String, String, u32), String> = HashMap::new();
+    let mut repos: Vec<String> = Vec::new();
+    for repo_bundle in &bundle.per_repo {
+        if !repos.contains(&repo_bundle.repo) {
+            repos.push(repo_bundle.repo.clone());
+        }
+        let RepoOutcome::Success(diags) = &repo_bundle.outcome else {
+            continue;
+        };
+        for diag in diags {
+            let id = nyx_agent_core::store::finding_id_hash(
+                &repo_bundle.repo,
+                &diag.path,
+                Some(i64::from(diag.line)),
+                &diag.cap,
+                &diag.rule,
+            );
+            let kind = classify_node_kind(diag);
+            by_location.insert(
+                (repo_bundle.repo.clone(), diag.path.clone(), diag.line),
+                id.clone(),
+            );
+            nodes.push(ChainReasoningNode {
+                id,
+                repo: repo_bundle.repo.clone(),
+                path: diag.path.clone(),
+                line: Some(diag.line),
+                cap: diag.cap.clone(),
+                rule: diag.rule.clone(),
+                severity: diag.severity.clone(),
+                kind: kind.to_string(),
+            });
+        }
+    }
+    if nodes.len() < 2 {
+        return None;
+    }
+
+    // Edges: per diag, walk its flow_steps; whenever a step lands on a
+    // location that resolves to another known diag, link that diag to
+    // the current diag. The edge direction goes "from upstream step ->
+    // sink diag" so the model sees an entry-to-sink traversal.
+    let mut edges: Vec<ChainReasoningEdge> = Vec::new();
+    let mut edge_keys: HashSet<(String, String)> = HashSet::new();
+    for repo_bundle in &bundle.per_repo {
+        let RepoOutcome::Success(diags) = &repo_bundle.outcome else {
+            continue;
+        };
+        for diag in diags {
+            let sink_id = match by_location.get(&(
+                repo_bundle.repo.clone(),
+                diag.path.clone(),
+                diag.line,
+            )) {
+                Some(id) => id.clone(),
+                None => continue,
+            };
+            // Walk every step; match by (repo, path, line) first, then
+            // by (any repo, path, line) so a cross-repo step finds the
+            // diag whose path matches even when the step itself does
+            // not name a repo.
+            for step in &diag.flow_steps {
+                let same_repo_key = (
+                    repo_bundle.repo.clone(),
+                    step.path.clone(),
+                    step.line,
+                );
+                if let Some(from_id) = by_location.get(&same_repo_key) {
+                    push_edge(&mut edges, &mut edge_keys, from_id, &sink_id, false);
+                    continue;
+                }
+                // Cross-repo: scan for any other repo whose diag
+                // matches (path, line).
+                for (other_repo, _, _) in by_location
+                    .keys()
+                    .filter(|(r, p, l)| {
+                        r != &repo_bundle.repo && p == &step.path && *l == step.line
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>()
+                {
+                    let key = (other_repo, step.path.clone(), step.line);
+                    if let Some(from_id) = by_location.get(&key) {
+                        push_edge(&mut edges, &mut edge_keys, from_id, &sink_id, true);
+                    }
+                }
+            }
+        }
+    }
+
+    Some(ChainReasoningInput {
+        run_id: bundle.run_id.clone(),
+        repos,
+        nodes,
+        edges,
+        max_chains: CHAIN_REASONING_DEFAULT_MAX,
+    })
+}
+
+fn push_edge(
+    edges: &mut Vec<ChainReasoningEdge>,
+    keys: &mut HashSet<(String, String)>,
+    from: &str,
+    to: &str,
+    cross_repo: bool,
+) {
+    if from == to {
+        return;
+    }
+    let key = (from.to_string(), to.to_string());
+    if keys.insert(key) {
+        edges.push(ChainReasoningEdge {
+            from: from.to_string(),
+            to: to.to_string(),
+            label: "Reaches".to_string(),
+            cross_repo,
+        });
+    }
+}
+
+/// Coarse role tag for a node. The static pass's flow_steps drive the
+/// `entry` decision; framework detection is a path-fragment heuristic;
+/// every remaining diag is a `sink`. The classification is advisory
+/// for the prompt — the model is free to override.
+fn classify_node_kind(diag: &Diag) -> &'static str {
+    let lower = diag.path.to_lowercase();
+    if FRAMEWORK_PATH_FRAGMENTS.iter().any(|frag| lower.contains(frag)) {
+        return NODE_KIND_FRAMEWORK;
+    }
+    if diag
+        .flow_steps
+        .iter()
+        .any(|s| s.kind.as_deref() == Some("source"))
+    {
+        return NODE_KIND_ENTRY;
+    }
+    if diag
+        .flow_steps
+        .iter()
+        .any(|s| s.kind.as_deref() == Some("sink"))
+    {
+        return NODE_KIND_SINK;
+    }
+    // Default: diags surface where the static pass landed, so bare
+    // diags without an explicit `source` step lean toward `sink`. The
+    // `other` bucket exported by `nyx-agent-types::chain` is reserved
+    // for clearly non-source / non-sink nodes a later phase may add.
+    NODE_KIND_SINK
+}
+
+async fn apply_chain_outcome(
+    store: &Store,
+    input: &ChainReasoningInput,
+    outcome: ChainReasoningOutcome,
+    report: &mut ChainReasoningPassReport,
+) -> anyhow::Result<()> {
+    match outcome {
+        ChainReasoningOutcome::Ranked {
+            run_id,
+            output,
+            prompt_version,
+            spent_usd_micros,
+            attempts,
+        } => {
+            report.spend_usd_micros += spent_usd_micros;
+            report.attempts += u64::from(attempts);
+            let provenance = AttackProvenance::LlmSynthesised.as_str().to_string();
+            let repo_by_id: HashMap<String, String> = input
+                .nodes
+                .iter()
+                .map(|n| (n.id.clone(), n.repo.clone()))
+                .collect();
+            let created_at = now_epoch_ms();
+            for (rank, chain) in output.chains.iter().enumerate() {
+                let cross_repo = chain
+                    .member_ids
+                    .iter()
+                    .filter_map(|m| repo_by_id.get(m))
+                    .collect::<HashSet<_>>()
+                    .len()
+                    > 1;
+                let member_ids_blob = match serde_json::to_string(&chain.member_ids) {
+                    Ok(b) => b,
+                    Err(err) => {
+                        tracing::warn!(error = %err, "chain reasoning: dropping chain with unserialisable member_ids");
+                        continue;
+                    }
+                };
+                let rationale_blob = serde_json::json!({
+                    "rationale": chain.rationale,
+                })
+                .to_string();
+                let chain_id = format!(
+                    "chain-{run_id}-{rank:02}-{created_at:x}",
+                );
+                let rec = ChainRecord {
+                    id: chain_id.clone(),
+                    run_id: run_id.clone(),
+                    cross_repo,
+                    member_ids: member_ids_blob,
+                    rationale_blob: Some(rationale_blob),
+                    attack_provenance: Some(provenance.clone()),
+                    prompt_version: Some(prompt_version.clone()),
+                };
+                store.chains().insert(&rec).await?;
+                report.chains_persisted += 1;
+                if cross_repo {
+                    report.cross_repo_chains += 1;
+                }
+                for member_id in &chain.member_ids {
+                    match store.findings().set_chain(member_id, &chain_id).await {
+                        Ok(()) => report.members_stamped += 1,
+                        Err(err) => tracing::warn!(
+                            error = %err,
+                            chain = %chain_id,
+                            finding = %member_id,
+                            "chain reasoning: failed to stamp finding back-link"
+                        ),
+                    }
+                }
+            }
+        }
+        ChainReasoningOutcome::NoChains {
+            run_id: _,
+            reason,
+            spent_usd_micros,
+            attempts,
+        } => {
+            tracing::info!(reason = %reason, "chain reasoning: no chains produced");
+            report.spend_usd_micros += spent_usd_micros;
+            report.attempts += u64::from(attempts);
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use nyx_agent_core::run::{CrossRepoCallgraphStub, RepoBundle};
@@ -1065,5 +1407,289 @@ mod tests {
         let blob = row.verdict_blob.unwrap();
         assert!(blob.contains("SpecDerivation"), "blob: {blob}");
         assert!(blob.contains("failed twice"));
+    }
+
+    // -------- chain-reasoning pass coverage --------
+
+    fn diag_with_flow_step(
+        path: &str,
+        line: u32,
+        cap: &str,
+        rule: &str,
+        flow: &[(&str, u32, &str)],
+    ) -> Diag {
+        let mut steps: Vec<serde_json::Value> = Vec::new();
+        for (i, (f, l, k)) in flow.iter().enumerate() {
+            steps.push(serde_json::json!({
+                "step": i + 1,
+                "kind": k,
+                "file": f,
+                "line": l,
+            }));
+        }
+        let mut diag: Diag = serde_json::from_value(serde_json::json!({
+            "path": path,
+            "line": line,
+            "severity": "High",
+            "id": rule,
+            "category": cap,
+            "evidence": {
+                "flow_steps": steps,
+            },
+        }))
+        .unwrap();
+        diag.lift_flow_steps();
+        diag
+    }
+
+    fn two_repo_bundle() -> RunBundle<Diag> {
+        // repo-A controller (entry, has a `source` flow_step) reaches
+        // repo-B sink. The sink's flow_step points at the controller's
+        // (path, line) tuple in repo-A, so the graph builder produces a
+        // cross-repo `Reaches` edge.
+        let entry = diag_with_flow_step(
+            "controller.py",
+            5,
+            "SQL_QUERY",
+            "rule-entry",
+            &[("controller.py", 5, "source")],
+        );
+        let sink = diag_with_flow_step(
+            "db.py",
+            42,
+            "SQL_QUERY",
+            "rule-sink",
+            &[("controller.py", 5, "call"), ("db.py", 42, "sink")],
+        );
+        RunBundle {
+            run_id: "run-X".to_string(),
+            started_at_ms: 0,
+            finished_at_ms: 0,
+            wall_clock_ms: 0,
+            per_repo: vec![
+                RepoBundle {
+                    repo: "repo-A".to_string(),
+                    outcome: RepoOutcome::Success(vec![entry]),
+                    started_at_ms: 0,
+                    finished_at_ms: 0,
+                    elapsed_ms: 0,
+                },
+                RepoBundle {
+                    repo: "repo-B".to_string(),
+                    outcome: RepoOutcome::Success(vec![sink]),
+                    started_at_ms: 0,
+                    finished_at_ms: 0,
+                    elapsed_ms: 0,
+                },
+            ],
+            callgraph: CrossRepoCallgraphStub::default(),
+        }
+    }
+
+    #[test]
+    fn build_chain_input_emits_cross_repo_edge() {
+        let bundle = two_repo_bundle();
+        let input = build_chain_input(&bundle).expect("graph");
+        assert_eq!(input.run_id, "run-X");
+        assert_eq!(input.repos, vec!["repo-A".to_string(), "repo-B".to_string()]);
+        assert_eq!(input.nodes.len(), 2);
+        // Entry node classification picks up the `source` flow_step.
+        let entry_node = input.nodes.iter().find(|n| n.repo == "repo-A").expect("entry");
+        assert_eq!(entry_node.kind, NODE_KIND_ENTRY);
+        let sink_node = input.nodes.iter().find(|n| n.repo == "repo-B").expect("sink");
+        assert_eq!(sink_node.kind, NODE_KIND_SINK);
+        // One cross-repo edge: entry -> sink.
+        let cross: Vec<_> = input.edges.iter().filter(|e| e.cross_repo).collect();
+        assert_eq!(cross.len(), 1, "edges: {:?}", input.edges);
+        assert_eq!(cross[0].from, entry_node.id);
+        assert_eq!(cross[0].to, sink_node.id);
+        assert_eq!(cross[0].label, "Reaches");
+    }
+
+    #[test]
+    fn build_chain_input_classifies_framework_path() {
+        let mut bundle = two_repo_bundle();
+        // Replace the entry diag with one whose path looks like a
+        // vendored framework binding.
+        let fw = diag_with_flow_step(
+            "vendor/orm/query.py",
+            10,
+            "SQL_QUERY",
+            "rule-fw",
+            &[("vendor/orm/query.py", 10, "call")],
+        );
+        bundle.per_repo[0].outcome = RepoOutcome::Success(vec![fw]);
+        let input = build_chain_input(&bundle).expect("graph");
+        let node = input.nodes.iter().find(|n| n.repo == "repo-A").expect("fw");
+        assert_eq!(node.kind, NODE_KIND_FRAMEWORK);
+    }
+
+    #[test]
+    fn build_chain_input_returns_none_below_two_nodes() {
+        let bundle = RunBundle::<Diag> {
+            run_id: "r".to_string(),
+            started_at_ms: 0,
+            finished_at_ms: 0,
+            wall_clock_ms: 0,
+            per_repo: vec![RepoBundle {
+                repo: "repo-A".to_string(),
+                outcome: RepoOutcome::Success(vec![diag_with_flow_step(
+                    "a.py",
+                    1,
+                    "SQL_QUERY",
+                    "rule-1",
+                    &[],
+                )]),
+                started_at_ms: 0,
+                finished_at_ms: 0,
+                elapsed_ms: 0,
+            }],
+            callgraph: CrossRepoCallgraphStub::default(),
+        };
+        assert!(build_chain_input(&bundle).is_none());
+    }
+
+    #[tokio::test]
+    async fn apply_chain_outcome_persists_cross_repo_chain() {
+        // Acceptance: a two-repo run with controller-in-repo-A
+        // reaches-sink-in-repo-B fixture produces at least one cross-repo
+        // chain row, with rationale stored and members back-linked.
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).await.unwrap();
+        store.repos().upsert(&seed_repo("repo-A")).await.unwrap();
+        store.repos().upsert(&seed_repo("repo-B")).await.unwrap();
+        store.runs().insert(&seed_run("run-X")).await.unwrap();
+        let bundle = two_repo_bundle();
+        let input = build_chain_input(&bundle).expect("graph");
+
+        // Seed the two finding rows the chain will link.
+        let entry_node = input.nodes.iter().find(|n| n.repo == "repo-A").unwrap().clone();
+        let sink_node = input.nodes.iter().find(|n| n.repo == "repo-B").unwrap().clone();
+        for n in [&entry_node, &sink_node] {
+            let f = nyx_agent_core::store::FindingRecord {
+                id: n.id.clone(),
+                run_id: "run-X".to_string(),
+                repo: n.repo.clone(),
+                path: n.path.clone(),
+                line: n.line.map(i64::from),
+                cap: n.cap.clone(),
+                rule: n.rule.clone(),
+                severity: n.severity.clone(),
+                status: "Open".to_string(),
+                finding_origin: "Static".to_string(),
+                first_seen: 1_000,
+                last_seen: 1_000,
+                superseded_by: None,
+                triage_state: "Open".to_string(),
+                triage_assigned_to: None,
+                verdict_blob: None,
+                repro_path: None,
+                attack_provenance: None,
+                prompt_version: None,
+                chain_id: None,
+            };
+            store.findings().upsert(&f).await.unwrap();
+        }
+
+        let output = nyx_agent_types::chain::ChainReasoningOutput {
+            chains: vec![nyx_agent_types::chain::ChainCandidate {
+                member_ids: vec![entry_node.id.clone(), sink_node.id.clone()],
+                rationale: "controller in repo-A reaches SQL sink in repo-B".to_string(),
+            }],
+        };
+        let outcome = ChainReasoningOutcome::Ranked {
+            run_id: "run-X".to_string(),
+            output,
+            prompt_version: nyx_agent_types::chain::CHAIN_REASONING_PROMPT_VERSION.to_string(),
+            spent_usd_micros: 12_000,
+            attempts: 1,
+        };
+        let mut report = ChainReasoningPassReport::default();
+        apply_chain_outcome(&store, &input, outcome, &mut report).await.unwrap();
+        assert_eq!(report.chains_persisted, 1);
+        assert_eq!(report.cross_repo_chains, 1);
+        assert_eq!(report.members_stamped, 2);
+        assert_eq!(report.spend_usd_micros, 12_000);
+
+        // Chain row landed with cross_repo + LlmSynthesised provenance.
+        let chains = store.chains().list_by_run("run-X").await.unwrap();
+        assert_eq!(chains.len(), 1);
+        let c = &chains[0];
+        assert!(c.cross_repo);
+        assert_eq!(c.attack_provenance.as_deref(), Some("LlmSynthesised"));
+        assert_eq!(
+            c.prompt_version.as_deref(),
+            Some(nyx_agent_types::chain::CHAIN_REASONING_PROMPT_VERSION),
+        );
+        let rationale = c.rationale_blob.as_deref().unwrap();
+        assert!(rationale.contains("controller in repo-A"), "rationale: {rationale}");
+        let members: Vec<String> = serde_json::from_str(&c.member_ids).unwrap();
+        assert_eq!(members, vec![entry_node.id.clone(), sink_node.id.clone()]);
+
+        // Both findings have chain_id back-link stamped.
+        let entry_row = store.findings().get(&entry_node.id).await.unwrap().unwrap();
+        let sink_row = store.findings().get(&sink_node.id).await.unwrap().unwrap();
+        assert_eq!(entry_row.chain_id.as_deref(), Some(c.id.as_str()));
+        assert_eq!(sink_row.chain_id.as_deref(), Some(c.id.as_str()));
+    }
+
+    #[tokio::test]
+    async fn apply_chain_outcome_handles_no_chains_without_writes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).await.unwrap();
+        store.runs().insert(&seed_run("run-X")).await.unwrap();
+        let input = nyx_agent_types::chain::ChainReasoningInput {
+            run_id: "run-X".to_string(),
+            repos: vec!["repo-A".to_string()],
+            nodes: vec![],
+            edges: vec![],
+            max_chains: 10,
+        };
+        let outcome = ChainReasoningOutcome::NoChains {
+            run_id: "run-X".to_string(),
+            reason: "chain reasoning failed twice (...; ...)".to_string(),
+            spent_usd_micros: 1_000,
+            attempts: 2,
+        };
+        let mut report = ChainReasoningPassReport::default();
+        apply_chain_outcome(&store, &input, outcome, &mut report).await.unwrap();
+        assert_eq!(report.chains_persisted, 0);
+        assert_eq!(report.cross_repo_chains, 0);
+        assert_eq!(report.members_stamped, 0);
+        assert_eq!(report.attempts, 2);
+        assert_eq!(report.spend_usd_micros, 1_000);
+        assert!(store.chains().list_by_run("run-X").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn chain_pass_is_noop_when_runtime_disabled() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).await.unwrap();
+        let secrets = SecretStore::memory();
+        let workspaces: HashMap<String, WorkspaceHandle> = HashMap::new();
+        let bundle = two_repo_bundle();
+        let (tx, _rx) = tokio::sync::broadcast::channel(4);
+        let cfg = AiConfig::default();
+        let report =
+            run_chain_reasoning_pass(&cfg, &store, &secrets, &bundle, &workspaces, tx)
+                .await
+                .unwrap();
+        assert_eq!(report, ChainReasoningPassReport::default());
+    }
+
+    #[tokio::test]
+    async fn chain_pass_is_noop_when_anthropic_but_no_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).await.unwrap();
+        let secrets = SecretStore::memory();
+        let workspaces: HashMap<String, WorkspaceHandle> = HashMap::new();
+        let bundle = two_repo_bundle();
+        let (tx, _rx) = tokio::sync::broadcast::channel(4);
+        let cfg = AiConfig { runtime: ConfigAiRuntime::Anthropic, ..AiConfig::default() };
+        let report =
+            run_chain_reasoning_pass(&cfg, &store, &secrets, &bundle, &workspaces, tx)
+                .await
+                .unwrap();
+        assert_eq!(report, ChainReasoningPassReport::default());
     }
 }

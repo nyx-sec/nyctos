@@ -6,9 +6,11 @@
 //! limited to validation failures, and budget caps all live here so the
 //! adapter layer can stay vendor-neutral.
 
+pub mod chain_reasoning;
 pub mod payload_synthesis;
 pub mod spec_derivation;
 
+pub use chain_reasoning::{run as run_chain_reasoning, ChainReasoningOutcome};
 pub use payload_synthesis::{run as run_payload_synthesis, PayloadSynthesisOutcome};
 pub use spec_derivation::{
     read_excerpt as read_spec_excerpt, run as run_spec_derivation, SpecDerivationOutcome,

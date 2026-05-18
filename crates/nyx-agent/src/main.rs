@@ -405,7 +405,7 @@ async fn drive_scan(
         &secrets,
         &bundle,
         &workspaces_for_ai,
-        events,
+        events.clone(),
     )
     .await
     {
@@ -424,6 +424,38 @@ async fn drive_scan(
             }
         }
         Err(err) => tracing::warn!(error = %err, "spec derivation pass failed"),
+    }
+
+    // Phase 16: rank cross-repo exploitable chains across the run's
+    // finding graph. Single-call pass; shares the run's budget bucket
+    // with payload + spec passes. No-op when no API key is configured
+    // or fewer than two findings landed in the bundle.
+    match ai_pipeline::run_chain_reasoning_pass(
+        &config.ai,
+        store,
+        &secrets,
+        &bundle,
+        &workspaces_for_ai,
+        events,
+    )
+    .await
+    {
+        Ok(report) => {
+            if verbose
+                && (report.chains_persisted > 0 || report.failed > 0)
+            {
+                println!(
+                    "scan: chain reasoning - {} chains ({} cross-repo), {} members stamped, {} failed ({} attempts, ${:.6})",
+                    report.chains_persisted,
+                    report.cross_repo_chains,
+                    report.members_stamped,
+                    report.failed,
+                    report.attempts,
+                    report.spend_usd_micros as f64 / 1_000_000.0,
+                );
+            }
+        }
+        Err(err) => tracing::warn!(error = %err, "chain reasoning pass failed"),
     }
 
     let counts = bundle.counts();
