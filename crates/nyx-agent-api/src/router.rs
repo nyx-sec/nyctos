@@ -76,6 +76,7 @@ pub fn build_router(state: ServerState) -> Router {
         .route("/api/v1/findings/:id/repro-bundle", post(create_repro_bundle))
         .route("/api/v1/findings/:id/repro-bundle.tar", get(download_repro_bundle))
         .route("/api/v1/findings/:id/replay", post(replay_repro_bundle))
+        .route("/api/v1/chains", get(list_chains))
         .route("/api/v1/chains/:id", get(get_chain))
         .route("/api/v1/findings/:id/traces", get(traces_for_finding))
         .route("/api/v1/traces/:id", get(get_trace))
@@ -1275,6 +1276,22 @@ fn classify_diff(record: &FindingRecord, run_started_at: i64) -> FindingDiffStat
 }
 
 // ---- /chains ----------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+struct ChainListQuery {
+    run_id: Option<String>,
+}
+
+async fn list_chains(
+    State(s): State<ServerState>,
+    Query(q): Query<ChainListQuery>,
+) -> Result<Json<Vec<ChainRecord>>, ApiError> {
+    let run_id = q
+        .run_id
+        .ok_or_else(|| ApiError::BadRequest("missing `run_id` query parameter".to_string()))?;
+    let rows = s.store.chains().list_by_run(&run_id).await?;
+    Ok(Json(rows))
+}
 
 async fn get_chain(
     State(s): State<ServerState>,

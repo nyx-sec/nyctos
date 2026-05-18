@@ -57,6 +57,11 @@ pub trait BudgetTracker: Send + Sync {
     /// if no cap is configured.
     async fn cap(&self, run_id: &str, kind: BudgetKind) -> Result<Option<i64>, AiError>;
 
+    /// Read the current `spent_usd_micros` for `(run_id, kind)`. A
+    /// non-existent row reads as `0` so pre-call cap checks against a
+    /// brand-new run do not need to seed the row first.
+    async fn current_spend(&self, run_id: &str, kind: BudgetKind) -> Result<i64, AiError>;
+
     /// Atomically increment `spent_usd_micros` by `micros` and return
     /// the new total.
     async fn add_spend(&self, run_id: &str, kind: BudgetKind, micros: i64) -> Result<i64, AiError>;
@@ -116,6 +121,15 @@ impl BudgetTracker for InMemoryBudgetTracker {
             .iter()
             .find(|r| r.run_id == run_id && r.kind == kind)
             .and_then(|r| r.cap_usd_micros))
+    }
+
+    async fn current_spend(&self, run_id: &str, kind: BudgetKind) -> Result<i64, AiError> {
+        let rows = self.inner.lock().expect("tracker poisoned");
+        Ok(rows
+            .iter()
+            .find(|r| r.run_id == run_id && r.kind == kind)
+            .map(|r| r.spent_usd_micros)
+            .unwrap_or(0))
     }
 
     async fn add_spend(&self, run_id: &str, kind: BudgetKind, micros: i64) -> Result<i64, AiError> {
@@ -178,5 +192,15 @@ mod tests {
         assert_eq!(after_a, 4_000);
         assert_eq!(after_b, 5_500);
         assert_eq!(t.spent("run", BudgetKind::OneShot), 5_500);
+    }
+
+    #[tokio::test]
+    async fn current_spend_reads_without_mutating() {
+        let t = InMemoryBudgetTracker::new();
+        assert_eq!(t.current_spend("run", BudgetKind::OneShot).await.unwrap(), 0);
+        t.add_spend("run", BudgetKind::OneShot, 7_500).await.unwrap();
+        assert_eq!(t.current_spend("run", BudgetKind::OneShot).await.unwrap(), 7_500);
+        assert_eq!(t.current_spend("run", BudgetKind::OneShot).await.unwrap(), 7_500);
+        assert_eq!(t.spent("run", BudgetKind::OneShot), 7_500);
     }
 }

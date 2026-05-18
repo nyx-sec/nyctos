@@ -382,6 +382,50 @@ async fn chains_endpoint_returns_row_or_404() {
 }
 
 #[tokio::test]
+async fn chains_list_endpoint_filters_by_run_id() {
+    let srv = TestServer::start().await;
+    srv.store.runs().insert(&sample_run("run-A")).await.expect("run-A");
+    srv.store.runs().insert(&sample_run("run-B")).await.expect("run-B");
+    srv.store
+        .chains()
+        .insert(&sample_chain("chain-A-1", "run-A", &["f-a"]))
+        .await
+        .expect("chain-A-1");
+    srv.store
+        .chains()
+        .insert(&sample_chain("chain-A-2", "run-A", &["f-b"]))
+        .await
+        .expect("chain-A-2");
+    srv.store
+        .chains()
+        .insert(&sample_chain("chain-B-1", "run-B", &["f-c"]))
+        .await
+        .expect("chain-B-1");
+
+    let got: Vec<ChainRecord> = reqwest::get(format!("{}/api/v1/chains?run_id=run-A", srv.base()))
+        .await
+        .expect("get")
+        .json()
+        .await
+        .expect("json");
+    let mut ids: Vec<_> = got.iter().map(|c| c.id.clone()).collect();
+    ids.sort();
+    assert_eq!(ids, vec!["chain-A-1".to_string(), "chain-A-2".to_string()]);
+
+    let empty: Vec<ChainRecord> =
+        reqwest::get(format!("{}/api/v1/chains?run_id=run-missing", srv.base()))
+            .await
+            .expect("get")
+            .json()
+            .await
+            .expect("json");
+    assert!(empty.is_empty());
+
+    let bad = reqwest::get(format!("{}/api/v1/chains", srv.base())).await.expect("get");
+    assert_eq!(bad.status(), reqwest::StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn scan_endpoint_calls_trigger() {
     let trigger: Arc<dyn ScanTrigger> =
         Arc::new(StubScanTrigger { run_id: "run-from-scan".to_string() });

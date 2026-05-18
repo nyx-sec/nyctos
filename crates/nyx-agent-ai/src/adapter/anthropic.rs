@@ -172,7 +172,7 @@ impl AiRuntime for AnthropicSdkAdapter {
         // Boundary is `>` (cap is the spendable ceiling); a call that lands
         // exactly at cap proceeds, the one after does not. The post-call
         // check uses the same `>` so both halves agree.
-        let spent_before = self.tracker.spent_snapshot(&budget).await?;
+        let spent_before = self.tracker.current_spend(&budget.run_id, budget.kind).await?;
         if let Some(cap) = self.tracker.cap(&budget.run_id, budget.kind).await? {
             if spent_before > cap {
                 let _ = sink.send(AgentEvent::Ai {
@@ -321,24 +321,6 @@ impl AiRuntime for AnthropicSdkAdapter {
         let min = approx_input_tokens * p.input_per_token_micros;
         let max = min + i64::from(prompt.max_output_tokens) * p.output_per_token_micros;
         Some(CostEstimate { min_usd_micros: min, max_usd_micros: max })
-    }
-}
-
-// Small extension trait used purely so the pre-call cap check can read
-// the current spend without an add_spend(0) round-trip.
-#[async_trait]
-trait TrackerExt {
-    async fn spent_snapshot(&self, budget: &Budget) -> Result<i64, AiError>;
-}
-
-#[async_trait]
-impl TrackerExt for SharedBudgetTracker {
-    async fn spent_snapshot(&self, budget: &Budget) -> Result<i64, AiError> {
-        // add_spend(0) is the cheapest way to observe the current total
-        // through the trait without expanding its surface. Production
-        // `BudgetStore`-backed impls treat zero-delta as a no-op write
-        // (`SET x = x + 0`) and return the unchanged total.
-        self.add_spend(&budget.run_id, budget.kind, 0).await
     }
 }
 

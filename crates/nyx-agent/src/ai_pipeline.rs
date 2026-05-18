@@ -134,6 +134,13 @@ impl BudgetTracker for BudgetStoreTracker {
         Ok(row.map(|r| r.cap_usd_micros))
     }
 
+    async fn current_spend(&self, run_id: &str, kind: BudgetKind) -> Result<i64, AiError> {
+        self.ensure_row(run_id, kind).await?;
+        let row =
+            self.store.budgets().get(run_id, Self::kind_str(kind)).await.map_err(store_err)?;
+        Ok(row.map(|r| r.spent_usd_micros).unwrap_or(0))
+    }
+
     async fn add_spend(&self, run_id: &str, kind: BudgetKind, micros: i64) -> Result<i64, AiError> {
         self.ensure_row(run_id, kind).await?;
         self.store
@@ -1218,12 +1225,8 @@ pub(crate) async fn drive_novel_finding_pass<R: AiRuntime + ?Sized>(
         let runtime_name = runtime.name();
         let runtime_model = runtime.default_model().to_string();
         for input in inputs {
-            // Pre-call cap check. `add_spend(_, _, 0)` is the BudgetTracker
-            // trait's only read path today; the zero delta is the
-            // `spent_snapshot` shim that survives until the trait grows
-            // a dedicated reader (deferred from Phase 12).
             let spent_before = tracker
-                .add_spend(&bundle.run_id, BudgetKind::OneShot, 0)
+                .current_spend(&bundle.run_id, BudgetKind::OneShot)
                 .await
                 .map_err(|e| anyhow::anyhow!("budget tracker error: {e}"))?;
             if spent_before >= run_cap_usd_micros {

@@ -172,7 +172,7 @@ impl AiRuntime for ClaudeCodeAdapter {
     ) -> Result<AgentResult, AiError> {
         // Pre-call budget check uses `>` to match the post-call check
         // below; cap is the spendable ceiling, not a hard refuse-when-equal.
-        let spent_before = read_spent(&self.tracker, &budget).await?;
+        let spent_before = self.tracker.current_spend(&budget.run_id, budget.kind).await?;
         if let Some(cap) = self.tracker.cap(&budget.run_id, budget.kind).await? {
             if spent_before > cap {
                 let _ = sink.send(AgentEvent::Ai {
@@ -377,13 +377,6 @@ impl AiRuntime for ClaudeCodeAdapter {
     fn cost_estimate(&self, _prompt: &Prompt) -> Option<CostEstimate> {
         None
     }
-}
-
-async fn read_spent(tracker: &SharedBudgetTracker, budget: &Budget) -> Result<i64, AiError> {
-    // Zero-delta add to read the current spend through the trait surface
-    // (mirrors the Anthropic adapter's `spent_snapshot` shim — see the
-    // deferred item that adds a `current_spend` reader to the trait).
-    tracker.add_spend(&budget.run_id, budget.kind, 0).await
 }
 
 fn render_task_markdown(task: &AgentTask) -> String {
