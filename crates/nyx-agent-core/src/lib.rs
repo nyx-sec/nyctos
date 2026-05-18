@@ -13,8 +13,8 @@ pub mod time;
 
 pub use config::{
     AiConfig, AiRuntime, Config, ConfigError, GeneralConfig, NyxConfig, PerformanceConfig,
-    RepoConfig, RepoSourceConfig, RunConfig, SandboxBackend, SandboxConfig, ScheduleConfig,
-    TriggersConfig, UiConfig,
+    ProjectConfig, RepoConfig, RepoSourceConfig, RunConfig, SandboxBackend, SandboxConfig,
+    ScheduleConfig, TriggersConfig, UiConfig,
 };
 pub use log_init::{init as init_logging, json_log_path, LogConfig, LogInitError};
 pub use project::{Project, ProjectId};

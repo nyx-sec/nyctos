@@ -10,9 +10,7 @@ use nyx_agent_api::{
     build_router, AuthConfig, EnvSecretResolver, ScanTrigger, ScanTriggerError, ServerState,
     SetupContext, WebhookConfig,
 };
-use nyx_agent_core::store::{
-    finding_id_hash, FindingRecord, RepoRecord, RunRecord, DEFAULT_PROJECT_ID,
-};
+use nyx_agent_core::store::{finding_id_hash, FindingRecord, ProjectRecord, RepoRecord, RunRecord};
 use nyx_agent_core::{
     ingest, now_epoch_ms, Config, IngestError, IngestedRepo, LogConfig, Project, ProjectId, Repo,
     RepoOutcome, RepoSource, Run, RunBundle, RunDispatcher, SandboxBackend, SecretStore, StateDir,
@@ -59,12 +57,63 @@ enum InspectTarget {
 }
 
 #[derive(Debug, Subcommand)]
+enum ProjectAction {
+    /// Create a project row by name. Fails if the name already exists.
+    Create {
+        name: String,
+        #[arg(long)]
+        description: Option<String>,
+        #[arg(long)]
+        target_base_url: Option<String>,
+    },
+    /// List every project row, alphabetical by name.
+    List,
+    /// Show one project plus the repos attached to it.
+    Show { name: String },
+    /// Delete a project by name. Cascades to repos via the FK.
+    Delete { name: String },
+    /// Attach a repo to a project. The source is either local
+    /// (`--path`) or git (`--git-url`).
+    AddRepo {
+        /// Project name the repo will belong to.
+        project: String,
+        /// Unique repo name.
+        name: String,
+        /// Local path to snapshot. Mutually exclusive with `--git-url`.
+        #[arg(long, value_name = "PATH", conflicts_with = "git_url")]
+        path: Option<PathBuf>,
+        /// Remote git URL to clone. Mutually exclusive with `--path`.
+        #[arg(long, value_name = "URL", conflicts_with = "path")]
+        git_url: Option<String>,
+        /// Branch hint for git sources.
+        #[arg(long)]
+        branch: Option<String>,
+        /// Auth descriptor (`ssh-key:<path>`, `token-env:<var>`,
+        /// `gh-app:<id>`) for git sources.
+        #[arg(long)]
+        auth: Option<String>,
+        /// Operator attestation. The daemon refuses to ingest a repo
+        /// without this flag set.
+        #[arg(long)]
+        i_own_this: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum Command {
-    /// Scan one or more repositories for findings.
+    /// Scan one or more repositories for findings. Selection is
+    /// project-scoped: `--project NAME` (repeatable) targets a whole
+    /// project; pair with `--repo NAME` (repeatable) to narrow within
+    /// the selected projects. Bare `--repo` without `--project` is
+    /// rejected to keep scoping explicit.
     Scan {
-        /// Repositories to scan (by name from `nyx-agent.toml`). Pass
-        /// `--repo` once per repository, or omit to scan every enabled
-        /// repo.
+        /// Projects to scan (by name from `nyx-agent.toml`). Pass
+        /// `--project` once per project, or omit to scan every enabled
+        /// project.
+        #[arg(long = "project", value_name = "PROJECT")]
+        projects: Vec<String>,
+        /// Repositories to scan, narrowed within `--project`. Requires
+        /// at least one `--project` to be set.
         #[arg(long = "repo", value_name = "REPO")]
         repos: Vec<String>,
         /// Run without opening a browser or prompting. Scan never does
@@ -83,6 +132,12 @@ enum Command {
         /// loudly surfaces the misconfiguration.
         #[arg(long, value_name = "REF")]
         since_ref: Option<String>,
+    },
+    /// Manage `Project` rows in the agent's state DB. Projects own
+    /// repos; the daemon's scan/run pipeline operates per project.
+    Project {
+        #[command(subcommand)]
+        action: ProjectAction,
     },
     /// Post (or update) a dedup'd PR comment summarising Confirmed +
     /// cross-repo chain findings from a previous `scan --output` run.
@@ -202,10 +257,22 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         open_cmd: None,
     }) {
         Command::Doctor => doctor(&state_dir, &config_path, &log_cfg, &config).await,
-        Command::Scan { repos, headless: _, output, since_ref } => {
+        Command::Scan { projects, repos, headless: _, output, since_ref } => {
             nyx_agent_core::init_logging(&log_cfg)?;
-            scan(&state_dir, &config, &repos, "Manual", output.as_deref(), since_ref.as_deref())
-                .await
+            scan(
+                &state_dir,
+                &config,
+                &projects,
+                &repos,
+                "Manual",
+                output.as_deref(),
+                since_ref.as_deref(),
+            )
+            .await
+        }
+        Command::Project { action } => {
+            nyx_agent_core::init_logging(&log_cfg)?;
+            project_command(&state_dir, action).await
         }
         Command::PrComment { report, repo, pr, ui_url, gh_api, token_env } => {
             nyx_agent_core::init_logging(&log_cfg)?;
@@ -338,51 +405,76 @@ fn truncate_for_column(s: &str, max: usize) -> String {
 async fn scan(
     state_dir: &StateDir,
     config: &Config,
-    requested: &[String],
+    requested_projects: &[String],
+    requested_repos: &[String],
     triggered_by: &str,
     output_path: Option<&std::path::Path>,
     since_ref: Option<&str>,
 ) -> anyhow::Result<ExitCode> {
-    let selected = select_repos(config, requested)?;
-    if selected.is_empty() {
-        eprintln!("scan: no repositories selected; configure one in nyx-agent.toml");
-        return Ok(ExitCode::from(1));
+    if !requested_repos.is_empty() && requested_projects.is_empty() {
+        eprintln!(
+            "scan: --repo requires --project context (or use --project to scan whole projects)"
+        );
+        return Ok(ExitCode::from(2));
     }
 
     let store = Store::open(state_dir.root()).await?;
-    let run = Run::new();
-    let run_record = build_run_record(&run, triggered_by);
-    store.runs().insert(&run_record).await?;
+    let targets =
+        match select_scan_targets(&store, config, requested_projects, requested_repos).await {
+            Ok(t) => t,
+            Err(err) => {
+                store.close().await;
+                return Err(err);
+            }
+        };
+    if targets.is_empty() {
+        eprintln!("scan: no repositories selected; configure one in nyx-agent.toml");
+        store.close().await;
+        return Ok(ExitCode::from(1));
+    }
 
     // CLI scan has no live subscribers; emitting into a dropped sink would
     // discard events, so build a self-owned bus to keep the event sink shape
     // identical to the API path. The receiver immediately drops, which makes
     // every send a no-op short of a clone.
     let (events_tx, _events_rx) = broadcast::channel::<AgentEvent>(16);
-    let result = drive_scan(
-        state_dir,
-        config,
-        &store,
-        selected,
-        &run,
-        events_tx,
-        true,
-        output_path,
-        since_ref,
-    )
-    .await;
 
-    match result {
-        Ok(report) => {
-            print_scan_report(&report);
-            store.close().await;
-            Ok(if report.success { ExitCode::SUCCESS } else { ExitCode::from(1) })
-        }
-        Err(err) => {
-            store.close().await;
-            Err(err)
+    let mut overall_success = true;
+    let mut reports: Vec<ScanReport> = Vec::with_capacity(targets.len());
+    for (project, repos) in targets {
+        let run = Run::new();
+        let run_record = build_run_record(&run, triggered_by);
+        store.runs().insert(&run_record).await?;
+
+        let result = drive_scan(
+            state_dir,
+            config,
+            &store,
+            &project,
+            repos,
+            &run,
+            events_tx.clone(),
+            true,
+            output_path,
+            since_ref,
+        )
+        .await;
+
+        match result {
+            Ok(report) => {
+                overall_success &= report.success;
+                print_scan_report(&project, &report);
+                reports.push(report);
+            }
+            Err(err) => {
+                store.close().await;
+                return Err(err);
+            }
         }
     }
+
+    store.close().await;
+    Ok(if overall_success { ExitCode::SUCCESS } else { ExitCode::from(1) })
 }
 
 struct ScanReport {
@@ -402,10 +494,10 @@ struct RepoReport {
     elapsed_ms: i64,
 }
 
-fn print_scan_report(r: &ScanReport) {
+fn print_scan_report(project: &Project, r: &ScanReport) {
     println!(
-        "scan: run {} finished in {}ms - {} succeeded, {} inconclusive, {} failed",
-        r.run_id, r.wall_clock_ms, r.succeeded, r.inconclusive, r.failed,
+        "scan: project {} run {} finished in {}ms - {} succeeded, {} inconclusive, {} failed",
+        project.name, r.run_id, r.wall_clock_ms, r.succeeded, r.inconclusive, r.failed,
     );
     for repo in &r.per_repo {
         println!(
@@ -440,6 +532,7 @@ async fn drive_scan(
     state_dir: &StateDir,
     config: &Config,
     store: &Store,
+    project: &Project,
     selected: Vec<Repo>,
     run: &Run,
     events: EventSink,
@@ -448,12 +541,9 @@ async fn drive_scan(
     since_ref: Option<&str>,
 ) -> anyhow::Result<ScanReport> {
     let now_ms = now_epoch_ms();
-    // Phase 4: per-repo workspace dirs live under
-    // `<state>/projects/<project_id>/repos/<name>/`. We resolve the
-    // project context per repo so a future multi-project scan walks the
-    // same code path; today every selected Repo carries the same
-    // project_id (the default project, until Phase 6 splits the CLI).
-    let project = resolve_run_project(store, &selected).await?;
+    // Phase 6: every selected repo belongs to `project`; the dispatcher
+    // emits Project/Run events scoped to that id, and workspace dirs
+    // land under `<state>/projects/<project_id>/repos/<name>/`.
     let mut ingest_failures: Vec<(String, IngestError)> = Vec::new();
     let mut workspaces: Vec<WorkspaceHandle> = Vec::new();
     for repo in &selected {
@@ -1020,34 +1110,52 @@ impl ScanTrigger for MpscScanTrigger {
 async fn run_scan_for_api(
     state_dir: &StateDir,
     config: &Config,
-    _project_id: Option<&str>,
+    project_id: Option<&str>,
     repo: Option<&str>,
     events: EventSink,
 ) -> Result<String, ScanTriggerError> {
-    // Phase 5: project_id arrives from the route but the daemon's
-    // repo-selection path still flattens across projects. Phase 6 wires
-    // a project-scoped selector into the CLI; reusing it here closes the
-    // gap so an API-initiated scan honours the project boundary.
-    let requested: Vec<String> = match repo {
+    let store = Store::open(state_dir.root()).await.map_err(internal_string)?;
+
+    // Resolve the project name the API route asked for. With no
+    // explicit id, fall back to scanning every configured project (the
+    // CLI's `--project` omitted shape).
+    let requested_projects: Vec<String> = match project_id {
+        Some(id) => match store.projects().get(id).await.map_err(internal_string)? {
+            Some(p) => vec![p.name],
+            None => {
+                store.close().await;
+                return Err(ScanTriggerError::Rejected(format!("project `{id}` not found")));
+            }
+        },
+        None => Vec::new(),
+    };
+    let requested_repos: Vec<String> = match repo {
         Some(name) => vec![name.to_string()],
         None => Vec::new(),
     };
-    let selected = select_repos(config, &requested).map_err(|e| {
-        let msg = format!("{e:#}");
-        if msg.contains("not declared") || msg.contains("enabled = false") {
-            ScanTriggerError::Rejected(msg)
-        } else {
-            ScanTriggerError::Internal(msg)
-        }
-    })?;
-    if selected.is_empty() {
+
+    let targets =
+        match select_scan_targets(&store, config, &requested_projects, &requested_repos).await {
+            Ok(t) => t,
+            Err(err) => {
+                store.close().await;
+                let msg = format!("{err:#}");
+                return Err(if msg.contains("not declared") || msg.contains("enabled = false") {
+                    ScanTriggerError::Rejected(msg)
+                } else {
+                    ScanTriggerError::Internal(msg)
+                });
+            }
+        };
+    if targets.is_empty() {
+        store.close().await;
         return Err(ScanTriggerError::Rejected(
             "no repositories selected; configure one in nyx-agent.toml".to_string(),
         ));
     }
 
-    let store = Store::open(state_dir.root()).await.map_err(internal_string)?;
-
+    // First-run UI semantics: synthesise one run row, kick the
+    // dispatcher per project in sequence on a background task.
     let run = Run::new();
     let run_record = build_run_record(&run, "UI");
     store.runs().insert(&run_record).await.map_err(internal_string)?;
@@ -1056,11 +1164,25 @@ async fn run_scan_for_api(
     let cfg = config.clone();
     let sd = state_dir.clone();
     tokio::spawn(async move {
-        let res = drive_scan(&sd, &cfg, &store, selected, &run, events, false, None, None).await;
-        store.close().await;
-        if let Err(err) = res {
-            eprintln!("scan (api): {err:#}");
+        for (project, repos) in targets {
+            let res = drive_scan(
+                &sd,
+                &cfg,
+                &store,
+                &project,
+                repos,
+                &run,
+                events.clone(),
+                false,
+                None,
+                None,
+            )
+            .await;
+            if let Err(err) = res {
+                eprintln!("scan (api) project `{}`: {err:#}", project.name);
+            }
         }
+        store.close().await;
     });
 
     Ok(run_id_out)
@@ -1098,33 +1220,17 @@ async fn upsert_repo_record(
     Ok(())
 }
 
-/// Resolve the [`Project`] that owns the selected repos for this run.
-///
-/// Phase 4 ingests + dispatches per-project. All `selected` repos are
-/// expected to share the same `project_id`; the Phase 6 CLI split will
-/// fan a multi-project scan out into one call per project. When
-/// `selected` is empty we fall back to the seeded default project so
-/// `drive_scan` can still emit a coherent `RunStarted` envelope before
-/// short-circuiting on the empty-workspace path.
-async fn resolve_run_project(store: &Store, selected: &[Repo]) -> anyhow::Result<Project> {
-    let project_id = selected
-        .first()
-        .map(|r| r.project_id.clone())
-        .unwrap_or_else(|| ProjectId::new(DEFAULT_PROJECT_ID));
-    let rec = match store.projects().get(project_id.as_str()).await? {
-        Some(r) => r,
-        None => store.projects().ensure_default(now_epoch_ms()).await?,
-    };
-    Ok(Project {
+/// Hydrate a `Project` from its persisted `ProjectRecord`. Returned by
+/// every CLI/API path that needs the live row's metadata (env overrides,
+/// target base URL) flowing into the dispatcher and downstream phases.
+fn project_from_record(rec: ProjectRecord) -> Project {
+    Project {
         id: ProjectId::new(rec.id),
         name: rec.name,
         description: rec.description,
         target_base_url: rec.target_base_url,
-        env_config: rec
-            .env_config_json
-            .as_deref()
-            .and_then(|s| serde_json::from_str(s).ok()),
-    })
+        env_config: rec.env_config_json.as_deref().and_then(|s| serde_json::from_str(s).ok()),
+    }
 }
 
 async fn persist_run_results(store: &Store, bundle: &RunBundle<Diag>) -> anyhow::Result<()> {
@@ -1186,37 +1292,101 @@ async fn finalise_run(
     Ok(())
 }
 
-fn select_repos(config: &Config, requested: &[String]) -> anyhow::Result<Vec<Repo>> {
-    // Phase 3 transitional: TOML now nests repos under `[[project]]`
-    // blocks. The DB still only knows the seeded default project, so we
-    // flatten across every configured project and attach each repo to
-    // `DEFAULT_PROJECT_ID`. Phase 4 reshapes the dispatcher to honour
-    // real project rows and project-scoped workspaces.
-    let project_id = nyx_agent_core::ProjectId::new(DEFAULT_PROJECT_ID);
-    let mut out = Vec::new();
-    if requested.is_empty() {
-        for project in &config.projects {
-            for c in &project.repos {
-                if c.enabled {
-                    out.push(Repo::from_config(c, project_id.clone())?);
-                }
+/// Resolve the project rows + enabled repos a scan should walk.
+///
+/// `requested_projects` filters the TOML's `[[project]]` blocks by name
+/// (empty = every configured project). `requested_repos` narrows within
+/// the selected projects (empty = every enabled repo in those projects).
+/// Each TOML project is looked up by name in the state DB; the row is
+/// created on the fly when missing so a freshly-installed daemon can
+/// scan without an explicit `project create` step.
+async fn select_scan_targets(
+    store: &Store,
+    config: &Config,
+    requested_projects: &[String],
+    requested_repos: &[String],
+) -> anyhow::Result<Vec<(Project, Vec<Repo>)>> {
+    let candidate_projects: Vec<&nyx_agent_core::ProjectConfig> = if requested_projects.is_empty() {
+        config.projects.iter().collect()
+    } else {
+        let mut out = Vec::with_capacity(requested_projects.len());
+        for name in requested_projects {
+            let cfg = config.projects.iter().find(|p| &p.name == name).ok_or_else(|| {
+                anyhow::anyhow!("project `{name}` not declared in nyx-agent.toml")
+            })?;
+            out.push(cfg);
+        }
+        out
+    };
+
+    if !requested_repos.is_empty() {
+        for name in requested_repos {
+            let found =
+                candidate_projects.iter().flat_map(|p| p.repos.iter()).any(|r| &r.name == name);
+            if !found {
+                anyhow::bail!(
+                    "repo `{name}` not declared under the selected project(s) in nyx-agent.toml"
+                );
             }
         }
-        return Ok(out);
     }
-    for name in requested {
-        let cfg = config
-            .projects
-            .iter()
-            .flat_map(|p| p.repos.iter())
-            .find(|r| &r.name == name)
-            .ok_or_else(|| anyhow::anyhow!("repo `{name}` not declared in nyx-agent.toml"))?;
-        if !cfg.enabled {
-            anyhow::bail!("repo `{name}` is declared but `enabled = false`");
+
+    let mut out: Vec<(Project, Vec<Repo>)> = Vec::with_capacity(candidate_projects.len());
+    for project_cfg in candidate_projects {
+        let rec = ensure_project_row(store, &project_cfg.name).await?;
+        let project = project_from_record(rec);
+        let project_id = project.id.clone();
+        let mut repos: Vec<Repo> = Vec::new();
+        for r in &project_cfg.repos {
+            if !requested_repos.is_empty() && !requested_repos.iter().any(|n| n == &r.name) {
+                continue;
+            }
+            if !r.enabled {
+                if requested_repos.iter().any(|n| n == &r.name) {
+                    anyhow::bail!("repo `{}` is declared but `enabled = false`", r.name);
+                }
+                continue;
+            }
+            repos.push(Repo::from_config(r, project_id.clone())?);
         }
-        out.push(Repo::from_config(cfg, project_id.clone())?);
+        if repos.is_empty() {
+            continue;
+        }
+        out.push((project, repos));
     }
     Ok(out)
+}
+
+/// Lookup-or-create a project row keyed by `name`. Mirrors the API's
+/// stable-id derivation so the CLI and the daemon converge on the same
+/// row when the operator reaches the daemon either way first.
+async fn ensure_project_row(store: &Store, name: &str) -> anyhow::Result<ProjectRecord> {
+    if let Some(row) = store.projects().get_by_name(name).await? {
+        return Ok(row);
+    }
+    let now = now_epoch_ms();
+    let id = format!("proj-{}", project_id_slug(name, now));
+    Ok(store.projects().create(&id, name, None, None, None, now).await?)
+}
+
+/// Slugify `name` and append a hex `now_ms` so re-running with the same
+/// project name still yields a recognisable id. Matches the
+/// `nyx-agent-api` helper of the same shape so a CLI-created row and an
+/// API-created row converge on the same prefix.
+fn project_id_slug(name: &str, now_ms: i64) -> String {
+    let slug: String = name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .collect();
+    let trimmed: String = slug
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
+        .chars()
+        .take(32)
+        .collect();
+    format!("{trimmed}-{now_ms:x}")
 }
 
 /// Run `git diff --name-only --diff-filter=AMR REF...HEAD` in each
@@ -1377,6 +1547,168 @@ fn auth_descriptor_of(src: &RepoSource) -> Option<String> {
         RepoSource::Git { auth: Some(a), .. } => Some(a.descriptor()),
         _ => None,
     }
+}
+
+async fn project_command(state_dir: &StateDir, action: ProjectAction) -> anyhow::Result<ExitCode> {
+    let store = Store::open(state_dir.root()).await?;
+    let result = match action {
+        ProjectAction::Create { name, description, target_base_url } => {
+            project_create(&store, &name, description.as_deref(), target_base_url.as_deref()).await
+        }
+        ProjectAction::List => project_list(&store).await,
+        ProjectAction::Show { name } => project_show(&store, &name).await,
+        ProjectAction::Delete { name } => project_delete(&store, &name).await,
+        ProjectAction::AddRepo { project, name, path, git_url, branch, auth, i_own_this } => {
+            project_add_repo(
+                &store,
+                &project,
+                &name,
+                path.as_deref(),
+                git_url.as_deref(),
+                branch.as_deref(),
+                auth.as_deref(),
+                i_own_this,
+            )
+            .await
+        }
+    };
+    store.close().await;
+    result
+}
+
+async fn project_create(
+    store: &Store,
+    name: &str,
+    description: Option<&str>,
+    target_base_url: Option<&str>,
+) -> anyhow::Result<ExitCode> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        eprintln!("project create: name must not be empty");
+        return Ok(ExitCode::from(2));
+    }
+    if store.projects().get_by_name(trimmed).await?.is_some() {
+        eprintln!("project create: `{trimmed}` already exists");
+        return Ok(ExitCode::from(1));
+    }
+    let now = now_epoch_ms();
+    let id = format!("proj-{}", project_id_slug(trimmed, now));
+    let rec =
+        store.projects().create(&id, trimmed, description, target_base_url, None, now).await?;
+    println!("created project {} (id: {})", rec.name, rec.id);
+    Ok(ExitCode::SUCCESS)
+}
+
+async fn project_list(store: &Store) -> anyhow::Result<ExitCode> {
+    let rows = store.projects().list().await?;
+    if rows.is_empty() {
+        println!("projects: none");
+        return Ok(ExitCode::SUCCESS);
+    }
+    println!(
+        "name                             id                                       target_base_url"
+    );
+    for p in &rows {
+        println!(
+            "{:<32} {:<40} {}",
+            truncate_for_column(&p.name, 32),
+            truncate_for_column(&p.id, 40),
+            p.target_base_url.as_deref().unwrap_or("-"),
+        );
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+async fn project_show(store: &Store, name: &str) -> anyhow::Result<ExitCode> {
+    let Some(rec) = store.projects().get_by_name(name).await? else {
+        eprintln!("project show: `{name}` not found");
+        return Ok(ExitCode::from(1));
+    };
+    println!("name:            {}", rec.name);
+    println!("id:              {}", rec.id);
+    println!("description:     {}", rec.description.as_deref().unwrap_or("-"));
+    println!("target_base_url: {}", rec.target_base_url.as_deref().unwrap_or("-"));
+    let repos = store.repos().list_by_project(&rec.id).await?;
+    if repos.is_empty() {
+        println!("repos:           (none)");
+        return Ok(ExitCode::SUCCESS);
+    }
+    println!("repos:");
+    for r in &repos {
+        println!("  - {} [{}] {}", r.name, r.source_kind, r.source_url_or_path,);
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+async fn project_delete(store: &Store, name: &str) -> anyhow::Result<ExitCode> {
+    let Some(rec) = store.projects().get_by_name(name).await? else {
+        eprintln!("project delete: `{name}` not found");
+        return Ok(ExitCode::from(1));
+    };
+    let affected = store.projects().delete(&rec.id).await?;
+    if affected == 0 {
+        eprintln!("project delete: `{name}` vanished before delete");
+        return Ok(ExitCode::from(1));
+    }
+    println!("deleted project {} (repos cascaded)", rec.name);
+    Ok(ExitCode::SUCCESS)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn project_add_repo(
+    store: &Store,
+    project_name: &str,
+    repo_name: &str,
+    path: Option<&std::path::Path>,
+    git_url: Option<&str>,
+    branch: Option<&str>,
+    auth: Option<&str>,
+    i_own_this: bool,
+) -> anyhow::Result<ExitCode> {
+    if !i_own_this {
+        eprintln!(
+            "project add-repo: --i-own-this is required before the daemon will accept a repo"
+        );
+        return Ok(ExitCode::from(2));
+    }
+    let (source_kind, source_value) = match (path, git_url) {
+        (Some(p), None) => ("local-path", p.display().to_string()),
+        (None, Some(url)) => ("git", url.to_string()),
+        (None, None) => {
+            eprintln!("project add-repo: provide either --path or --git-url");
+            return Ok(ExitCode::from(2));
+        }
+        (Some(_), Some(_)) => unreachable!("clap enforces conflicts_with"),
+    };
+    let Some(project) = store.projects().get_by_name(project_name).await? else {
+        eprintln!("project add-repo: project `{project_name}` not found");
+        return Ok(ExitCode::from(1));
+    };
+    if let Some(existing) = store.repos().get(repo_name).await? {
+        if existing.project_id != project.id {
+            eprintln!(
+                "project add-repo: repo `{repo_name}` already belongs to project `{}`",
+                existing.project_id
+            );
+            return Ok(ExitCode::from(1));
+        }
+    }
+    let now = now_epoch_ms();
+    let rec = RepoRecord {
+        name: repo_name.to_string(),
+        project_id: project.id.clone(),
+        source_kind: source_kind.to_string(),
+        source_url_or_path: source_value,
+        branch: branch.map(str::to_string),
+        auth_ref: auth.map(str::to_string),
+        i_own_this,
+        last_scan_run_id: None,
+        created_at: now,
+        updated_at: now,
+    };
+    store.repos().upsert(&rec).await?;
+    println!("attached repo {} to project {}", rec.name, project.name);
+    Ok(ExitCode::SUCCESS)
 }
 
 async fn doctor(
