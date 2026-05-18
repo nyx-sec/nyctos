@@ -787,3 +787,76 @@ async fn websocket_without_run_filter_receives_all_runs() {
         panic!("expected text frame, got {frame:?}");
     }
 }
+
+#[tokio::test]
+async fn websocket_with_run_filter_replays_buffered_frames() {
+    // Build the server inline so we can hold a handle to the per-run
+    // replay buffer and pre-seed it with frames the WS upgrade path
+    // should hand back before joining the live broadcast.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = Store::open(tmp.path()).await.expect("open store");
+    let (events, _rx) = broadcast::channel::<AgentEvent>(16);
+    let config_path = tmp.path().join("nyx-agent.toml");
+    let setup = SetupContext::new(config_path, Config::default(), true, SecretStore::default());
+    let trigger: Arc<dyn ScanTrigger> =
+        Arc::new(StubScanTrigger { run_id: "r-1".to_string() });
+    let state =
+        ServerState::new(store.clone(), events.clone(), trigger, setup, AuthConfig::default());
+
+    // Pre-seed the replay buffer with the run's opening frames so the
+    // WS upgrade reads them back via `snapshot()` before subscribing
+    // to the live broadcast.
+    let started = AgentEvent::Run {
+        data: RunEvent::RunStarted {
+            run_id: "r-1".to_string(),
+            repos: vec!["alpha".to_string()],
+            started_at_ms: 1,
+        },
+    };
+    let repo_started = AgentEvent::Run {
+        data: RunEvent::RepoStarted {
+            run_id: "r-1".to_string(),
+            repo: "alpha".to_string(),
+            started_at_ms: 2,
+        },
+    };
+    state.replay.push(&started).await;
+    state.replay.push(&repo_started).await;
+
+    let app = build_router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let h = tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let url = format!("ws://{addr}/api/v1/events?run_id=r-1");
+    let (ws_stream, _) =
+        tokio_tungstenite::connect_async(&url).await.expect("ws connect");
+    let (_, mut ws_rx) = ws_stream.split();
+
+    let first = tokio::time::timeout(Duration::from_secs(2), ws_rx.next())
+        .await
+        .expect("recv timeout")
+        .expect("stream end")
+        .expect("ws err");
+    let second = tokio::time::timeout(Duration::from_secs(2), ws_rx.next())
+        .await
+        .expect("recv timeout")
+        .expect("stream end")
+        .expect("ws err");
+
+    let frame_kind = |frame: tokio_tungstenite::tungstenite::Message| -> String {
+        match frame {
+            tokio_tungstenite::tungstenite::Message::Text(t) => {
+                let v: Value = serde_json::from_str(&t).expect("json");
+                v["data"]["kind"].as_str().unwrap_or("").to_string()
+            }
+            other => panic!("expected text frame, got {other:?}"),
+        }
+    };
+    assert_eq!(frame_kind(first), "RunStarted");
+    assert_eq!(frame_kind(second), "RepoStarted");
+
+    h.abort();
+}
