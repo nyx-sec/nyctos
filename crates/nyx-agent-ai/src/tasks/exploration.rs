@@ -342,51 +342,18 @@ fn build_agent_task(scope: &ExplorationScope) -> AgentTask {
     };
     let max_secs = scope.max_wall_clock.as_secs();
 
+    // Prompt bodies live at
+    // `crates/nyx-agent-ai/src/prompts/exploration.v1.{system,objective}.md`
+    // so the trace viewer can resolve the literal template that drove a
+    // given run.
     let system = format!(
-        "You are nyx-agent's AI Exploration worker.\n\
-         \n\
-         Your job is to spot vulnerabilities nyx's static pass and the\n\
-         heuristic novel-finding pass miss — shadow APIs, state-machine\n\
-         flaws, CORS misconfigurations, business-logic skips. You drive\n\
-         the workspace from inside a chain-lane sandbox; every tool call\n\
-         is audited and rate-limited.\n\
-         \n\
-         Hard rules (the sandbox enforces them — your job is to stay\n\
-         inside them):\n\
-         - Probe only the hosts listed under ALLOWED HOSTS.\n\
-         - File writes go to the sentinel path, nothing else.\n\
-         - Shell exec is for inspection only; no destructive ops.\n\
-         - Stop at {max_actions} tool calls, or {max_secs}s wall clock,\n\
-           whichever comes first.\n\
-         \n\
-         When you identify a vulnerability, emit the `record_exploration_finding`\n\
-         tool call with these fields:\n\
-         - `path` (required): file path or pseudo-path like `<api:/admin>`\n\
-         - `line` (optional): 1-based line number when the finding pins to source\n\
-         - `cap`  (required): capability tag (SQL_QUERY / OS_COMMAND /\n\
-                              SSRF / CORS_MISCONFIG / AUTH_BYPASS / etc.)\n\
-         - `rationale` (required): short non-empty explanation\n\
-         - `endpoint` (optional): API endpoint description for shadow APIs\n\
-         - `suggested_payload_hint` (optional): payload sketch the verifier\n\
-                                                seeds PayloadSynthesis with\n\
-         \n\
-         Quality matters more than count. Emit one tool call per finding;\n\
-         the audit log captures every action.",
+        include_str!("../prompts/exploration.v1.system.md"),
         max_actions = scope.max_actions,
         max_secs = max_secs,
     );
 
     let objective = format!(
-        "Explore the running service and surface vulnerabilities the static pass missed.\n\
-         \n\
-         ALLOWED HOSTS\n{allowed}\n\
-         \n\
-         TARGETS\n{targets}\n\
-         \n\
-         CONSTRAINTS\n\
-         - max_actions:  {max_actions}\n\
-         - max_wall_clock: {max_secs}s\n\
-         - sentinel_path: {sentinel}\n",
+        include_str!("../prompts/exploration.v1.objective.md"),
         allowed = allowed,
         targets = targets,
         max_actions = scope.max_actions,

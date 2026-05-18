@@ -1794,8 +1794,21 @@ async fn doctor(
     report_sandbox_shim();
     report_scheduler(config);
     report_webhook(config);
+    report_run(config);
 
     Ok(nyx_code)
+}
+
+fn report_run(config: &Config) {
+    if config.run.replay_stable_check {
+        println!(
+            "verifier: replay_stable_check enabled (each (vuln, benign) pair re-executes; ~2x cost per verify)"
+        );
+    } else {
+        println!(
+            "verifier: replay_stable_check disabled (default; set [run].replay_stable_check = true to enable)"
+        );
+    }
 }
 
 fn report_scheduler(config: &Config) {
