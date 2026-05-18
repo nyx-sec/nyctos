@@ -59,6 +59,7 @@ pub fn init(cfg: &LogConfig) -> Result<(), LogInitError> {
 
 /// Variant that lets callers redirect the human-readable layer (used by
 /// tests). The JSON layer always writes to `<log_dir>/<file_name>`.
+#[tracing::instrument(skip_all, fields(level = %cfg.level, log_dir = %cfg.log_dir.display()))]
 pub fn install<W>(cfg: &LogConfig, human_writer: W) -> Result<(), LogInitError>
 where
     W: for<'a> tracing_subscriber::fmt::MakeWriter<'a> + Send + Sync + 'static,

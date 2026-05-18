@@ -1,0 +1,32 @@
+repo = []
+schedule = []
+
+[general]
+log_level = "info"
+
+[performance]
+max_parallel_scans = 4
+scan_timeout_secs = 600
+
+[sandbox]
+enabled = true
+allow_network = false
+backend = "auto"
+
+[ai]
+provider = "claude-code"
+runtime = "claude-code"
+max_concurrent_one_shot = 4
+
+[ui]
+listen_addr = "127.0.0.1:8765"
+open_browser = true
+
+[triggers]
+on_push = false
+on_pr = false
+
+[nyx]
+
+[run]
+replay_stable_check = false

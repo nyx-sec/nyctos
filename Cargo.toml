@@ -9,6 +9,7 @@ members = [
     "crates/nyx-agent-sandbox",
     "crates/nyx-agent-api",
     "crates/nyx-agent-ui",
+    "xtask",
 ]
 
 [workspace.package]

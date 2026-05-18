@@ -1,8 +1,8 @@
 //! AI Exploration agent task (Phase 23).
 //!
 //! Drives the Claude Code agent loop against a running chain-lane
-//! sandbox so the model can probe a real deployment with HTTP + shell
-//! + bounded file-write tools. The goal is to surface vulnerabilities
+//! sandbox so the model can probe a real deployment with HTTP, shell,
+//! and bounded file-write tools. The goal is to surface vulnerabilities
 //! the nyx static pass and the heuristic novel-finding pass miss:
 //! shadow APIs, state-machine flaws, CORS misconfigurations, etc.
 //!
@@ -488,8 +488,8 @@ mod tests {
 
     use async_trait::async_trait;
     use nyx_agent_types::agent::{
-        AgentResult, AgentTask, AiError, BudgetKind, CacheStats, CostEstimate, ExtractedAgentResult,
-        Prompt, Response, TokenUsage,
+        AgentResult, AgentTask, AiError, BudgetKind, CostEstimate, ExtractedAgentResult, Prompt,
+        Response, TokenUsage,
     };
     use nyx_agent_types::event::AgentEvent;
     use tokio::sync::broadcast;

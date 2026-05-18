@@ -1803,7 +1803,7 @@ async fn replay_repro_bundle(
         let mut stdout_done = false;
         let mut stderr_done = false;
         let mut timed_out = false;
-        while !(stdout_done && stderr_done) && !timed_out {
+        while (!stdout_done || !stderr_done) && !timed_out {
             tokio::select! {
                 _ = tokio::time::sleep_until(deadline) => {
                     let _ = child.start_kill();
@@ -1947,7 +1947,7 @@ fn extract_ustar(bytes: &[u8], dest: &std::path::Path) -> std::io::Result<()> {
                 }
             }
         }
-        let data_blocks = (size + 511) / 512;
+        let data_blocks = size.div_ceil(512);
         i += 512 + (data_blocks as usize) * 512;
     }
     Ok(())

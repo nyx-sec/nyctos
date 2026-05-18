@@ -1232,6 +1232,7 @@ pub async fn run_novel_finding_discovery_pass(
 /// through the production Anthropic adapter. The pass runs each repo's
 /// batches sequentially (against one shared `(run_id, OneShot)` budget
 /// bucket) so the cap check has a deterministic ordering.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn drive_novel_finding_pass<R: AiRuntime + ?Sized>(
     runtime: &R,
     tracker: &dyn BudgetTracker,
@@ -2106,6 +2107,7 @@ impl StaticEscapeSuiteGate {
         Self { verdict: EscapeSuiteVerdict::Green }
     }
 
+    #[allow(dead_code)]
     pub fn red(fixture: impl Into<String>, reason: impl Into<String>) -> Self {
         Self {
             verdict: EscapeSuiteVerdict::Red {

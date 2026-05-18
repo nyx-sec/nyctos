@@ -88,6 +88,7 @@ impl StateDir {
     /// Create the root and every subdirectory if missing; idempotent. On
     /// Unix every directory created or already present is forced to mode
     /// `0700`.
+    #[tracing::instrument(skip_all, fields(root = %self.root.display()))]
     pub fn ensure(&self) -> Result<(), StateError> {
         create_secure_dir(&self.root)?;
         for sub in SUBDIRS {

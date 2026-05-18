@@ -131,7 +131,7 @@ impl Sandbox for BirdcageSandbox {
             let mut stdin = child
                 .stdin
                 .take()
-                .ok_or_else(|| SandboxError::State("shim stdin unavailable"))?;
+                .ok_or(SandboxError::State("shim stdin unavailable"))?;
             stdin.write_all(&cfg_json).await.map_err(SandboxError::Io)?;
             stdin.shutdown().await.map_err(SandboxError::Io)?;
         }

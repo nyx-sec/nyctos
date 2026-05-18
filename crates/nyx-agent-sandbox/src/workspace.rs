@@ -43,9 +43,8 @@ pub fn snapshot(src: &Path, dst: &Path) -> io::Result<SnapshotKind> {
 
     #[cfg(target_os = "macos")]
     {
-        match clonefile(src, dst) {
-            Ok(()) => return Ok(SnapshotKind::Clonefile),
-            Err(_) => {}
+        if let Ok(()) = clonefile(src, dst) {
+            return Ok(SnapshotKind::Clonefile);
         }
     }
 

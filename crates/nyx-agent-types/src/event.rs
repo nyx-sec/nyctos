@@ -25,6 +25,7 @@ pub enum AgentEvent {
 #[serde(tag = "kind")]
 pub enum RunEvent {
     Heartbeat {
+        #[ts(type = "number")]
         ts: i64,
     },
     /// Run-level lifecycle: dispatcher accepted the work and is about to
@@ -32,6 +33,7 @@ pub enum RunEvent {
     RunStarted {
         run_id: String,
         repos: Vec<String>,
+        #[ts(type = "number")]
         started_at_ms: i64,
     },
     /// Per-repo lifecycle: a rayon job picked up `repo` and the static
@@ -39,6 +41,7 @@ pub enum RunEvent {
     RepoStarted {
         run_id: String,
         repo: String,
+        #[ts(type = "number")]
         started_at_ms: i64,
     },
     /// Static pass returned (success or no findings).
@@ -46,6 +49,7 @@ pub enum RunEvent {
         run_id: String,
         repo: String,
         n_diags: u32,
+        #[ts(type = "number")]
         elapsed_ms: i64,
     },
     /// Dynamic / sandbox pass returned. Phase 06 does not emit this
@@ -54,6 +58,7 @@ pub enum RunEvent {
     RepoDynamicDone {
         run_id: String,
         repo: String,
+        #[ts(type = "number")]
         elapsed_ms: i64,
     },
     /// Per-repo failure: the static pass exited non-zero, panicked, or
@@ -62,6 +67,7 @@ pub enum RunEvent {
         run_id: String,
         repo: String,
         message: String,
+        #[ts(type = "number")]
         elapsed_ms: i64,
     },
     /// Per-repo terminator. Always emitted regardless of outcome so
@@ -71,13 +77,16 @@ pub enum RunEvent {
         run_id: String,
         repo: String,
         outcome: RepoOutcomeTag,
+        #[ts(type = "number")]
         elapsed_ms: i64,
     },
     /// Run-level terminator. Emitted once every repo has produced a
     /// `RepoFinished`.
     RunFinished {
         run_id: String,
+        #[ts(type = "number")]
         finished_at_ms: i64,
+        #[ts(type = "number")]
         wall_clock_ms: i64,
         succeeded: u32,
         inconclusive: u32,
@@ -110,7 +119,12 @@ pub enum AiEvent {
     ToolCallFinished { task_id: String, name: String, ok: bool },
     CacheHit { task_id: String, tokens: u32 },
     CacheMiss { task_id: String, tokens: u32 },
-    BudgetTick { task_id: String, run_id: String, spent_usd_micros: i64 },
+    BudgetTick {
+        task_id: String,
+        run_id: String,
+        #[ts(type = "number")]
+        spent_usd_micros: i64,
+    },
     TaskHalted { task_id: String, reason: HaltReason },
 }
 

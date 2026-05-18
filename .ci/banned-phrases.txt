@@ -1,13 +1,15 @@
 # Curated banned-phrase list for nyx-pro voice-lint.
 # One phrase per line. Lines starting with `#` are comments.
-# Matching is case-insensitive literal substring.
+# Matching is case-insensitive literal substring by default. Lines that
+# start with `regex:` are extended regular expressions (POSIX ERE,
+# case-insensitive) so a phrase can be restricted to a specific context
+# without flagging legitimate alternate usages. For example, `leverage`
+# the verb is banned, but `leverage point` (noun) is not.
 # To allow a phrase in a specific file, wrap the surrounding region in
 # `<!-- nyx: verbatim -->` / `<!-- /nyx: verbatim -->` markers.
 delve
-leverage
 seamless
 synergy
-robust
 cutting-edge
 world-class
 enterprise-grade
@@ -21,4 +23,18 @@ as an AI
 I'd be happy to
 certainly,
 of course,
-powerful
+
+# Verb form of "leverage": followed by a determiner / possessive so the
+# noun forms ("leverage point", "leverage ratio") survive.
+regex:\bleverage[s]?\s+(the|this|that|these|those|our|their|your|its|my|a|an|all|both|users|customers|developers|teams|community)\b
+
+# Marketing-speak "robust": followed by an abstract noun the word is
+# usually padding for. Legitimate concrete uses ("robust testing",
+# "robust parser") are not flagged.
+regex:\brobust\s+(system|systems|platform|platforms|solution|solutions|framework|frameworks|approach|approaches|architecture|infrastructure|methodology|design|capability|capabilities)\b
+
+# Unqualified "powerful": followed by an abstract / marketing-speak noun,
+# or appearing at end of clause (period / comma / em-dash). Concrete
+# noun uses ("powerful API", "powerful tool") survive.
+regex:\bpowerful\s+(features?|capabilit(y|ies)|abstractions?|toolkits?|solutions?|combinations?|engines?)\b
+regex:\bpowerful[[:space:]]*[.,;!?]

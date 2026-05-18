@@ -314,7 +314,7 @@ fn code_safe(s: &str) -> String {
         }
     }
     let fence_len = max_run + 1;
-    let fence: String = std::iter::repeat('`').take(fence_len).collect();
+    let fence: String = "`".repeat(fence_len);
     let needs_pad =
         s.starts_with('`') || s.ends_with('`') || s.chars().all(|c| c.is_whitespace());
     let pad = if needs_pad && !s.is_empty() { " " } else { "" };

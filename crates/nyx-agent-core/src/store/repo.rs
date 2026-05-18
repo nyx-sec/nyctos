@@ -295,7 +295,7 @@ mod tests {
         // Untouched: pointer + creation time + attestation flag.
         assert_eq!(got.last_scan_run_id.as_deref(), Some("run-prior"));
         assert_eq!(got.created_at, 1_000);
-        assert_eq!(got.i_own_this, true);
+        assert!(got.i_own_this);
         assert_eq!(got.updated_at, 7_777);
     }
 

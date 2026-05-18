@@ -27,6 +27,9 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
+#[cfg(not(test))]
+use chrono::{DateTime, Utc};
+#[cfg(test)]
 use chrono::{DateTime, TimeZone, Utc};
 use cron::Schedule;
 use nyx_agent_core::ScheduleConfig;
@@ -65,6 +68,7 @@ pub enum SchedulerError {
 
 /// Time source. Production uses [`Clock::System`]; tests use
 /// [`Clock::Manual`] so they can advance time without sleeping.
+#[allow(dead_code)]
 pub enum Clock {
     System,
     Manual(Arc<std::sync::Mutex<DateTime<Utc>>>),
@@ -221,6 +225,7 @@ impl Scheduler {
 /// observe which entries triggered without subscribing to the
 /// dispatcher.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct FiredEntry {
     pub label: String,
     pub repo: Option<String>,

@@ -266,7 +266,7 @@ fn render_expected_verdict(finding: &FindingRecord) -> String {
         .verdict_blob
         .as_deref()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
-        .unwrap_or_else(|| serde_json::json!(null));
+        .unwrap_or(serde_json::Value::Null);
     serde_json::to_string_pretty(&serde_json::json!({
         "finding_id": finding.id,
         "status": finding.status,
@@ -316,10 +316,10 @@ fn build_ustar(
         out.extend_from_slice(&header);
         out.extend_from_slice(&a.contents);
         let pad = (512 - (a.contents.len() % 512)) % 512;
-        out.extend(std::iter::repeat(0u8).take(pad));
+        out.extend(std::iter::repeat_n(0u8, pad));
     }
     // Two empty 512-byte blocks terminate a USTAR stream.
-    out.extend(std::iter::repeat(0u8).take(1024));
+    out.extend(std::iter::repeat_n(0u8, 1024));
     Ok(out)
 }
 
@@ -509,7 +509,7 @@ mod tests {
             names.push(name);
             // Size lives at offset 124..135 as octal ASCII.
             let size = parse_octal(&header[124..135]);
-            let data_blocks = (size + 511) / 512;
+            let data_blocks = size.div_ceil(512);
             i += 512 + (data_blocks as usize) * 512;
         }
         assert!(

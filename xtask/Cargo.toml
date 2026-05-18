@@ -1,14 +1,16 @@
 [package]
-name = "nyx-agent-types"
+name = "xtask"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+publish = false
+
+[[bin]]
+name = "xtask"
+path = "src/main.rs"
 
 [dependencies]
-serde = { workspace = true }
-serde_json = { workspace = true }
-thiserror = { workspace = true }
-tokio = { workspace = true }
+nyx-agent-types = { path = "../crates/nyx-agent-types" }
 ts-rs = { workspace = true }

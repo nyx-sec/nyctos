@@ -339,12 +339,14 @@ fn default_true() -> bool {
 }
 
 impl Config {
+    #[tracing::instrument(skip_all, fields(path = %path.display()))]
     pub fn load_from(path: &Path) -> Result<Self, ConfigError> {
         let raw = std::fs::read_to_string(path)
             .map_err(|source| ConfigError::Read { path: path.to_path_buf(), source })?;
         Self::parse(&raw, path)
     }
 
+    #[tracing::instrument(skip_all, fields(path = %path.display()))]
     pub fn load_or_default(path: &Path) -> Result<Self, ConfigError> {
         match std::fs::read_to_string(path) {
             Ok(raw) => Self::parse(&raw, path),

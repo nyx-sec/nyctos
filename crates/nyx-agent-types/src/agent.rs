@@ -40,6 +40,7 @@ pub struct Prompt {
     pub temperature: f32,
     /// Adapter-specific seed for deterministic sampling. Adapters that
     /// do not expose a seed ignore this.
+    #[ts(type = "number | null")]
     pub seed: Option<u64>,
 }
 
@@ -62,6 +63,7 @@ pub struct Response {
     /// when the runtime does not support caching.
     pub cache: Option<CacheStats>,
     /// Total cost charged for this call, in USD micros (1e-6 USD).
+    #[ts(type = "number")]
     pub cost_usd_micros: i64,
 }
 
@@ -90,6 +92,7 @@ pub struct Budget {
     /// the host writes itself.
     pub kind: BudgetKind,
     /// Hard cap, in USD micros. Exceeding this cap halts the task.
+    #[ts(type = "number")]
     pub cap_usd_micros: i64,
 }
 
@@ -115,7 +118,9 @@ impl BudgetKind {
 /// halt check before the round-trip.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct CostEstimate {
+    #[ts(type = "number")]
     pub min_usd_micros: i64,
+    #[ts(type = "number")]
     pub max_usd_micros: i64,
 }
 
@@ -140,6 +145,7 @@ pub struct AgentResult {
     pub final_message: String,
     pub turns: u32,
     pub usage: TokenUsage,
+    #[ts(type = "number")]
     pub cost_usd_micros: i64,
     /// Structured artefacts the adapter lifted out of the agent loop's
     /// tool-use trace. Phase 13's Claude Code adapter populates these

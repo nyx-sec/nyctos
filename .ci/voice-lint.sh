@@ -47,11 +47,27 @@ scan_file() {
     while IFS= read -r phrase; do
         [ -z "$phrase" ] && continue
         case "$phrase" in '#'*) continue;; esac
-        if printf '%s' "$stripped" | grep -niF -- "$phrase" >/dev/null 2>&1; then
-            line="$(printf '%s' "$stripped" | grep -niF -- "$phrase" | head -1)"
-            echo "voice-lint: banned phrase \"$phrase\" in $file: $line" >&2
-            found=1
-        fi
+        # Lines prefixed with `regex:` are treated as extended regex
+        # patterns (case-insensitive) so phrases like "leverage" can be
+        # restricted to verb usage without flagging the noun form
+        # ("leverage point"). Plain lines stay literal substring greps.
+        case "$phrase" in
+            'regex:'*)
+                pattern="${phrase#regex:}"
+                if printf '%s' "$stripped" | grep -niE -- "$pattern" >/dev/null 2>&1; then
+                    line="$(printf '%s' "$stripped" | grep -niE -- "$pattern" | head -1)"
+                    echo "voice-lint: banned pattern \"$pattern\" in $file: $line" >&2
+                    found=1
+                fi
+                ;;
+            *)
+                if printf '%s' "$stripped" | grep -niF -- "$phrase" >/dev/null 2>&1; then
+                    line="$(printf '%s' "$stripped" | grep -niF -- "$phrase" | head -1)"
+                    echo "voice-lint: banned phrase \"$phrase\" in $file: $line" >&2
+                    found=1
+                fi
+                ;;
+        esac
     done < "$BANNED_FILE"
 }
 

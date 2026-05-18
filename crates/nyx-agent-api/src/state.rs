@@ -123,6 +123,12 @@ struct ReplayInner {
     order: VecDeque<String>,
 }
 
+impl Default for EventReplay {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EventReplay {
     pub fn new() -> Self {
         Self { inner: Mutex::new(ReplayInner::default()), max_per_run: 128, max_runs: 16 }
