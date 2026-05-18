@@ -107,27 +107,47 @@ export interface RunRecord {
 
 export interface FindingRecord {
   id: string;
+  run_id: string;
   repo: string;
   path: string;
-  line: number;
+  line: number | null;
   cap: string;
   rule: string;
-  severity: string | null;
-  finding_origin: string;
+  severity: string;
   status: string;
-  triage_state: string | null;
-  first_seen_run_id: string | null;
-  last_seen_run_id: string | null;
+  finding_origin: string;
+  first_seen: number;
+  last_seen: number;
   superseded_by: string | null;
-  chain_id: string | null;
+  triage_state: string;
+  triage_assigned_to: string | null;
   verdict_blob: string | null;
-  updated_at: number;
+  repro_path: string | null;
+  attack_provenance: string | null;
+  prompt_version: string | null;
+  chain_id: string | null;
+}
+
+export type FindingDiffStatus = "new" | "regressed" | "closed" | "unchanged";
+
+export interface FindingWithDiff extends FindingRecord {
+  diff_status: FindingDiffStatus;
+}
+
+export interface RunFindingsResponse {
+  run_id: string;
+  prior_run_id: string | null;
+  items: FindingWithDiff[];
 }
 
 export interface ChainRecord {
   id: string;
-  summary: string | null;
-  created_at: number;
+  run_id: string;
+  cross_repo: boolean;
+  member_ids: string;
+  rationale_blob: string | null;
+  attack_provenance: string | null;
+  prompt_version: string | null;
 }
 
 export type RepoSourceKind = "git" | "local-path" | "github" | "gitlab" | "local";
@@ -212,15 +232,39 @@ export interface DoctorResponse {
 
 // ---- query keys ------------------------------------------------------------
 
+export interface FindingsQuery {
+  repo?: string;
+  run_id?: string;
+  cap?: string;
+  origin?: string;
+  status?: string;
+  severity?: string;
+  triage_state?: string;
+  chain_id?: string;
+  include_quarantine?: boolean;
+}
+
 export const qk = {
   health: () => ["health"] as const,
   setupStatus: () => ["setup", "status"] as const,
   repos: () => ["repos"] as const,
   runs: (status?: string) => ["runs", status ?? "Running"] as const,
   run: (id: string) => ["runs", id] as const,
-  findings: (params: { repo?: string; run_id?: string }) =>
-    ["findings", params.repo ?? null, params.run_id ?? null] as const,
+  findings: (params: FindingsQuery) =>
+    [
+      "findings",
+      params.repo ?? null,
+      params.run_id ?? null,
+      params.cap ?? null,
+      params.origin ?? null,
+      params.status ?? null,
+      params.severity ?? null,
+      params.triage_state ?? null,
+      params.chain_id ?? null,
+      params.include_quarantine ?? false,
+    ] as const,
   finding: (id: string) => ["findings", id] as const,
+  runFindings: (run_id: string) => ["runs", run_id, "findings"] as const,
   chain: (id: string) => ["chains", id] as const,
 };
 
@@ -346,17 +390,35 @@ export function useRun(id: string | undefined) {
   });
 }
 
-export function useFindings(params: { repo?: string; run_id?: string }) {
-  const enabled = Boolean(params.repo || params.run_id);
+export function useFindings(params: FindingsQuery = {}) {
   return useQuery({
     queryKey: qk.findings(params),
     queryFn: () => {
       const search = new URLSearchParams();
-      if (params.repo) search.set("repo", params.repo);
-      if (params.run_id) search.set("run_id", params.run_id);
-      return request<FindingRecord[]>(`/findings?${search.toString()}`);
+      for (const [key, value] of Object.entries(params)) {
+        if (value === undefined || value === null || value === "") continue;
+        if (typeof value === "boolean") {
+          if (value) search.set(key, "true");
+        } else {
+          search.set(key, String(value));
+        }
+      }
+      const qs = search.toString();
+      return request<FindingRecord[]>(`/findings${qs ? `?${qs}` : ""}`);
     },
-    enabled,
+  });
+}
+
+/**
+ * Findings produced by a single run, decorated with diff status
+ * ("new", "regressed", "closed", "unchanged") computed server-side
+ * against the prior run.
+ */
+export function useRunFindings(runId: string | undefined) {
+  return useQuery({
+    queryKey: runId ? qk.runFindings(runId) : ["runs", "_disabled", "findings"],
+    queryFn: () => request<RunFindingsResponse>(`/runs/${encodeURIComponent(runId!)}/findings`),
+    enabled: Boolean(runId),
   });
 }
 

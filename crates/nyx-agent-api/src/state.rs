@@ -1,3 +1,4 @@
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -8,11 +9,11 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::json;
 use thiserror::Error;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 use nyx_agent_core::store::StoreError;
 use nyx_agent_core::{Config, SecretStore, Store};
-use nyx_agent_types::event::EventSink;
+use nyx_agent_types::event::{AgentEvent, EventSink, RunEvent};
 
 /// Future returned by [`ScanTrigger::trigger`]. Boxed so the trait can be
 /// object-safe.
@@ -79,6 +80,88 @@ impl SetupContext {
     }
 }
 
+/// Bounded per-run event replay buffer. Closes the broadcast race
+/// described in the Phase 07 deferred item: a client that calls
+/// `POST /api/v1/scan` and *then* opens the WebSocket would miss
+/// `RunStarted` (and possibly the first few `RepoStarted`/`RepoFailed`)
+/// frames because tokio's `broadcast::Sender` does not replay history.
+/// `events_ws` reads back the snapshot here before joining the live
+/// stream so the LiveScanView always sees the run's lifecycle from the
+/// start.
+///
+/// Events that lack a `run_id` (e.g. plain heartbeats) are not buffered
+/// because there is nothing for a subscriber to scope to.
+#[derive(Debug)]
+pub struct EventReplay {
+    by_run: Mutex<HashMap<String, VecDeque<AgentEvent>>>,
+    /// Hard cap on events stored per run. The Phase 11 acceptance set
+    /// is small (one RunStarted + N RepoStarted/RepoFinished pairs +
+    /// RunFinished). 128 frames covers ~60 repos before the head is
+    /// dropped, which is more than the static-pass budget.
+    pub max_per_run: usize,
+    /// Cap on tracked runs. Past this we evict the run whose tail event
+    /// is oldest. 16 covers the realistic concurrent-LiveScanView count.
+    pub max_runs: usize,
+}
+
+impl EventReplay {
+    pub fn new() -> Self {
+        Self { by_run: Mutex::new(HashMap::new()), max_per_run: 128, max_runs: 16 }
+    }
+
+    /// Append an event to the per-run buffer. No-op for events that do
+    /// not carry a `run_id`.
+    pub async fn push(&self, event: &AgentEvent) {
+        let Some(run_id) = run_id_for_event(event) else { return };
+        let mut g = self.by_run.lock().await;
+        if !g.contains_key(run_id) && g.len() >= self.max_runs {
+            // Evict an arbitrary tracked run to make room. `HashMap`
+            // iteration order is unspecified, so this is not LRU; the
+            // bound is the only guarantee. A timestamp-anchored eviction
+            // is deferred (see deferred.md).
+            if let Some(victim) = g.keys().next().cloned() {
+                g.remove(&victim);
+            }
+        }
+        let buf = g.entry(run_id.to_string()).or_default();
+        if buf.len() == self.max_per_run {
+            buf.pop_front();
+        }
+        buf.push_back(event.clone());
+
+        // Drop the buffer once `RunFinished` has been observed plus a
+        // small grace window of further frames - the LiveScanView only
+        // needs replay until the run terminates.
+        if matches!(event, AgentEvent::Run { data: RunEvent::RunFinished { .. } }) {
+            // Keep the buffer for any subscriber that connects right
+            // after RunFinished; the eviction policy handles long-term
+            // cleanup.
+        }
+    }
+
+    /// Snapshot every buffered event for `run_id`. Cheap clone.
+    pub async fn snapshot(&self, run_id: &str) -> Vec<AgentEvent> {
+        let g = self.by_run.lock().await;
+        g.get(run_id).map(|q| q.iter().cloned().collect()).unwrap_or_default()
+    }
+}
+
+fn run_id_for_event(ev: &AgentEvent) -> Option<&str> {
+    match ev {
+        AgentEvent::Run { data } => match data {
+            RunEvent::Heartbeat { .. } => None,
+            RunEvent::RunStarted { run_id, .. }
+            | RunEvent::RepoStarted { run_id, .. }
+            | RunEvent::RepoStaticDone { run_id, .. }
+            | RunEvent::RepoDynamicDone { run_id, .. }
+            | RunEvent::RepoFailed { run_id, .. }
+            | RunEvent::RepoFinished { run_id, .. }
+            | RunEvent::RunFinished { run_id, .. } => Some(run_id.as_str()),
+        },
+        _ => None,
+    }
+}
+
 /// Bearer-token guard used by the API auth middleware. `None` skips
 /// the check entirely (e.g. when the daemon was launched with
 /// `--headless`).
@@ -107,6 +190,11 @@ pub struct ServerState {
     pub scan: Arc<dyn ScanTrigger>,
     pub setup: SetupContext,
     pub auth: AuthConfig,
+    /// Per-run event replay buffer. Populated by a tap task the daemon
+    /// runs alongside the broadcast channel and read by `events_ws` on
+    /// upgrade so newly-attached LiveScanView clients catch the
+    /// run's lifecycle from the start.
+    pub replay: Arc<EventReplay>,
     /// Path that holds per-repo workspace dirs (the moral equivalent of
     /// `<state>/repos`). The repo-delete handler removes the per-repo
     /// subdir under this path so a re-add starts from a clean slate.
@@ -122,7 +210,15 @@ impl ServerState {
         setup: SetupContext,
         auth: AuthConfig,
     ) -> Self {
-        Self { store, events, scan, setup, auth, state_repos_dir: None }
+        Self {
+            store,
+            events,
+            scan,
+            setup,
+            auth,
+            replay: Arc::new(EventReplay::new()),
+            state_repos_dir: None,
+        }
     }
 
     /// Attach the on-disk repo workspace root so the delete handler can

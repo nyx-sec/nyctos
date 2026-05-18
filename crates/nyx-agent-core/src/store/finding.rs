@@ -2,7 +2,7 @@
 //! IDs so re-running a scan over the same code converges on the same row.
 
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
+use sqlx::{QueryBuilder, Row, SqlitePool};
 
 use crate::store::StoreError;
 
@@ -87,6 +87,54 @@ pub fn finding_id_hash(repo: &str, path: &str, line: Option<i64>, cap: &str, rul
         out.push_str(&format!("{b:02x}"));
     }
     out
+}
+
+/// Filter accepted by [`FindingStore::list_filtered`]. Borrows from the
+/// caller so the API can hand its query parameters straight through
+/// without cloning.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct FindingFilter<'a> {
+    pub repo: Option<&'a str>,
+    pub run_id: Option<&'a str>,
+    pub cap: Option<&'a str>,
+    pub origin: Option<&'a str>,
+    pub status: Option<&'a str>,
+    pub severity: Option<&'a str>,
+    pub triage_state: Option<&'a str>,
+    pub chain_id: Option<&'a str>,
+    /// When `false` (default) rows with `status = 'Quarantine'` are
+    /// excluded. The Phase 11 list view leaves this off; the Quarantine
+    /// page passes `true`.
+    pub include_quarantine: bool,
+    /// Optional row cap. `None` means "no LIMIT" - the UI is expected to
+    /// stay below ~10k rows per page so a cap is informative, not a
+    /// safety net.
+    pub limit: Option<i64>,
+}
+
+fn row_to_finding(row: sqlx::sqlite::SqliteRow) -> FindingRecord {
+    FindingRecord {
+        id: row.get("id"),
+        run_id: row.get("run_id"),
+        repo: row.get("repo"),
+        path: row.get("path"),
+        line: row.get("line"),
+        cap: row.get("cap"),
+        rule: row.get("rule"),
+        severity: row.get("severity"),
+        status: row.get("status"),
+        finding_origin: row.get("finding_origin"),
+        first_seen: row.get("first_seen"),
+        last_seen: row.get("last_seen"),
+        superseded_by: row.get("superseded_by"),
+        triage_state: row.get("triage_state"),
+        triage_assigned_to: row.get("triage_assigned_to"),
+        verdict_blob: row.get("verdict_blob"),
+        repro_path: row.get("repro_path"),
+        attack_provenance: row.get("attack_provenance"),
+        prompt_version: row.get("prompt_version"),
+        chain_id: row.get("chain_id"),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -221,6 +269,76 @@ impl<'a> FindingStore<'a> {
         .fetch_all(self.pool)
         .await?;
         Ok(rows)
+    }
+
+    /// Composite filter used by the Phase 11 findings browser. Every
+    /// field is optional; combining them ANDs in SQLite, and an empty
+    /// filter returns every active row (i.e. status != Quarantine
+    /// unless [`FindingFilter::include_quarantine`] is set). Ordering
+    /// matches [`list_active_for_repo`] / [`list_by_run`]: most-recent
+    /// `last_seen` first.
+    pub async fn list_filtered(
+        &self,
+        filter: &FindingFilter<'_>,
+    ) -> Result<Vec<FindingRecord>, StoreError> {
+        let mut qb: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(
+            "SELECT id, run_id, repo, path, line, cap, rule, severity, status, \
+             finding_origin, first_seen, last_seen, superseded_by, triage_state, \
+             triage_assigned_to, verdict_blob, repro_path, attack_provenance, \
+             prompt_version, chain_id FROM findings",
+        );
+        let mut needs_where = true;
+        let mut push_clause = |qb: &mut QueryBuilder<sqlx::Sqlite>| {
+            if needs_where {
+                qb.push(" WHERE ");
+                needs_where = false;
+            } else {
+                qb.push(" AND ");
+            }
+        };
+        if !filter.include_quarantine {
+            push_clause(&mut qb);
+            qb.push("status != 'Quarantine'");
+        }
+        if let Some(repo) = filter.repo {
+            push_clause(&mut qb);
+            qb.push("repo = ").push_bind(repo.to_string());
+        }
+        if let Some(run_id) = filter.run_id {
+            push_clause(&mut qb);
+            qb.push("run_id = ").push_bind(run_id.to_string());
+        }
+        if let Some(cap) = filter.cap {
+            push_clause(&mut qb);
+            qb.push("cap = ").push_bind(cap.to_string());
+        }
+        if let Some(origin) = filter.origin {
+            push_clause(&mut qb);
+            qb.push("finding_origin = ").push_bind(origin.to_string());
+        }
+        if let Some(status) = filter.status {
+            push_clause(&mut qb);
+            qb.push("status = ").push_bind(status.to_string());
+        }
+        if let Some(severity) = filter.severity {
+            push_clause(&mut qb);
+            qb.push("severity = ").push_bind(severity.to_string());
+        }
+        if let Some(triage) = filter.triage_state {
+            push_clause(&mut qb);
+            qb.push("triage_state = ").push_bind(triage.to_string());
+        }
+        if let Some(chain_id) = filter.chain_id {
+            push_clause(&mut qb);
+            qb.push("chain_id = ").push_bind(chain_id.to_string());
+        }
+        qb.push(" ORDER BY last_seen DESC");
+        if let Some(limit) = filter.limit {
+            qb.push(" LIMIT ").push_bind(limit);
+        }
+        let rows = qb.build().fetch_all(self.pool).await?;
+        let out = rows.into_iter().map(row_to_finding).collect();
+        Ok(out)
     }
 
     pub async fn list_by_run(&self, run_id: &str) -> Result<Vec<FindingRecord>, StoreError> {
@@ -440,6 +558,84 @@ mod tests {
         s.findings().upsert(&f).await.expect("insert");
         let got = s.findings().get(&f.id).await.expect("get").expect("row");
         assert_eq!(got.prompt_version.as_deref(), Some("prompts/finding/v17"));
+    }
+
+    #[tokio::test]
+    async fn list_filtered_combines_predicates() {
+        let (_tmp, s) = fresh_store().await;
+        seed(&s).await;
+        s.repos().upsert(&sample_repo("repo-2")).await.expect("repo-2");
+        s.runs().insert(&sample_run("run-2")).await.expect("run-2");
+        let mut a = sample_finding("run-1", "repo-1", "src/a.rs", "rule-a");
+        a.severity = "High".to_string();
+        a.finding_origin = "Static".to_string();
+        let mut b = sample_finding("run-1", "repo-1", "src/b.rs", "rule-b");
+        b.severity = "Low".to_string();
+        b.finding_origin = "AI".to_string();
+        let mut c = sample_finding("run-2", "repo-2", "src/c.rs", "rule-c");
+        c.severity = "High".to_string();
+        c.cap = "cmdi".to_string();
+        s.findings().upsert(&a).await.expect("a");
+        s.findings().upsert(&b).await.expect("b");
+        s.findings().upsert(&c).await.expect("c");
+
+        let all = s.findings().list_filtered(&FindingFilter::default()).await.expect("all");
+        assert_eq!(all.len(), 3);
+
+        let high = s
+            .findings()
+            .list_filtered(&FindingFilter { severity: Some("High"), ..Default::default() })
+            .await
+            .expect("sev");
+        let ids: Vec<_> = high.into_iter().map(|f| f.id).collect();
+        assert!(ids.contains(&a.id));
+        assert!(ids.contains(&c.id));
+        assert!(!ids.contains(&b.id));
+
+        let by_cap_and_run = s
+            .findings()
+            .list_filtered(&FindingFilter {
+                run_id: Some("run-2"),
+                cap: Some("cmdi"),
+                ..Default::default()
+            })
+            .await
+            .expect("cap+run");
+        assert_eq!(by_cap_and_run.len(), 1);
+        assert_eq!(by_cap_and_run[0].id, c.id);
+
+        let by_origin = s
+            .findings()
+            .list_filtered(&FindingFilter {
+                origin: Some("AI"),
+                ..Default::default()
+            })
+            .await
+            .expect("origin");
+        assert_eq!(by_origin.len(), 1);
+        assert_eq!(by_origin[0].id, b.id);
+    }
+
+    #[tokio::test]
+    async fn list_filtered_excludes_quarantine_unless_opted_in() {
+        let (_tmp, s) = fresh_store().await;
+        seed(&s).await;
+        let open = sample_finding("run-1", "repo-1", "src/o.rs", "rule-o");
+        let mut quarantined = sample_finding("run-1", "repo-1", "src/q.rs", "rule-q");
+        quarantined.status = "Quarantine".to_string();
+        s.findings().upsert(&open).await.expect("o");
+        s.findings().upsert(&quarantined).await.expect("q");
+
+        let active = s.findings().list_filtered(&FindingFilter::default()).await.expect("active");
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].id, open.id);
+
+        let everything = s
+            .findings()
+            .list_filtered(&FindingFilter { include_quarantine: true, ..Default::default() })
+            .await
+            .expect("everything");
+        assert_eq!(everything.len(), 2);
     }
 
     #[tokio::test]

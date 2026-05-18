@@ -25,7 +25,7 @@ use tokio::sync::broadcast::error::RecvError;
 use tower_http::trace::TraceLayer;
 
 use nyx_agent_core::store::{
-    ChainRecord, FindingRecord, PatchOption, RepoPatch, RepoRecord, RunRecord,
+    ChainRecord, FindingFilter, FindingRecord, PatchOption, RepoPatch, RepoRecord, RunRecord,
 };
 use nyx_agent_core::{AiRuntime, SandboxBackend, ACCOUNT_AI_ANTHROPIC, ACCOUNT_AI_LOCAL_LLM};
 use nyx_agent_types::event::{AgentEvent, RunEvent};
@@ -48,6 +48,7 @@ pub fn build_router(state: ServerState) -> Router {
         .route("/api/v1/scan", post(trigger_scan))
         .route("/api/v1/runs", get(list_runs))
         .route("/api/v1/runs/:id", get(get_run))
+        .route("/api/v1/runs/:id/findings", get(findings_for_run))
         .route("/api/v1/findings", get(list_findings))
         .route("/api/v1/findings/:id", get(get_finding))
         .route("/api/v1/chains/:id", get(get_chain))
@@ -916,32 +917,49 @@ async fn get_run(
 
 // ---- /findings --------------------------------------------------------------
 
+/// Composite filter for `GET /api/v1/findings`. Every field is
+/// optional; combining them ANDs server-side. Quarantined rows are
+/// hidden by default; the Quarantine view passes
+/// `include_quarantine=true`.
 #[derive(Debug, Deserialize)]
 pub struct FindingsQuery {
     #[serde(default)]
     pub repo: Option<String>,
     #[serde(default)]
     pub run_id: Option<String>,
+    #[serde(default)]
+    pub cap: Option<String>,
+    #[serde(default)]
+    pub origin: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub severity: Option<String>,
+    #[serde(default)]
+    pub triage_state: Option<String>,
+    #[serde(default)]
+    pub chain_id: Option<String>,
+    #[serde(default)]
+    pub include_quarantine: bool,
 }
 
 async fn list_findings(
     State(s): State<ServerState>,
     Query(q): Query<FindingsQuery>,
 ) -> Result<Json<Vec<FindingRecord>>, ApiError> {
-    let rows = match (q.repo, q.run_id) {
-        (Some(repo), None) => s.store.findings().list_active_for_repo(&repo).await?,
-        (None, Some(run_id)) => s.store.findings().list_by_run(&run_id).await?,
-        (Some(_), Some(_)) => {
-            return Err(ApiError::BadRequest(
-                "pass at most one of `repo` or `run_id`".to_string(),
-            ));
-        }
-        (None, None) => {
-            return Err(ApiError::BadRequest(
-                "either `repo` or `run_id` query parameter is required".to_string(),
-            ));
-        }
+    let filter = FindingFilter {
+        repo: q.repo.as_deref(),
+        run_id: q.run_id.as_deref(),
+        cap: q.cap.as_deref(),
+        origin: q.origin.as_deref(),
+        status: q.status.as_deref(),
+        severity: q.severity.as_deref(),
+        triage_state: q.triage_state.as_deref(),
+        chain_id: q.chain_id.as_deref(),
+        include_quarantine: q.include_quarantine,
+        limit: None,
     };
+    let rows = s.store.findings().list_filtered(&filter).await?;
     Ok(Json(rows))
 }
 
@@ -955,6 +973,80 @@ async fn get_finding(
         .await?
         .map(Json)
         .ok_or_else(|| ApiError::NotFound(format!("finding `{id}` not found")))
+}
+
+/// Diff status for one finding relative to a baseline run. Surfaced as
+/// the "new / regressed / closed" chips the Phase 11 findings browser
+/// renders. `Unchanged` means the finding existed and was Open in the
+/// prior run too. The `Regressed` and `Closed` shapes are reserved for
+/// when a per-run finding-membership history lands; today the API only
+/// emits `New` and `Unchanged`.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum FindingDiffStatus {
+    New,
+    Regressed,
+    Closed,
+    Unchanged,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FindingWithDiff {
+    #[serde(flatten)]
+    pub record: FindingRecord,
+    pub diff_status: FindingDiffStatus,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RunFindingsResponse {
+    pub run_id: String,
+    /// Most recent earlier run on the same install. `None` when this is
+    /// the first run, in which case every finding is classified as
+    /// [`FindingDiffStatus::New`].
+    pub prior_run_id: Option<String>,
+    pub items: Vec<FindingWithDiff>,
+}
+
+async fn findings_for_run(
+    State(s): State<ServerState>,
+    Path(run_id): Path<String>,
+) -> Result<Json<RunFindingsResponse>, ApiError> {
+    let run = s
+        .store
+        .runs()
+        .get(&run_id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("run `{run_id}` not found")))?;
+    let started_at = run.started_at;
+    let prior_run_id = s.store.runs().prior_run_id(&run_id, started_at).await?;
+
+    let filter = FindingFilter {
+        run_id: Some(&run_id),
+        include_quarantine: false,
+        ..Default::default()
+    };
+    let rows = s.store.findings().list_filtered(&filter).await?;
+    let items = rows
+        .into_iter()
+        .map(|record| {
+            let diff_status = classify_diff(&record, started_at);
+            FindingWithDiff { record, diff_status }
+        })
+        .collect();
+    Ok(Json(RunFindingsResponse { run_id, prior_run_id, items }))
+}
+
+fn classify_diff(record: &FindingRecord, run_started_at: i64) -> FindingDiffStatus {
+    // `first_seen` is preserved across upserts, so a finding observed
+    // for the first time during this run carries a `first_seen` >=
+    // run.started_at. Everything else is `Unchanged` for now.
+    // `Regressed` and `Closed` need per-run membership history which
+    // lives behind a deferred schema migration.
+    if record.first_seen >= run_started_at {
+        FindingDiffStatus::New
+    } else {
+        FindingDiffStatus::Unchanged
+    }
 }
 
 // ---- /chains ----------------------------------------------------------------
@@ -984,17 +1076,40 @@ async fn events_ws(
     Query(q): Query<EventsQuery>,
     ws: WebSocketUpgrade,
 ) -> Response {
+    // Subscribe *before* reading the replay so events that fire between
+    // snapshot and join still hit this receiver. The snapshot is sent
+    // first; duplicate frames are idempotent client-side because
+    // applyEvent in repoStatus.ts treats per-repo state as a fold over
+    // the latest event per key.
     let rx = s.events.subscribe();
-    let filter = q.run_id;
-    ws.on_upgrade(move |socket| handle_events_ws(socket, rx, filter))
+    let filter = q.run_id.clone();
+    let replay = if let Some(run_id) = filter.as_deref() {
+        s.replay.snapshot(run_id).await
+    } else {
+        Vec::new()
+    };
+    ws.on_upgrade(move |socket| handle_events_ws(socket, rx, filter, replay))
 }
 
 async fn handle_events_ws(
     socket: WebSocket,
     mut rx: tokio::sync::broadcast::Receiver<AgentEvent>,
     run_filter: Option<String>,
+    replay: Vec<AgentEvent>,
 ) {
     let (mut tx, mut rx_socket) = socket.split();
+    for ev in replay {
+        match serde_json::to_string(&ev) {
+            Ok(payload) => {
+                if tx.send(Message::Text(payload)).await.is_err() {
+                    return;
+                }
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "failed to serialize replay AgentEvent");
+            }
+        }
+    }
     loop {
         tokio::select! {
             biased;

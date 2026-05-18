@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT id AS \"id!\" FROM runs\n            WHERE started_at < ? AND id != ?\n            ORDER BY started_at DESC LIMIT 1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "ade94be46faa2248917804a060d69b7e08398f03d391a3cd31429fad8fc50106"
+}

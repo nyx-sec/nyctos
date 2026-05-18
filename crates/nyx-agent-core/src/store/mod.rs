@@ -39,7 +39,8 @@ pub use candidate::{CandidateFindingRecord, CandidateFindingStore, CandidateStat
 pub use chain::{ChainRecord, ChainStore};
 pub use feedback::{FeedbackRecord, FeedbackStore, OperatorVerdict};
 pub use finding::{
-    finding_id_hash, FindingOrigin, FindingRecord, FindingStatus, FindingStore, TriageState,
+    finding_id_hash, FindingFilter, FindingOrigin, FindingRecord, FindingStatus, FindingStore,
+    TriageState,
 };
 pub use payload::{PayloadRecord, PayloadStore};
 pub use repo::{PatchOption, RepoPatch, RepoRecord, RepoStore, SourceKind};

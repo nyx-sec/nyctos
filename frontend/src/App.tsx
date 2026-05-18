@@ -2,8 +2,10 @@ import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { AppLayout } from "@/components/AppLayout";
 import { Card } from "@/components/Card";
 import { Spinner } from "@/components/Spinner";
+import { FindingList } from "@/pages/Findings";
 import { Placeholder } from "@/pages/Placeholder";
 import { RepoList } from "@/pages/Repos";
+import { LiveScanView } from "@/pages/Runs";
 import { SetupWizard } from "@/pages/Setup";
 import { useSetupStatus } from "@/api/client";
 
@@ -44,7 +46,8 @@ export function App() {
         <Route path="/setup" element={<SetupWizard />} />
         <Route path="/repos" element={<RepoList />} />
         <Route path="/runs" element={<Placeholder />} />
-        <Route path="/findings" element={<Placeholder />} />
+        <Route path="/runs/:runId" element={<LiveScanView />} />
+        <Route path="/findings" element={<FindingList />} />
         <Route path="/chains" element={<Placeholder />} />
         <Route path="/quarantine" element={<Placeholder />} />
         <Route path="/settings" element={<Placeholder />} />

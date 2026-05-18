@@ -166,6 +166,27 @@ impl<'a> RunStore<'a> {
         Ok(())
     }
 
+    /// Most recent earlier run, ranked by `started_at`. Used by the
+    /// Phase 11 diff endpoint to anchor "new vs prior" badge logic.
+    pub async fn prior_run_id(
+        &self,
+        run_id: &str,
+        started_at: i64,
+    ) -> Result<Option<String>, StoreError> {
+        let row = sqlx::query!(
+            r#"
+            SELECT id AS "id!" FROM runs
+            WHERE started_at < ? AND id != ?
+            ORDER BY started_at DESC LIMIT 1
+            "#,
+            started_at,
+            run_id,
+        )
+        .fetch_optional(self.pool)
+        .await?;
+        Ok(row.map(|r| r.id))
+    }
+
     pub async fn delete(&self, id: &str) -> Result<u64, StoreError> {
         let res = sqlx::query!("DELETE FROM runs WHERE id = ?", id).execute(self.pool).await?;
         Ok(res.rows_affected())

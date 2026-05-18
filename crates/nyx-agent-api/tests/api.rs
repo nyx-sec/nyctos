@@ -308,8 +308,75 @@ async fn findings_endpoints_filter_by_repo_and_run() {
             .expect("json");
     assert_eq!(got.id, finding.id);
 
-    let bad = reqwest::get(format!("{}/api/v1/findings", srv.base())).await.expect("get");
-    assert_eq!(bad.status(), reqwest::StatusCode::BAD_REQUEST);
+    // Global view (no filter) returns every active finding.
+    let global: Vec<FindingRecord> = reqwest::get(format!("{}/api/v1/findings", srv.base()))
+        .await
+        .expect("get")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(global.len(), 1);
+}
+
+#[tokio::test]
+async fn findings_endpoint_filters_by_cap_and_severity() {
+    let srv = TestServer::start().await;
+    srv.store.repos().upsert(&sample_repo("repo-1")).await.expect("repo");
+    srv.store.runs().insert(&sample_run("run-A")).await.expect("run");
+
+    let mut taint = sample_finding("run-A", "repo-1", "src/a.rs", "taint");
+    taint.cap = "sqli".to_string();
+    taint.severity = "High".to_string();
+    let mut cmdi = sample_finding("run-A", "repo-1", "src/b.rs", "cmd");
+    cmdi.cap = "cmdi".to_string();
+    cmdi.severity = "Low".to_string();
+    srv.store.findings().upsert(&taint).await.expect("taint");
+    srv.store.findings().upsert(&cmdi).await.expect("cmdi");
+
+    let high: Vec<FindingRecord> =
+        reqwest::get(format!("{}/api/v1/findings?severity=High", srv.base()))
+            .await
+            .expect("get")
+            .json()
+            .await
+            .expect("json");
+    assert_eq!(high.len(), 1);
+    assert_eq!(high[0].id, taint.id);
+
+    let cmdi_only: Vec<FindingRecord> =
+        reqwest::get(format!("{}/api/v1/findings?cap=cmdi", srv.base()))
+            .await
+            .expect("get")
+            .json()
+            .await
+            .expect("json");
+    assert_eq!(cmdi_only.len(), 1);
+    assert_eq!(cmdi_only[0].id, cmdi.id);
+}
+
+#[tokio::test]
+async fn runs_findings_endpoint_marks_diff_status() {
+    let srv = TestServer::start().await;
+    srv.store.repos().upsert(&sample_repo("repo-1")).await.expect("repo");
+    srv.store.runs().insert(&sample_run("run-A")).await.expect("run");
+    // sample_run.started_at = 2_000; sample_finding.first_seen = 3_000.
+    // 3_000 >= 2_000, so every row classifies as `new`.
+    let finding = sample_finding("run-A", "repo-1", "src/a.rs", "rule-1");
+    srv.store.findings().upsert(&finding).await.expect("finding");
+
+    let body: serde_json::Value =
+        reqwest::get(format!("{}/api/v1/runs/run-A/findings", srv.base()))
+            .await
+            .expect("get")
+            .json()
+            .await
+            .expect("json");
+    assert_eq!(body["run_id"], "run-A");
+    assert!(body["prior_run_id"].is_null());
+    let items = body["items"].as_array().expect("items array");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["diff_status"], "new");
+    assert_eq!(items[0]["id"], finding.id);
 }
 
 #[tokio::test]

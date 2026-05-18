@@ -445,6 +445,22 @@ async fn serve(
         auth_config,
     )
     .with_state_repos_dir(state_dir.repos());
+
+    // Tap the broadcast channel and feed every event into the per-run
+    // replay buffer so WS clients that attach after a scan kicks off
+    // still receive `RunStarted` + early `RepoStarted` frames.
+    let replay = Arc::clone(&server_state.replay);
+    let replay_rx = events_tx.subscribe();
+    let _replay_task = tokio::spawn(async move {
+        let mut rx = replay_rx;
+        loop {
+            match rx.recv().await {
+                Ok(ev) => replay.push(&ev).await,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
     let ui_fallback = {
         let bootstrap = Arc::clone(&ui_bootstrap);
         move |uri: axum::http::Uri| {

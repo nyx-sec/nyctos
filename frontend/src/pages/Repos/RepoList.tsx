@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Badge, type BadgeTone } from "@/components/Badge";
 import { Button } from "@/components/Button";
 import { Card } from "@/components/Card";
@@ -28,6 +29,7 @@ export function RepoList() {
   const repos = useRepos();
   const triggerScan = useTriggerScan();
   const deleteRepo = useDeleteRepo();
+  const navigate = useNavigate();
   const [live, setLive] = useState<LiveMap>({});
   const [banner, setBanner] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
@@ -45,6 +47,7 @@ export function RepoList() {
     try {
       const { run_id } = await triggerScan.mutateAsync(name);
       setBanner(`Scan started for ${name} (run ${run_id}).`);
+      navigate(`/runs/${encodeURIComponent(run_id)}`);
     } catch (err) {
       setBanner(`Scan for ${name} failed: ${String(err)}`);
       setLive((cur) => ({ ...cur, [name]: { status: "Failed", runId: null } }));
@@ -56,6 +59,7 @@ export function RepoList() {
     try {
       const { run_id } = await triggerScan.mutateAsync(undefined);
       setBanner(`Scan started (run ${run_id}).`);
+      navigate(`/runs/${encodeURIComponent(run_id)}`);
     } catch (err) {
       setBanner(`Scan-all failed: ${String(err)}`);
     }
