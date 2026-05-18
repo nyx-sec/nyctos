@@ -45,7 +45,7 @@ impl TriggeredBy {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunRecord {
     pub id: String,
     pub started_at: i64,

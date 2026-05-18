@@ -1,15 +1,20 @@
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::process::ExitCode;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
+use nyx_agent_api::{build_router, ScanTrigger, ScanTriggerError, ServerState};
 use nyx_agent_core::store::{finding_id_hash, FindingRecord, RepoRecord, RunRecord};
 use nyx_agent_core::{
     ingest, Config, IngestError, IngestedRepo, LogConfig, Repo, RepoOutcome, RepoSource, Run,
     RunBundle, RunDispatcher, StateDir, Store, WorkspaceHandle,
 };
 use nyx_agent_nyx::{Diag, NyxError, NyxRunner, NyxScanLane, MINIMUM_NYX_VERSION};
+use nyx_agent_types::event::{AgentEvent, EventSink, RunEvent};
 use semver::Version;
+use tokio::sync::{broadcast, mpsc, oneshot};
 
 #[derive(Debug, Parser)]
 #[command(name = "nyx-agent", version, about = "Nyx repository agent", propagate_version = true)]
@@ -63,6 +68,13 @@ enum Command {
         /// Override the listen address from `[ui]`.
         #[arg(long)]
         listen: Option<String>,
+        /// Do not launch a browser at startup.
+        #[arg(long)]
+        no_open: bool,
+        /// Disable the embedded UI surface entirely (no browser launch
+        /// and no future auth-protected mutation endpoints).
+        #[arg(long)]
+        headless: bool,
     },
 }
 
@@ -97,16 +109,17 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
 
     let log_cfg = LogConfig::new(state_dir.logs(), cli.log_level.clone());
 
-    match cli.command.unwrap_or(Command::Serve { listen: None }) {
+    match cli.command.unwrap_or(Command::Serve { listen: None, no_open: false, headless: false }) {
         Command::Doctor => doctor(&state_dir, &config_path, &log_cfg, &config).await,
         Command::Scan { repos } => {
             nyx_agent_core::init_logging(&log_cfg)?;
-            scan(&state_dir, &config, &repos).await
+            scan(&state_dir, &config, &repos, None, "Manual").await
         }
-        Command::Reverify { .. }
-        | Command::Inspect { .. }
-        | Command::Budget
-        | Command::Serve { .. } => {
+        Command::Serve { listen, no_open, headless } => {
+            nyx_agent_core::init_logging(&log_cfg)?;
+            serve(state_dir, config, listen, no_open, headless).await
+        }
+        Command::Reverify { .. } | Command::Inspect { .. } | Command::Budget => {
             nyx_agent_core::init_logging(&log_cfg)?;
             todo!("subcommand wiring lands in a later phase")
         }
@@ -117,6 +130,8 @@ async fn scan(
     state_dir: &StateDir,
     config: &Config,
     requested: &[String],
+    events: Option<EventSink>,
+    triggered_by: &str,
 ) -> anyhow::Result<ExitCode> {
     let selected = select_repos(config, requested)?;
     if selected.is_empty() {
@@ -134,7 +149,7 @@ async fn scan(
         started_at: run.started_at_ms,
         finished_at: None,
         status: "Running".to_string(),
-        triggered_by: "Manual".to_string(),
+        triggered_by: triggered_by.to_string(),
         git_ref: None,
         parent_run_id: None,
         wall_clock_ms: None,
@@ -164,6 +179,16 @@ async fn scan(
             }
             Err(err) => {
                 report_ingest_error(&repo.name, &err);
+                if let Some(sink) = &events {
+                    let _ = sink.send(AgentEvent::Run {
+                        data: RunEvent::RepoFailed {
+                            run_id: run.id.clone(),
+                            repo: repo.name.clone(),
+                            message: format!("ingest failed: {err}"),
+                            elapsed_ms: 0,
+                        },
+                    });
+                }
                 ingest_failures.push((repo.name.clone(), err));
             }
         }
@@ -185,7 +210,7 @@ async fn scan(
         }
     };
 
-    let dispatcher = RunDispatcher::from_config(&config.performance, workspaces.len(), None);
+    let dispatcher = RunDispatcher::from_config(&config.performance, workspaces.len(), events);
     let run_for_dispatch = run.clone();
     let dispatch_handle = tokio::task::spawn_blocking(move || {
         dispatcher.dispatch::<NyxScanLane, Diag>(run_for_dispatch, lane, workspaces)
@@ -244,6 +269,226 @@ async fn scan(
     } else {
         ExitCode::from(1)
     })
+}
+
+async fn serve(
+    state_dir: StateDir,
+    config: Config,
+    listen_override: Option<String>,
+    no_open: bool,
+    headless: bool,
+) -> anyhow::Result<ExitCode> {
+    let listen_addr = listen_override.unwrap_or_else(|| config.ui.listen_addr.clone());
+    let store = Store::open(state_dir.root()).await?;
+    let (events_tx, _events_rx) = broadcast::channel::<AgentEvent>(256);
+
+    let (scan_tx, mut scan_rx) = mpsc::channel::<ScanRequest>(16);
+    let trigger: Arc<dyn ScanTrigger> = Arc::new(MpscScanTrigger { tx: scan_tx });
+
+    let scan_state_dir = state_dir.clone();
+    let scan_config = config.clone();
+    let scan_events = events_tx.clone();
+    let scan_worker = tokio::spawn(async move {
+        while let Some(req) = scan_rx.recv().await {
+            let state_dir = scan_state_dir.clone();
+            let config = scan_config.clone();
+            let events = scan_events.clone();
+            tokio::spawn(async move {
+                let outcome = run_scan_for_api(&state_dir, &config, req.repo.as_deref(), events).await;
+                let _ = req.reply.send(outcome);
+            });
+        }
+    });
+
+    let server_state = ServerState::new(store.clone(), events_tx.clone(), trigger);
+    let app = build_router(server_state);
+
+    let listener = tokio::net::TcpListener::bind(&listen_addr)
+        .await
+        .map_err(|e| anyhow::anyhow!("bind {listen_addr}: {e}"))?;
+    let local_addr = listener.local_addr()?;
+    let url = format!("http://{local_addr}");
+    println!("ready on {url}");
+
+    if !headless && !no_open {
+        if let Err(err) = webbrowser::open(&url) {
+            eprintln!("warn: could not open browser at {url}: {err}");
+        }
+    }
+
+    let shutdown = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+
+    let serve_result =
+        axum::serve(listener, app).with_graceful_shutdown(shutdown).await;
+    scan_worker.abort();
+    store.close().await;
+    serve_result.map_err(|e| anyhow::anyhow!("http server: {e}"))?;
+    Ok(ExitCode::SUCCESS)
+}
+
+struct ScanRequest {
+    repo: Option<String>,
+    reply: oneshot::Sender<Result<String, ScanTriggerError>>,
+}
+
+struct MpscScanTrigger {
+    tx: mpsc::Sender<ScanRequest>,
+}
+
+impl ScanTrigger for MpscScanTrigger {
+    fn trigger<'a>(
+        &'a self,
+        repo: Option<String>,
+    ) -> Pin<Box<dyn Future<Output = Result<String, ScanTriggerError>> + Send + 'a>> {
+        Box::pin(async move {
+            let (reply, rx) = oneshot::channel();
+            self.tx
+                .send(ScanRequest { repo, reply })
+                .await
+                .map_err(|_| ScanTriggerError::Closed)?;
+            rx.await.map_err(|_| ScanTriggerError::Closed)?
+        })
+    }
+}
+
+async fn run_scan_for_api(
+    state_dir: &StateDir,
+    config: &Config,
+    repo: Option<&str>,
+    events: EventSink,
+) -> Result<String, ScanTriggerError> {
+    let requested: Vec<String> = match repo {
+        Some(name) => vec![name.to_string()],
+        None => Vec::new(),
+    };
+    let selected = select_repos(config, &requested).map_err(|e| {
+        let msg = format!("{e:#}");
+        if msg.contains("not declared") || msg.contains("enabled = false") {
+            ScanTriggerError::Rejected(msg)
+        } else {
+            ScanTriggerError::Internal(msg)
+        }
+    })?;
+    if selected.is_empty() {
+        return Err(ScanTriggerError::Rejected(
+            "no repositories selected; configure one in nyx-agent.toml".to_string(),
+        ));
+    }
+
+    let store = Store::open(state_dir.root()).await.map_err(internal_string)?;
+
+    let run = Run::new(selected.iter().map(|r| r.name.clone()).collect());
+    let run_record = RunRecord {
+        id: run.id.clone(),
+        started_at: run.started_at_ms,
+        finished_at: None,
+        status: "Running".to_string(),
+        triggered_by: "UI".to_string(),
+        git_ref: None,
+        parent_run_id: None,
+        wall_clock_ms: None,
+        total_ai_spend_usd_micros: 0,
+    };
+    store.runs().insert(&run_record).await.map_err(internal_string)?;
+
+    let run_id_out = run.id.clone();
+    let cfg = config.clone();
+    let sd = state_dir.clone();
+    let events_clone = events.clone();
+    tokio::spawn(async move {
+        if let Err(err) =
+            complete_scan(&sd, &cfg, store, selected, run, events_clone).await
+        {
+            eprintln!("scan (api): {err:#}");
+        }
+    });
+
+    Ok(run_id_out)
+}
+
+async fn complete_scan(
+    state_dir: &StateDir,
+    config: &Config,
+    store: Store,
+    selected: Vec<Repo>,
+    run: Run,
+    events: EventSink,
+) -> anyhow::Result<()> {
+    let now_ms = now_epoch_ms();
+    let state_repos = state_dir.repos();
+    let mut ingest_failures: Vec<(String, IngestError)> = Vec::new();
+    let mut workspaces: Vec<WorkspaceHandle> = Vec::new();
+    for repo in &selected {
+        match ingest(repo, &state_repos, &run.id).await {
+            Ok(ingested) => {
+                upsert_repo_record(&store, &ingested, now_ms).await?;
+                workspaces.push(WorkspaceHandle::new(ingested));
+            }
+            Err(err) => {
+                report_ingest_error(&repo.name, &err);
+                let _ = events.send(AgentEvent::Run {
+                    data: RunEvent::RepoFailed {
+                        run_id: run.id.clone(),
+                        repo: repo.name.clone(),
+                        message: format!("ingest failed: {err}"),
+                        elapsed_ms: 0,
+                    },
+                });
+                ingest_failures.push((repo.name.clone(), err));
+            }
+        }
+    }
+
+    if workspaces.is_empty() {
+        finalise_run(&store, &run.id, run.started_at_ms, 0, "Failed").await?;
+        store.close().await;
+        return Ok(());
+    }
+
+    let lane = match build_scan_lane(config).await {
+        Ok(lane) => Arc::new(lane),
+        Err(err) => {
+            eprintln!("scan: cannot build nyx lane: {err}");
+            finalise_run(&store, &run.id, run.started_at_ms, 0, "Failed").await?;
+            store.close().await;
+            return Ok(());
+        }
+    };
+
+    let dispatcher =
+        RunDispatcher::from_config(&config.performance, workspaces.len(), Some(events.clone()));
+    let run_for_dispatch = run.clone();
+    let dispatch_handle = tokio::task::spawn_blocking(move || {
+        dispatcher.dispatch::<NyxScanLane, Diag>(run_for_dispatch, lane, workspaces)
+    });
+
+    let bundle: RunBundle<Diag> = match dispatch_handle.await {
+        Ok(b) => b,
+        Err(err) => {
+            let _ = finalise_run(&store, &run.id, run.started_at_ms, 0, "Failed").await;
+            store.close().await;
+            return Err(anyhow::anyhow!("dispatch join: {err}"));
+        }
+    };
+
+    persist_run_results(&store, &bundle).await?;
+    let counts = bundle.counts();
+    finalise_run(
+        &store,
+        &run.id,
+        run.started_at_ms,
+        bundle.wall_clock_ms,
+        if counts.failed == 0 && ingest_failures.is_empty() { "Succeeded" } else { "Failed" },
+    )
+    .await?;
+    store.close().await;
+    Ok(())
+}
+
+fn internal_string<E: std::fmt::Display>(e: E) -> ScanTriggerError {
+    ScanTriggerError::Internal(format!("{e}"))
 }
 
 async fn build_scan_lane(config: &Config) -> anyhow::Result<NyxScanLane> {
@@ -452,3 +697,4 @@ fn resolve_min_nyx_version(config: &Config) -> anyhow::Result<Version> {
     Version::parse(raw)
         .map_err(|e| anyhow::anyhow!("[nyx].min_version `{raw}` is not a valid semver: {e}"))
 }
+

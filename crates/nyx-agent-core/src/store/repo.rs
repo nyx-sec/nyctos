@@ -23,7 +23,7 @@ impl SourceKind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RepoRecord {
     pub name: String,
     pub source_kind: String,

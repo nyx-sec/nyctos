@@ -128,7 +128,7 @@ pub struct UiConfig {
 
 impl Default for UiConfig {
     fn default() -> Self {
-        Self { listen_addr: "127.0.0.1:7878".to_string(), open_browser: false }
+        Self { listen_addr: "127.0.0.1:8765".to_string(), open_browser: false }
     }
 }
 

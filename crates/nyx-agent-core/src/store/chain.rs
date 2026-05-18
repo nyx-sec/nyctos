@@ -1,8 +1,9 @@
 //! `chains` table - cross-finding rationales produced by chain reasoner.
 
+use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChainRecord {
     pub id: String,
     pub run_id: String,

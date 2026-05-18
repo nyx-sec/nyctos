@@ -87,7 +87,7 @@ pub fn finding_id_hash(repo: &str, path: &str, line: Option<i64>, cap: &str, rul
     out
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FindingRecord {
     pub id: String,
     pub run_id: String,
