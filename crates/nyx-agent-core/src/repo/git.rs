@@ -238,6 +238,11 @@ fn normalise_remote(url: &str) -> String {
     trimmed.to_string()
 }
 
+/// Canonical GitHub API endpoint used to probe token scopes. Pulled out
+/// as a constant so [`validate_token_scopes_at`] can be exercised by
+/// hermetic tests pointing at a stubbed server.
+const GITHUB_USER_PROBE_URL: &str = "https://api.github.com/user";
+
 /// Query the GitHub API to check whether `token` carries any write
 /// scope. Used by [`ingest_git`] to refuse write-capable credentials
 /// before they touch the repo.
@@ -248,7 +253,13 @@ fn normalise_remote(url: &str) -> String {
 /// read-only (the caller is still expected to provision them with
 /// read-only permissions; the GH UI enforces that out-of-band).
 pub async fn validate_token_scopes(token: &str) -> Result<GhScopeCheck, IngestError> {
-    let url = "https://api.github.com/user";
+    validate_token_scopes_at(GITHUB_USER_PROBE_URL, token).await
+}
+
+pub(crate) async fn validate_token_scopes_at(
+    url: &str,
+    token: &str,
+) -> Result<GhScopeCheck, IngestError> {
     let resp = match reqwest::Client::builder()
         .user_agent(concat!("nyx-agent/", env!("CARGO_PKG_VERSION")))
         .build()
@@ -452,5 +463,100 @@ mod tests {
             normalise_remote("https://github.com/org/repo.git"),
             normalise_remote("https://github.com/org/repo/")
         );
+    }
+
+    mod scope_probe {
+        use super::*;
+        use wiremock::matchers::{header, header_exists, method, path};
+        use wiremock::{Mock, MockBuilder, MockServer, ResponseTemplate};
+
+        async fn probe_at(server: &MockServer) -> Result<GhScopeCheck, IngestError> {
+            let url = format!("{}/user", server.uri());
+            validate_token_scopes_at(&url, "ghp_dummy").await
+        }
+
+        fn user_probe() -> MockBuilder {
+            Mock::given(method("GET"))
+                .and(path("/user"))
+                .and(header("authorization", "Bearer ghp_dummy"))
+                .and(header_exists("user-agent"))
+        }
+
+        #[tokio::test]
+        async fn read_only_scopes_pass() {
+            let server = MockServer::start().await;
+            user_probe()
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .insert_header("x-oauth-scopes", "read:user, read:org")
+                        .set_body_string("{}"),
+                )
+                .mount(&server)
+                .await;
+            match probe_at(&server).await.expect("ok") {
+                GhScopeCheck::AllReadOnly { scopes } => {
+                    assert_eq!(scopes, vec!["read:user".to_string(), "read:org".to_string()]);
+                }
+                other => panic!("expected AllReadOnly, got {other:?}"),
+            }
+        }
+
+        #[tokio::test]
+        async fn repo_scope_is_refused() {
+            let server = MockServer::start().await;
+            user_probe()
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .insert_header("x-oauth-scopes", "repo, read:user")
+                        .set_body_string("{}"),
+                )
+                .mount(&server)
+                .await;
+            match probe_at(&server).await.expect("ok") {
+                GhScopeCheck::HasWriteScope { write_scope, scopes } => {
+                    assert_eq!(write_scope, "repo");
+                    assert!(scopes.iter().any(|s| s == "read:user"));
+                }
+                other => panic!("expected HasWriteScope, got {other:?}"),
+            }
+        }
+
+        #[tokio::test]
+        async fn missing_scope_header_is_no_scope_header() {
+            let server = MockServer::start().await;
+            user_probe()
+                .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+                .mount(&server)
+                .await;
+            assert!(matches!(probe_at(&server).await.expect("ok"), GhScopeCheck::NoScopeHeader));
+        }
+
+        #[tokio::test]
+        async fn unauthorised_returns_scope_status_error() {
+            let server = MockServer::start().await;
+            user_probe()
+                .respond_with(ResponseTemplate::new(401).set_body_string("Bad credentials"))
+                .mount(&server)
+                .await;
+            let err = probe_at(&server).await.expect_err("must fail");
+            match err {
+                IngestError::AuthScopeStatus { status, .. } => assert_eq!(status, 401),
+                other => panic!("expected AuthScopeStatus, got {other:?}"),
+            }
+        }
+
+        #[tokio::test]
+        async fn server_error_returns_scope_status_error() {
+            let server = MockServer::start().await;
+            user_probe()
+                .respond_with(ResponseTemplate::new(503).set_body_string("upstream down"))
+                .mount(&server)
+                .await;
+            let err = probe_at(&server).await.expect_err("must fail");
+            match err {
+                IngestError::AuthScopeStatus { status, .. } => assert_eq!(status, 503),
+                other => panic!("expected AuthScopeStatus, got {other:?}"),
+            }
+        }
     }
 }
