@@ -130,13 +130,42 @@ export interface ChainRecord {
   created_at: number;
 }
 
+export type RepoSourceKind = "git" | "local-path" | "github" | "gitlab" | "local";
+
 export interface CreateRepoRequest {
   name: string;
-  source_kind: "git" | "local-path" | "github" | "gitlab" | "local";
+  source_kind: RepoSourceKind;
   source_url_or_path: string;
   branch?: string;
   auth_ref?: string;
   i_own_this: boolean;
+}
+
+/**
+ * Partial update body for `PATCH /api/v1/repos/:name`. Nullable fields
+ * (`branch`, `auth_ref`) use tri-state semantics:
+ *   - omitted: leave existing value untouched
+ *   - `null`: clear the existing value
+ *   - string: set the field to the supplied value
+ */
+export interface PatchRepoRequest {
+  source_kind?: RepoSourceKind;
+  source_url_or_path?: string;
+  branch?: string | null;
+  auth_ref?: string | null;
+  i_own_this?: boolean;
+}
+
+export interface TestRepoRequest {
+  source_kind: RepoSourceKind;
+  source_url_or_path: string;
+  branch?: string;
+}
+
+export interface TestRepoResponse {
+  ok: boolean;
+  message: string;
+  on_disk_git_remote?: string;
 }
 
 export interface HealthResponse {
@@ -261,6 +290,28 @@ export function useDeleteRepo() {
         method: "DELETE",
       }),
     onSuccess: () => invalidateRepoLists(qc),
+  });
+}
+
+export function usePatchRepo() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ name, patch }: { name: string; patch: PatchRepoRequest }) =>
+      request<RepoRecord>(`/repos/${encodeURIComponent(name)}`, {
+        method: "PATCH",
+        body: JSON.stringify(patch),
+      }),
+    onSuccess: () => invalidateRepoLists(qc),
+  });
+}
+
+export function useTestRepo() {
+  return useMutation({
+    mutationFn: (body: TestRepoRequest) =>
+      request<TestRepoResponse>("/repos/test", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
   });
 }
 

@@ -42,7 +42,7 @@ pub use finding::{
     finding_id_hash, FindingOrigin, FindingRecord, FindingStatus, FindingStore, TriageState,
 };
 pub use payload::{PayloadRecord, PayloadStore};
-pub use repo::{RepoRecord, RepoStore, SourceKind};
+pub use repo::{PatchOption, RepoPatch, RepoRecord, RepoStore, SourceKind};
 pub use repro::{ReproBundleRecord, ReproBundleStore};
 pub use run::{RunRecord, RunStatus, RunStore, TriggeredBy};
 pub use schedule::{ScheduleRecord, ScheduleStore};

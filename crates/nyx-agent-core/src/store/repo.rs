@@ -38,6 +38,29 @@ pub struct RepoRecord {
     pub updated_at: i64,
 }
 
+/// Tri-state for `PATCH` semantics on a nullable field: leave existing
+/// value untouched, or replace it with `Some(...)` / `None`.
+#[derive(Debug, Clone, Copy, Default)]
+pub enum PatchOption<T> {
+    #[default]
+    Unset,
+    Set(T),
+}
+
+/// Partial-update descriptor consumed by [`RepoStore::update`]. Fields
+/// left as `None` (or `Unset` for nullable columns) preserve the
+/// existing row's value.
+#[derive(Debug)]
+pub struct RepoPatch<'a> {
+    pub name: &'a str,
+    pub source_kind: Option<&'a str>,
+    pub source_url_or_path: Option<&'a str>,
+    pub branch: PatchOption<Option<&'a str>>,
+    pub auth_ref: PatchOption<Option<&'a str>>,
+    pub i_own_this: Option<bool>,
+    pub updated_at: i64,
+}
+
 pub struct RepoStore<'a> {
     pool: &'a SqlitePool,
 }
@@ -139,6 +162,38 @@ impl<'a> RepoStore<'a> {
             .collect())
     }
 
+    /// Partial update of mutable repo fields. Returns `Ok(false)` if no
+    /// row with `name` exists. `last_scan_run_id` is left untouched —
+    /// that pointer is owned by the dispatcher via [`Self::set_last_scan`].
+    /// `created_at` is preserved.
+    pub async fn update(&self, patch: &RepoPatch<'_>) -> Result<bool, StoreError> {
+        let Some(existing) = self.get(patch.name).await? else {
+            return Ok(false);
+        };
+        let merged = RepoRecord {
+            name: existing.name,
+            source_kind: patch.source_kind.map(str::to_string).unwrap_or(existing.source_kind),
+            source_url_or_path: patch
+                .source_url_or_path
+                .map(str::to_string)
+                .unwrap_or(existing.source_url_or_path),
+            branch: match patch.branch {
+                PatchOption::Unset => existing.branch,
+                PatchOption::Set(v) => v.map(str::to_string),
+            },
+            auth_ref: match patch.auth_ref {
+                PatchOption::Unset => existing.auth_ref,
+                PatchOption::Set(v) => v.map(str::to_string),
+            },
+            i_own_this: patch.i_own_this.unwrap_or(existing.i_own_this),
+            last_scan_run_id: existing.last_scan_run_id,
+            created_at: existing.created_at,
+            updated_at: patch.updated_at,
+        };
+        self.upsert(&merged).await?;
+        Ok(true)
+    }
+
     pub async fn set_last_scan(
         &self,
         name: &str,
@@ -206,6 +261,59 @@ mod tests {
         let affected = s.repos().delete("doomed").await.expect("delete");
         assert_eq!(affected, 1);
         assert!(s.repos().get("doomed").await.expect("get").is_none());
+    }
+
+    #[tokio::test]
+    async fn update_patches_subset_and_preserves_pointers() {
+        use super::{PatchOption, RepoPatch};
+        let (_tmp, s) = fresh_store().await;
+        let mut r = sample_repo("billing");
+        r.branch = Some("main".to_string());
+        s.repos().upsert(&r).await.expect("insert");
+        s.repos()
+            .set_last_scan("billing", "run-prior", 5_000)
+            .await
+            .expect("seed last_scan");
+
+        let patch = RepoPatch {
+            name: "billing",
+            source_kind: Some("git"),
+            source_url_or_path: Some("https://example.com/billing.git"),
+            branch: PatchOption::Set(Some("dev")),
+            auth_ref: PatchOption::Set(None),
+            i_own_this: None,
+            updated_at: 7_777,
+        };
+        let updated = s.repos().update(&patch).await.expect("update");
+        assert!(updated, "patch must report applied when row exists");
+
+        let got = s.repos().get("billing").await.expect("get").expect("row");
+        assert_eq!(got.source_kind, "git");
+        assert_eq!(got.source_url_or_path, "https://example.com/billing.git");
+        assert_eq!(got.branch.as_deref(), Some("dev"));
+        assert_eq!(got.auth_ref, None);
+        // Untouched: pointer + creation time + attestation flag.
+        assert_eq!(got.last_scan_run_id.as_deref(), Some("run-prior"));
+        assert_eq!(got.created_at, 1_000);
+        assert_eq!(got.i_own_this, true);
+        assert_eq!(got.updated_at, 7_777);
+    }
+
+    #[tokio::test]
+    async fn update_returns_false_when_missing() {
+        use super::{PatchOption, RepoPatch};
+        let (_tmp, s) = fresh_store().await;
+        let patch = RepoPatch {
+            name: "ghost",
+            source_kind: Some("git"),
+            source_url_or_path: None,
+            branch: PatchOption::Unset,
+            auth_ref: PatchOption::Unset,
+            i_own_this: None,
+            updated_at: 1,
+        };
+        let updated = s.repos().update(&patch).await.expect("update");
+        assert!(!updated);
     }
 
     #[tokio::test]

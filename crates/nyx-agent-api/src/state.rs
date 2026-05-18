@@ -107,6 +107,11 @@ pub struct ServerState {
     pub scan: Arc<dyn ScanTrigger>,
     pub setup: SetupContext,
     pub auth: AuthConfig,
+    /// Path that holds per-repo workspace dirs (the moral equivalent of
+    /// `<state>/repos`). The repo-delete handler removes the per-repo
+    /// subdir under this path so a re-add starts from a clean slate.
+    /// `None` in tests that do not exercise workspace cleanup.
+    pub state_repos_dir: Option<PathBuf>,
 }
 
 impl ServerState {
@@ -117,7 +122,14 @@ impl ServerState {
         setup: SetupContext,
         auth: AuthConfig,
     ) -> Self {
-        Self { store, events, scan, setup, auth }
+        Self { store, events, scan, setup, auth, state_repos_dir: None }
+    }
+
+    /// Attach the on-disk repo workspace root so the delete handler can
+    /// remove `<state_repos_dir>/<name>/` when a repo is removed.
+    pub fn with_state_repos_dir(mut self, dir: PathBuf) -> Self {
+        self.state_repos_dir = Some(dir);
+        self
     }
 }
 

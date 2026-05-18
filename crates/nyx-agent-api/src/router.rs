@@ -6,6 +6,8 @@
 //! single run; without the filter every `AgentEvent` lands on the
 //! socket.
 
+use std::time::Duration;
+
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
@@ -13,7 +15,7 @@ use axum::{
     },
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{delete, get, post},
+    routing::{get, post},
     Json, Router,
 };
 use futures_util::{SinkExt, StreamExt};
@@ -22,7 +24,9 @@ use serde_json::json;
 use tokio::sync::broadcast::error::RecvError;
 use tower_http::trace::TraceLayer;
 
-use nyx_agent_core::store::{ChainRecord, FindingRecord, RepoRecord, RunRecord};
+use nyx_agent_core::store::{
+    ChainRecord, FindingRecord, PatchOption, RepoPatch, RepoRecord, RunRecord,
+};
 use nyx_agent_core::{AiRuntime, SandboxBackend, ACCOUNT_AI_ANTHROPIC, ACCOUNT_AI_LOCAL_LLM};
 use nyx_agent_types::event::{AgentEvent, RunEvent};
 
@@ -36,7 +40,11 @@ pub fn build_router(state: ServerState) -> Router {
         .route("/api/v1/setup", post(submit_setup))
         .route("/api/v1/setup/doctor", post(setup_doctor))
         .route("/api/v1/repos", get(list_repos).post(create_repo))
-        .route("/api/v1/repos/:name", delete(delete_repo))
+        .route("/api/v1/repos/test", post(test_repo_connectivity))
+        .route(
+            "/api/v1/repos/:name",
+            get(get_repo).patch(patch_repo).delete(delete_repo),
+        )
         .route("/api/v1/scan", post(trigger_scan))
         .route("/api/v1/runs", get(list_runs))
         .route("/api/v1/runs/:id", get(get_run))
@@ -560,6 +568,100 @@ async fn create_repo(
     Ok(Json(rec))
 }
 
+async fn get_repo(
+    State(s): State<ServerState>,
+    Path(name): Path<String>,
+) -> Result<Json<RepoRecord>, ApiError> {
+    s.store
+        .repos()
+        .get(&name)
+        .await?
+        .map(Json)
+        .ok_or_else(|| ApiError::NotFound(format!("repo `{name}` not found")))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PatchRepoRequest {
+    #[serde(default)]
+    pub source_kind: Option<String>,
+    #[serde(default)]
+    pub source_url_or_path: Option<String>,
+    /// Tri-state: omitted = no change, `null` = clear, string = set.
+    #[serde(default, deserialize_with = "deserialize_tri_state_string")]
+    pub branch: TriStateString,
+    #[serde(default, deserialize_with = "deserialize_tri_state_string")]
+    pub auth_ref: TriStateString,
+    #[serde(default)]
+    pub i_own_this: Option<bool>,
+}
+
+async fn patch_repo(
+    State(s): State<ServerState>,
+    Path(name): Path<String>,
+    Json(req): Json<PatchRepoRequest>,
+) -> Result<Json<RepoRecord>, ApiError> {
+    if let Some(kind) = req.source_kind.as_deref() {
+        if !matches!(kind, "git" | "local-path" | "github" | "gitlab" | "local") {
+            return Err(ApiError::BadRequest(format!("unknown source_kind `{kind}`")));
+        }
+    }
+    if let Some(false) = req.i_own_this {
+        return Err(ApiError::BadRequest(
+            "i_own_this cannot be cleared via PATCH; remove the repo instead".to_string(),
+        ));
+    }
+    let now = now_epoch_ms();
+    let branch = patch_option_for(&req.branch);
+    let auth_ref = patch_option_for(&req.auth_ref);
+    let patch = RepoPatch {
+        name: &name,
+        source_kind: req.source_kind.as_deref(),
+        source_url_or_path: req.source_url_or_path.as_deref(),
+        branch,
+        auth_ref,
+        i_own_this: req.i_own_this,
+        updated_at: now,
+    };
+    let applied = s.store.repos().update(&patch).await?;
+    if !applied {
+        return Err(ApiError::NotFound(format!("repo `{name}` not found")));
+    }
+    let row = s
+        .store
+        .repos()
+        .get(&name)
+        .await?
+        .ok_or_else(|| ApiError::Internal("repo vanished after update".to_string()))?;
+    Ok(Json(row))
+}
+
+fn patch_option_for(tri: &TriStateString) -> PatchOption<Option<&str>> {
+    match tri {
+        TriStateString::Unset => PatchOption::Unset,
+        TriStateString::Null => PatchOption::Set(None),
+        TriStateString::Some(v) => PatchOption::Set(Some(v.as_str())),
+    }
+}
+
+#[derive(Debug, Default)]
+pub enum TriStateString {
+    #[default]
+    Unset,
+    Null,
+    Some(String),
+}
+
+fn deserialize_tri_state_string<'de, D>(d: D) -> Result<TriStateString, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<String>::deserialize(d)?;
+    Ok(match value {
+        None => TriStateString::Null,
+        Some(s) => TriStateString::Some(s),
+    })
+}
+
 async fn delete_repo(
     State(s): State<ServerState>,
     Path(name): Path<String>,
@@ -568,7 +670,198 @@ async fn delete_repo(
     if affected == 0 {
         return Err(ApiError::NotFound(format!("repo `{name}` not found")));
     }
-    Ok(StatusBody::ok(format!("deleted {affected} row(s)")))
+    let mut workspace_msg = String::new();
+    if let Some(root) = &s.state_repos_dir {
+        let target = root.join(&name);
+        if target.is_dir() {
+            match std::fs::remove_dir_all(&target) {
+                Ok(()) => {
+                    workspace_msg = format!(" (workspace {} removed)", target.display());
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        repo = %name,
+                        path = %target.display(),
+                        error = %err,
+                        "failed to remove repo workspace; row was still deleted",
+                    );
+                    workspace_msg = format!(
+                        " (workspace {} could not be removed: {err})",
+                        target.display()
+                    );
+                }
+            }
+        }
+    }
+    Ok(StatusBody::ok(format!("deleted {affected} row(s){workspace_msg}")))
+}
+
+// ---- /repos/test ------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct TestRepoRequest {
+    pub source_kind: String,
+    pub source_url_or_path: String,
+    #[serde(default)]
+    pub branch: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TestRepoResponse {
+    pub ok: bool,
+    pub message: String,
+    /// `true` only for `local-path` probes. `null` when the on-disk
+    /// `.git/config` either does not exist or carries no `origin`
+    /// remote.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub on_disk_git_remote: Option<String>,
+}
+
+/// Lightweight probe wired to the wizard's "test connectivity" button.
+/// Performs only a read-only side effect (`git ls-remote` for git
+/// sources, `stat` + read of `.git/config` for local-path sources).
+async fn test_repo_connectivity(
+    Json(req): Json<TestRepoRequest>,
+) -> Result<Json<TestRepoResponse>, ApiError> {
+    match req.source_kind.as_str() {
+        "git" | "github" | "gitlab" => {
+            let url = req.source_url_or_path.trim();
+            if url.is_empty() {
+                return Err(ApiError::BadRequest("source_url_or_path is required".to_string()));
+            }
+            let branch = req.branch.as_deref().map(str::trim).filter(|s| !s.is_empty());
+            let (ok, message) = git_ls_remote_probe(url, branch).await;
+            Ok(Json(TestRepoResponse { ok, message, on_disk_git_remote: None }))
+        }
+        "local-path" | "local" => {
+            let path = std::path::Path::new(&req.source_url_or_path);
+            if !path.exists() {
+                return Ok(Json(TestRepoResponse {
+                    ok: false,
+                    message: format!("path `{}` does not exist", path.display()),
+                    on_disk_git_remote: None,
+                }));
+            }
+            if !path.is_dir() {
+                return Ok(Json(TestRepoResponse {
+                    ok: false,
+                    message: format!("path `{}` is not a directory", path.display()),
+                    on_disk_git_remote: None,
+                }));
+            }
+            let remote = read_local_git_remote(path);
+            let message = match &remote {
+                Some(url) => format!(
+                    "path readable; on-disk `.git/config` remote = `{url}`. Confirm before adding.",
+                ),
+                None => {
+                    "path readable; no `.git/config` remote on disk (untracked directory)."
+                        .to_string()
+                }
+            };
+            Ok(Json(TestRepoResponse { ok: true, message, on_disk_git_remote: remote }))
+        }
+        other => Err(ApiError::BadRequest(format!("unknown source_kind `{other}`"))),
+    }
+}
+
+const GIT_PROBE_TIMEOUT: Duration = Duration::from_secs(15);
+
+async fn git_ls_remote_probe(url: &str, branch: Option<&str>) -> (bool, String) {
+    let mut cmd = tokio::process::Command::new("git");
+    cmd.arg("-c")
+        .arg("credential.helper=")
+        .arg("ls-remote")
+        .arg("--exit-code")
+        .arg(url);
+    if let Some(b) = branch {
+        cmd.arg(format!("refs/heads/{b}"));
+    }
+    // Match ingestion-path env hardening: no terminal prompts, no user
+    // git config bleed.
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    cmd.env("GIT_CONFIG_GLOBAL", "/dev/null");
+    cmd.env("GIT_CONFIG_SYSTEM", "/dev/null");
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    cmd.stdin(std::process::Stdio::null());
+    // Otherwise a timed-out probe leaks the underlying `git ls-remote`
+    // process: `tokio::time::timeout` drops the future that owns the
+    // `Child`, but `tokio::process::Child` does not kill on drop by
+    // default.
+    cmd.kill_on_drop(true);
+
+    let child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(err) => return (false, format!("could not spawn git: {err}")),
+    };
+    let wait = child.wait_with_output();
+    match tokio::time::timeout(GIT_PROBE_TIMEOUT, wait).await {
+        Ok(Ok(output)) => {
+            if output.status.success() {
+                let line_count = output.stdout.iter().filter(|b| **b == b'\n').count();
+                (
+                    true,
+                    match branch {
+                        Some(b) => format!("ls-remote reached upstream; branch `{b}` exists"),
+                        None => format!("ls-remote reached upstream ({line_count} refs visible)"),
+                    },
+                )
+            } else if output.status.code() == Some(2) {
+                (false, match branch {
+                    Some(b) => format!("upstream reachable but branch `{b}` does not exist"),
+                    None => "upstream reachable but has no refs".to_string(),
+                })
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let trimmed = stderr.trim();
+                (
+                    false,
+                    if trimmed.is_empty() {
+                        format!("git ls-remote exited with status {}", output.status)
+                    } else {
+                        format!("git ls-remote failed: {trimmed}")
+                    },
+                )
+            }
+        }
+        Ok(Err(err)) => (false, format!("git wait failed: {err}")),
+        Err(_) => (
+            false,
+            format!("git ls-remote timed out after {}s", GIT_PROBE_TIMEOUT.as_secs()),
+        ),
+    }
+}
+
+fn read_local_git_remote(path: &std::path::Path) -> Option<String> {
+    let cfg = path.join(".git").join("config");
+    let raw = std::fs::read_to_string(&cfg).ok()?;
+    parse_git_config_remote(&raw)
+}
+
+/// Tiny line-oriented parser for the `[remote "origin"]` block's `url =`
+/// key. Sufficient for the inspection use case; falls back gracefully on
+/// exotic `include = path` configs (those return `None`).
+fn parse_git_config_remote(raw: &str) -> Option<String> {
+    let mut in_origin = false;
+    for line in raw.lines() {
+        let line = line.trim();
+        if line.starts_with('#') || line.starts_with(';') || line.is_empty() {
+            continue;
+        }
+        if line.starts_with('[') {
+            in_origin = line == "[remote \"origin\"]";
+            continue;
+        }
+        if in_origin {
+            if let Some(rest) = line.strip_prefix("url") {
+                if let Some(eq) = rest.find('=') {
+                    return Some(rest[eq + 1..].trim().to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 // ---- /scan ------------------------------------------------------------------

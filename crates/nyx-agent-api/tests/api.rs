@@ -544,6 +544,155 @@ async fn auth_middleware_requires_token_for_setup_after_completion() {
 }
 
 #[tokio::test]
+async fn patch_repo_updates_subset_and_returns_row() {
+    let srv = TestServer::start().await;
+    let client = reqwest::Client::new();
+    client
+        .post(format!("{}/api/v1/repos", srv.base()))
+        .json(&serde_json::json!({
+            "name": "billing",
+            "source_kind": "local-path",
+            "source_url_or_path": "/tmp/billing",
+            "i_own_this": true,
+        }))
+        .send()
+        .await
+        .expect("post");
+
+    let resp = client
+        .patch(format!("{}/api/v1/repos/billing", srv.base()))
+        .json(&serde_json::json!({
+            "source_kind": "git",
+            "source_url_or_path": "https://example.com/billing.git",
+            "branch": "dev",
+        }))
+        .send()
+        .await
+        .expect("patch");
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    let row: RepoRecord = resp.json().await.expect("json");
+    assert_eq!(row.source_kind, "git");
+    assert_eq!(row.source_url_or_path, "https://example.com/billing.git");
+    assert_eq!(row.branch.as_deref(), Some("dev"));
+}
+
+#[tokio::test]
+async fn patch_repo_returns_404_when_missing() {
+    let srv = TestServer::start().await;
+    let resp = reqwest::Client::new()
+        .patch(format!("{}/api/v1/repos/ghost", srv.base()))
+        .json(&serde_json::json!({ "source_kind": "git" }))
+        .send()
+        .await
+        .expect("patch");
+    assert_eq!(resp.status(), reqwest::StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn delete_repo_removes_workspace_dir_when_configured() {
+    use nyx_agent_api::{build_router, AuthConfig, ScanTrigger, ScanTriggerError, ServerState, SetupContext};
+    use nyx_agent_core::{Config, SecretStore, Store};
+    use tokio::sync::broadcast;
+
+    struct Stub;
+    impl ScanTrigger for Stub {
+        fn trigger<'a>(
+            &'a self,
+            _repo: Option<String>,
+        ) -> Pin<Box<dyn Future<Output = Result<String, ScanTriggerError>> + Send + 'a>> {
+            Box::pin(async { Ok("r".to_string()) })
+        }
+    }
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = Store::open(tmp.path()).await.expect("open store");
+    let (events, _rx) = broadcast::channel::<AgentEvent>(8);
+    let config_path = tmp.path().join("nyx-agent.toml");
+    let setup = SetupContext::new(config_path, Config::default(), true, SecretStore::default());
+    let state_repos = tmp.path().join("repos");
+    let billing_dir = state_repos.join("billing");
+    std::fs::create_dir_all(&billing_dir).expect("mkdir");
+    std::fs::write(billing_dir.join("marker"), b"x").expect("write");
+
+    let state = ServerState::new(
+        store.clone(),
+        events,
+        Arc::new(Stub) as Arc<dyn ScanTrigger>,
+        setup,
+        AuthConfig::default(),
+    )
+    .with_state_repos_dir(state_repos.clone());
+    let app = build_router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let h = tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let base = format!("http://{addr}");
+    let client = reqwest::Client::new();
+    client
+        .post(format!("{base}/api/v1/repos"))
+        .json(&serde_json::json!({
+            "name": "billing",
+            "source_kind": "local-path",
+            "source_url_or_path": billing_dir.to_string_lossy(),
+            "i_own_this": true,
+        }))
+        .send()
+        .await
+        .expect("post");
+    assert!(billing_dir.exists(), "workspace must exist before delete");
+    let resp = client.delete(format!("{base}/api/v1/repos/billing")).send().await.expect("del");
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    assert!(!billing_dir.exists(), "workspace must be gone after delete");
+
+    h.abort();
+}
+
+#[tokio::test]
+async fn test_repo_endpoint_rejects_unknown_source_kind() {
+    let srv = TestServer::start().await;
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/v1/repos/test", srv.base()))
+        .json(&serde_json::json!({
+            "source_kind": "smb",
+            "source_url_or_path": "//share/x",
+        }))
+        .send()
+        .await
+        .expect("post");
+    assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_repo_endpoint_stats_local_path() {
+    let srv = TestServer::start().await;
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let repo_dir = tmp.path().join("svc");
+    std::fs::create_dir_all(repo_dir.join(".git")).expect("git dir");
+    std::fs::write(
+        repo_dir.join(".git").join("config"),
+        b"[remote \"origin\"]\n\turl = https://example.com/svc.git\n",
+    )
+    .expect("write");
+
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/v1/repos/test", srv.base()))
+        .json(&serde_json::json!({
+            "source_kind": "local-path",
+            "source_url_or_path": repo_dir.to_string_lossy(),
+        }))
+        .send()
+        .await
+        .expect("post");
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    let body: Value = resp.json().await.expect("json");
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["on_disk_git_remote"], "https://example.com/svc.git");
+}
+
+#[tokio::test]
 async fn websocket_without_run_filter_receives_all_runs() {
     let srv = TestServer::start().await;
     let url = format!("{}/api/v1/events", srv.ws_base());

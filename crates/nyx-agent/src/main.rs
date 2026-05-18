@@ -443,7 +443,8 @@ async fn serve(
         trigger,
         setup,
         auth_config,
-    );
+    )
+    .with_state_repos_dir(state_dir.repos());
     let ui_fallback = {
         let bootstrap = Arc::clone(&ui_bootstrap);
         move |uri: axum::http::Uri| {

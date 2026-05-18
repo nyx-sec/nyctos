@@ -3,6 +3,7 @@ import { AppLayout } from "@/components/AppLayout";
 import { Card } from "@/components/Card";
 import { Spinner } from "@/components/Spinner";
 import { Placeholder } from "@/pages/Placeholder";
+import { RepoList } from "@/pages/Repos";
 import { SetupWizard } from "@/pages/Setup";
 import { useSetupStatus } from "@/api/client";
 
@@ -41,7 +42,7 @@ export function App() {
       <Routes>
         <Route path="/" element={<Navigate to="/repos" replace />} />
         <Route path="/setup" element={<SetupWizard />} />
-        <Route path="/repos" element={<Placeholder />} />
+        <Route path="/repos" element={<RepoList />} />
         <Route path="/runs" element={<Placeholder />} />
         <Route path="/findings" element={<Placeholder />} />
         <Route path="/chains" element={<Placeholder />} />
