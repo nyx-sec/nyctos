@@ -187,15 +187,30 @@ async fn scan(
 
     let dispatcher = RunDispatcher::from_config(&config.performance, workspaces.len(), None);
     let run_for_dispatch = run.clone();
-    let bundle: RunBundle<Diag> = tokio::task::spawn_blocking(move || {
+    let dispatch_handle = tokio::task::spawn_blocking(move || {
         dispatcher.dispatch::<NyxScanLane, Diag>(run_for_dispatch, lane, workspaces)
-    })
-    .await
-    .map_err(|e| anyhow::anyhow!("dispatch join error: {e}"))?;
+    });
+
+    // Guard the runs row: any failure between dispatch and finalise must still
+    // flip status off "Running" before we propagate. Otherwise a panicking
+    // rayon worker or a transient sqlx error leaves the row stuck forever.
+    let bundle: RunBundle<Diag> = match dispatch_handle.await {
+        Ok(b) => b,
+        Err(join_err) => {
+            let _ = finalise_run(&store, &run.id, run.started_at_ms, 0, "Failed").await;
+            store.close().await;
+            return Err(anyhow::anyhow!("dispatch join error: {join_err}"));
+        }
+    };
+
+    if let Err(err) = persist_run_results(&store, &bundle).await {
+        let _ =
+            finalise_run(&store, &run.id, run.started_at_ms, bundle.wall_clock_ms, "Failed").await;
+        store.close().await;
+        return Err(err);
+    }
 
     let counts = bundle.counts();
-    persist_run_results(&store, &bundle).await?;
-
     finalise_run(
         &store,
         &run.id,
