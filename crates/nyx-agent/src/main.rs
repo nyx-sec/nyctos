@@ -1133,24 +1133,28 @@ async fn finalise_run(
 }
 
 fn select_repos(config: &Config, requested: &[String]) -> anyhow::Result<Vec<Repo>> {
-    // Phase-2 transitional: flat config still lists repos at top level;
-    // Phase 3 reshapes the TOML to `[[project]]` blocks and wires real
-    // ProjectIds through. Until then, attach every selected repo to the
-    // seeded default project.
+    // Phase 3 transitional: TOML now nests repos under `[[project]]`
+    // blocks. The DB still only knows the seeded default project, so we
+    // flatten across every configured project and attach each repo to
+    // `DEFAULT_PROJECT_ID`. Phase 4 reshapes the dispatcher to honour
+    // real project rows and project-scoped workspaces.
     let project_id = nyx_agent_core::ProjectId::new(DEFAULT_PROJECT_ID);
     let mut out = Vec::new();
     if requested.is_empty() {
-        for c in &config.repos {
-            if c.enabled {
-                out.push(Repo::from_config(c, project_id.clone())?);
+        for project in &config.projects {
+            for c in &project.repos {
+                if c.enabled {
+                    out.push(Repo::from_config(c, project_id.clone())?);
+                }
             }
         }
         return Ok(out);
     }
     for name in requested {
         let cfg = config
-            .repos
+            .projects
             .iter()
+            .flat_map(|p| p.repos.iter())
             .find(|r| &r.name == name)
             .ok_or_else(|| anyhow::anyhow!("repo `{name}` not declared in nyx-agent.toml"))?;
         if !cfg.enabled {

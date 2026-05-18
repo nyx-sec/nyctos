@@ -27,7 +27,7 @@ pub enum ConfigError {
     Serialise(#[from] toml::ser::Error),
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub general: GeneralConfig,
@@ -38,8 +38,12 @@ pub struct Config {
     pub triggers: TriggersConfig,
     pub nyx: NyxConfig,
     pub run: RunConfig,
-    #[serde(rename = "repo", default)]
-    pub repos: Vec<RepoConfig>,
+    /// Phase 3: projects own repos. Each `[[project]]` block declares
+    /// one product (e.g. backend + frontend) and groups its repos under
+    /// `[[project.repo]]`. The top-level `[[repo]]` shape is gone — all
+    /// repos must live under a project.
+    #[serde(rename = "project", default)]
+    pub projects: Vec<ProjectConfig>,
     /// Phase 27: cron-driven scan schedule entries. Each entry pairs a
     /// 5-field cron expression with an optional repo filter (`None`
     /// scans every enabled repo). The daemon's scheduler task evaluates
@@ -305,6 +309,32 @@ fn default_schedule_label() -> String {
     "scheduled".to_string()
 }
 
+/// Phase 3: a project groups one or more repos that belong to the
+/// same product. Scan/run/env-builder/chain-runner operate per-project.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectConfig {
+    /// Unique project name. Used as the human-facing identifier and
+    /// (Phase 4+) as the workspace directory prefix.
+    pub name: String,
+    /// Optional free-form description surfaced in the UI.
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Optional base URL the sandbox env-builder dials when running
+    /// dynamic checks against the running stack.
+    #[serde(default)]
+    pub target_base_url: Option<String>,
+    /// Optional structured env overrides merged into the project's
+    /// docker-compose / sandbox runtime. Stored as opaque TOML so each
+    /// stack can carry whatever keys it needs.
+    #[serde(default)]
+    pub env_config: Option<toml::Value>,
+    /// Repos that belong to this project. Use `[[project.repo]]`
+    /// blocks in TOML.
+    #[serde(rename = "repo", default)]
+    pub repos: Vec<RepoConfig>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RepoConfig {
@@ -418,26 +448,32 @@ mod tests {
                 min_version: Some("0.2.0".to_string()),
             },
             run: RunConfig { replay_stable_check: true },
-            repos: vec![
-                RepoConfig {
-                    name: "nyx-pro".to_string(),
-                    i_own_this: true,
-                    source: RepoSourceConfig::Git {
-                        url: "git@github.com:nyx/nyx-pro.git".to_string(),
-                        branch: Some("main".to_string()),
-                        auth: Some("ssh-key:~/.ssh/work_ed25519".to_string()),
+            projects: vec![ProjectConfig {
+                name: "acme-app".to_string(),
+                description: Some("Acme web product".to_string()),
+                target_base_url: Some("http://localhost:3000".to_string()),
+                env_config: None,
+                repos: vec![
+                    RepoConfig {
+                        name: "nyx-pro".to_string(),
+                        i_own_this: true,
+                        source: RepoSourceConfig::Git {
+                            url: "git@github.com:nyx/nyx-pro.git".to_string(),
+                            branch: Some("main".to_string()),
+                            auth: Some("ssh-key:~/.ssh/work_ed25519".to_string()),
+                        },
+                        enabled: true,
                     },
-                    enabled: true,
-                },
-                RepoConfig {
-                    name: "monolith".to_string(),
-                    i_own_this: true,
-                    source: RepoSourceConfig::LocalPath {
-                        path: PathBuf::from("/Users/eli/code/monolith"),
+                    RepoConfig {
+                        name: "monolith".to_string(),
+                        i_own_this: true,
+                        source: RepoSourceConfig::LocalPath {
+                            path: PathBuf::from("/Users/eli/code/monolith"),
+                        },
+                        enabled: true,
                     },
-                    enabled: true,
-                },
-            ],
+                ],
+            }],
             schedules: vec![ScheduleConfig {
                 cron: "0 3 * * 1".to_string(),
                 repo: Some("nyx-pro".to_string()),
@@ -464,23 +500,26 @@ mod tests {
 
     #[test]
     fn repo_enabled_defaults_to_true_when_omitted() {
-        let raw = "[[repo]]\nname = \"nyx-pro\"\ni_own_this = true\n\
+        let raw = "[[project]]\nname = \"p\"\n\n[[project.repo]]\nname = \"nyx-pro\"\n\
+                   i_own_this = true\n\
                    source = { kind = \"local-path\", path = \"/srv/repos/nyx-pro\" }\n";
         let cfg = Config::parse(raw, &PathBuf::from("<test>")).expect("parse");
-        assert_eq!(cfg.repos.len(), 1);
+        assert_eq!(cfg.projects.len(), 1);
+        assert_eq!(cfg.projects[0].repos.len(), 1);
         assert!(
-            cfg.repos[0].enabled,
+            cfg.projects[0].repos[0].enabled,
             "declared repo without explicit enabled must default to true"
         );
     }
 
     #[test]
     fn repo_source_git_parses_with_inline_table() {
-        let raw = "[[repo]]\nname = \"billing\"\ni_own_this = true\n\
+        let raw = "[[project]]\nname = \"p\"\n\n[[project.repo]]\nname = \"billing\"\n\
+                   i_own_this = true\n\
                    source = { kind = \"git\", url = \"git@github.com:org/billing.git\", \
                               branch = \"main\", auth = \"ssh-key:~/.ssh/work_ed25519\" }\n";
         let cfg = Config::parse(raw, &PathBuf::from("<test>")).expect("parse");
-        match &cfg.repos[0].source {
+        match &cfg.projects[0].repos[0].source {
             RepoSourceConfig::Git { url, branch, auth } => {
                 assert_eq!(url, "git@github.com:org/billing.git");
                 assert_eq!(branch.as_deref(), Some("main"));
@@ -492,10 +531,11 @@ mod tests {
 
     #[test]
     fn repo_source_local_path_parses() {
-        let raw = "[[repo]]\nname = \"monolith\"\ni_own_this = true\n\
+        let raw = "[[project]]\nname = \"p\"\n\n[[project.repo]]\nname = \"monolith\"\n\
+                   i_own_this = true\n\
                    source = { kind = \"local-path\", path = \"/home/eli/code/monolith\" }\n";
         let cfg = Config::parse(raw, &PathBuf::from("<test>")).expect("parse");
-        match &cfg.repos[0].source {
+        match &cfg.projects[0].repos[0].source {
             RepoSourceConfig::LocalPath { path } => {
                 assert_eq!(path, &PathBuf::from("/home/eli/code/monolith"));
             }
@@ -505,7 +545,8 @@ mod tests {
 
     #[test]
     fn repo_source_unknown_kind_rejected() {
-        let raw = "[[repo]]\nname = \"x\"\ni_own_this = true\n\
+        let raw = "[[project]]\nname = \"p\"\n\n[[project.repo]]\nname = \"x\"\n\
+                   i_own_this = true\n\
                    source = { kind = \"hg\", path = \"/srv/x\" }\n";
         let err = Config::parse(raw, &PathBuf::from("<test>")).expect_err("must reject");
         assert!(matches!(err, ConfigError::Parse { .. }));
@@ -513,12 +554,42 @@ mod tests {
 
     #[test]
     fn repo_i_own_this_defaults_to_false_when_omitted() {
-        let raw = "[[repo]]\nname = \"x\"\nsource = { kind = \"local-path\", path = \"/srv/x\" }\n";
+        let raw = "[[project]]\nname = \"p\"\n\n[[project.repo]]\nname = \"x\"\n\
+                   source = { kind = \"local-path\", path = \"/srv/x\" }\n";
         let cfg = Config::parse(raw, &PathBuf::from("<test>")).expect("parse");
         assert!(
-            !cfg.repos[0].i_own_this,
+            !cfg.projects[0].repos[0].i_own_this,
             "i_own_this must default to false so the daemon refuses unattested repos"
         );
+    }
+
+    #[test]
+    fn top_level_repo_block_rejected() {
+        // Phase 3: bare `[[repo]]` is no longer accepted. The TOML must
+        // declare a `[[project]]` first and nest repos under it.
+        let raw = "[[repo]]\nname = \"x\"\ni_own_this = true\n\
+                   source = { kind = \"local-path\", path = \"/srv/x\" }\n";
+        let err = Config::parse(raw, &PathBuf::from("<test>")).expect_err("must reject");
+        assert!(matches!(err, ConfigError::Parse { .. }));
+    }
+
+    #[test]
+    fn project_groups_multiple_repos() {
+        let raw = "[[project]]\nname = \"acme\"\ndescription = \"Acme product\"\n\
+                   target_base_url = \"http://localhost:3000\"\n\n\
+                   [[project.repo]]\nname = \"acme-backend\"\ni_own_this = true\nenabled = true\n\
+                   source = { kind = \"local-path\", path = \"/p/backend\" }\n\n\
+                   [[project.repo]]\nname = \"acme-frontend\"\ni_own_this = true\nenabled = true\n\
+                   source = { kind = \"local-path\", path = \"/p/frontend\" }\n";
+        let cfg = Config::parse(raw, &PathBuf::from("<test>")).expect("parse");
+        assert_eq!(cfg.projects.len(), 1);
+        let p = &cfg.projects[0];
+        assert_eq!(p.name, "acme");
+        assert_eq!(p.description.as_deref(), Some("Acme product"));
+        assert_eq!(p.target_base_url.as_deref(), Some("http://localhost:3000"));
+        assert_eq!(p.repos.len(), 2);
+        assert_eq!(p.repos[0].name, "acme-backend");
+        assert_eq!(p.repos[1].name, "acme-frontend");
     }
 
     #[test]

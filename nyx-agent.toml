@@ -1,4 +1,16 @@
-repo = []
+# Declare projects below. Each project groups one or more repos.
+#
+# [[project]]
+# name = "example-app"
+# description = "Example multi-repo product"
+# target_base_url = "http://localhost:3000"
+#
+#   [[project.repo]]
+#   name = "example-backend"
+#   i_own_this = true
+#   enabled = true
+#   source = { kind = "local-path", path = "/path/to/backend" }
+
 schedule = []
 
 [general]

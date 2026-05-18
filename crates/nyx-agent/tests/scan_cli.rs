@@ -46,7 +46,7 @@ fn scan_repo_round_trips_against_stub() {
 
     let config_path = state_root.path().join("nyx-agent.toml");
     let toml = format!(
-        "[general]\nlog_level = \"info\"\n\n[nyx]\nbinary_path = \"{}\"\nmin_version = \"0.1.0\"\n\n[[repo]]\nname = \"demo\"\ni_own_this = true\nenabled = true\nsource = {{ kind = \"local-path\", path = \"{}\" }}\n",
+        "[general]\nlog_level = \"info\"\n\n[nyx]\nbinary_path = \"{}\"\nmin_version = \"0.1.0\"\n\n[[project]]\nname = \"demo-project\"\n\n  [[project.repo]]\n  name = \"demo\"\n  i_own_this = true\n  enabled = true\n  source = {{ kind = \"local-path\", path = \"{}\" }}\n",
         stub_path.display(),
         repo_src.path().display(),
     );
