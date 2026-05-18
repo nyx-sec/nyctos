@@ -1,4 +1,4 @@
-//! Typed configuration loaded from `nyx-agent.toml`.
+//! Typed configuration loaded from `nyctos.toml`.
 //!
 //! Missing sections fall back to defaults so that `nyx-agent doctor` and
 //! other read-only operations work in a fresh checkout with no config
@@ -166,7 +166,7 @@ pub struct AiConfig {
     /// `None` falls back to the built-in
     /// [`AiConfig::DEFAULT_RUN_BUDGET_USD_MICROS`]. Operators raise or
     /// lower this via `[ai] default_run_budget_usd_micros` in
-    /// `nyx-agent.toml`.
+    /// `nyctos.toml`.
     #[serde(default)]
     pub default_run_budget_usd_micros: Option<i64>,
 }
@@ -240,7 +240,7 @@ impl Default for UiConfig {
         // Plan: serve opens a browser on startup unless --no-open /
         // --headless. Default this to true so users who never write
         // `[ui].open_browser` keep the documented behaviour, and those
-        // who set it to false in nyx-agent.toml suppress the launch.
+        // who set it to false in nyctos.toml suppress the launch.
         Self { listen_addr: "127.0.0.1:8765".to_string(), open_browser: true }
     }
 }
@@ -487,7 +487,7 @@ mod tests {
 
     #[test]
     fn missing_file_returns_default() {
-        let path = PathBuf::from("/definitely/does/not/exist/nyx-agent.toml");
+        let path = PathBuf::from("/definitely/does/not/exist/nyctos.toml");
         let cfg = Config::load_or_default(&path).expect("missing file -> default");
         assert_eq!(cfg, Config::default());
     }

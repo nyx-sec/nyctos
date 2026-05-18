@@ -1,7 +1,7 @@
 //! SQLite persistence layer for the agent.
 //!
 //! `Store::open` resolves a SQLite file under the configured state
-//! directory (`~/.local/share/nyx-agent/state.db` by default), applies
+//! directory (`~/.local/share/nyctos/state.db` by default), applies
 //! every migration shipped under `migrations/`, sets WAL + the tuning
 //! pragmas the plan specifies, and hands back a clonable pool wrapper.
 //!

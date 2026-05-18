@@ -1,6 +1,6 @@
 //! Filesystem layout for the agent's persistent state.
 //!
-//! Creates `~/.local/share/nyx-agent/{runs,repos,findings,logs,cache}` on
+//! Creates `~/.local/share/nyctos/{runs,repos,findings,logs,cache}` on
 //! first use. On Unix the root directory and its subdirectories are
 //! restricted to mode `0700` so other local users cannot read run state.
 
@@ -36,7 +36,7 @@ pub struct StateDir {
 impl StateDir {
     pub fn default_root() -> Result<PathBuf, StateError> {
         let base = dirs::data_dir().ok_or(StateError::NoDataDir)?;
-        Ok(base.join("nyx-agent"))
+        Ok(base.join("nyctos"))
     }
 
     pub fn at(root: impl Into<PathBuf>) -> Self {
@@ -193,7 +193,7 @@ mod tests {
     #[test]
     fn ensure_creates_all_subdirs() {
         let tmp = tmp_root();
-        let sd = StateDir::at(tmp.path().join("nyx-agent"));
+        let sd = StateDir::at(tmp.path().join("nyctos"));
         sd.ensure().expect("ensure once");
         for sub in SUBDIRS {
             let p = sd.root().join(sub);
@@ -204,7 +204,7 @@ mod tests {
     #[test]
     fn ensure_is_idempotent() {
         let tmp = tmp_root();
-        let sd = StateDir::at(tmp.path().join("nyx-agent"));
+        let sd = StateDir::at(tmp.path().join("nyctos"));
         sd.ensure().expect("first");
         sd.ensure().expect("second");
         sd.ensure().expect("third");
@@ -215,7 +215,7 @@ mod tests {
     fn ensure_sets_0700_on_unix() {
         use std::os::unix::fs::PermissionsExt;
         let tmp = tmp_root();
-        let sd = StateDir::at(tmp.path().join("nyx-agent"));
+        let sd = StateDir::at(tmp.path().join("nyctos"));
         sd.ensure().expect("ensure");
         for p in std::iter::once(sd.root().to_path_buf())
             .chain(SUBDIRS.iter().map(|s| sd.root().join(s)))
@@ -241,7 +241,7 @@ mod tests {
     #[test]
     fn load_or_mint_auth_token_persists_idempotently() {
         let tmp = tmp_root();
-        let sd = StateDir::at(tmp.path().join("nyx-agent"));
+        let sd = StateDir::at(tmp.path().join("nyctos"));
         sd.ensure().expect("ensure");
         let first = sd.load_or_mint_auth_token().expect("mint first");
         assert_eq!(first.len(), 64, "32 random bytes -> 64 hex chars");
@@ -256,7 +256,7 @@ mod tests {
     fn auth_token_file_is_0600() {
         use std::os::unix::fs::PermissionsExt;
         let tmp = tmp_root();
-        let sd = StateDir::at(tmp.path().join("nyx-agent"));
+        let sd = StateDir::at(tmp.path().join("nyctos"));
         sd.ensure().expect("ensure");
         sd.load_or_mint_auth_token().expect("mint");
         let mode = std::fs::metadata(sd.auth_token_path()).unwrap().permissions().mode() & 0o777;

@@ -16,7 +16,7 @@ nyx-agent-api = { path = "../nyx-agent-api" }
 nyx-agent-core = { path = "../nyx-agent-core" }
 nyx-agent-nyx = { path = "../nyx-agent-nyx" }
 nyx-agent-sandbox = { path = "../nyx-agent-sandbox" }
-nyx-agent-types = { path = "../nyx-agent-types" }
+nyctos-types = { path = "../nyctos-types" }
 nyx-agent-ui = { path = "../nyx-agent-ui" }
 anyhow = { workspace = true }
 async-trait = "0.1"

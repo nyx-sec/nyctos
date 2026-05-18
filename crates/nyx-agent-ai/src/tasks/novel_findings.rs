@@ -15,9 +15,9 @@
 
 use std::collections::HashSet;
 
-use nyx_agent_types::agent::{AiError, Budget, BudgetKind, Prompt, Response};
-use nyx_agent_types::event::EventSink;
-use nyx_agent_types::novel::{
+use nyctos_types::agent::{AiError, Budget, BudgetKind, Prompt, Response};
+use nyctos_types::event::EventSink;
+use nyctos_types::novel::{
     CandidateFinding, NovelFindingDiscoveryInput, NovelFindingDiscoveryOutput,
     NOVEL_FINDING_DISCOVERY_PROMPT_VERSION,
 };
@@ -231,16 +231,16 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use async_trait::async_trait;
-    use nyx_agent_types::agent::{
+    use nyctos_types::agent::{
         AgentResult, AgentTask, AiError, CacheStats, CostEstimate, TokenUsage,
     };
-    use nyx_agent_types::event::AgentEvent;
-    use nyx_agent_types::novel::{FileForReview, PriorFinding};
+    use nyctos_types::event::AgentEvent;
+    use nyctos_types::novel::{FileForReview, PriorFinding};
     use tokio::sync::broadcast;
 
     use super::*;
     use crate::runtime::{AiRuntime, BudgetTracker, InMemoryBudgetTracker};
-    use nyx_agent_types::agent::BudgetKind;
+    use nyctos_types::agent::BudgetKind;
 
     /// Scripted runtime that replays a fixed sequence of `one_shot`
     /// responses. Same shape as the payload / spec / chain test

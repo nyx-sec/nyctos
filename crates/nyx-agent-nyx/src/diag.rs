@@ -14,7 +14,7 @@
 
 use std::path::Path;
 
-use nyx_agent_types::payload::SinkCtx;
+use nyctos_types::payload::SinkCtx;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 

@@ -76,7 +76,7 @@ async fn create_then_update_same_comment() {
         .await;
 
     let state_root = tempfile::tempdir().expect("state");
-    let config_path = state_root.path().join("nyx-agent.toml");
+    let config_path = state_root.path().join("nyctos.toml");
     fs::write(&config_path, "[general]\nlog_level = \"info\"\n").expect("config");
 
     Command::cargo_bin("nyx-agent")
@@ -191,7 +191,7 @@ async fn skips_when_report_has_no_pr_worthy_rows() {
     let server = MockServer::start().await;
     // No GET / POST / PATCH calls expected.
     let state_root = tempfile::tempdir().expect("state");
-    let config_path = state_root.path().join("nyx-agent.toml");
+    let config_path = state_root.path().join("nyctos.toml");
     fs::write(&config_path, "[general]\nlog_level = \"info\"\n").expect("config");
     Command::cargo_bin("nyx-agent")
         .expect("nyx-agent binary")

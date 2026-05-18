@@ -17,7 +17,7 @@ ExecStart=/usr/local/bin/nyx-agent scan --headless
 # default to running as root with its own state directory, splitting
 # the operator-visible scan history across two paths.
 DynamicUser=yes
-StateDirectory=nyx-agent
+StateDirectory=nyctos
 WorkingDirectory=%S/nyx-agent
 Environment=NYX_AGENT_STATE_DIR=%S/nyx-agent
 

@@ -42,7 +42,7 @@ fn write_stub(dir: &Path) -> std::path::PathBuf {
 }
 
 fn write_config(state_root: &Path, stub: &Path, repo_src: &Path) -> std::path::PathBuf {
-    let config_path = state_root.join("nyx-agent.toml");
+    let config_path = state_root.join("nyctos.toml");
     let toml = format!(
         "[general]\nlog_level = \"info\"\n\n[nyx]\nbinary_path = \"{}\"\nmin_version = \"0.1.0\"\n\n[[project]]\nname = \"demo-project\"\n\n  [[project.repo]]\n  name = \"demo\"\n  i_own_this = true\n  enabled = true\n  source = {{ kind = \"local-path\", path = \"{}\" }}\n",
         stub.display(),

@@ -1,7 +1,7 @@
 # Cron-driven scans
 
 The daemon ships an in-process scheduler that wakes every 60 seconds,
-evaluates every `[[schedule]]` entry in `nyx-agent.toml`, and triggers
+evaluates every `[[schedule]]` entry in `nyctos.toml`, and triggers
 a scan through the same path the SPA's "Scan now" button uses. There
 is no external `cron` process to wire up — the scheduler runs inside
 `nyx-agent serve`, so the daemon must be running for entries to fire.
@@ -69,7 +69,7 @@ sudo launchctl bootstrap system /Library/LaunchDaemons/com.nyx.agent.plist
 The plist runs `nyx-agent serve --headless` with `KeepAlive=true`, so
 the daemon stays up across reboots. Periodic kicks come from the
 in-process scheduler reading `[[schedule]]` entries out of
-`nyx-agent.toml`; there is no separate launchd calendar trigger to
+`nyctos.toml`; there is no separate launchd calendar trigger to
 configure.
 
 ## Verifying

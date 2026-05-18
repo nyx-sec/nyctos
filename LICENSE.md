@@ -1,12 +1,12 @@
-# Nyx Pro License
+# Nyctos License
 
-Nyx Pro (the `nyx-agent` daemon, the web UI, and every accompanying file in
+Nyctos (the `nyx-agent` daemon, the web UI, and every accompanying file in
 this repository) is **source-available** software, not "open source".  The OSI
 term *open source* refers exclusively to software distributed under an
-OSI-approved license; Nyx Pro is not.  Approved phrasing for this software is
+OSI-approved license; Nyctos is not.  Approved phrasing for this software is
 **source-available**, **fair-source**, or **public-source**.
 
-Nyx Pro is governed by **PolyForm Small Business License 1.0.0** (reproduced
+Nyctos is governed by **PolyForm Small Business License 1.0.0** (reproduced
 verbatim below).  In short:
 
 - **Free** for personal use, research, hobby projects, OSS contribution, and
@@ -20,13 +20,13 @@ verbatim below).  In short:
   contributions. Forks and redistribution are permitted under the PolyForm
   terms.
 
-The Nyx Pro daemon links to and orchestrates the separate `nyx` core scanner,
+The Nyctos daemon links to and orchestrates the separate `nyx` core scanner,
 which is published under GPL-3.0-or-later.  The copyright holder of `nyx`
 (Eli Peter, sole author) has executed an internal, project-to-project
-dual-license grant authorising the Nyx Pro project to consume `nyx` under
+dual-license grant authorising the Nyctos project to consume `nyx` under
 non-GPL terms; that grant is recorded in `LICENSE-GRANTS.md` in the `nyx`
-repository.  The grant is **not transferable**. Third-party forks of Nyx
-Pro must comply with the public GPL-3.0-or-later terms of `nyx` (which are
+repository.  The grant is **not transferable**. Third-party forks of Nyctos
+must comply with the public GPL-3.0-or-later terms of `nyx` (which are
 viral copyleft on redistribution).
 
 ---
@@ -177,7 +177,7 @@ A commercial-license SKU is the only path that supersedes the PolyForm terms.
 
 ## Third-party software
 
-Nyx Pro is built on a collection of third-party open-source libraries.  Each
+Nyctos is built on a collection of third-party open-source libraries.  Each
 library retains its original license; the full inventory is published in
 `THIRD-PARTY-LICENSES.md` (generated at build time from `Cargo.lock`).  The
 GPL-3.0-or-later `nyx` core scanner is consumed under an internal grant from

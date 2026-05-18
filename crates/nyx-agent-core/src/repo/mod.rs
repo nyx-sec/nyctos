@@ -130,7 +130,7 @@ impl Repo {
 #[derive(Debug, Error)]
 pub enum IngestError {
     #[error(
-        "repo `{name}` is not attested: set `i_own_this = true` in nyx-agent.toml after \
+        "repo `{name}` is not attested: set `i_own_this = true` in nyctos.toml after \
          confirming you own the repository"
     )]
     NotAttested { name: String },

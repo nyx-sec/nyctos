@@ -26,7 +26,7 @@ pub struct UiAssets;
 /// carries the bearer token the API middleware expects on every
 /// non-`/setup` request. The fallback handler rewrites `index.html` to
 /// embed it before sending the response; the SPA reads it from
-/// `window.__NYX_BOOTSTRAP__`.
+/// `window.__NYCTOS_BOOTSTRAP__`.
 #[derive(Clone, Default)]
 pub struct UiBootstrap {
     pub auth_token: Option<String>,
@@ -81,7 +81,7 @@ fn inject_bootstrap(html: &[u8], bootstrap: &UiBootstrap) -> Vec<u8> {
         return html.to_vec();
     };
     let payload =
-        format!("<script>window.__NYX_BOOTSTRAP__={};</script>", serde_payload(bootstrap));
+        format!("<script>window.__NYCTOS_BOOTSTRAP__={};</script>", serde_payload(bootstrap));
     // Inject right after the opening <head>. Falls back to prepending
     // if no <head> tag is present.
     if let Some(pos) = text.find("<head>") {

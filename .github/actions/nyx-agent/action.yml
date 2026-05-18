@@ -17,11 +17,11 @@ inputs:
     default: 'nyx-agent'
   config:
     description: >
-      Path to `nyx-agent.toml`. Defaults to `./nyx-agent.toml`. The
+      Path to `nyctos.toml`. Defaults to `./nyctos.toml`. The
       file must declare a `[[repo]]` block pointing at the current
       checkout (`source.kind = "local-path"`, `path = "."`).
     required: false
-    default: 'nyx-agent.toml'
+    default: 'nyctos.toml'
   state-dir:
     description: >
       Override the agent state directory. Defaults to a per-run

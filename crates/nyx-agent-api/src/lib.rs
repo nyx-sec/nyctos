@@ -4,7 +4,7 @@
 //! wires three things into [`ServerState`]:
 //!
 //! - a connected [`nyx_agent_core::Store`] for read-only queries,
-//! - a tokio broadcast sink ([`nyx_agent_types::event::EventSink`])
+//! - a tokio broadcast sink ([`nyctos_types::event::EventSink`])
 //!   that the run dispatcher publishes lifecycle events through,
 //! - a [`ScanTrigger`] handle the API uses to kick off a manual scan.
 //!

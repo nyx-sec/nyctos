@@ -11,15 +11,15 @@ removing that one directory.
 On first launch the agent resolves the root in this order:
 
 1. `--state-dir <PATH>` on the command line.
-2. `[general] state_dir` in `nyx-agent.toml`.
-3. `dirs::data_dir()/nyx-agent`. On macOS that's
-   `~/Library/Application Support/nyx-agent`; on Linux,
-   `$XDG_DATA_HOME/nyx-agent` (defaulting to `~/.local/share/nyx-agent`).
+2. `[general] state_dir` in `nyctos.toml`.
+3. `dirs::data_dir()/nyctos`. On macOS that's
+   `~/Library/Application Support/nyctos`; on Linux,
+   `$XDG_DATA_HOME/nyctos` (defaulting to `~/.local/share/nyctos`).
 
 `nyx-agent doctor` prints the resolved path:
 
 ```text
-state dir OK at /Users/eli/Library/Application Support/nyx-agent
+state dir OK at /Users/eli/Library/Application Support/nyctos
 ```
 
 If `dirs::data_dir()` cannot resolve a base (no `HOME`, no
@@ -171,12 +171,12 @@ nyx-agent --state-dir /tmp/nyctos-scratch doctor
 nyx-agent --state-dir /tmp/nyctos-scratch scan --project demo
 ```
 
-Pin the directory in `nyx-agent.toml` (handy for `systemd` /
+Pin the directory in `nyctos.toml` (handy for `systemd` /
 `launchd` units that set their own `HOME`):
 
 ```toml
 [general]
-state_dir = "/var/lib/nyx-agent"
+state_dir = "/var/lib/nyctos"
 ```
 
 Either form works for any subcommand. `--state-dir` wins when both

@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use nyx_agent_types::event::{AgentEvent, EventSink, RepoOutcomeTag, RunEvent};
+use nyctos_types::event::{AgentEvent, EventSink, RepoOutcomeTag, RunEvent};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use rayon::ThreadPoolBuilder;
 use serde::{Deserialize, Serialize};

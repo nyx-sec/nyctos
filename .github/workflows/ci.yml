@@ -26,7 +26,7 @@ jobs:
         run: cargo nextest run --workspace
       - name: ts-bindings up-to-date
         run: |
-          cargo build -p nyx-agent-types
+          cargo build -p nyctos-types
           git diff --exit-code frontend/src/api/types.gen.ts
       - name: missing-instrument lint
         run: bash .ci/missing-instrument.sh

@@ -17,7 +17,7 @@ default `serve`). Pass them before the subcommand name, e.g.
 
 | Flag | Default | Effect |
 |---|---|---|
-| `--config PATH` | `./nyx-agent.toml` | Path to the config file. `nyx-agent` runs with built-in defaults when the path does not exist; see `docs/config.md` (forthcoming). |
+| `--config PATH` | `./nyctos.toml` | Path to the config file. `nyx-agent` runs with built-in defaults when the path does not exist; see `docs/config.md` (forthcoming). |
 | `--state-dir PATH` | `dirs::data_dir()` plus `nyx-agent/` | Override the state directory. Persists runs, findings, repro bundles, ingested repos, logs, and the SQLite store. |
 | `--log-level FILTER` | `info` | Filter passed to `tracing-subscriber`. Accepts `info`, `debug`, `nyx_agent=trace,sqlx=warn`, etc. Applied to stderr only. |
 
@@ -121,7 +121,7 @@ and any cross-repo chains discovered in the run.
   --project context (or use --project to scan whole projects)` and
   exit `2`.
 - No matching repos: stderr emits `scan: no repositories selected;
-  configure one in nyx-agent.toml` and exit `1`.
+  configure one in nyctos.toml` and exit `1`.
 - `--since-ref` starts with `-`: scan refuses, since the value
   would be parsed as a git option (`scan: --since-ref '...' must
   not start with '-'`). Exit `1`.
@@ -142,7 +142,7 @@ occurred. `1` if any repo failed or scan refused to start. `2` if
 
 Manage `Project` rows in the agent's state DB. Projects are the
 top-level scan unit; repos are nested under a project via
-`[[project.repo]]` in `nyx-agent.toml` and via a `project_id` FK in
+`[[project.repo]]` in `nyctos.toml` and via a `project_id` FK in
 the SQLite store. Every CLI/API/sandbox surface operates per
 project, so the canonical first step in a fresh deployment is
 `nyx-agent project create`.

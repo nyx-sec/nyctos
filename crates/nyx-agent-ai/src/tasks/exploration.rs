@@ -35,10 +35,10 @@
 
 use std::time::Duration;
 
-use nyx_agent_types::agent::{
+use nyctos_types::agent::{
     AgentResult, AgentTask, AiError, Budget, BudgetKind, ExtractedAgentResult,
 };
-use nyx_agent_types::event::{AgentEvent, AiEvent, EventSink};
+use nyctos_types::event::{AgentEvent, AiEvent, EventSink};
 
 use crate::runtime::AiRuntime;
 
@@ -437,11 +437,11 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use async_trait::async_trait;
-    use nyx_agent_types::agent::{
+    use nyctos_types::agent::{
         AgentResult, AgentTask, AiError, BudgetKind, CostEstimate, ExtractedAgentResult, Prompt,
         Response, TokenUsage,
     };
-    use nyx_agent_types::event::AgentEvent;
+    use nyctos_types::event::AgentEvent;
     use tokio::sync::broadcast;
 
     use super::*;

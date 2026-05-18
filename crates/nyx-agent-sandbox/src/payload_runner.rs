@@ -38,8 +38,8 @@ use std::time::Duration;
 
 use thiserror::Error;
 
-use nyx_agent_types::payload::AttackProvenance;
-use nyx_agent_types::verify::{Oracle, VerifyResult, VerifyRun, VerifyVerdict};
+use nyctos_types::payload::AttackProvenance;
+use nyctos_types::verify::{Oracle, VerifyResult, VerifyRun, VerifyVerdict};
 
 use crate::{
     BackendKind, BirdcageSandbox, ProcessSandbox, Sandbox, SandboxError, SandboxOpts, SandboxStatus,

@@ -33,7 +33,7 @@ stack; the `nyx-agent` daemon in this repository is not.
 
 **Nyctos** (Greek genitive of `Nyx`, "of-the-night") is the product
 brand. The shipping crates, binary (`nyx-agent`), config
-(`nyx-agent.toml`), and state directory (`~/.local/share/nyx-agent/`)
+(`nyctos.toml`), and state directory (`~/.local/share/nyctos/`)
 still carry their legacy names; the code rename to `nyctos` is queued
 as its own phase. The upstream dynamic-verification engine `nyx`
 (GPL-3.0-or-later) keeps its name. Full target surface at
@@ -104,7 +104,7 @@ subcommand reference.
 no FFI link against it. The `nyx` binary must be installed and discoverable:
 
 - by default on `PATH` (verify with `which nyx`), or
-- via `[nyx].binary_path = "/abs/path/to/nyx"` in `nyx-agent.toml`.
+- via `[nyx].binary_path = "/abs/path/to/nyx"` in `nyctos.toml`.
 
 `nyx-agent doctor` reports the resolved path, the detected version, and the
 minimum supported version. It exits non-zero when the binary is missing or
@@ -150,7 +150,7 @@ real frontend build inside `crates/nyx-agent-ui/build.rs`:
    `rust_embed` picks it up at compile time.
 
 A release build with a missing or broken `frontend/` checkout fails
-the build script with a panic. Set `NYX_SKIP_FRONTEND_BUILD=1` to
+the build script with a panic. Set `NYCTOS_SKIP_FRONTEND_BUILD=1` to
 opt out and ship the stub instead (used by environments that build
 the SPA separately and prepopulate `crates/nyx-agent-ui/dist/`).
 

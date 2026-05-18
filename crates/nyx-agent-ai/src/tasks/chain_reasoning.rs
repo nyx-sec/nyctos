@@ -16,11 +16,11 @@
 
 use std::collections::HashSet;
 
-use nyx_agent_types::agent::{AiError, Budget, BudgetKind, Prompt, Response};
-use nyx_agent_types::chain::{
+use nyctos_types::agent::{AiError, Budget, BudgetKind, Prompt, Response};
+use nyctos_types::chain::{
     ChainCandidate, ChainReasoningInput, ChainReasoningOutput, CHAIN_REASONING_PROMPT_VERSION,
 };
-use nyx_agent_types::event::EventSink;
+use nyctos_types::event::EventSink;
 
 use crate::runtime::AiRuntime;
 
@@ -212,18 +212,18 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use async_trait::async_trait;
-    use nyx_agent_types::agent::{
+    use nyctos_types::agent::{
         AgentResult, AgentTask, AiError, CacheStats, CostEstimate, TokenUsage,
     };
-    use nyx_agent_types::chain::{
+    use nyctos_types::chain::{
         ChainReasoningEdge, ChainReasoningNode, NODE_KIND_ENTRY, NODE_KIND_SINK,
     };
-    use nyx_agent_types::event::AgentEvent;
+    use nyctos_types::event::AgentEvent;
     use tokio::sync::broadcast;
 
     use super::*;
     use crate::runtime::{AiRuntime, BudgetTracker, InMemoryBudgetTracker};
-    use nyx_agent_types::agent::BudgetKind;
+    use nyctos_types::agent::BudgetKind;
 
     /// Scripted runtime that replays a fixed sequence of `one_shot`
     /// responses. Same shape as the payload + spec test fixtures.

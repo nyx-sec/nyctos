@@ -4,7 +4,7 @@
 //! direct-HTTP Anthropic Messages adapter. Subsequent phases add the
 //! Claude Code CLI driver (Phase 13), OpenAI / Bedrock / Vertex
 //! adapters, and a local-LLM driver. Adapters depend only on
-//! `nyx-agent-types`; the agent binary wires the host-side budget
+//! `nyctos-types`; the agent binary wires the host-side budget
 //! port to `nyx-agent-core`'s `BudgetStore` at startup.
 
 pub mod adapter;

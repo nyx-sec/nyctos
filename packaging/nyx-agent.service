@@ -19,7 +19,7 @@ RestartSec=5
 # Hardening — the daemon does not need root, network admin, or write
 # access to anything outside its state directory.
 DynamicUser=yes
-StateDirectory=nyx-agent
+StateDirectory=nyctos
 WorkingDirectory=%S/nyx-agent
 Environment=NYX_AGENT_STATE_DIR=%S/nyx-agent
 ProtectSystem=strict

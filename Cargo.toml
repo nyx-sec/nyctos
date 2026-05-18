@@ -2,7 +2,7 @@
 resolver = "2"
 members = [
     "crates/nyx-agent",
-    "crates/nyx-agent-types",
+    "crates/nyctos-types",
     "crates/nyx-agent-core",
     "crates/nyx-agent-nyx",
     "crates/nyx-agent-ai",

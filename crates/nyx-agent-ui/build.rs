@@ -7,7 +7,7 @@
 //!   then mirror `frontend/dist/` into `crates/nyx-agent-ui/dist/`
 //!   so the `rust_embed` macro picks them up at compile time.
 //! * In any other profile (or when the env var
-//!   `NYX_SKIP_FRONTEND_BUILD=1` is set) write a tiny stub
+//!   `NYCTOS_SKIP_FRONTEND_BUILD=1` is set) write a tiny stub
 //!   `index.html` that points the operator at `npm run dev`. Debug
 //!   builds are common in CI where Node is not guaranteed; we still
 //!   want a non-empty asset tree so the agent's `/` route returns
@@ -20,7 +20,7 @@ use std::process::Command;
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-env-changed=NYX_SKIP_FRONTEND_BUILD");
+    println!("cargo:rerun-if-env-changed=NYCTOS_SKIP_FRONTEND_BUILD");
     println!("cargo:rerun-if-env-changed=PROFILE");
 
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -41,7 +41,7 @@ fn main() {
     }
 
     let profile = env::var("PROFILE").unwrap_or_default();
-    let skip = env::var("NYX_SKIP_FRONTEND_BUILD").ok().as_deref() == Some("1");
+    let skip = env::var("NYCTOS_SKIP_FRONTEND_BUILD").ok().as_deref() == Some("1");
     let want_real_build = profile == "release" && !skip;
 
     fs::create_dir_all(&crate_dist_dir).expect("create crate dist dir");

@@ -70,7 +70,7 @@ export function AiRuntimeStep({ form, update }: Props) {
           />
           <p className="setup-hint">
             Stored in your operating-system keychain on save; never written to
-            <code> nyx-agent.toml</code> or the JSON log.
+            <code> nyctos.toml</code> or the JSON log.
           </p>
         </div>
       )}

@@ -11,9 +11,9 @@ use serde_json::json;
 use thiserror::Error;
 use tokio::sync::{Mutex, RwLock};
 
+use nyctos_types::event::{AgentEvent, EventSink, RunEvent};
 use nyx_agent_core::store::StoreError;
 use nyx_agent_core::{Config, SecretStore, Store};
-use nyx_agent_types::event::{AgentEvent, EventSink, RunEvent};
 
 /// Future returned by [`ScanTrigger::trigger`]. Boxed so the trait can be
 /// object-safe.
@@ -46,7 +46,7 @@ pub enum ScanTriggerError {
     Internal(String),
 }
 
-/// First-launch wizard context. Lets the API write `nyx-agent.toml`
+/// First-launch wizard context. Lets the API write `nyctos.toml`
 /// on behalf of the operator, see whether setup is complete, and
 /// stash API keys in the OS keychain.
 #[derive(Clone)]
@@ -57,7 +57,7 @@ pub struct SetupContext {
     /// `/setup` handler can hand a freshly-written config back to the
     /// rest of the API without restarting the daemon.
     pub config: Arc<RwLock<Config>>,
-    /// `true` once `nyx-agent.toml` is materialised on disk. Read by
+    /// `true` once `nyctos.toml` is materialised on disk. Read by
     /// `GET /api/v1/setup/status` and by the auth middleware to know
     /// whether to exempt `/setup` endpoints.
     pub completed: Arc<std::sync::atomic::AtomicBool>,

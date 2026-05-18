@@ -1,17 +1,17 @@
 # Configuration
 
-Nyctos loads its configuration from `nyx-agent.toml`. The file is
+Nyctos loads its configuration from `nyctos.toml`. The file is
 optional: when missing, every section falls back to defaults, so
 read-only commands like `nyx-agent doctor` work in a fresh checkout
 with no config on disk.
 
 ## Where the file lives
 
-The agent looks for `./nyx-agent.toml` relative to the current
+The agent looks for `./nyctos.toml` relative to the current
 working directory. Override with `--config <PATH>` on any subcommand:
 
 ```bash
-nyx-agent --config /etc/nyx-agent.toml serve
+nyx-agent --config /etc/nyctos.toml serve
 ```
 
 `nyx-agent doctor` prints whether the file was found and which
@@ -41,7 +41,7 @@ fails the load rather than silently going to default.
 | Field       | Type            | Default | Description                                                  |
 |-------------|-----------------|---------|--------------------------------------------------------------|
 | `log_level` | string          | `info`  | `tracing` filter for stderr (e.g. `info`, `debug`, `nyx=trace`). |
-| `state_dir` | path (optional) | unset   | Override the state directory. Falls back to `dirs::data_dir()/nyx-agent` when unset. |
+| `state_dir` | path (optional) | unset   | Override the state directory. Falls back to `dirs::data_dir()/nyctos` when unset. |
 
 ## `[performance]`
 
@@ -242,7 +242,7 @@ label = "weekly-monday-3am"
 | `failed to parse config at <path>: unknown field ...`     | Typo in a field name. Sections deny unknown fields. Check the schema tables above.                |
 | `failed to parse config at <path>: missing field ...`     | A required field is unset. `name` on `[[project]]` / `[[project.repo]]`, `cron` on `[[schedule]]`, `url` on a `git` source. |
 | `failed to read config at <path>: ...`                    | Permission issue or the path passed to `--config` is wrong.                                       |
-| `no repositories selected; configure one in nyx-agent.toml` | The TOML has zero `[[project.repo]]` blocks or every repo is `enabled = false`.                  |
+| `no repositories selected; configure one in nyctos.toml` | The TOML has zero `[[project.repo]]` blocks or every repo is `enabled = false`.                  |
 | `invalid [[schedule]] config: ...`                        | A cron expression failed to parse or the referenced repo does not exist. The daemon refuses to start. |
 | Daemon accepts webhooks but every call returns `503`      | `triggers.webhook_secret_ref` is unset, points at an unset env var, or resolves to an empty string. |
 

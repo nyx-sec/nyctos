@@ -26,6 +26,7 @@ use serde_json::json;
 use tokio::sync::broadcast::error::RecvError;
 use tower_http::trace::TraceLayer;
 
+use nyctos_types::event::{AgentEvent, RunEvent};
 use nyx_agent_core::report::{
     build_bundle, build_run_card, render_html as render_run_card_html,
     render_markdown as render_run_card_markdown, verify_sha256 as verify_bundle_sha256,
@@ -39,7 +40,6 @@ use nyx_agent_core::store::{
 use nyx_agent_core::{
     now_epoch_ms, AiRuntime, SandboxBackend, ACCOUNT_AI_ANTHROPIC, ACCOUNT_AI_LOCAL_LLM,
 };
-use nyx_agent_types::event::{AgentEvent, RunEvent};
 
 use crate::state::{ApiError, ServerState};
 
@@ -93,7 +93,7 @@ pub fn build_router(state: ServerState) -> Router {
 /// Bearer-token gate. Skipped entirely when [`AuthConfig::token`] is
 /// unset (the `--headless` path), and skipped on a per-route basis for
 /// `/health` plus the wizard endpoints, but only while setup is still
-/// pending. Once `nyx-agent.toml` exists the wizard endpoints require
+/// pending. Once `nyctos.toml` exists the wizard endpoints require
 /// the bearer token like every other mutation endpoint so an attacker
 /// cannot overwrite the operator's config.
 async fn auth_layer(
@@ -215,7 +215,7 @@ async fn health() -> impl IntoResponse {
 
 #[derive(Debug, Serialize)]
 struct SetupStatusResponse {
-    /// `true` once `nyx-agent.toml` is on disk.
+    /// `true` once `nyctos.toml` is on disk.
     complete: bool,
     /// Path the wizard would write to. Surfaced so the UI can render
     /// the operator's resolved location.

@@ -101,7 +101,7 @@ curl -X POST http://127.0.0.1:4747/webhook/git \
 
 ## Operator checklist
 
-- [ ] `[triggers].webhook_secret_ref` set in `nyx-agent.toml`.
+- [ ] `[triggers].webhook_secret_ref` set in `nyctos.toml`.
 - [ ] Matching env var exported in the daemon's process environment.
 - [ ] Daemon reachable from the upstream git server (loopback if both
       run on the same host; otherwise put a TLS terminator in front).

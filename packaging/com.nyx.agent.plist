@@ -20,12 +20,12 @@
     <true/>
 
     <key>WorkingDirectory</key>
-    <string>/usr/local/var/lib/nyx-agent</string>
+    <string>/usr/local/var/lib/nyctos</string>
 
     <key>EnvironmentVariables</key>
     <dict>
         <key>NYX_AGENT_STATE_DIR</key>
-        <string>/usr/local/var/lib/nyx-agent</string>
+        <string>/usr/local/var/lib/nyctos</string>
     </dict>
 
     <key>StandardOutPath</key>

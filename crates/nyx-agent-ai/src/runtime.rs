@@ -6,14 +6,14 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use nyx_agent_types::agent::{
+use nyctos_types::agent::{
     AgentResult, AgentTask, AiError, Budget, BudgetKind, CostEstimate, Prompt, Response,
 };
-use nyx_agent_types::event::EventSink;
+use nyctos_types::event::EventSink;
 
 /// Vendor-neutral AI runtime contract. Every adapter (Anthropic SDK,
 /// Claude Code, OpenAI, ...) implements this trait so the rest of the
-/// agent depends only on `nyx-agent-ai` and `nyx-agent-types`.
+/// agent depends only on `nyx-agent-ai` and `nyctos-types`.
 #[async_trait]
 pub trait AiRuntime: Send + Sync {
     fn name(&self) -> &'static str;

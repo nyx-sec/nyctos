@@ -25,11 +25,11 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use nyx_agent_types::agent::{
+use nyctos_types::agent::{
     classify_tool_use, AgentResult, AgentTask, AiError, Budget, CostEstimate, ExtractedAgentResult,
     HaltReason, Prompt, Response, TokenUsage,
 };
-use nyx_agent_types::event::{AgentEvent, AiEvent, EventSink};
+use nyctos_types::event::{AgentEvent, AiEvent, EventSink};
 use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
@@ -480,7 +480,7 @@ mod tests {
 
     use super::*;
     use crate::runtime::InMemoryBudgetTracker;
-    use nyx_agent_types::agent::BudgetKind;
+    use nyctos_types::agent::BudgetKind;
     use tokio::sync::broadcast;
 
     fn sample_task() -> AgentTask {

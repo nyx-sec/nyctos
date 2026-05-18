@@ -26,7 +26,7 @@ first launch detected — wizard at http://127.0.0.1:8765/setup
 ```
 <!-- /nyx: verbatim -->
 
-The "first launch detected" line only appears when `nyx-agent.toml`
+The "first launch detected" line only appears when `nyctos.toml`
 is not yet on disk. The browser lands on `/setup` in that case;
 once you submit the wizard, subsequent starts go to `/`.
 
@@ -61,7 +61,7 @@ nyx-agent project create acme-app \
 `project create` writes a row to the SQLite store and returns the
 generated `project_id`. The project name must be unique. From here
 you can attach repos via `nyx-agent project add-repo` (worked
-example below) or by hand-editing `nyx-agent.toml`.
+example below) or by hand-editing `nyctos.toml`.
 
 You can also create the project from the SPA after the first-launch
 wizard completes — the projects list lives at `/projects`.
@@ -69,7 +69,7 @@ wizard completes — the projects list lives at `/projects`.
 ## Walk the first-launch wizard
 
 The SPA at `/setup` asks for five things. Each maps to a single
-config field; the daemon writes `nyx-agent.toml` only after you
+config field; the daemon writes `nyctos.toml` only after you
 submit. The wizard refuses to submit until you tick
 `i_own_this = true`.
 
@@ -88,7 +88,7 @@ returns `200`.
 ## Attach a repo to the project
 
 The wizard does not register repos. Two paths: the CLI or
-hand-editing `nyx-agent.toml`.
+hand-editing `nyctos.toml`.
 
 CLI (uses the project you created above):
 
@@ -183,7 +183,7 @@ exits non-zero if the diff cannot be computed.
 **Via HTTP** (assumes the loopback default and an auth token):
 
 ```bash
-TOKEN=$(cat ~/.local/share/nyx-agent/auth_token)
+TOKEN=$(cat ~/.local/share/nyctos/auth_token)
 curl -sS -X POST \
   -H "Authorization: Bearer $TOKEN" \
   http://127.0.0.1:8765/api/v1/projects/<project_id>/scan
@@ -231,7 +231,7 @@ posts a dedup'd PR comment. See `docs/ci/github-actions.md`.
 
 ## Common failure modes
 
-### `scan: no repositories selected; configure one in nyx-agent.toml`
+### `scan: no repositories selected; configure one in nyctos.toml`
 
 No `[[project]]` blocks define any repos, every entry has `enabled
 = false`, or `--project NAME` / `--repo NAME` did not match a
@@ -246,7 +246,7 @@ narrow the search space first.
 
 ### Browser opens but the SPA shows "needs configuration"
 
-`nyx-agent.toml` is missing. Either complete the wizard at `/setup`
+`nyctos.toml` is missing. Either complete the wizard at `/setup`
 or write the file by hand and reload. The daemon does not require
 a restart.
 

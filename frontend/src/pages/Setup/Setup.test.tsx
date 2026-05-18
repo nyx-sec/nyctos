@@ -24,7 +24,7 @@ beforeEach(() => {
         return new Response(
           JSON.stringify({
             complete: false,
-            config_path: "/tmp/nyx-agent.toml",
+            config_path: "/tmp/nyctos.toml",
             ai_runtime: "none",
             sandbox_backend: "auto",
           }),

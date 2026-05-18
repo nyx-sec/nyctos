@@ -8,7 +8,7 @@ repository.workspace = true
 
 [dependencies]
 nyx-agent-nyx = { path = "../nyx-agent-nyx" }
-nyx-agent-types = { path = "../nyx-agent-types" }
+nyctos-types = { path = "../nyctos-types" }
 anyhow = { workspace = true }
 async-trait = "0.1"
 blake3 = { workspace = true }

@@ -14,6 +14,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
 use tokio::sync::broadcast;
 
+use nyctos_types::event::{AgentEvent, EventSink, RepoOutcomeTag, RunEvent};
 use nyx_agent_api::{
     build_router, AuthConfig, ScanTrigger, ScanTriggerError, ServerState, SetupContext,
 };
@@ -21,7 +22,6 @@ use nyx_agent_core::store::{
     ChainRecord, FindingRecord, RepoRecord, RunRecord, DEFAULT_PROJECT_ID,
 };
 use nyx_agent_core::{Config, SecretStore, Store};
-use nyx_agent_types::event::{AgentEvent, EventSink, RepoOutcomeTag, RunEvent};
 
 struct StubScanTrigger {
     run_id: String,
@@ -68,7 +68,7 @@ impl TestServer {
         let tmp = tempfile::tempdir().expect("tempdir");
         let store = Store::open(tmp.path()).await.expect("open store");
         let (events, _rx) = broadcast::channel::<AgentEvent>(64);
-        let config_path = tmp.path().join("nyx-agent.toml");
+        let config_path = tmp.path().join("nyctos.toml");
         let setup = SetupContext::new(
             config_path,
             Config::default(),
@@ -741,7 +741,7 @@ async fn delete_repo_removes_workspace_dir_when_configured() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let store = Store::open(tmp.path()).await.expect("open store");
     let (events, _rx) = broadcast::channel::<AgentEvent>(8);
-    let config_path = tmp.path().join("nyx-agent.toml");
+    let config_path = tmp.path().join("nyctos.toml");
     let setup = SetupContext::new(config_path, Config::default(), true, SecretStore::memory());
     let state_repos = tmp.path().join("repos");
     let billing_dir = state_repos.join("billing");
@@ -861,7 +861,7 @@ async fn websocket_with_run_filter_replays_buffered_frames() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let store = Store::open(tmp.path()).await.expect("open store");
     let (events, _rx) = broadcast::channel::<AgentEvent>(16);
-    let config_path = tmp.path().join("nyx-agent.toml");
+    let config_path = tmp.path().join("nyctos.toml");
     let setup = SetupContext::new(config_path, Config::default(), true, SecretStore::memory());
     let trigger: Arc<dyn ScanTrigger> = Arc::new(StubScanTrigger { run_id: "r-1".to_string() });
     let state =
@@ -980,7 +980,7 @@ async fn repro_bundle_endpoint_builds_and_downloads() {
 
     let (events, _rx) = broadcast::channel::<AgentEvent>(8);
     let setup = SetupContext::new(
-        tmp.path().join("nyx-agent.toml"),
+        tmp.path().join("nyctos.toml"),
         Config::default(),
         true,
         SecretStore::memory(),
@@ -1048,7 +1048,7 @@ async fn start_webhook_server(
     let tmp = tempfile::tempdir().expect("tempdir");
     let store = Store::open(tmp.path()).await.expect("open store");
     let (events, _rx) = broadcast::channel::<AgentEvent>(64);
-    let config_path = tmp.path().join("nyx-agent.toml");
+    let config_path = tmp.path().join("nyctos.toml");
     let setup = SetupContext::new(config_path, Config::default(), true, SecretStore::memory());
     let trigger = Arc::new(RecordingTrigger::default());
     let scan_trigger: Arc<dyn ScanTrigger> = trigger.clone();

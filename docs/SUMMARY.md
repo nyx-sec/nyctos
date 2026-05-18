@@ -19,7 +19,7 @@ Both names appear in these pages for the reasons explained in
   read findings.
 - [cli.md](cli.md): every subcommand `nyx-agent` ships, the flags
   it accepts, and the exit codes it returns.
-- [config.md](config.md): `nyx-agent.toml` schema, defaults, and
+- [config.md](config.md): `nyctos.toml` schema, defaults, and
   failure modes section by section.
 - [state-dir.md](state-dir.md): on-disk layout of the state
   directory: SQLite file, logs, repo workspaces, repro bundles,
@@ -39,7 +39,7 @@ chain runner all operate per project, so a multi-repo product
   worked example that creates a project and attaches a repo end to
   end.
 - The TOML shape is `[[project]]` blocks that nest `[[project.repo]]`
-  entries. See [`nyx-agent.toml`](../nyx-agent.toml) at the repo
+  entries. See [`nyctos.toml`](../nyctos.toml) at the repo
   root for a populated example, and `docs/PROJECT_ENTITY_PLAN.md`
   for the phased refactor that introduced the model.
 

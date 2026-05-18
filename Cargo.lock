@@ -1866,6 +1866,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "nyctos-types"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "ts-rs",
+]
+
+[[package]]
 name = "nyx-agent"
 version = "0.1.0"
 dependencies = [
@@ -1876,12 +1887,12 @@ dependencies = [
  "chrono",
  "clap",
  "cron",
+ "nyctos-types",
  "nyx-agent-ai",
  "nyx-agent-api",
  "nyx-agent-core",
  "nyx-agent-nyx",
  "nyx-agent-sandbox",
- "nyx-agent-types",
  "nyx-agent-ui",
  "predicates",
  "reqwest",
@@ -1904,8 +1915,8 @@ dependencies = [
  "anyhow",
  "async-trait",
  "blake3",
+ "nyctos-types",
  "nyx-agent-nyx",
- "nyx-agent-types",
  "reqwest",
  "serde",
  "serde_json",
@@ -1927,9 +1938,9 @@ dependencies = [
  "futures-util",
  "hex",
  "hmac",
+ "nyctos-types",
  "nyx-agent-core",
  "nyx-agent-sandbox",
- "nyx-agent-types",
  "reqwest",
  "serde",
  "serde_json",
@@ -1953,7 +1964,7 @@ dependencies = [
  "dirs",
  "hex",
  "keyring",
- "nyx-agent-types",
+ "nyctos-types",
  "rand 0.8.6",
  "rayon",
  "reqwest",
@@ -1974,8 +1985,8 @@ name = "nyx-agent-nyx"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "nyctos-types",
  "nyx-agent-core",
- "nyx-agent-types",
  "semver",
  "serde",
  "serde_json",
@@ -1993,8 +2004,8 @@ dependencies = [
  "anyhow",
  "birdcage",
  "libc",
+ "nyctos-types",
  "nyx-agent-core",
- "nyx-agent-types",
  "regex",
  "serde",
  "serde_json",
@@ -2003,17 +2014,6 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tracing",
-]
-
-[[package]]
-name = "nyx-agent-types"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "tokio",
- "ts-rs",
 ]
 
 [[package]]
@@ -4315,7 +4315,7 @@ dependencies = [
 name = "xtask"
 version = "0.1.0"
 dependencies = [
- "nyx-agent-types",
+ "nyctos-types",
  "proc-macro2",
  "syn",
  "ts-rs",

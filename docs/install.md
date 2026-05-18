@@ -36,11 +36,11 @@ fails loudly if Node is missing or the frontend build errors out: we
 never want to ship a release binary with a stub UI.
 
 If you build the SPA out-of-band (e.g. a CI job that prepopulates
-`crates/nyx-agent-ui/dist/`), set `NYX_SKIP_FRONTEND_BUILD=1` to skip
+`crates/nyx-agent-ui/dist/`), set `NYCTOS_SKIP_FRONTEND_BUILD=1` to skip
 the npm step:
 
 ```bash
-NYX_SKIP_FRONTEND_BUILD=1 cargo build --release
+NYCTOS_SKIP_FRONTEND_BUILD=1 cargo build --release
 ```
 
 Debug builds (`cargo build`, `cargo run`, `cargo nextest run`) write
@@ -58,11 +58,11 @@ The agent will not start scans without a usable `nyx`.
 Two ways to make `nyx` discoverable, in order of preference:
 
 1. Place `nyx` on `PATH`. Verify with `which nyx`.
-2. Set `[nyx].binary_path = "/abs/path/to/nyx"` in `nyx-agent.toml`.
+2. Set `[nyx].binary_path = "/abs/path/to/nyx"` in `nyctos.toml`.
 
 The minimum version is `0.1.0` (the `MINIMUM_NYX_VERSION` constant in
 `crates/nyx-agent-nyx/src/runner.rs:24`). Override per install via
-`[nyx].min_version = "0.2.0"` in `nyx-agent.toml` if a deployment
+`[nyx].min_version = "0.2.0"` in `nyctos.toml` if a deployment
 needs a newer floor than the agent default.
 
 The upstream `nyx` scanner is GPL-3.0-or-later, distributed
@@ -91,11 +91,11 @@ platform's data dir:
 
 | Platform | Default path |
 |---|---|
-| Linux | `~/.local/share/nyx-agent/` |
-| macOS | `~/Library/Application Support/nyx-agent/` |
+| Linux | `~/.local/share/nyctos/` |
+| macOS | `~/Library/Application Support/nyctos/` |
 
 Override with `--state-dir /path/to/dir` (global flag) or
-`[general].state_dir = "/path"` in `nyx-agent.toml`. The directory
+`[general].state_dir = "/path"` in `nyctos.toml`. The directory
 holds the SQLite database, run snapshots, ingested repos, repro
 bundles, logs, and the bearer-token file (`auth_token`, mode `0600`).
 
@@ -111,10 +111,10 @@ startup and exits non-zero on any failure:
 Sample output:
 
 ```
-state dir OK at /home/op/.local/share/nyx-agent
-logs -> /home/op/.local/share/nyx-agent/logs/nyx-agent.jsonl
-config not found at ./nyx-agent.toml (using defaults)
-db OK at /home/op/.local/share/nyx-agent/state.db (schema v1)
+state dir OK at /home/op/.local/share/nyctos
+logs -> /home/op/.local/share/nyctos/logs/agent.jsonl
+config not found at ./nyctos.toml (using defaults)
+db OK at /home/op/.local/share/nyctos/state.db (schema v1)
 nyx OK at /usr/local/bin/nyx (version 0.1.0, minimum 0.1.0)
 claude-code: available v1.0.0 at /usr/local/bin/claude
 sandbox chain lane -> birdcage (selected by host probe) [2 simultaneous]
@@ -127,7 +127,7 @@ Each line maps to a single check:
 |---|---|
 | `state dir OK` | State dir exists with mode `0700` and every subdirectory is present. |
 | `logs -> <path>` | JSON log file location for this run. |
-| `config OK` / `config not found` | Whether `nyx-agent.toml` was loaded or defaults applied. A missing config is not fatal. |
+| `config OK` / `config not found` | Whether `nyctos.toml` was loaded or defaults applied. A missing config is not fatal. |
 | `db OK ... schema v<N>` | SQLite opened and migrations are caught up. |
 | `nyx OK` / `nyx FAIL` | The scanner binary is on `PATH` (or `[nyx].binary_path` resolved), and its `--version` is at or above `MINIMUM_NYX_VERSION`. |
 | `claude-code: available` / `unavailable` | Informational only. Doctor exits zero with claude-code missing. |
@@ -141,7 +141,7 @@ version. Every other check is informational.
 ### `nyx FAIL: nyx binary not found on PATH`
 
 Doctor could not resolve `nyx`. Install it, put it on `PATH`, or set
-`[nyx].binary_path` in `nyx-agent.toml`.
+`[nyx].binary_path` in `nyctos.toml`.
 
 ### `nyx FAIL: nyx version <found> below required minimum <required>`
 
@@ -157,7 +157,7 @@ unset). Set one of those env vars, or pass `--state-dir /abs/path`.
 ### Release build panics with `frontend build failed`
 
 The `crates/nyx-agent-ui` build script could not run `npm`. Install
-Node and `npm`, or set `NYX_SKIP_FRONTEND_BUILD=1` and provide
+Node and `npm`, or set `NYCTOS_SKIP_FRONTEND_BUILD=1` and provide
 prebuilt assets in `crates/nyx-agent-ui/dist/`.
 
 ### `cargo build` fails on missing `.sqlx/` query data

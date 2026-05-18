@@ -6,6 +6,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
+use nyctos_types::event::{AgentEvent, EventSink, RunEvent};
 use nyx_agent_api::{
     build_router, AuthConfig, EnvSecretResolver, ScanTrigger, ScanTriggerError, ServerState,
     SetupContext, WebhookConfig, WebhookSecretResolver,
@@ -18,7 +19,6 @@ use nyx_agent_core::{
 };
 use nyx_agent_nyx::{Diag, NyxError, NyxRunner, NyxScanLane, MINIMUM_NYX_VERSION};
 use nyx_agent_sandbox::{select_backend, BackendChoice, BackendKind, Lane, LaneConcurrency};
-use nyx_agent_types::event::{AgentEvent, EventSink, RunEvent};
 use semver::Version;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -30,9 +30,9 @@ mod scheduler;
 use banner::print_startup_banner;
 
 #[derive(Debug, Parser)]
-#[command(name = "nyx-agent", version, about = "Nyx repository agent", propagate_version = true)]
+#[command(name = "nyx-agent", version, about = "Nyctos repository agent", propagate_version = true)]
 struct Cli {
-    /// Path to `nyx-agent.toml`. Defaults to `./nyx-agent.toml`.
+    /// Path to `nyctos.toml`. Defaults to `./nyctos.toml`.
     #[arg(long, global = true, value_name = "PATH")]
     config: Option<PathBuf>,
 
@@ -107,7 +107,7 @@ enum Command {
     /// the selected projects. Bare `--repo` without `--project` is
     /// rejected to keep scoping explicit.
     Scan {
-        /// Projects to scan (by name from `nyx-agent.toml`). Pass
+        /// Projects to scan (by name from `nyctos.toml`). Pass
         /// `--project` once per project, or omit to scan every enabled
         /// project.
         #[arg(long = "project", value_name = "PROJECT")]
@@ -237,7 +237,7 @@ fn main() -> ExitCode {
 }
 
 async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
-    let config_path = cli.config.clone().unwrap_or_else(|| PathBuf::from("nyx-agent.toml"));
+    let config_path = cli.config.clone().unwrap_or_else(|| PathBuf::from("nyctos.toml"));
     let config_present = config_path.exists();
     let config = Config::load_or_default(&config_path)?;
 
@@ -428,7 +428,7 @@ async fn scan(
             }
         };
     if targets.is_empty() {
-        eprintln!("scan: no repositories selected; configure one in nyx-agent.toml");
+        eprintln!("scan: no repositories selected; configure one in nyctos.toml");
         store.close().await;
         return Ok(ExitCode::from(1));
     }
@@ -489,7 +489,7 @@ struct ScanReport {
 
 struct RepoReport {
     repo: String,
-    outcome: nyx_agent_types::event::RepoOutcomeTag,
+    outcome: nyctos_types::event::RepoOutcomeTag,
     diags: usize,
     elapsed_ms: i64,
 }
@@ -1150,7 +1150,7 @@ async fn run_scan_for_api(
     if targets.is_empty() {
         store.close().await;
         return Err(ScanTriggerError::Rejected(
-            "no repositories selected; configure one in nyx-agent.toml".to_string(),
+            "no repositories selected; configure one in nyctos.toml".to_string(),
         ));
     }
 
@@ -1337,9 +1337,10 @@ async fn select_scan_targets(
     } else {
         let mut out = Vec::with_capacity(requested_projects.len());
         for name in requested_projects {
-            let cfg = config.projects.iter().find(|p| &p.name == name).ok_or_else(|| {
-                anyhow::anyhow!("project `{name}` not declared in nyx-agent.toml")
-            })?;
+            let cfg =
+                config.projects.iter().find(|p| &p.name == name).ok_or_else(|| {
+                    anyhow::anyhow!("project `{name}` not declared in nyctos.toml")
+                })?;
             out.push(cfg);
         }
         out
@@ -1351,7 +1352,7 @@ async fn select_scan_targets(
                 candidate_projects.iter().flat_map(|p| p.repos.iter()).any(|r| &r.name == name);
             if !found {
                 anyhow::bail!(
-                    "repo `{name}` not declared under the selected project(s) in nyx-agent.toml"
+                    "repo `{name}` not declared under the selected project(s) in nyctos.toml"
                 );
             }
         }

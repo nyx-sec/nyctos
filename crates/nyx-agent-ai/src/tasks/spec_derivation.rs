@@ -14,10 +14,10 @@
 //! into a `HarnessSpecRecord` at write time and stamps the parent
 //! finding's `spec_id` back-link.
 
+use nyctos_types::agent::{AiError, Budget, BudgetKind, Prompt, Response};
+use nyctos_types::event::EventSink;
+use nyctos_types::spec::{FileExcerpt, SpecDerivationInput, SPEC_DERIVATION_PROMPT_VERSION};
 use nyx_agent_nyx::HarnessSpec;
-use nyx_agent_types::agent::{AiError, Budget, BudgetKind, Prompt, Response};
-use nyx_agent_types::event::EventSink;
-use nyx_agent_types::spec::{FileExcerpt, SpecDerivationInput, SPEC_DERIVATION_PROMPT_VERSION};
 
 use crate::runtime::AiRuntime;
 
@@ -213,15 +213,15 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use async_trait::async_trait;
-    use nyx_agent_types::agent::{
+    use nyctos_types::agent::{
         AgentResult, AgentTask, AiError, CacheStats, CostEstimate, TokenUsage,
     };
-    use nyx_agent_types::event::AgentEvent;
+    use nyctos_types::event::AgentEvent;
     use tokio::sync::broadcast;
 
     use super::*;
     use crate::runtime::{AiRuntime, BudgetTracker, InMemoryBudgetTracker};
-    use nyx_agent_types::agent::BudgetKind;
+    use nyctos_types::agent::BudgetKind;
 
     /// Scripted runtime that replays a fixed sequence of `one_shot`
     /// responses. Same shape as the payload-synthesis test fixture.

@@ -11,9 +11,9 @@
 //! `nyx-agent-core::store`; the binary turns a `Synthesised` outcome
 //! into a `PayloadRecord` at write time.
 
-use nyx_agent_types::agent::{AiError, Budget, BudgetKind, Prompt, Response};
-use nyx_agent_types::event::EventSink;
-use nyx_agent_types::payload::{
+use nyctos_types::agent::{AiError, Budget, BudgetKind, Prompt, Response};
+use nyctos_types::event::EventSink;
+use nyctos_types::payload::{
     PayloadSynthesisInput, PayloadSynthesisOutput, PAYLOAD_SYNTHESIS_PROMPT_VERSION,
 };
 
@@ -164,16 +164,16 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use async_trait::async_trait;
-    use nyx_agent_types::agent::{
+    use nyctos_types::agent::{
         AgentResult, AgentTask, AiError, CacheStats, CostEstimate, TokenUsage,
     };
-    use nyx_agent_types::event::AgentEvent;
-    use nyx_agent_types::payload::SinkCtx;
+    use nyctos_types::event::AgentEvent;
+    use nyctos_types::payload::SinkCtx;
     use tokio::sync::broadcast;
 
     use super::*;
     use crate::runtime::{AiRuntime, BudgetTracker, InMemoryBudgetTracker};
-    use nyx_agent_types::agent::BudgetKind;
+    use nyctos_types::agent::BudgetKind;
 
     /// Scripted runtime that replays a fixed sequence of `one_shot`
     /// responses. Each call pops the next entry; if the queue is empty

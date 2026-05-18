@@ -6,11 +6,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use nyctos_types::agent::{AgentTask, AiError, Budget, BudgetKind};
+use nyctos_types::event::AgentEvent;
 use nyx_agent_ai::{
     detect_claude_binary, AiRuntime, ClaudeCodeAdapter, InMemoryBudgetTracker, SharedBudgetTracker,
 };
-use nyx_agent_types::agent::{AgentTask, AiError, Budget, BudgetKind};
-use nyx_agent_types::event::AgentEvent;
 use tokio::sync::broadcast;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -35,7 +35,7 @@ interface NyxBootstrap {
 
 declare global {
   interface Window {
-    __NYX_BOOTSTRAP__?: NyxBootstrap;
+    __NYCTOS_BOOTSTRAP__?: NyxBootstrap;
   }
 }
 
@@ -44,7 +44,7 @@ declare global {
  *  `--headless` (auth disabled). */
 export function getAuthToken(): string | undefined {
   if (typeof window === "undefined") return undefined;
-  return window.__NYX_BOOTSTRAP__?.authToken;
+  return window.__NYCTOS_BOOTSTRAP__?.authToken;
 }
 
 async function request<T>(
@@ -79,7 +79,7 @@ async function request<T>(
 // ---- record shapes ---------------------------------------------------------
 //
 // These mirror the `*Record` structs in `nyx_agent_core::store`. The
-// shared schema will move into `nyx-agent-types` once the type-hoist
+// shared schema will move into `nyctos-types` once the type-hoist
 // deferred item lands.
 
 export interface RepoRecord {

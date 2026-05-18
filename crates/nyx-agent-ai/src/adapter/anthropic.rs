@@ -17,11 +17,11 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use nyx_agent_types::agent::{
+use nyctos_types::agent::{
     AgentResult, AgentTask, AiError, Budget, CacheStats, CostEstimate, HaltReason, Prompt,
     Response, TokenUsage,
 };
-use nyx_agent_types::event::{AgentEvent, AiEvent, EventSink};
+use nyctos_types::event::{AgentEvent, AiEvent, EventSink};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
@@ -407,8 +407,8 @@ mod tests {
 
     use super::*;
     use crate::runtime::{BudgetTracker, InMemoryBudgetTracker};
-    use nyx_agent_types::agent::BudgetKind;
-    use nyx_agent_types::event::{AgentEvent, AiEvent};
+    use nyctos_types::agent::BudgetKind;
+    use nyctos_types::event::{AgentEvent, AiEvent};
     use tokio::sync::broadcast;
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};

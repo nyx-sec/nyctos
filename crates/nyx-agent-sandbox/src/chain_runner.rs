@@ -41,9 +41,9 @@ use std::time::Duration;
 
 use thiserror::Error;
 
+use nyctos_types::payload::AttackProvenance;
+use nyctos_types::verify::Oracle;
 use nyx_agent_core::project::ProjectId;
-use nyx_agent_types::payload::AttackProvenance;
-use nyx_agent_types::verify::Oracle;
 
 use crate::payload_runner::{
     bytes_contains, classify_status, pick_lang, render_synthesised, HarnessLang, HarnessSource,
@@ -77,7 +77,7 @@ pub struct ChainStep {
 /// Inputs for one full chain replay.
 #[derive(Debug, Clone)]
 pub struct ChainRun {
-    /// Stable id from the persisted [`nyx_agent_types::chain`] row, or
+    /// Stable id from the persisted [`nyctos_types::chain`] row, or
     /// any caller-chosen tag. The runner uses it only as a label on
     /// emitted diagnostics.
     pub chain_id: String,

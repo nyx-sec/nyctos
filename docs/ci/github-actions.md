@@ -46,7 +46,7 @@ permissions:
 | input | required | description |
 |---|---|---|
 | `nyx-agent-binary` | no | Path to the binary. Defaults to `nyx-agent` (PATH lookup). |
-| `config` | no | Path to `nyx-agent.toml`. Defaults to `./nyx-agent.toml`. |
+| `config` | no | Path to `nyctos.toml`. Defaults to `./nyctos.toml`. |
 | `state-dir` | no | State directory override. Defaults to a per-run tempdir under `$RUNNER_TEMP`. |
 | `ui-url` | no | Base URL of the operator's local UI. Used to deep-link the comment back to `<ui-url>/runs/<run_id>`. Empty = no link. |
 | `gh-api` | no | GitHub REST base. Override for GHE; defaults to `https://api.github.com`. |
@@ -84,7 +84,7 @@ jobs:
 unreachable. Set `fetch-depth: 0` or pass `--no-shallow` to your
 custom checkout step.
 
-## `nyx-agent.toml` shape
+## `nyctos.toml` shape
 
 Point the repo config at the PR checkout via `local-path` source:
 

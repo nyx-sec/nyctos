@@ -24,6 +24,21 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use nyctos_types::agent::{AiError, BudgetKind};
+use nyctos_types::chain::{
+    ChainReasoningEdge, ChainReasoningInput, ChainReasoningNode, CHAIN_REASONING_DEFAULT_MAX,
+    CHAIN_REASONING_PROMPT_VERSION, NODE_KIND_ENTRY, NODE_KIND_FRAMEWORK, NODE_KIND_SINK,
+};
+use nyctos_types::event::EventSink;
+use nyctos_types::novel::{
+    FileForReview, NovelFindingDiscoveryInput, PriorFinding, DEFAULT_FILES_PER_BATCH,
+    DEFAULT_NOVEL_DISCOVERY_RUN_CAP_USD_MICROS, NOVEL_FINDING_DISCOVERY_PROMPT_VERSION,
+};
+use nyctos_types::payload::{
+    AttackProvenance, PayloadSynthesisInput, PAYLOAD_SYNTHESIS_PROMPT_VERSION,
+};
+use nyctos_types::spec::{SpecDerivationInput, SPEC_DERIVATION_PROMPT_VERSION};
+use nyctos_types::verify::{Oracle, VerifyResult, VerifyVerdict};
 use nyx_agent_ai::{
     read_spec_excerpt, run_chain_reasoning, run_exploration, run_novel_findings,
     run_payload_synthesis, run_spec_derivation, AiRuntime, AnthropicSdkAdapter, BudgetTracker,
@@ -45,21 +60,6 @@ use nyx_agent_sandbox::payload_runner::{
     HarnessSource, HarnessSpecInput, PayloadRun, PayloadRunner,
 };
 use nyx_agent_sandbox::BackendKind;
-use nyx_agent_types::agent::{AiError, BudgetKind};
-use nyx_agent_types::chain::{
-    ChainReasoningEdge, ChainReasoningInput, ChainReasoningNode, CHAIN_REASONING_DEFAULT_MAX,
-    CHAIN_REASONING_PROMPT_VERSION, NODE_KIND_ENTRY, NODE_KIND_FRAMEWORK, NODE_KIND_SINK,
-};
-use nyx_agent_types::event::EventSink;
-use nyx_agent_types::novel::{
-    FileForReview, NovelFindingDiscoveryInput, PriorFinding, DEFAULT_FILES_PER_BATCH,
-    DEFAULT_NOVEL_DISCOVERY_RUN_CAP_USD_MICROS, NOVEL_FINDING_DISCOVERY_PROMPT_VERSION,
-};
-use nyx_agent_types::payload::{
-    AttackProvenance, PayloadSynthesisInput, PAYLOAD_SYNTHESIS_PROMPT_VERSION,
-};
-use nyx_agent_types::spec::{SpecDerivationInput, SPEC_DERIVATION_PROMPT_VERSION};
-use nyx_agent_types::verify::{Oracle, VerifyResult, VerifyVerdict};
 use tokio::sync::Semaphore;
 
 /// Per-call cap forwarded into `Budget.cap_usd_micros` for every
@@ -593,7 +593,7 @@ fn collect_spec_excerpts(
     workspace: &WorkspaceHandle,
     diag: &Diag,
     max: usize,
-) -> Vec<nyx_agent_types::spec::FileExcerpt> {
+) -> Vec<nyctos_types::spec::FileExcerpt> {
     let mut out = Vec::new();
     if let Some(ex) = read_spec_excerpt(
         workspace.workspace(),
@@ -949,7 +949,7 @@ fn classify_node_kind(diag: &Diag) -> &'static str {
     }
     // Default: diags surface where the static pass landed, so bare
     // diags without an explicit `source` step lean toward `sink`. The
-    // `other` bucket exported by `nyx-agent-types::chain` is reserved
+    // `other` bucket exported by `nyctos-types::chain` is reserved
     // for clearly non-source / non-sink nodes a later phase may add.
     NODE_KIND_SINK
 }
@@ -1518,7 +1518,7 @@ async fn apply_novel_outcome(
 fn candidate_id(
     run_id: &str,
     repo: &str,
-    c: &nyx_agent_types::novel::CandidateFinding,
+    c: &nyctos_types::novel::CandidateFinding,
     created_at_ms: i64,
     rank: usize,
 ) -> String {
@@ -1863,8 +1863,8 @@ fn attack_provenance_from(label: Option<&str>) -> AttackProvenance {
     }
 }
 
-fn empty_verify_run(payload: &[u8]) -> nyx_agent_types::verify::VerifyRun {
-    nyx_agent_types::verify::VerifyRun {
+fn empty_verify_run(payload: &[u8]) -> nyctos_types::verify::VerifyRun {
+    nyctos_types::verify::VerifyRun {
         payload: payload.to_vec(),
         oracle_fired: false,
         exit_code: -1,
@@ -2785,7 +2785,7 @@ mod tests {
             lang: "python".to_string(),
             spec: Box::new(spec),
             spec_blob: canonical,
-            prompt_version: nyx_agent_types::spec::SPEC_DERIVATION_PROMPT_VERSION.to_string(),
+            prompt_version: nyctos_types::spec::SPEC_DERIVATION_PROMPT_VERSION.to_string(),
             spent_usd_micros: 3_500,
             attempts: 1,
         };
@@ -3017,8 +3017,8 @@ mod tests {
             store.findings().upsert(&f).await.unwrap();
         }
 
-        let output = nyx_agent_types::chain::ChainReasoningOutput {
-            chains: vec![nyx_agent_types::chain::ChainCandidate {
+        let output = nyctos_types::chain::ChainReasoningOutput {
+            chains: vec![nyctos_types::chain::ChainCandidate {
                 member_ids: vec![entry_node.id.clone(), sink_node.id.clone()],
                 rationale: "controller in repo-A reaches SQL sink in repo-B".to_string(),
             }],
@@ -3026,7 +3026,7 @@ mod tests {
         let outcome = ChainReasoningOutcome::Ranked {
             run_id: "run-X".to_string(),
             output,
-            prompt_version: nyx_agent_types::chain::CHAIN_REASONING_PROMPT_VERSION.to_string(),
+            prompt_version: nyctos_types::chain::CHAIN_REASONING_PROMPT_VERSION.to_string(),
             spent_usd_micros: 12_000,
             attempts: 1,
         };
@@ -3047,7 +3047,7 @@ mod tests {
         assert_eq!(c.attack_provenance.as_deref(), Some("LlmSynthesised"));
         assert_eq!(
             c.prompt_version.as_deref(),
-            Some(nyx_agent_types::chain::CHAIN_REASONING_PROMPT_VERSION),
+            Some(nyctos_types::chain::CHAIN_REASONING_PROMPT_VERSION),
         );
         let rationale = c.rationale_blob.as_deref().unwrap();
         assert!(rationale.contains("controller in repo-A"), "rationale: {rationale}");
@@ -3066,7 +3066,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let store = Store::open(tmp.path()).await.unwrap();
         store.runs().insert(&seed_run("run-X")).await.unwrap();
-        let input = nyx_agent_types::chain::ChainReasoningInput {
+        let input = nyctos_types::chain::ChainReasoningInput {
             run_id: "run-X".to_string(),
             repos: vec!["repo-A".to_string()],
             nodes: vec![],
@@ -3123,10 +3123,10 @@ mod tests {
 
     // -------- novel-finding-discovery pass coverage --------
 
-    use nyx_agent_ai::{AiRuntime, InMemoryBudgetTracker};
-    use nyx_agent_types::agent::{
+    use nyctos_types::agent::{
         AgentResult, AgentTask, Budget, CacheStats, CostEstimate, Prompt, Response, TokenUsage,
     };
+    use nyx_agent_ai::{AiRuntime, InMemoryBudgetTracker};
     use std::sync::Mutex as StdMutex;
 
     /// Scripted runtime mirroring the per-task fixtures. Each `one_shot`
@@ -3169,7 +3169,7 @@ mod tests {
             &self,
             prompt: Prompt,
             budget: Budget,
-            _sink: nyx_agent_types::event::EventSink,
+            _sink: nyctos_types::event::EventSink,
         ) -> Result<Response, AiError> {
             let next = self
                 .responses
@@ -3195,7 +3195,7 @@ mod tests {
             &self,
             _task: AgentTask,
             _budget: Budget,
-            _sink: nyx_agent_types::event::EventSink,
+            _sink: nyctos_types::event::EventSink,
         ) -> Result<AgentResult, AiError> {
             Err(AiError::UnsupportedMode("agent_loop"))
         }
@@ -3354,7 +3354,7 @@ mod tests {
         assert_eq!(row.status, "Pending");
         assert_eq!(
             row.prompt_version.as_deref(),
-            Some(nyx_agent_types::novel::NOVEL_FINDING_DISCOVERY_PROMPT_VERSION)
+            Some(nyctos_types::novel::NOVEL_FINDING_DISCOVERY_PROMPT_VERSION)
         );
         assert!(row.rationale.as_deref().unwrap_or("").contains("list_admins"));
     }
@@ -3648,7 +3648,7 @@ mod tests {
             suggested_payload_hint: Some(".*".to_string()),
             status: "Pending".to_string(),
             prompt_version: Some(
-                nyx_agent_types::novel::NOVEL_FINDING_DISCOVERY_PROMPT_VERSION.to_string(),
+                nyctos_types::novel::NOVEL_FINDING_DISCOVERY_PROMPT_VERSION.to_string(),
             ),
         };
         store.candidate_findings().insert(&cand).await.unwrap();
@@ -3822,7 +3822,7 @@ mod tests {
             &self,
             _prompt: Prompt,
             _budget: Budget,
-            _sink: nyx_agent_types::event::EventSink,
+            _sink: nyctos_types::event::EventSink,
         ) -> Result<Response, AiError> {
             Err(AiError::UnsupportedMode("one_shot"))
         }
@@ -3831,7 +3831,7 @@ mod tests {
             &self,
             task: AgentTask,
             budget: Budget,
-            _sink: nyx_agent_types::event::EventSink,
+            _sink: nyctos_types::event::EventSink,
         ) -> Result<AgentResult, AiError> {
             let mut next = self
                 .outcomes
@@ -3885,7 +3885,7 @@ mod tests {
         );
 
         let mut result = empty_exploration_result();
-        result.extracted.push(nyx_agent_types::agent::ExtractedAgentResult::ExplorationFinding {
+        result.extracted.push(nyctos_types::agent::ExtractedAgentResult::ExplorationFinding {
             path: "<api:/api/admin/orders>".into(),
             line: None,
             cap: "AUTH_BYPASS".into(),
@@ -3979,8 +3979,8 @@ mod tests {
         // Banner frame on the event bus name-checks the failing fixture.
         let mut saw_banner = false;
         while let Ok(frame) = rx.try_recv() {
-            if let nyx_agent_types::event::AgentEvent::Ai {
-                data: nyx_agent_types::event::AiEvent::TokenReceived { token, .. },
+            if let nyctos_types::event::AgentEvent::Ai {
+                data: nyctos_types::event::AiEvent::TokenReceived { token, .. },
             } = frame
             {
                 if token.contains("escape-suite RED")

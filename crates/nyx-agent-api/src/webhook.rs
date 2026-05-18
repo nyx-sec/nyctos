@@ -140,7 +140,7 @@ pub async fn webhook_git(
 ) -> Result<impl IntoResponse, ApiError> {
     let Some(cfg) = state.webhook.as_ref() else {
         return Err(ApiError::Internal(
-            "webhook not enabled; set [triggers].webhook_secret_ref in nyx-agent.toml".to_string(),
+            "webhook not enabled; set [triggers].webhook_secret_ref in nyctos.toml".to_string(),
         ));
     };
 
