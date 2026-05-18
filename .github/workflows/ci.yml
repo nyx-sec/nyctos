@@ -25,6 +25,8 @@ jobs:
         run: |
           cargo build -p nyx-agent-types
           git diff --exit-code frontend/src/api/types.gen.ts
+      - name: missing-instrument lint
+        run: bash .ci/missing-instrument.sh
 
   guards:
     runs-on: ubuntu-latest

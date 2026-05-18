@@ -43,6 +43,20 @@ stack; the `nyx-agent` daemon in this repository is not.
 Early scaffolding. See `.pitboss/play/plan.md` for the phased delivery
 plan; this commit lands Phase 01 (cargo workspace + CI guards).
 
+## Documentation
+
+Operator-facing docs live under [`docs/`](docs/). Start here:
+
+- [`docs/install.md`](docs/install.md): prerequisites, source build,
+  and `nyx-agent doctor`.
+- [`docs/quickstart.md`](docs/quickstart.md): first daemon, first
+  scan, first findings.
+- [`docs/triggers/cron.md`](docs/triggers/cron.md) and
+  [`docs/triggers/webhook.md`](docs/triggers/webhook.md): no-touch
+  scan triggers.
+- [`docs/ci/github-actions.md`](docs/ci/github-actions.md): the
+  shipped composite Action for PR gating.
+
 ## Upstream `nyx` scanner
 
 `nyx-agent` shells out to the upstream `nyx` static scanner; the agent has
