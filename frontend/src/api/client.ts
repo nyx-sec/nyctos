@@ -84,6 +84,7 @@ async function request<T>(
 
 export interface RepoRecord {
   name: string;
+  project_id: string;
   source_kind: string;
   source_url_or_path: string;
   branch: string | null;
@@ -92,6 +93,36 @@ export interface RepoRecord {
   last_scan_run_id: string | null;
   created_at: number;
   updated_at: number;
+}
+
+export interface ProjectRecord {
+  id: string;
+  name: string;
+  description: string | null;
+  target_base_url: string | null;
+  env_config_json: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface CreateProjectRequest {
+  name: string;
+  description?: string;
+  target_base_url?: string;
+  env_config?: unknown;
+}
+
+/**
+ * Partial update body for `PATCH /api/v1/projects/:project_id`. Nullable
+ * fields use tri-state semantics:
+ *   - omitted: leave existing value untouched
+ *   - `null`: clear the existing value
+ *   - value: set the field to the supplied value
+ */
+export interface PatchProjectRequest {
+  description?: string | null;
+  target_base_url?: string | null;
+  env_config?: unknown;
 }
 
 export interface RunRecord {
@@ -228,8 +259,8 @@ export interface CreateRepoRequest {
 }
 
 /**
- * Partial update body for `PATCH /api/v1/repos/:name`. Nullable fields
- * (`branch`, `auth_ref`) use tri-state semantics:
+ * Partial update body for `PATCH /api/v1/projects/:project_id/repos/:name`.
+ * Nullable fields (`branch`, `auth_ref`) use tri-state semantics:
  *   - omitted: leave existing value untouched
  *   - `null`: clear the existing value
  *   - string: set the field to the supplied value
@@ -313,7 +344,10 @@ export interface FindingsQuery {
 export const qk = {
   health: () => ["health"] as const,
   setupStatus: () => ["setup", "status"] as const,
-  repos: () => ["repos"] as const,
+  projects: () => ["projects"] as const,
+  project: (id: string) => ["projects", id] as const,
+  projectRepos: (projectId: string) => ["projects", projectId, "repos"] as const,
+  allRepos: () => ["projects", "_all", "repos"] as const,
   runs: (status?: string) => ["runs", status ?? "Running"] as const,
   run: (id: string) => ["runs", id] as const,
   findings: (params: FindingsQuery) =>
@@ -378,61 +412,149 @@ export function useDoctor() {
   });
 }
 
-export function useRepos() {
+// ---- projects --------------------------------------------------------------
+
+export function useProjects() {
   return useQuery({
-    queryKey: qk.repos(),
-    queryFn: () => request<RepoRecord[]>("/repos"),
+    queryKey: qk.projects(),
+    queryFn: () => request<ProjectRecord[]>("/projects"),
   });
 }
 
-export function useCreateRepo() {
+export function useProject(id: string | undefined) {
+  return useQuery({
+    queryKey: id ? qk.project(id) : ["projects", "_disabled"],
+    queryFn: () => request<ProjectRecord>(`/projects/${encodeURIComponent(id!)}`),
+    enabled: Boolean(id),
+  });
+}
+
+export function useCreateProject() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: CreateRepoRequest) =>
-      request<RepoRecord>("/repos", { method: "POST", body: JSON.stringify(body) }),
-    onSuccess: () => invalidateRepoLists(qc),
-  });
-}
-
-export function useDeleteRepo() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (name: string) =>
-      request<{ ok: boolean; message: string }>(`/repos/${encodeURIComponent(name)}`, {
-        method: "DELETE",
-      }),
-    onSuccess: () => invalidateRepoLists(qc),
-  });
-}
-
-export function usePatchRepo() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({ name, patch }: { name: string; patch: PatchRepoRequest }) =>
-      request<RepoRecord>(`/repos/${encodeURIComponent(name)}`, {
-        method: "PATCH",
-        body: JSON.stringify(patch),
-      }),
-    onSuccess: () => invalidateRepoLists(qc),
-  });
-}
-
-export function useTestRepo() {
-  return useMutation({
-    mutationFn: (body: TestRepoRequest) =>
-      request<TestRepoResponse>("/repos/test", {
+    mutationFn: (body: CreateProjectRequest) =>
+      request<ProjectRecord>("/projects", {
         method: "POST",
         body: JSON.stringify(body),
       }),
+    onSuccess: () => invalidateProjectLists(qc),
   });
 }
 
-export function useTriggerScan() {
+export function usePatchProject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, patch }: { id: string; patch: PatchProjectRequest }) =>
+      request<ProjectRecord>(`/projects/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        body: JSON.stringify(patch),
+      }),
+    onSuccess: (_data, vars) => {
+      invalidateProjectLists(qc);
+      qc.invalidateQueries({ queryKey: qk.project(vars.id) });
+    },
+  });
+}
+
+export function useDeleteProject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      request<{ ok: boolean; message: string }>(
+        `/projects/${encodeURIComponent(id)}`,
+        { method: "DELETE" },
+      ),
+    onSuccess: () => invalidateProjectLists(qc),
+  });
+}
+
+// ---- repos (nested under projects) ----------------------------------------
+
+export function useProjectRepos(projectId: string | undefined) {
+  return useQuery({
+    queryKey: projectId ? qk.projectRepos(projectId) : ["projects", "_disabled", "repos"],
+    queryFn: () =>
+      request<RepoRecord[]>(`/projects/${encodeURIComponent(projectId!)}/repos`),
+    enabled: Boolean(projectId),
+  });
+}
+
+/**
+ * Aggregates every repo across every project. Used by global views like
+ * the findings filter dropdown that pre-date the project-tree refactor.
+ * Fans out N+1 calls (one project list + one per project); fine while
+ * project counts are small.
+ */
+export function useAllRepos() {
+  return useQuery({
+    queryKey: qk.allRepos(),
+    queryFn: async () => {
+      const projects = await request<ProjectRecord[]>("/projects");
+      const lists = await Promise.all(
+        projects.map((p) =>
+          request<RepoRecord[]>(`/projects/${encodeURIComponent(p.id)}/repos`),
+        ),
+      );
+      return lists.flat();
+    },
+  });
+}
+
+export function useCreateProjectRepo(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: CreateRepoRequest) =>
+      request<RepoRecord>(`/projects/${encodeURIComponent(projectId)}/repos`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => invalidateRepoLists(qc, projectId),
+  });
+}
+
+export function useDeleteProjectRepo(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) =>
+      request<{ ok: boolean; message: string }>(
+        `/projects/${encodeURIComponent(projectId)}/repos/${encodeURIComponent(name)}`,
+        { method: "DELETE" },
+      ),
+    onSuccess: () => invalidateRepoLists(qc, projectId),
+  });
+}
+
+export function usePatchProjectRepo(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ name, patch }: { name: string; patch: PatchRepoRequest }) =>
+      request<RepoRecord>(
+        `/projects/${encodeURIComponent(projectId)}/repos/${encodeURIComponent(name)}`,
+        { method: "PATCH", body: JSON.stringify(patch) },
+      ),
+    onSuccess: () => invalidateRepoLists(qc, projectId),
+  });
+}
+
+export function useTestProjectRepo(projectId: string) {
+  return useMutation({
+    mutationFn: (body: TestRepoRequest) =>
+      request<TestRepoResponse>(
+        `/projects/${encodeURIComponent(projectId)}/repos/test`,
+        { method: "POST", body: JSON.stringify(body) },
+      ),
+  });
+}
+
+export function useTriggerScan(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (repo?: string) => {
       const query = repo ? `?repo=${encodeURIComponent(repo)}` : "";
-      return request<{ run_id: string }>(`/scan${query}`, { method: "POST" });
+      return request<{ run_id: string }>(
+        `/projects/${encodeURIComponent(projectId)}/scan${query}`,
+        { method: "POST" },
+      );
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["runs"] });
@@ -506,8 +628,14 @@ export function useChain(id: string | undefined) {
   });
 }
 
-function invalidateRepoLists(qc: QueryClient) {
-  qc.invalidateQueries({ queryKey: qk.repos() });
+function invalidateProjectLists(qc: QueryClient) {
+  qc.invalidateQueries({ queryKey: qk.projects() });
+  qc.invalidateQueries({ queryKey: qk.allRepos() });
+}
+
+function invalidateRepoLists(qc: QueryClient, projectId: string) {
+  qc.invalidateQueries({ queryKey: qk.projectRepos(projectId) });
+  qc.invalidateQueries({ queryKey: qk.allRepos() });
 }
 
 // ---- quarantine + traces ---------------------------------------------------

@@ -65,7 +65,7 @@ export function SetupWizard() {
       sandbox_backend: form.sandboxBackend,
       i_own_this: form.iOwnThis,
     });
-    navigate("/repos", { replace: true });
+    navigate("/projects", { replace: true });
   }
 
   return (

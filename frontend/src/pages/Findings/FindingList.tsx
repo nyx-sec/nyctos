@@ -6,8 +6,8 @@ import { Card } from "@/components/Card";
 import { EmptyState } from "@/components/EmptyState";
 import { Spinner } from "@/components/Spinner";
 import {
+  useAllRepos,
   useFindings,
-  useRepos,
   useRunFindings,
   type FindingDiffStatus,
   type FindingRecord,
@@ -51,7 +51,7 @@ export function FindingList() {
     return f;
   }, [params, runId]);
 
-  const repos = useRepos();
+  const repos = useAllRepos();
   const runQuery = useRunFindings(runId);
   const listQuery = useFindings(runId ? {} : filters);
 

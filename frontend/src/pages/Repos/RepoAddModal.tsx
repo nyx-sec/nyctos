@@ -5,8 +5,8 @@ import { Badge } from "@/components/Badge";
 import { Button } from "@/components/Button";
 import { Spinner } from "@/components/Spinner";
 import {
-  useCreateRepo,
-  useTestRepo,
+  useCreateProjectRepo,
+  useTestProjectRepo,
   type CreateRepoRequest,
   type TestRepoResponse,
 } from "@/api/client";
@@ -55,15 +55,16 @@ function buildSchema(tab: Tab) {
 }
 
 interface Props {
+  projectId: string;
   onClose: () => void;
   onAdded: (name: string) => void;
 }
 
-export function RepoAddModal({ onClose, onAdded }: Props) {
+export function RepoAddModal({ projectId, onClose, onAdded }: Props) {
   const [tab, setTab] = useState<Tab>("url");
   const [testResult, setTestResult] = useState<TestRepoResponse | null>(null);
-  const create = useCreateRepo();
-  const test = useTestRepo();
+  const create = useCreateProjectRepo(projectId);
+  const test = useTestProjectRepo(projectId);
   const firstInputRef = useRef<HTMLInputElement | null>(null);
 
   const resolver: Resolver<FormValues> = async (values) => {

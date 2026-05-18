@@ -23,7 +23,7 @@ interface NavItem {
 
 const NAV: NavItem[] = [
   { to: "/setup", label: "Setup", Icon: SetupIcon, group: "primary" },
-  { to: "/repos", label: "Repos", Icon: ReposIcon, group: "primary" },
+  { to: "/projects", label: "Projects", Icon: ReposIcon, group: "primary" },
   { to: "/runs", label: "Runs", Icon: RunsIcon, group: "primary" },
   { to: "/findings", label: "Findings", Icon: FindingsIcon, group: "primary" },
   { to: "/chains", label: "Chains", Icon: ChainsIcon, group: "secondary" },

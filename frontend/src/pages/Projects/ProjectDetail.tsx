@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useParams, Link } from "react-router-dom";
 import { Badge, type BadgeTone } from "@/components/Badge";
 import { Button } from "@/components/Button";
 import { Card } from "@/components/Card";
@@ -7,14 +7,16 @@ import { EmptyState } from "@/components/EmptyState";
 import { Spinner } from "@/components/Spinner";
 import {
   useAgentEvents,
-  useDeleteRepo,
-  useRepos,
+  useDeleteProject,
+  useDeleteProjectRepo,
+  useProject,
+  useProjectRepos,
   useTriggerScan,
   type AgentEventLike,
   type RepoRecord,
 } from "@/api/client";
-import { RepoAddModal } from "./RepoAddModal";
-import { applyEvent, type RepoLiveState, type RepoLiveStatus } from "./repoStatus";
+import { RepoAddModal } from "../Repos/RepoAddModal";
+import { applyEvent, type RepoLiveState, type RepoLiveStatus } from "../Repos/repoStatus";
 
 type LiveMap = Record<string, RepoLiveState>;
 
@@ -25,11 +27,14 @@ const STATUS_TONE: Record<RepoLiveStatus, BadgeTone> = {
   Failed: "danger",
 };
 
-export function RepoList() {
-  const repos = useRepos();
-  const triggerScan = useTriggerScan();
-  const deleteRepo = useDeleteRepo();
+export function ProjectDetail() {
+  const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
+  const project = useProject(projectId);
+  const repos = useProjectRepos(projectId);
+  const triggerScan = useTriggerScan(projectId ?? "");
+  const deleteRepo = useDeleteProjectRepo(projectId ?? "");
+  const deleteProject = useDeleteProject();
   const [live, setLive] = useState<LiveMap>({});
   const [banner, setBanner] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
@@ -55,7 +60,7 @@ export function RepoList() {
   }
 
   async function onScanAll() {
-    setBanner("Triggering scan across every configured repo…");
+    setBanner("Triggering scan across every repo in this project…");
     try {
       const { run_id } = await triggerScan.mutateAsync(undefined);
       setBanner(`Scan started (run ${run_id}).`);
@@ -65,10 +70,8 @@ export function RepoList() {
     }
   }
 
-  async function onDelete(name: string) {
-    if (!window.confirm(`Remove repo "${name}" and its workspace dir?`)) {
-      return;
-    }
+  async function onDeleteRepo(name: string) {
+    if (!window.confirm(`Remove repo "${name}" and its workspace dir?`)) return;
     try {
       await deleteRepo.mutateAsync(name);
       setBanner(`Removed ${name}.`);
@@ -82,14 +85,86 @@ export function RepoList() {
     }
   }
 
+  async function onDeleteProject() {
+    if (!project.data) return;
+    if (
+      !window.confirm(
+        `Delete project "${project.data.name}"? All repos under it will be removed too.`,
+      )
+    ) {
+      return;
+    }
+    try {
+      await deleteProject.mutateAsync(project.data.id);
+      navigate("/projects", { replace: true });
+    } catch (err) {
+      setBanner(`Could not delete project: ${String(err)}`);
+    }
+  }
+
   const rows = useMemo(() => repos.data ?? [], [repos.data]);
   const noneConfigured = !repos.isPending && rows.length === 0;
+
+  if (!projectId) {
+    return (
+      <Card title="Project">
+        <p>Missing project id.</p>
+      </Card>
+    );
+  }
+
+  if (project.isPending) {
+    return (
+      <Card>
+        <div style={{ padding: 40, textAlign: "center" }}>
+          <Spinner size="lg" />
+        </div>
+      </Card>
+    );
+  }
+
+  if (project.error || !project.data) {
+    return (
+      <Card title="Project not found">
+        <p>
+          <Link to="/projects">← Back to projects</Link>
+        </p>
+      </Card>
+    );
+  }
+
+  const p = project.data;
 
   return (
     <>
       <Card
+        title={p.name}
+        subtitle={p.description ?? "No description."}
+        actions={
+          <div className="repo-list__actions">
+            <Button variant="ghost" onClick={onDeleteProject} disabled={deleteProject.isPending}>
+              Delete project
+            </Button>
+          </div>
+        }
+      >
+        <dl className="project-meta">
+          <div>
+            <dt>Project id</dt>
+            <dd>
+              <code>{p.id}</code>
+            </dd>
+          </div>
+          <div>
+            <dt>Target base URL</dt>
+            <dd>{p.target_base_url ? <code>{p.target_base_url}</code> : "—"}</dd>
+          </div>
+        </dl>
+      </Card>
+
+      <Card
         title="Repositories"
-        subtitle="Sources the agent scans. Add a git URL or a local checkout, then trigger a scan."
+        subtitle="Sources the agent scans under this project."
         actions={
           <div className="repo-list__actions">
             <Button
@@ -156,7 +231,7 @@ export function RepoList() {
                   repo={repo}
                   live={live[repo.name] ?? { status: "Idle", runId: null }}
                   onScan={() => onScanOne(repo.name)}
-                  onDelete={() => onDelete(repo.name)}
+                  onDelete={() => onDeleteRepo(repo.name)}
                   busy={triggerScan.isPending || deleteRepo.isPending}
                 />
               ))}
@@ -167,6 +242,7 @@ export function RepoList() {
 
       {showAdd && (
         <RepoAddModal
+          projectId={projectId}
           onClose={() => setShowAdd(false)}
           onAdded={(name) => {
             setShowAdd(false);

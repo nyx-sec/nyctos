@@ -2,7 +2,7 @@ import { useLocation } from "react-router-dom";
 
 const TITLE_BY_PATH: Record<string, string> = {
   "/setup": "Setup",
-  "/repos": "Repos",
+  "/projects": "Projects",
   "/runs": "Runs",
   "/findings": "Findings",
   "/chains": "Chains",
@@ -12,7 +12,9 @@ const TITLE_BY_PATH: Record<string, string> = {
 
 export function TopBar() {
   const { pathname } = useLocation();
-  const title = TITLE_BY_PATH[pathname] ?? "Nyx";
+  const title =
+    TITLE_BY_PATH[pathname] ??
+    (pathname.startsWith("/projects/") ? "Project" : "Nyx");
 
   return (
     <header className="app-layout__topbar">

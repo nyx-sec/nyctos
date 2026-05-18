@@ -4,8 +4,8 @@ import { Card } from "@/components/Card";
 import { Spinner } from "@/components/Spinner";
 import { FindingList } from "@/pages/Findings";
 import { Placeholder } from "@/pages/Placeholder";
+import { ProjectDetail, ProjectList } from "@/pages/Projects";
 import { QuarantineList } from "@/pages/Quarantine";
-import { RepoList } from "@/pages/Repos";
 import { LiveScanView } from "@/pages/Runs";
 import { Settings } from "@/pages/Settings";
 import { SetupWizard } from "@/pages/Setup";
@@ -34,21 +34,22 @@ export function App() {
 
   // Fresh-install gate: every route bounces to /setup until the
   // wizard writes nyx-agent.toml. After completion, /setup itself
-  // bounces back to /repos so the operator does not accidentally
+  // bounces back to /projects so the operator does not accidentally
   // re-run the wizard.
   if (!complete && !onSetup) {
     return <Navigate to="/setup" replace />;
   }
   if (complete && onSetup) {
-    return <Navigate to="/repos" replace />;
+    return <Navigate to="/projects" replace />;
   }
 
   return (
     <AppLayout>
       <Routes>
-        <Route path="/" element={<Navigate to="/repos" replace />} />
+        <Route path="/" element={<Navigate to="/projects" replace />} />
         <Route path="/setup" element={<SetupWizard />} />
-        <Route path="/repos" element={<RepoList />} />
+        <Route path="/projects" element={<ProjectList />} />
+        <Route path="/projects/:projectId" element={<ProjectDetail />} />
         <Route path="/runs" element={<Placeholder />} />
         <Route path="/runs/:runId" element={<LiveScanView />} />
         <Route path="/findings" element={<FindingList />} />
@@ -58,7 +59,7 @@ export function App() {
           element={advanced ? <QuarantineList /> : <Navigate to="/settings" replace />}
         />
         <Route path="/settings" element={<Settings />} />
-        <Route path="*" element={<Navigate to="/repos" replace />} />
+        <Route path="*" element={<Navigate to="/projects" replace />} />
       </Routes>
     </AppLayout>
   );

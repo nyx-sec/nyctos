@@ -2,7 +2,7 @@ import type { AgentEventLike } from "@/api/client";
 
 /**
  * Per-repo live status derived from `RunEvent` frames pushed over
- * the WebSocket. `Idle` is the resting state surfaced by `RepoList`
+ * the WebSocket. `Idle` is the resting state surfaced by `ProjectDetail`
  * when no Run event has named the repo since page load. The
  * `runId` field lets the UI link to the run currently driving the
  * repo (or `null` once the run finishes).
