@@ -1023,6 +1023,7 @@ pub async fn run_novel_finding_discovery_pass(
         workspaces,
         events,
         DEFAULT_NOVEL_DISCOVERY_RUN_CAP_USD_MICROS,
+        DEFAULT_FILES_PER_BATCH,
     )
     .await
 }
@@ -1040,6 +1041,7 @@ pub(crate) async fn drive_novel_finding_pass<R: AiRuntime + ?Sized>(
     workspaces: &HashMap<String, WorkspaceHandle>,
     events: EventSink,
     run_cap_usd_micros: i64,
+    files_per_batch: usize,
 ) -> anyhow::Result<NovelFindingDiscoveryPassReport> {
     let mut report = NovelFindingDiscoveryPassReport::default();
     let mut halted = false;
@@ -1055,7 +1057,7 @@ pub(crate) async fn drive_novel_finding_pass<R: AiRuntime + ?Sized>(
             &repo_bundle.repo,
             workspace.workspace(),
             diags,
-            DEFAULT_FILES_PER_BATCH,
+            files_per_batch,
         );
         if inputs.is_empty() {
             continue;
@@ -2377,6 +2379,7 @@ mod tests {
             &workspaces,
             tx,
             5_000_000,
+            DEFAULT_FILES_PER_BATCH,
         )
         .await
         .unwrap();
@@ -2408,9 +2411,11 @@ mod tests {
     #[tokio::test]
     async fn drive_novel_finding_pass_halts_on_budget_cap() {
         // Acceptance: the per-run cap halts further batches once spend
-        // crosses the cap. We dispatch two batches of one file each;
-        // the first call exhausts the cap, so the second batch is
-        // marked halted instead of dispatched.
+        // crosses the cap. With `files_per_batch = 1` and a two-file
+        // workspace, the first call exhausts the cap, so the second
+        // batch is marked halted instead of dispatched. The scripted
+        // runtime is queued with exactly one response — if the halt
+        // logic broke and a second one_shot fired, it would panic.
         let tmp_db = tempfile::tempdir().unwrap();
         let store = Store::open(tmp_db.path()).await.unwrap();
         store.repos().upsert(&seed_repo("repo-B")).await.unwrap();
@@ -2445,28 +2450,19 @@ mod tests {
         let runtime =
             ScriptedNovelRuntime::new(vec![Ok(body)], cap, tracker.clone());
 
-        // Force one-file batches so we get two distinct batches.
-        // Hand-build inputs via `build_novel_inputs_for_repo` and then
-        // drive the inner pass to keep the test deterministic.
         let bundle = make_bundle("run-Bg", "repo-B", Vec::new());
         let (tx, _rx) = tokio::sync::broadcast::channel(4);
 
-        // Custom drive: replicate the pass loop with batch_size = 1.
-        // We can't go through `drive_novel_finding_pass` directly since
-        // it uses DEFAULT_FILES_PER_BATCH; instead we exercise the
-        // batch-size param via `build_novel_inputs_for_repo` and then
-        // verify the public pass also halts.
-        let inputs = build_novel_inputs_for_repo(
-            "run-Bg",
-            "repo-B",
-            workspace.path(),
-            &[],
-            1,
+        // Sanity: with files_per_batch=1 the walker must emit >=2
+        // batches so the halt path is exercised.
+        let inputs =
+            build_novel_inputs_for_repo("run-Bg", "repo-B", workspace.path(), &[], 1);
+        assert!(
+            inputs.len() >= 2,
+            "fixture must produce >=2 batches; got {}",
+            inputs.len()
         );
-        assert!(inputs.len() >= 2, "fixture must produce >=2 batches; got {}", inputs.len());
 
-        // First call records `cap` spend and the budget tracker is now
-        // at the ceiling; the next pre-call check refuses.
         let report = drive_novel_finding_pass(
             &runtime,
             tracker.as_ref(),
@@ -2475,30 +2471,30 @@ mod tests {
             &workspaces,
             tx,
             cap,
+            1,
         )
         .await
         .unwrap();
 
-        // With DEFAULT_FILES_PER_BATCH the walker probably yields a
-        // single batch (two files <= 30); to validate budget gating we
-        // must assert one of two shapes:
-        //   - 1 batch dispatched, 0 halted (small fixture fits in one
-        //     batch), OR
-        //   - >1 batches dispatched and remaining halted (large enough
-        //     fixture to span multiple batches).
-        // Either way, the second-call cap check must fire when a
-        // second batch is attempted. The most informative invariant is
-        // that the tracker spent value lands at the cap and the
-        // dispatched + halted counts cover every batch.
-        let spent = tracker.spent("run-Bg", BudgetKind::OneShot);
-        assert!(
-            spent <= cap,
-            "spent {spent} must not exceed cap {cap} (per-call check halts overspend)"
+        // The first call exhausts the cap; every subsequent batch in
+        // the same repo must be halted before issuing a one_shot.
+        assert_eq!(
+            report.batches_dispatched, 1,
+            "exactly one batch should fire before the cap halts further dispatch"
         );
-        assert!(report.batches_dispatched >= 1);
+        assert!(
+            report.batches_halted >= 1,
+            "at least one batch must record a halt; got {}",
+            report.batches_halted
+        );
         assert_eq!(
             report.failed, 0,
-            "no scripted errors are expected; failure means runtime tried a second call"
+            "no scripted errors expected; failure means runtime tried a second call"
+        );
+        let spent = tracker.spent("run-Bg", BudgetKind::OneShot);
+        assert_eq!(
+            spent, cap,
+            "exactly one call's worth of spend should land in the bucket"
         );
     }
 
