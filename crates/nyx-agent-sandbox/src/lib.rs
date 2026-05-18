@@ -27,6 +27,7 @@ use std::time::Duration;
 use thiserror::Error;
 
 pub mod backend;
+pub mod chain_runner;
 pub mod env;
 pub mod payload_runner;
 pub mod shim;
@@ -36,6 +37,10 @@ pub use backend::birdcage::BirdcageSandbox;
 pub use backend::firecracker::{firecracker_host_supported, FirecrackerSandbox, FirecrackerSpec};
 pub use backend::libkrun::{libkrun_host_supported, LibkrunSandbox, LibkrunSpec};
 pub use backend::process::ProcessSandbox;
+pub use chain_runner::{
+    ChainResult, ChainRun, ChainRunner, ChainRunnerError, ChainStep, ChainStepCapture,
+    ChainVerdict, InconclusiveReason,
+};
 pub use payload_runner::{
     HarnessSource, HarnessSpecInput, PayloadRun, PayloadRunner, PayloadRunnerError,
 };

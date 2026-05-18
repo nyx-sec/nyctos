@@ -379,20 +379,20 @@ impl RunCapture {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum HarnessLang {
+pub(crate) enum HarnessLang {
     Python,
     Shell,
 }
 
 impl HarnessLang {
-    fn script_ext(self) -> &'static str {
+    pub(crate) fn script_ext(self) -> &'static str {
         match self {
             HarnessLang::Python => ".py",
             HarnessLang::Shell => ".sh",
         }
     }
 
-    fn argv(self, harness_rel: &Path) -> Vec<String> {
+    pub(crate) fn argv(self, harness_rel: &Path) -> Vec<String> {
         let path = harness_rel.to_string_lossy().to_string();
         match self {
             HarnessLang::Python => vec!["python3".to_string(), path],
@@ -401,7 +401,7 @@ impl HarnessLang {
     }
 }
 
-fn pick_lang(lang: &str) -> Result<HarnessLang, PayloadRunnerError> {
+pub(crate) fn pick_lang(lang: &str) -> Result<HarnessLang, PayloadRunnerError> {
     match lang.trim().to_lowercase().as_str() {
         "python" | "python3" | "py" => Ok(HarnessLang::Python),
         "sh" | "shell" | "bash" => Ok(HarnessLang::Shell),
@@ -416,7 +416,7 @@ fn payload_filename(label: &str) -> String {
 /// Render the synthesised harness body. Splices `payload` into the
 /// `invoke` template at the `@PAYLOAD` slot using lang-appropriate
 /// literal quoting.
-fn render_synthesised(spec: &HarnessSpecInput, lang: HarnessLang, payload: &[u8]) -> Vec<u8> {
+pub(crate) fn render_synthesised(spec: &HarnessSpecInput, lang: HarnessLang, payload: &[u8]) -> Vec<u8> {
     let literal = match lang {
         HarnessLang::Python => python_literal(payload),
         HarnessLang::Shell => shell_literal(payload),
@@ -475,14 +475,14 @@ fn shell_literal(payload: &[u8]) -> String {
     s
 }
 
-fn bytes_contains(haystack: &[u8], needle: &[u8]) -> bool {
+pub(crate) fn bytes_contains(haystack: &[u8], needle: &[u8]) -> bool {
     if needle.is_empty() {
         return false;
     }
     haystack.windows(needle.len()).any(|w| w == needle)
 }
 
-fn classify_status(status: SandboxStatus) -> (i32, bool) {
+pub(crate) fn classify_status(status: SandboxStatus) -> (i32, bool) {
     match status {
         SandboxStatus::Exited(code) => (code, false),
         SandboxStatus::Signaled(sig) => (128 + sig, false),
