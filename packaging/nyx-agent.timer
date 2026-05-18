@@ -1,0 +1,14 @@
+[Unit]
+Description=Trigger a weekly nyx-agent scan
+Documentation=https://nyctos.dev/docs/triggers/
+
+[Timer]
+# 03:00 every Monday — matches the Phase 27 acceptance fixture
+# (`0 3 * * 1`). Operators can override by dropping a unit file at
+# /etc/systemd/system/nyx-agent.timer.d/override.conf.
+OnCalendar=Mon *-*-* 03:00:00
+Persistent=true
+Unit=nyx-agent-scan.service
+
+[Install]
+WantedBy=timers.target

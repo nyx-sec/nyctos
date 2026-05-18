@@ -35,6 +35,11 @@ pub enum ScanTriggerError {
     Rejected(String),
     #[error("daemon is shutting down")]
     Closed,
+    /// Phase 27: the scan request queue is full. The API maps this to
+    /// HTTP 429 so external schedulers / webhooks / CI loops back off
+    /// instead of stalling on `send().await`.
+    #[error("scan request queue is full: {0}")]
+    Backpressure(String),
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -219,6 +224,10 @@ pub struct ServerState {
     /// and stamps a `repro_bundles` row pointing at the resulting path.
     /// `None` in tests that do not exercise bundle creation.
     pub state_bundles_dir: Option<PathBuf>,
+    /// Phase 27: `POST /webhook/git` config. `None` disables the route
+    /// (the daemon hands a populated struct only when the operator has
+    /// configured `triggers.webhook_secret_ref`).
+    pub webhook: Option<Arc<crate::webhook::WebhookConfig>>,
 }
 
 impl ServerState {
@@ -238,6 +247,7 @@ impl ServerState {
             replay: Arc::new(EventReplay::new()),
             state_repos_dir: None,
             state_bundles_dir: None,
+            webhook: None,
         }
     }
 
@@ -252,6 +262,13 @@ impl ServerState {
     /// handler can write `<state_bundles_dir>/<finding-id>.tar`.
     pub fn with_state_bundles_dir(mut self, dir: PathBuf) -> Self {
         self.state_bundles_dir = Some(dir);
+        self
+    }
+
+    /// Phase 27: enable `POST /webhook/git`. The handler returns the
+    /// standard error envelope (HTTP 500) when this is not called.
+    pub fn with_webhook(mut self, cfg: crate::webhook::WebhookConfig) -> Self {
+        self.webhook = Some(Arc::new(cfg));
         self
     }
 }
@@ -287,6 +304,9 @@ impl IntoResponse for ApiError {
             }
             ApiError::Scan(ScanTriggerError::Closed) => {
                 (StatusCode::SERVICE_UNAVAILABLE, "shutting_down")
+            }
+            ApiError::Scan(ScanTriggerError::Backpressure(_)) => {
+                (StatusCode::TOO_MANY_REQUESTS, "scan_backpressure")
             }
             ApiError::Scan(ScanTriggerError::Internal(_)) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, "scan_internal")

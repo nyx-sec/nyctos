@@ -11,8 +11,8 @@ pub mod store;
 
 pub use config::{
     AiConfig, AiRuntime, Config, ConfigError, GeneralConfig, NyxConfig, PerformanceConfig,
-    RepoConfig, RepoSourceConfig, RunConfig, SandboxBackend, SandboxConfig, TriggersConfig,
-    UiConfig,
+    RepoConfig, RepoSourceConfig, RunConfig, SandboxBackend, SandboxConfig, ScheduleConfig,
+    TriggersConfig, UiConfig,
 };
 pub use log_init::{init as init_logging, json_log_path, LogConfig, LogInitError};
 pub use repo::{ingest, GitAuth, IngestError, IngestedRepo, Repo, RepoSource, SnapshotBackend};

@@ -1002,3 +1002,157 @@ async fn repro_bundle_endpoint_builds_and_downloads() {
 
     h.abort();
 }
+
+// ---- /webhook/git (Phase 27) ------------------------------------------------
+
+async fn start_webhook_server(
+    secret: &[u8],
+    branch: Option<&str>,
+    repo: Option<&str>,
+) -> (std::net::SocketAddr, Arc<RecordingTrigger>, tokio::task::JoinHandle<()>, tempfile::TempDir)
+{
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = Store::open(tmp.path()).await.expect("open store");
+    let (events, _rx) = broadcast::channel::<AgentEvent>(64);
+    let config_path = tmp.path().join("nyx-agent.toml");
+    let setup =
+        SetupContext::new(config_path, Config::default(), true, SecretStore::memory());
+    let trigger = Arc::new(RecordingTrigger::default());
+    let scan_trigger: Arc<dyn ScanTrigger> = trigger.clone();
+    let state = ServerState::new(store, events, scan_trigger, setup, AuthConfig::default())
+        .with_webhook(nyx_agent_api::WebhookConfig {
+            secret: Arc::new(nyx_agent_api::StaticSecretResolver {
+                secret: Some(secret.to_vec()),
+            }),
+            branch: branch.map(str::to_string),
+            repo: repo.map(str::to_string),
+        });
+    let app = build_router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let handle = tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    (addr, trigger, handle, tmp)
+}
+
+#[derive(Default)]
+struct RecordingTrigger {
+    calls: tokio::sync::Mutex<Vec<Option<String>>>,
+}
+
+impl ScanTrigger for RecordingTrigger {
+    fn trigger<'a>(
+        &'a self,
+        repo: Option<String>,
+    ) -> Pin<Box<dyn Future<Output = Result<String, ScanTriggerError>> + Send + 'a>> {
+        Box::pin(async move {
+            let mut g = self.calls.lock().await;
+            let id = format!("run-{}", g.len());
+            g.push(repo);
+            Ok(id)
+        })
+    }
+}
+
+#[tokio::test]
+async fn webhook_with_valid_hmac_triggers_scan() {
+    let secret = b"shared-secret";
+    let (addr, trigger, h, _tmp) =
+        start_webhook_server(secret, Some("main"), None).await;
+    let body = br#"{"ref":"refs/heads/main","after":"deadbeef"}"#.to_vec();
+    let sig = nyx_agent_api::sign_webhook(secret, &body);
+    let url = format!("http://{}/webhook/git", addr);
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&url)
+        .header("X-Hub-Signature-256", &sig)
+        .header("content-type", "application/json")
+        .body(body)
+        .send()
+        .await
+        .expect("post");
+    assert_eq!(resp.status(), reqwest::StatusCode::ACCEPTED);
+    let v: Value = resp.json().await.expect("json");
+    assert_eq!(v["triggered"], Value::Bool(true));
+    assert!(v["run_id"].as_str().is_some());
+    let calls = trigger.calls.lock().await.clone();
+    assert_eq!(calls.len(), 1, "trigger fired exactly once");
+    h.abort();
+}
+
+#[tokio::test]
+async fn webhook_with_invalid_hmac_returns_401() {
+    let secret = b"shared-secret";
+    let (addr, trigger, h, _tmp) = start_webhook_server(secret, None, None).await;
+    let body = br#"{"ref":"refs/heads/main"}"#.to_vec();
+    let bad_sig = nyx_agent_api::sign_webhook(b"wrong-secret", &body);
+    let url = format!("http://{}/webhook/git", addr);
+    let resp = reqwest::Client::new()
+        .post(&url)
+        .header("X-Hub-Signature-256", &bad_sig)
+        .header("content-type", "application/json")
+        .body(body)
+        .send()
+        .await
+        .expect("post");
+    assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+    let calls = trigger.calls.lock().await.clone();
+    assert!(calls.is_empty(), "invalid HMAC must not trigger");
+    h.abort();
+}
+
+#[tokio::test]
+async fn webhook_missing_signature_returns_401() {
+    let secret = b"shared-secret";
+    let (addr, trigger, h, _tmp) = start_webhook_server(secret, None, None).await;
+    let url = format!("http://{}/webhook/git", addr);
+    let resp = reqwest::Client::new()
+        .post(&url)
+        .header("content-type", "application/json")
+        .body(br#"{"ref":"refs/heads/main"}"#.to_vec())
+        .send()
+        .await
+        .expect("post");
+    assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+    let calls = trigger.calls.lock().await.clone();
+    assert!(calls.is_empty());
+    h.abort();
+}
+
+#[tokio::test]
+async fn webhook_wrong_branch_is_skipped_not_triggered() {
+    let secret = b"shared-secret";
+    let (addr, trigger, h, _tmp) = start_webhook_server(secret, Some("main"), None).await;
+    let body = br#"{"ref":"refs/heads/topic-branch"}"#.to_vec();
+    let sig = nyx_agent_api::sign_webhook(secret, &body);
+    let url = format!("http://{}/webhook/git", addr);
+    let resp = reqwest::Client::new()
+        .post(&url)
+        .header("X-Hub-Signature-256", &sig)
+        .header("content-type", "application/json")
+        .body(body)
+        .send()
+        .await
+        .expect("post");
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    let v: Value = resp.json().await.expect("json");
+    assert_eq!(v["triggered"], Value::Bool(false));
+    let calls = trigger.calls.lock().await.clone();
+    assert!(calls.is_empty(), "branch filter must short-circuit");
+    h.abort();
+}
+
+#[tokio::test]
+async fn webhook_disabled_returns_500_envelope() {
+    let server = TestServer::start().await;
+    let resp = reqwest::Client::new()
+        .post(format!("{}/webhook/git", server.base()))
+        .header("X-Hub-Signature-256", "sha256=00")
+        .body("{}")
+        .send()
+        .await
+        .expect("post");
+    assert_eq!(resp.status(), reqwest::StatusCode::INTERNAL_SERVER_ERROR);
+    server.handle.abort();
+}

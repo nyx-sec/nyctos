@@ -1,0 +1,38 @@
+[Unit]
+Description=One-shot nyx-agent scan
+Documentation=https://nyctos.dev/docs/triggers/
+After=network-online.target nyx-agent.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Driven by `nyx-agent.timer`. Targets the locally running daemon's
+# manual-trigger endpoint; the daemon owns the dispatcher, this unit
+# just kicks the run.
+ExecStart=/usr/local/bin/nyx-agent scan --headless
+
+# Same uid + state layout as `nyx-agent.service` so the timer-driven
+# scan writes into the same SQLite database the long-running daemon
+# manages. Without `DynamicUser` + `StateDirectory` the unit would
+# default to running as root with its own state directory, splitting
+# the operator-visible scan history across two paths.
+DynamicUser=yes
+StateDirectory=nyx-agent
+WorkingDirectory=%S/nyx-agent
+Environment=NYX_AGENT_STATE_DIR=%S/nyx-agent
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+PrivateTmp=true
+PrivateDevices=true
+SystemCallArchitectures=native
+AmbientCapabilities=
+CapabilityBoundingSet=

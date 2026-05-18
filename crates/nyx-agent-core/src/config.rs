@@ -40,6 +40,12 @@ pub struct Config {
     pub run: RunConfig,
     #[serde(rename = "repo", default)]
     pub repos: Vec<RepoConfig>,
+    /// Phase 27: cron-driven scan schedule entries. Each entry pairs a
+    /// 5-field cron expression with an optional repo filter (`None`
+    /// scans every enabled repo). The daemon's scheduler task evaluates
+    /// every entry once per minute.
+    #[serde(rename = "schedule", default)]
+    pub schedules: Vec<ScheduleConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -263,6 +269,40 @@ pub struct TriggersConfig {
     pub on_push: bool,
     pub on_pr: bool,
     pub schedule_cron: Option<String>,
+    /// Phase 27: HMAC-SHA256 secret for `POST /webhook/git`. When
+    /// unset, the webhook handler returns 503 so a misconfigured host
+    /// cannot accept unauthenticated triggers.
+    #[serde(default)]
+    pub webhook_secret_ref: Option<String>,
+    /// Optional branch filter for the webhook. When set, the handler
+    /// only triggers a scan if the payload's branch ref matches.
+    /// `None` accepts any branch.
+    #[serde(default)]
+    pub webhook_branch: Option<String>,
+}
+
+/// Phase 27: one `[[schedule]]` entry. A 5-field cron expression plus
+/// an optional repo filter. When `repo` is `None` the scheduler runs
+/// against every enabled repo (i.e. the same shape as the API's
+/// manual-scan endpoint with no `repo=` query).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScheduleConfig {
+    /// 5-field cron expression (minute hour day-of-month month day-of-week).
+    /// Example: `0 3 * * 1` = 03:00 every Monday.
+    pub cron: String,
+    /// Limit the run to a single configured repo. `None` scans every
+    /// enabled repo.
+    #[serde(default)]
+    pub repo: Option<String>,
+    /// Operator-readable label surfaced in tracing spans and the UI.
+    /// Default `"scheduled"`.
+    #[serde(default = "default_schedule_label")]
+    pub label: String,
+}
+
+fn default_schedule_label() -> String {
+    "scheduled".to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -368,6 +408,8 @@ mod tests {
                 on_push: true,
                 on_pr: true,
                 schedule_cron: Some("0 * * * *".to_string()),
+                webhook_secret_ref: Some("env:NYX_WEBHOOK_SECRET".to_string()),
+                webhook_branch: Some("main".to_string()),
             },
             nyx: NyxConfig {
                 binary_path: Some(PathBuf::from("/opt/nyx/bin/nyx")),
@@ -394,6 +436,11 @@ mod tests {
                     enabled: true,
                 },
             ],
+            schedules: vec![ScheduleConfig {
+                cron: "0 3 * * 1".to_string(),
+                repo: Some("nyx-pro".to_string()),
+                label: "weekly-monday-3am".to_string(),
+            }],
         };
         let rendered = cfg.to_toml_string().expect("serialise");
         let parsed = Config::parse(&rendered, &PathBuf::from("<test>")).expect("parse");

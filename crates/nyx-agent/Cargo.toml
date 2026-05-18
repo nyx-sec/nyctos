@@ -21,7 +21,9 @@ nyx-agent-ui = { path = "../nyx-agent-ui" }
 anyhow = { workspace = true }
 async-trait = "0.1"
 axum = { workspace = true }
+chrono = { workspace = true }
 clap = { workspace = true }
+cron = { workspace = true }
 reqwest = { workspace = true }
 semver = { workspace = true }
 serde = { workspace = true }

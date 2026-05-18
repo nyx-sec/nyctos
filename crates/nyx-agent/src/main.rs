@@ -8,7 +8,8 @@ use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use nyx_agent_api::{
-    build_router, AuthConfig, ScanTrigger, ScanTriggerError, ServerState, SetupContext,
+    build_router, AuthConfig, EnvSecretResolver, ScanTrigger, ScanTriggerError, ServerState,
+    SetupContext, WebhookConfig,
 };
 use nyx_agent_core::store::{finding_id_hash, FindingRecord, RepoRecord, RunRecord};
 use nyx_agent_core::{
@@ -23,6 +24,7 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 
 mod ai_pipeline;
 mod cmd;
+mod scheduler;
 
 const ANSI_RESET: &str = "\x1b[0m";
 const ANSI_NYX_GREEN: &str = "\x1b[38;2;46;160;103m";
@@ -889,10 +891,25 @@ async fn serve(
     let auth_config = AuthConfig::new(auth_token.clone());
 
     let ui_bootstrap = Arc::new(nyx_agent_ui::UiBootstrap { auth_token: auth_token.clone() });
-    let server_state =
-        ServerState::new(store.clone(), events_tx.clone(), trigger, setup, auth_config)
+    let mut server_state =
+        ServerState::new(store.clone(), events_tx.clone(), trigger.clone(), setup, auth_config)
             .with_state_repos_dir(state_dir.repos())
             .with_state_bundles_dir(state_dir.bundles());
+
+    // Phase 27: enable `POST /webhook/git` when the operator has
+    // configured a shared secret. Resolves the env-backed ref on each
+    // request so a wizard rotate flow does not require a daemon
+    // restart.
+    if config.triggers.webhook_secret_ref.is_some() {
+        let resolver = Arc::new(EnvSecretResolver {
+            spec: config.triggers.webhook_secret_ref.clone(),
+        });
+        server_state = server_state.with_webhook(WebhookConfig {
+            secret: resolver,
+            branch: config.triggers.webhook_branch.clone(),
+            repo: None,
+        });
+    }
 
     // Tap the broadcast channel and feed every event into the per-run
     // replay buffer so WS clients that attach after a scan kicks off
@@ -954,12 +971,37 @@ async fn serve(
         });
     }
 
+    // Phase 27: spawn the cron scheduler when at least one
+    // `[[schedule]]` entry is configured. The watch channel is the
+    // shutdown signal — flipping it to `true` ends the loop.
+    let (scheduler_shutdown_tx, scheduler_shutdown_rx) = tokio::sync::watch::channel(false);
+    let scheduler_handle = if config.schedules.is_empty() {
+        None
+    } else {
+        match scheduler::Scheduler::from_config(&config.schedules, trigger.clone()) {
+            Ok(s) => {
+                let rx = scheduler_shutdown_rx.clone();
+                Some(tokio::spawn(async move {
+                    s.run(scheduler::DEFAULT_TICK_INTERVAL, rx).await;
+                }))
+            }
+            Err(err) => {
+                eprintln!("warn: scheduler refused config: {err}");
+                None
+            }
+        }
+    };
+
     let shutdown = async {
         let _ = tokio::signal::ctrl_c().await;
     };
 
     let serve_result = axum::serve(listener, app).with_graceful_shutdown(shutdown).await;
     scan_worker.abort();
+    let _ = scheduler_shutdown_tx.send(true);
+    if let Some(h) = scheduler_handle {
+        h.abort();
+    }
     store.close().await;
     serve_result.map_err(|e| anyhow::anyhow!("http server: {e}"))?;
     Ok(ExitCode::SUCCESS)
@@ -1028,10 +1070,18 @@ impl ScanTrigger for MpscScanTrigger {
     ) -> Pin<Box<dyn Future<Output = Result<String, ScanTriggerError>> + Send + 'a>> {
         Box::pin(async move {
             let (reply, rx) = oneshot::channel();
-            self.tx
-                .send(ScanRequest { repo, reply })
-                .await
-                .map_err(|_| ScanTriggerError::Closed)?;
+            // Phase 27: non-blocking submit so an external scheduler /
+            // webhook / CI loop sees a fast HTTP 429 instead of stalling
+            // on `send().await` when the dispatcher is saturated. The
+            // bound is set in `serve()`; raise it there if a real load
+            // profile demands a deeper queue.
+            self.tx.try_send(ScanRequest { repo, reply }).map_err(|err| match err {
+                mpsc::error::TrySendError::Full(_) => ScanTriggerError::Backpressure(
+                    "scan request queue is full; retry after the current run completes"
+                        .to_string(),
+                ),
+                mpsc::error::TrySendError::Closed(_) => ScanTriggerError::Closed,
+            })?;
             rx.await.map_err(|_| ScanTriggerError::Closed)?
         })
     }

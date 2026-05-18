@@ -75,6 +75,7 @@ pub fn build_router(state: ServerState) -> Router {
         .route("/api/v1/quarantine/:id/promote", post(promote_quarantine))
         .route("/api/v1/quarantine/:id/dismiss", post(dismiss_quarantine))
         .route("/api/v1/events", get(events_ws))
+        .route("/webhook/git", post(crate::webhook::webhook_git))
         .layer(middleware::from_fn_with_state(state.clone(), auth_layer))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -109,7 +110,9 @@ async fn auth_layer(
 }
 
 fn is_always_open(path: &str) -> bool {
-    path == "/api/v1/health"
+    // `/webhook/git` carries its own HMAC auth so bypass the bearer
+    // gate; the handler refuses on bad signature.
+    path == "/api/v1/health" || path == "/webhook/git"
 }
 
 fn is_setup_path(path: &str) -> bool {

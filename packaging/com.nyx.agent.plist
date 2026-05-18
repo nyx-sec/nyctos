@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.nyx.agent</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/nyx-agent</string>
+        <string>serve</string>
+        <string>--headless</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Phase 27 acceptance: a `0 3 * * 1` cron entry triggers a run
+         every Monday at 03:00. launchd does not consume a cron string
+         directly; the calendar interval below is the launchd-native
+         equivalent. The in-process Rust scheduler also reads
+         `[[schedule]]` entries from `nyx-agent.toml`; pick one path
+         per host (this plist is here for operators who prefer launchd
+         to manage the kick). -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Weekday</key>
+        <integer>1</integer>
+        <key>Hour</key>
+        <integer>3</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>WorkingDirectory</key>
+    <string>/usr/local/var/lib/nyx-agent</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>NYX_AGENT_STATE_DIR</key>
+        <string>/usr/local/var/lib/nyx-agent</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/usr/local/var/log/nyx-agent.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/usr/local/var/log/nyx-agent.err.log</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>
