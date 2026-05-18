@@ -22,6 +22,7 @@ use semver::Version;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 mod ai_pipeline;
+mod cmd;
 
 const ANSI_RESET: &str = "\x1b[0m";
 const ANSI_NYX_GREEN: &str = "\x1b[38;2;46;160;103m";
@@ -74,6 +75,55 @@ enum Command {
         /// repo.
         #[arg(long = "repo", value_name = "REPO")]
         repos: Vec<String>,
+        /// Run without opening a browser or prompting. Scan never does
+        /// either, so this is accepted for compatibility with CI
+        /// invocations that re-use the flag from `serve`.
+        #[arg(long)]
+        headless: bool,
+        /// Write a machine-readable JSON report to `PATH`. Consumed by
+        /// `pr-comment --report` and by external dashboards.
+        #[arg(long, value_name = "PATH")]
+        output: Option<PathBuf>,
+        /// Filter the report to findings whose `path` differs from
+        /// `REF` (i.e. only paths the PR / branch touched). Computed
+        /// per workspace via `git diff --name-only REF...HEAD`. When
+        /// the diff cannot be computed, scan exits non-zero so CI
+        /// loudly surfaces the misconfiguration.
+        #[arg(long, value_name = "REF")]
+        since_ref: Option<String>,
+    },
+    /// Post (or update) a dedup'd PR comment summarising Confirmed +
+    /// cross-repo chain findings from a previous `scan --output` run.
+    ///
+    /// The comment lives in the operator's GitHub PR; everything else
+    /// (Open, Quarantine, Inconclusive, AI trace viewer, repro
+    /// bundles) stays in the operator's local UI.
+    PrComment {
+        /// Path to `report.json` (produced by `scan --output`).
+        #[arg(long, value_name = "PATH")]
+        report: PathBuf,
+        /// GitHub repository in `owner/repo` form. Defaults to
+        /// `$GITHUB_REPOSITORY` when running inside an Actions
+        /// workflow.
+        #[arg(long, value_name = "OWNER/REPO", env = "GITHUB_REPOSITORY")]
+        repo: String,
+        /// Pull request number. Defaults to the integer parsed from
+        /// `$GITHUB_REF` when it matches `refs/pull/<N>/merge` or
+        /// `refs/pull/<N>/head`.
+        #[arg(long, value_name = "N")]
+        pr: Option<u32>,
+        /// Base URL of the operator's local UI. Findings link back
+        /// here. Trailing slash optional.
+        #[arg(long, value_name = "URL")]
+        ui_url: Option<String>,
+        /// GitHub REST base. Override for GHE; defaults to
+        /// `https://api.github.com`.
+        #[arg(long, value_name = "URL", default_value = cmd::pr_comment::DEFAULT_GH_API_BASE)]
+        gh_api: String,
+        /// Environment variable to read the GitHub token from. The
+        /// token never appears in argv or logs.
+        #[arg(long, value_name = "ENV", default_value = "GITHUB_TOKEN")]
+        token_env: String,
     },
     /// Re-verify a previous finding by run/finding id.
     Reverify {
@@ -160,9 +210,21 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         open_cmd: None,
     }) {
         Command::Doctor => doctor(&state_dir, &config_path, &log_cfg, &config).await,
-        Command::Scan { repos } => {
+        Command::Scan { repos, headless: _, output, since_ref } => {
             nyx_agent_core::init_logging(&log_cfg)?;
-            scan(&state_dir, &config, &repos, "Manual").await
+            scan(
+                &state_dir,
+                &config,
+                &repos,
+                "Manual",
+                output.as_deref(),
+                since_ref.as_deref(),
+            )
+            .await
+        }
+        Command::PrComment { report, repo, pr, ui_url, gh_api, token_env } => {
+            nyx_agent_core::init_logging(&log_cfg)?;
+            pr_comment_cmd(&report, repo, pr, ui_url, gh_api, &token_env).await
         }
         Command::Serve { listen, no_open, headless, open_cmd } => {
             nyx_agent_core::init_logging(&log_cfg)?;
@@ -304,6 +366,8 @@ async fn scan(
     config: &Config,
     requested: &[String],
     triggered_by: &str,
+    output_path: Option<&std::path::Path>,
+    since_ref: Option<&str>,
 ) -> anyhow::Result<ExitCode> {
     let selected = select_repos(config, requested)?;
     if selected.is_empty() {
@@ -321,7 +385,18 @@ async fn scan(
     // identical to the API path. The receiver immediately drops, which makes
     // every send a no-op short of a clone.
     let (events_tx, _events_rx) = broadcast::channel::<AgentEvent>(16);
-    let result = drive_scan(state_dir, config, &store, selected, &run, events_tx, true).await;
+    let result = drive_scan(
+        state_dir,
+        config,
+        &store,
+        selected,
+        &run,
+        events_tx,
+        true,
+        output_path,
+        since_ref,
+    )
+    .await;
 
     match result {
         Ok(report) => {
@@ -386,6 +461,7 @@ fn build_run_record(run: &Run, triggered_by: &str) -> RunRecord {
 /// the per-repo ingest println the CLI prints; the API path stays
 /// quiet because the WebSocket already streams `RepoStarted` /
 /// `RepoFinished` to subscribers.
+#[allow(clippy::too_many_arguments)]
 async fn drive_scan(
     state_dir: &StateDir,
     config: &Config,
@@ -394,6 +470,8 @@ async fn drive_scan(
     run: &Run,
     events: EventSink,
     verbose: bool,
+    output_path: Option<&std::path::Path>,
+    since_ref: Option<&str>,
 ) -> anyhow::Result<ScanReport> {
     let now_ms = now_epoch_ms();
     let state_repos = state_dir.repos();
@@ -704,14 +782,40 @@ async fn drive_scan(
 
     let counts = bundle.counts();
     let success = counts.failed == 0 && ingest_failures.is_empty();
-    finalise_run(
-        store,
-        &run.id,
-        run.started_at_ms,
-        bundle.wall_clock_ms,
-        if success { "Succeeded" } else { "Failed" },
-    )
-    .await?;
+    let final_status = if success { "Succeeded" } else { "Failed" };
+    finalise_run(store, &run.id, run.started_at_ms, bundle.wall_clock_ms, final_status).await?;
+
+    if let Some(path) = output_path {
+        let changed = match since_ref {
+            Some(ref_name) => Some(collect_changed_files(&workspaces_for_ai, ref_name).await?),
+            None => None,
+        };
+        let started_at = run.started_at_ms;
+        let finished_at = started_at + bundle.wall_clock_ms;
+        let meta = cmd::scan_report::RunMeta {
+            started_at,
+            finished_at: Some(finished_at),
+            status: final_status,
+            triggered_by: "Manual",
+        };
+        let report = cmd::scan_report::build_report(
+            store,
+            &run.id,
+            meta,
+            since_ref,
+            changed.as_ref(),
+        )
+        .await?;
+        report.write(path)?;
+        if verbose {
+            println!(
+                "scan: wrote report to {} ({} finding(s), {} chain(s))",
+                path.display(),
+                report.findings.len(),
+                report.chains.len()
+            );
+        }
+    }
 
     let per_repo = bundle
         .per_repo
@@ -967,7 +1071,8 @@ async fn run_scan_for_api(
     let cfg = config.clone();
     let sd = state_dir.clone();
     tokio::spawn(async move {
-        let res = drive_scan(&sd, &cfg, &store, selected, &run, events, false).await;
+        let res =
+            drive_scan(&sd, &cfg, &store, selected, &run, events, false, None, None).await;
         store.close().await;
         if let Err(err) = res {
             eprintln!("scan (api): {err:#}");
@@ -1088,6 +1193,122 @@ fn select_repos(config: &Config, requested: &[String]) -> anyhow::Result<Vec<Rep
         out.push(Repo::from_config(cfg)?);
     }
     Ok(out)
+}
+
+/// Run `git diff --name-only --diff-filter=AMR REF...HEAD` in each
+/// workspace and collect the resulting paths keyed by repo name.
+async fn collect_changed_files(
+    workspaces: &HashMap<String, WorkspaceHandle>,
+    since_ref: &str,
+) -> anyhow::Result<HashMap<String, std::collections::HashSet<String>>> {
+    if since_ref.starts_with('-') {
+        anyhow::bail!(
+            "scan: --since-ref `{since_ref}` must not start with `-` (would be parsed as a git option)"
+        );
+    }
+    let mut out: HashMap<String, std::collections::HashSet<String>> = HashMap::new();
+    for (name, handle) in workspaces {
+        let workspace = handle.workspace().to_path_buf();
+        let ref_name = since_ref.to_string();
+        let output = tokio::process::Command::new("git")
+            .arg("-C")
+            .arg(&workspace)
+            .arg("diff")
+            .arg("--name-only")
+            .arg("--diff-filter=AMR")
+            .arg("--end-of-options")
+            .arg(format!("{ref_name}...HEAD"))
+            .output()
+            .await
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "scan: failed to spawn `git diff` in workspace {} for repo `{name}`: {e}",
+                    workspace.display()
+                )
+            })?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!(
+                "scan: `git diff {ref_name}...HEAD` in workspace {} for repo `{name}` failed: {stderr}",
+                workspace.display()
+            );
+        }
+        let set = out.entry(name.clone()).or_default();
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                set.insert(trimmed.to_string());
+            }
+        }
+    }
+    Ok(out)
+}
+
+async fn pr_comment_cmd(
+    report_path: &std::path::Path,
+    repo: String,
+    pr: Option<u32>,
+    ui_url: Option<String>,
+    gh_api: String,
+    token_env: &str,
+) -> anyhow::Result<ExitCode> {
+    let token = match std::env::var(token_env) {
+        Ok(v) if !v.is_empty() => v,
+        _ => {
+            eprintln!("pr-comment: env var `{token_env}` is empty or unset");
+            return Ok(ExitCode::from(1));
+        }
+    };
+    let pr_number = match pr.or_else(detect_pr_from_env) {
+        Some(n) => n,
+        None => {
+            eprintln!(
+                "pr-comment: --pr not provided and could not be derived from $GITHUB_REF / $GITHUB_EVENT_PATH"
+            );
+            return Ok(ExitCode::from(1));
+        }
+    };
+    let cfg = cmd::pr_comment::PrCommentConfig {
+        repo,
+        pr: pr_number,
+        token,
+        ui_url,
+        gh_api,
+    };
+    match cmd::pr_comment::run(report_path, cfg).await {
+        Ok(outcome) => {
+            if outcome.skipped_empty {
+                println!(
+                    "pr-comment: report contains no Confirmed or cross-repo chain findings; skipping comment"
+                );
+            } else if outcome.updated_existing {
+                println!(
+                    "pr-comment: updated existing comment ({} finding(s), {} chain(s))",
+                    outcome.posted_findings, outcome.posted_chains
+                );
+            } else {
+                println!(
+                    "pr-comment: created comment ({} finding(s), {} chain(s))",
+                    outcome.posted_findings, outcome.posted_chains
+                );
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Err(err) => {
+            eprintln!("pr-comment: {err}");
+            Ok(ExitCode::from(1))
+        }
+    }
+}
+
+/// Best-effort PR number recovery from the GitHub Actions environment.
+/// Honours `$GITHUB_REF` of the shape `refs/pull/<N>/{merge,head}` -
+/// the standard `pull_request` trigger sets it.
+fn detect_pr_from_env() -> Option<u32> {
+    let r = std::env::var("GITHUB_REF").ok()?;
+    let rest = r.strip_prefix("refs/pull/")?;
+    let (num, _) = rest.split_once('/')?;
+    num.parse().ok()
 }
 
 fn report_ingest_error(name: &str, err: &IngestError) {

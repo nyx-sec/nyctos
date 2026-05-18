@@ -1,0 +1,319 @@
+//! `report.json` written by `scan --output` and consumed by
+//! `pr-comment --report`.
+//!
+//! The shape captures the per-run finding + chain inventory plus
+//! optional metadata about the `--since-ref` filter that produced it.
+//! Everything pr-comment needs to render a grouped comment is here -
+//! no live store lookup is required at comment time, so CI can run
+//! `pr-comment` on a runner that never touched SQLite.
+
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
+
+use nyx_agent_core::store::{ChainRecord, FindingRecord, Store, StoreError};
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScanReport {
+    pub schema_version: u32,
+    pub run_id: String,
+    pub started_at: i64,
+    pub finished_at: Option<i64>,
+    pub status: String,
+    pub triggered_by: String,
+    /// Repositories included in this report. Sorted for stable diffs.
+    pub repos: Vec<String>,
+    /// Echoed back from `--since-ref` so the comment surface can show
+    /// the operator which base the diff was computed against. `None`
+    /// when scan ran without the flag.
+    pub since_ref: Option<String>,
+    pub findings: Vec<ReportFinding>,
+    pub chains: Vec<ReportChain>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReportFinding {
+    pub id: String,
+    pub repo: String,
+    pub path: String,
+    pub line: Option<i64>,
+    pub cap: String,
+    pub rule: String,
+    pub severity: String,
+    pub status: String,
+    pub finding_origin: String,
+    pub chain_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReportChain {
+    pub id: String,
+    pub cross_repo: bool,
+    pub member_ids: Vec<String>,
+    pub rationale: Option<String>,
+}
+
+pub const REPORT_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, thiserror::Error)]
+pub enum ScanReportError {
+    #[error("io error writing report to {path}: {source}")]
+    Write { path: String, source: std::io::Error },
+    #[error("io error reading report from {path}: {source}")]
+    Read { path: String, source: std::io::Error },
+    #[error("json error: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("store error: {0}")]
+    Store(#[from] StoreError),
+}
+
+impl ScanReport {
+    /// Read a report from disk. Used by `pr-comment`.
+    pub fn load(path: &Path) -> Result<Self, ScanReportError> {
+        let bytes = std::fs::read(path).map_err(|source| ScanReportError::Read {
+            path: path.display().to_string(),
+            source,
+        })?;
+        Ok(serde_json::from_slice(&bytes)?)
+    }
+
+    /// Serialise the report to `path` with stable, pretty-printed JSON.
+    pub fn write(&self, path: &Path) -> Result<(), ScanReportError> {
+        let json = serde_json::to_vec_pretty(self)?;
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent).map_err(|source| ScanReportError::Write {
+                    path: path.display().to_string(),
+                    source,
+                })?;
+            }
+        }
+        std::fs::write(path, json).map_err(|source| ScanReportError::Write {
+            path: path.display().to_string(),
+            source,
+        })?;
+        Ok(())
+    }
+}
+
+/// Read every persisted finding + chain for `run_id` and assemble a
+/// [`ScanReport`]. When `changed_files` is `Some`, findings whose
+/// `(repo, path)` is not in the set are dropped before serialisation.
+pub async fn build_report(
+    store: &Store,
+    run_id: &str,
+    run_meta: RunMeta<'_>,
+    since_ref: Option<&str>,
+    changed_files: Option<&HashMap<String, HashSet<String>>>,
+) -> Result<ScanReport, ScanReportError> {
+    let raw_findings = store.findings().list_by_run(run_id).await?;
+    let raw_chains = store.chains().list_by_run(run_id).await?;
+
+    let findings: Vec<ReportFinding> = raw_findings
+        .into_iter()
+        .filter(|f| keep_finding(f, changed_files))
+        .map(map_finding)
+        .collect();
+
+    let mut repos: Vec<String> = findings.iter().map(|f| f.repo.clone()).collect();
+    repos.sort();
+    repos.dedup();
+
+    Ok(ScanReport {
+        schema_version: REPORT_SCHEMA_VERSION,
+        run_id: run_id.to_string(),
+        started_at: run_meta.started_at,
+        finished_at: run_meta.finished_at,
+        status: run_meta.status.to_string(),
+        triggered_by: run_meta.triggered_by.to_string(),
+        repos,
+        since_ref: since_ref.map(|s| s.to_string()),
+        findings,
+        chains: raw_chains.into_iter().map(map_chain).collect(),
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct RunMeta<'a> {
+    pub started_at: i64,
+    pub finished_at: Option<i64>,
+    pub status: &'a str,
+    pub triggered_by: &'a str,
+}
+
+fn keep_finding(
+    f: &FindingRecord,
+    changed_files: Option<&HashMap<String, HashSet<String>>>,
+) -> bool {
+    match changed_files {
+        None => true,
+        Some(map) => map
+            .get(&f.repo)
+            .map(|paths| paths.contains(&f.path))
+            .unwrap_or(false),
+    }
+}
+
+fn map_finding(f: FindingRecord) -> ReportFinding {
+    ReportFinding {
+        id: f.id,
+        repo: f.repo,
+        path: f.path,
+        line: f.line,
+        cap: f.cap,
+        rule: f.rule,
+        severity: f.severity,
+        status: f.status,
+        finding_origin: f.finding_origin,
+        chain_id: f.chain_id,
+    }
+}
+
+fn map_chain(c: ChainRecord) -> ReportChain {
+    // `chains.member_ids` is persisted as a JSON-serialised
+    // `Vec<String>` by the chain reasoner; the testutil sometimes
+    // round-trips through the same shape and sometimes hands us a
+    // comma-separated list, so try JSON first and fall back to CSV.
+    let member_ids: Vec<String> = serde_json::from_str(&c.member_ids).unwrap_or_else(|_| {
+        c.member_ids
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    });
+    let rationale = c.rationale_blob.and_then(extract_rationale);
+    ReportChain {
+        id: c.id,
+        cross_repo: c.cross_repo,
+        member_ids,
+        rationale,
+    }
+}
+
+/// Pull the human-facing string out of the rationale blob the chain
+/// reasoner persists (`{"rationale": "..."}`); pass through whatever
+/// is there when the blob is not the expected shape so future schema
+/// changes do not silently swallow the value.
+fn extract_rationale(blob: String) -> Option<String> {
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&blob) {
+        if let Some(text) = v.get("rationale").and_then(|r| r.as_str()) {
+            return Some(text.to_string());
+        }
+    }
+    Some(blob)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn sample_finding(id: &str, repo: &str, path: &str) -> ReportFinding {
+        ReportFinding {
+            id: id.to_string(),
+            repo: repo.to_string(),
+            path: path.to_string(),
+            line: Some(42),
+            cap: "sqli".to_string(),
+            rule: "py.sqli".to_string(),
+            severity: "High".to_string(),
+            status: "Verified".to_string(),
+            finding_origin: "Static".to_string(),
+            chain_id: None,
+        }
+    }
+
+    #[test]
+    fn round_trip_through_disk() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("report.json");
+        let report = ScanReport {
+            schema_version: REPORT_SCHEMA_VERSION,
+            run_id: "run-1".into(),
+            started_at: 100,
+            finished_at: Some(200),
+            status: "Succeeded".into(),
+            triggered_by: "ci".into(),
+            repos: vec!["alpha".into(), "beta".into()],
+            since_ref: Some("origin/main".into()),
+            findings: vec![sample_finding("f-a", "alpha", "src/a.py")],
+            chains: vec![ReportChain {
+                id: "c1".into(),
+                cross_repo: true,
+                member_ids: vec!["f-a".into(), "f-b".into()],
+                rationale: Some("controller reaches sink".into()),
+            }],
+        };
+        report.write(&path).unwrap();
+        let loaded = ScanReport::load(&path).unwrap();
+        assert_eq!(loaded, report);
+    }
+
+    #[test]
+    fn keep_finding_with_changed_files_filter() {
+        let mut map: HashMap<String, HashSet<String>> = HashMap::new();
+        map.entry("alpha".into())
+            .or_default()
+            .insert("src/a.py".into());
+        let kept = FindingRecord {
+            id: "x".into(),
+            run_id: "r".into(),
+            repo: "alpha".into(),
+            path: "src/a.py".into(),
+            line: None,
+            cap: "sqli".into(),
+            rule: "r".into(),
+            severity: "High".into(),
+            status: "Open".into(),
+            finding_origin: "Static".into(),
+            first_seen: 0,
+            last_seen: 0,
+            superseded_by: None,
+            triage_state: "Open".into(),
+            triage_assigned_to: None,
+            verdict_blob: None,
+            repro_path: None,
+            attack_provenance: None,
+            prompt_version: None,
+            chain_id: None,
+        };
+        let dropped = FindingRecord { path: "src/b.py".into(), ..kept.clone() };
+        let other_repo = FindingRecord { repo: "beta".into(), ..kept.clone() };
+        assert!(keep_finding(&kept, Some(&map)));
+        assert!(!keep_finding(&dropped, Some(&map)));
+        assert!(!keep_finding(&other_repo, Some(&map)));
+        assert!(keep_finding(&dropped, None));
+    }
+
+    #[test]
+    fn map_chain_parses_json_member_ids() {
+        let raw = ChainRecord {
+            id: "c1".into(),
+            run_id: "r".into(),
+            cross_repo: true,
+            member_ids: r#"["a","b","c"]"#.into(),
+            rationale_blob: Some(r#"{"rationale":"controller reaches sink"}"#.into()),
+            attack_provenance: None,
+            prompt_version: None,
+        };
+        let mapped = map_chain(raw);
+        assert_eq!(mapped.member_ids, vec!["a", "b", "c"]);
+        assert_eq!(mapped.rationale.as_deref(), Some("controller reaches sink"));
+    }
+
+    #[test]
+    fn map_chain_falls_back_to_csv_when_not_json() {
+        let raw = ChainRecord {
+            id: "c2".into(),
+            run_id: "r".into(),
+            cross_repo: false,
+            member_ids: "a, b ,c".into(),
+            rationale_blob: Some("opaque blob".into()),
+            attack_provenance: None,
+            prompt_version: None,
+        };
+        let mapped = map_chain(raw);
+        assert_eq!(mapped.member_ids, vec!["a", "b", "c"]);
+        assert_eq!(mapped.rationale.as_deref(), Some("opaque blob"));
+    }
+}

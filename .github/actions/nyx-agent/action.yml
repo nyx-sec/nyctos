@@ -1,0 +1,100 @@
+name: 'nyx-agent scan'
+description: >
+  Run nyx-agent against the current checkout, write a machine-readable
+  report, and post (or update) a single dedup'd PR comment summarising
+  Confirmed + cross-repo chain findings. Everything else (Open,
+  Quarantine, Inconclusive, AI trace viewer, repro bundles) stays in
+  the operator's local UI.
+author: 'nyx'
+
+inputs:
+  nyx-agent-binary:
+    description: >
+      Path to the `nyx-agent` binary. Defaults to `nyx-agent` (PATH
+      lookup). Override when self-hosted runners install the binary in
+      a known location.
+    required: false
+    default: 'nyx-agent'
+  config:
+    description: >
+      Path to `nyx-agent.toml`. Defaults to `./nyx-agent.toml`. The
+      file must declare a `[[repo]]` block pointing at the current
+      checkout (`source.kind = "local-path"`, `path = "."`).
+    required: false
+    default: 'nyx-agent.toml'
+  state-dir:
+    description: >
+      Override the agent state directory. Defaults to a per-run
+      tempdir under `$RUNNER_TEMP` so CI runs do not pollute the host
+      cache.
+    required: false
+    default: ''
+  ui-url:
+    description: >
+      Base URL of the operator's local UI (e.g.
+      `https://nyx.example.internal`). The PR comment links each run
+      back to `<ui-url>/runs/<run_id>`. Leave empty to omit the link.
+    required: false
+    default: ''
+  gh-api:
+    description: >
+      GitHub REST base. Override for GitHub Enterprise; defaults to
+      `https://api.github.com`.
+    required: false
+    default: 'https://api.github.com'
+  gh-token:
+    description: >
+      GitHub token with `pull-requests: write` permission. Defaults to
+      `${{ github.token }}`. The token is consumed via the
+      `GITHUB_TOKEN` env var and never appears in argv.
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Resolve state directory
+      id: state
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ -n "${{ inputs.state-dir }}" ]; then
+          dir="${{ inputs.state-dir }}"
+        else
+          dir="${RUNNER_TEMP:-/tmp}/nyx-agent-state-$$"
+        fi
+        mkdir -p "$dir"
+        echo "dir=$dir" >> "$GITHUB_OUTPUT"
+
+    - name: Run nyx-agent scan
+      shell: bash
+      env:
+        # Token surfaces only here so the agent can fan out into git
+        # subprocesses if needed. Never echoed.
+        GITHUB_TOKEN: ${{ inputs.gh-token }}
+      run: |
+        set -euo pipefail
+        "${{ inputs.nyx-agent-binary }}" \
+          --config "${{ inputs.config }}" \
+          --state-dir "${{ steps.state.outputs.dir }}" \
+          scan \
+          --headless \
+          --output "${{ steps.state.outputs.dir }}/report.json" \
+          --since-ref "${{ github.base_ref }}"
+
+    - name: Post PR comment
+      if: ${{ github.event_name == 'pull_request' || github.event_name == 'pull_request_target' }}
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.gh-token }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+      run: |
+        set -euo pipefail
+        "${{ inputs.nyx-agent-binary }}" \
+          --config "${{ inputs.config }}" \
+          --state-dir "${{ steps.state.outputs.dir }}" \
+          pr-comment \
+          --report "${{ steps.state.outputs.dir }}/report.json" \
+          --pr "${{ github.event.pull_request.number }}" \
+          --ui-url "${{ inputs.ui-url }}" \
+          --gh-api "${{ inputs.gh-api }}" \
+          --token-env GITHUB_TOKEN
