@@ -178,7 +178,7 @@ async fn scan(
     }
 
     let store = Store::open(state_dir.root()).await?;
-    let run = Run::new(selected.iter().map(|r| r.name.clone()).collect());
+    let run = Run::new();
     let run_record = build_run_record(&run, triggered_by);
     store.runs().insert(&run_record).await?;
 
@@ -615,7 +615,7 @@ async fn run_scan_for_api(
 
     let store = Store::open(state_dir.root()).await.map_err(internal_string)?;
 
-    let run = Run::new(selected.iter().map(|r| r.name.clone()).collect());
+    let run = Run::new();
     let run_record = build_run_record(&run, "UI");
     store.runs().insert(&run_record).await.map_err(internal_string)?;
 

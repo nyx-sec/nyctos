@@ -39,21 +39,26 @@ pub use workspace::WorkspaceHandle;
 pub struct Run {
     pub id: String,
     pub started_at_ms: i64,
-    pub repos: Vec<String>,
 }
 
 impl Run {
     /// Mint a fresh run id and capture the wall-clock start. The id is
     /// process-locally unique even when multiple runs collide inside a
     /// single millisecond.
-    pub fn new(repos: Vec<String>) -> Self {
-        Self { id: mint_run_id(), started_at_ms: now_epoch_ms(), repos }
+    pub fn new() -> Self {
+        Self { id: mint_run_id(), started_at_ms: now_epoch_ms() }
     }
 
     /// Build a run with a caller-supplied id. Used by tests that want
     /// to assert against a known id; not for production code.
-    pub fn with_id(id: impl Into<String>, repos: Vec<String>) -> Self {
-        Self { id: id.into(), started_at_ms: now_epoch_ms(), repos }
+    pub fn with_id(id: impl Into<String>) -> Self {
+        Self { id: id.into(), started_at_ms: now_epoch_ms() }
+    }
+}
+
+impl Default for Run {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -542,7 +547,7 @@ mod tests {
                 Ok(Vec::new())
             });
         let dispatcher = RunDispatcher::with_explicit(2, Duration::from_secs(5), None);
-        let run = Run::with_id("run-test-concurrent", vec!["alpha".into(), "beta".into()]);
+        let run = Run::with_id("run-test-concurrent");
 
         let start = Instant::now();
         let bundle = dispatcher.dispatch::<dyn ScanLane<()>, ()>(run, lane, workspaces);
@@ -577,7 +582,7 @@ mod tests {
             },
         );
         let dispatcher = RunDispatcher::with_explicit(2, timeout, None);
-        let run = Run::with_id("run-test-timeout", vec!["fast".into(), "slow".into()]);
+        let run = Run::with_id("run-test-timeout");
 
         let bundle = dispatcher.dispatch::<dyn ScanLane<()>, ()>(run, lane, workspaces);
 
@@ -605,7 +610,7 @@ mod tests {
                 Ok(Vec::new())
             });
         let dispatcher = RunDispatcher::with_explicit(1, Duration::from_secs(5), Some(tx.clone()));
-        let run = Run::with_id("run-evt", vec!["solo".into()]);
+        let run = Run::with_id("run-evt");
         let _ = dispatcher.dispatch::<dyn ScanLane<()>, ()>(run, lane, workspaces);
 
         let mut saw_run_started = false;
@@ -642,7 +647,7 @@ mod tests {
             });
         let dispatcher = RunDispatcher::with_explicit(1, Duration::from_secs(5), None);
         let bundle = dispatcher.dispatch::<dyn ScanLane<()>, ()>(
-            Run::with_id("run-fail", vec!["broken".into()]),
+            Run::with_id("run-fail"),
             lane,
             workspaces,
         );
@@ -668,7 +673,7 @@ mod tests {
             });
         let dispatcher = RunDispatcher::with_explicit(2, Duration::from_secs(1), None);
         let bundle = dispatcher.dispatch::<dyn ScanLane<u32>, u32>(
-            Run::with_id("run-cg", vec!["ok".into(), "broken".into()]),
+            Run::with_id("run-cg"),
             lane,
             workspaces,
         );
@@ -713,12 +718,12 @@ mod tests {
         };
 
         let bundle_a = dispatcher.dispatch::<dyn ScanLane<_>, _>(
-            Run::with_id("run-first", vec!["solo".into()]),
+            Run::with_id("run-first"),
             Arc::clone(&lane),
             workspaces.clone(),
         );
         let bundle_b = dispatcher.dispatch::<dyn ScanLane<_>, _>(
-            Run::with_id("run-second", vec!["solo".into()]),
+            Run::with_id("run-second"),
             lane,
             workspaces,
         );
@@ -747,7 +752,7 @@ mod tests {
             });
         let dispatcher = RunDispatcher::with_explicit(2, Duration::from_secs(1), None);
         let bundle = dispatcher.dispatch::<dyn ScanLane<()>, ()>(
-            Run::with_id("run-visit", vec!["a".into(), "b".into(), "c".into()]),
+            Run::with_id("run-visit"),
             lane,
             workspaces,
         );
