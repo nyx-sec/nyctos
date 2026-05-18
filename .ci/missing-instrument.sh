@@ -3,55 +3,32 @@
 # forgot `#[tracing::instrument]`.
 #
 # Rust has no native clippy lint that ties an attribute requirement to a
-# visibility modifier. Phase 02 expresses the rule as a CI grep instead;
+# visibility modifier. Phase 02 expresses the rule as a CI lint instead;
 # Phase 29 promotes it to a hard error (dylint-driven) once every public
 # function in the workspace is either instrumented or explicitly
 # exempted via `// nyx: no-instrument`.
 #
-# Exit code is always 0 in Phase 02; the rule warns, does not fail.
+# Implementation lives in the `xtask` crate as a syn-based AST walker:
+# it parses each `crates/**/*.rs` file, walks free functions and
+# inherent-impl methods, and warns on `Visibility::Public` items
+# lacking `#[tracing::instrument]`. The previous awk script over-fired
+# on multi-line signatures and could not see `pub(crate)` distinctly;
+# the syn walker handles both.
+#
+# Exit code is always 0; the rule warns, does not fail.
+
+set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-# Collect Rust sources under crates/, preferring git's view so renamed
-# but tracked files stay in scope.
-FILES=()
-while IFS= read -r line; do
-    FILES+=("$line")
-done < <(git ls-files 'crates/*.rs' 'crates/**/*.rs' 2>/dev/null \
-            || find crates -name '*.rs' -type f)
+# Build quietly so a clean tree gets one fast invocation. Pass-through
+# the warnings on stderr verbatim. `cargo run` is used (rather than a
+# pre-built binary) so the lint stays consistent with whatever code is
+# checked out.
+cargo run -p xtask --quiet -- lint-instrument
 
-if [[ ${#FILES[@]} -eq 0 ]]; then
-    exit 0
-fi
-
-for f in "${FILES[@]}"; do
-    [[ -f "$f" ]] || continue
-    # Skip the lint helper itself and obvious entry points.
-    case "$f" in
-        */main.rs|*/build.rs|*/tests/*) continue ;;
-    esac
-
-    # Look at each line that begins with `pub fn` / `pub async fn` / `pub const fn`,
-    # ignoring trait impls (covered by trait signature) and macros.
-    awk -v file="$f" '
-        function flush(   line, n, i) {
-            n = length(prev)
-            for (i = 1; i <= n; i++) prev[i] = ""
-        }
-        /^[[:space:]]*\/\/[[:space:]]*nyx:[[:space:]]*no-instrument/ { exempt = 1; next }
-        /^[[:space:]]*#\[tracing::instrument/ { instrumented = 1; next }
-        /^[[:space:]]*pub[[:space:]]+(async[[:space:]]+|const[[:space:]]+)?fn[[:space:]]/ {
-            if (!instrumented && !exempt) {
-                printf("warning: %s:%d: pub fn missing #[tracing::instrument]\n",
-                       file, NR) > "/dev/stderr"
-                warns++
-            }
-            instrumented = 0; exempt = 0; next
-        }
-        /^[[:space:]]*$/ { instrumented = 0; exempt = 0; next }
-        END { exit (warns > 0 ? 0 : 0) }
-    ' "$f" || true
-done
-
+# Always succeed: this is Phase 02 warn-only behaviour. Phase 29 will
+# replace this trailing exit with `cargo run -p xtask -- lint-instrument
+# --deny`.
 exit 0

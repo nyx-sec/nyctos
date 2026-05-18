@@ -1,8 +1,17 @@
-// xtask binary. One subcommand today: `gen-ts` regenerates the
-// frontend TypeScript bindings driven by the `#[derive(TS)]` annotations
-// on every type in `nyx-agent-types`. CI invokes this binary and then
-// runs `git diff --exit-code frontend/src/api/types.gen.ts` to catch
-// drift between the Rust schema and the committed bindings.
+// xtask binary. Subcommands:
+//   - `gen-ts`           regenerates the frontend TypeScript bindings
+//                        driven by `#[derive(TS)]` on every type in
+//                        `nyx-agent-types`. CI invokes this binary and
+//                        then runs `git diff --exit-code
+//                        frontend/src/api/types.gen.ts` to catch drift
+//                        between the Rust schema and the committed
+//                        bindings.
+//   - `lint-instrument`  warn-only lint for public functions that
+//                        forgot `#[tracing::instrument]`. Replaces the
+//                        prior `.ci/missing-instrument.sh` awk script;
+//                        the shell wrapper now shells out here.
+
+mod lint_instrument;
 
 use std::env;
 use std::fs;
@@ -32,12 +41,19 @@ fn main() -> ExitCode {
                 ExitCode::from(1)
             }
         },
+        Some("lint-instrument") => match lint_instrument::run() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                eprintln!("xtask lint-instrument failed: {err}");
+                ExitCode::from(1)
+            }
+        },
         Some(other) => {
-            eprintln!("xtask: unknown subcommand `{other}` (try `gen-ts`)");
+            eprintln!("xtask: unknown subcommand `{other}` (try `gen-ts` or `lint-instrument`)");
             ExitCode::from(2)
         }
         None => {
-            eprintln!("xtask: missing subcommand (try `gen-ts`)");
+            eprintln!("xtask: missing subcommand (try `gen-ts` or `lint-instrument`)");
             ExitCode::from(2)
         }
     }

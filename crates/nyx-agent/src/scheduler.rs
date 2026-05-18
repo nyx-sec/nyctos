@@ -102,11 +102,9 @@ pub struct Scheduler {
 impl Scheduler {
     /// Parse the config snapshot and build a scheduler bound to
     /// `trigger`. Invalid cron expressions short-circuit with a clean
-    /// error so the builder refuses to construct a scheduler with
-    /// broken config rather than silently dropping the entry. (The
-    /// daemon's `serve()` currently logs the error and starts without
-    /// the scheduler; see the deferred item to escalate that to a
-    /// hard refusal.)
+    /// error; the daemon's `serve()` propagates that error and refuses
+    /// to start, so a fat-fingered `[[schedule]]` entry cannot leave
+    /// the trigger surface silently disabled.
     pub fn from_config(
         entries: &[ScheduleConfig],
         trigger: Arc<dyn ScanTrigger>,
@@ -269,7 +267,7 @@ fn translate_dow_item(item: &str) -> String {
     let translated_range = if range_part == "*" || range_part.is_empty() {
         range_part.to_string()
     } else if let Some((lo, hi)) = range_part.split_once('-') {
-        format!("{}-{}", translate_dow_token(lo), translate_dow_token(hi))
+        translate_dow_range(lo, hi)
     } else {
         translate_dow_token(range_part)
     };
@@ -277,6 +275,45 @@ fn translate_dow_item(item: &str) -> String {
         Some(s) => format!("{}/{}", translated_range, s),
         None => translated_range,
     }
+}
+
+/// Translate a single `lo-hi` standard-cron day-of-week range to the
+/// cron-crate ordinal space (Sunday = 1).
+///
+/// Standard cron treats both `0` and `7` as Sunday, so a range whose
+/// upper bound is `7` (`1-7`, `5-7`, ...) needs to be expanded into
+/// the cron-crate's Sunday-as-1 ordering: a naive `(n % 7) + 1` per
+/// endpoint produces an inverted range (e.g. `1-7` → `2-1`) that the
+/// crate refuses to parse. We instead enumerate the canonical mod-7
+/// days in the range and emit either a contiguous cron-crate range,
+/// the full `1-7` shortcut, or a comma list when the cron-crate
+/// ordinals are non-adjacent (the wrap case).
+fn translate_dow_range(lo: &str, hi: &str) -> String {
+    let parsed = (lo.parse::<u32>(), hi.parse::<u32>());
+    let (Ok(lo_n), Ok(hi_n)) = parsed else {
+        return format!("{}-{}", translate_dow_token(lo), translate_dow_token(hi));
+    };
+    if lo_n > 7 || hi_n > 7 || lo_n > hi_n {
+        return format!("{}-{}", translate_dow_token(lo), translate_dow_token(hi));
+    }
+    let mut std_days: Vec<u32> = (lo_n..=hi_n).map(|d| d % 7).collect();
+    std_days.sort_unstable();
+    std_days.dedup();
+    let mut cron_days: Vec<u32> = std_days.iter().map(|d| (*d % 7) + 1).collect();
+    cron_days.sort_unstable();
+    if cron_days.len() == 7 {
+        return "1-7".to_string();
+    }
+    let contiguous = cron_days.windows(2).all(|w| w[1] == w[0] + 1);
+    if contiguous {
+        let first = cron_days.first().copied().unwrap_or(1);
+        let last = cron_days.last().copied().unwrap_or(first);
+        if first == last {
+            return first.to_string();
+        }
+        return format!("{}-{}", first, last);
+    }
+    cron_days.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(",")
 }
 
 fn translate_dow_token(token: &str) -> String {
@@ -337,6 +374,52 @@ mod tests {
         assert_eq!(expand_to_cron_crate("0 3 * * */2"), "0 0 3 * * */2");
         // List.
         assert_eq!(expand_to_cron_crate("0 3 * * 1,3,5"), "0 0 3 * * 2,4,6");
+    }
+
+    #[test]
+    fn dow_range_translation_handles_sunday_wrap() {
+        // `1-7` (standard cron Mon-through-Sun, i.e. every day) used to
+        // translate to `2-1` which the cron crate refuses. Now it
+        // collapses to the full week.
+        assert_eq!(expand_to_cron_crate("0 3 * * 1-7"), "0 0 3 * * 1-7");
+        // `0-7` covers every day too — `0` and `7` are both Sunday so
+        // the canonical set is {0,1,2,3,4,5,6} → `1-7`.
+        assert_eq!(expand_to_cron_crate("0 3 * * 0-7"), "0 0 3 * * 1-7");
+        // `0-6` (Sun-Sat) is the canonical "all days" expression and
+        // maps cleanly to `1-7`.
+        assert_eq!(expand_to_cron_crate("0 3 * * 0-6"), "0 0 3 * * 1-7");
+        // `5-7` (Fri-Sat-Sun) needs a comma split because the cron
+        // crate cannot range Fri(6) → Sun(1).
+        assert_eq!(expand_to_cron_crate("0 3 * * 5-7"), "0 0 3 * * 1,6,7");
+        // `6-7` (Sat, Sun) is two non-adjacent cron-crate ordinals.
+        assert_eq!(expand_to_cron_crate("0 3 * * 6-7"), "0 0 3 * * 1,7");
+        // `7-7` is a single-day range that still translates to Sunday.
+        assert_eq!(expand_to_cron_crate("0 3 * * 7-7"), "0 0 3 * * 1");
+        // `0-3` (Sun-Wed) is contiguous in cron-crate space (1-4).
+        assert_eq!(expand_to_cron_crate("0 3 * * 0-3"), "0 0 3 * * 1-4");
+    }
+
+    #[test]
+    fn dow_range_translation_validates_at_config_load() {
+        // Each of the previously broken expressions now parses; the
+        // scheduler refuses an invalid cron, so an `Ok(_)` here proves
+        // the wrap rewrite produced a cron-crate-compatible string.
+        for cron in ["0 3 * * 1-7", "0 3 * * 5-7", "0 3 * * 6-7", "0 3 * * 0-7"] {
+            let trigger: Arc<dyn ScanTrigger> = Arc::new(StubTrigger::default());
+            let result = Scheduler::from_config(
+                &[ScheduleConfig {
+                    cron: cron.to_string(),
+                    repo: None,
+                    label: "weekly".to_string(),
+                }],
+                trigger,
+            );
+            assert!(
+                result.is_ok(),
+                "expected {cron} to parse after Sunday-wrap rewrite, got {:?}",
+                result.err()
+            );
+        }
     }
 
     #[test]

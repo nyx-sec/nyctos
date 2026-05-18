@@ -944,23 +944,20 @@ async fn serve(
 
     // Phase 27: spawn the cron scheduler when at least one
     // `[[schedule]]` entry is configured. The watch channel is the
-    // shutdown signal — flipping it to `true` ends the loop.
+    // shutdown signal — flipping it to `true` ends the loop. A
+    // refused `[[schedule]]` config aborts startup so an operator who
+    // fat-fingers a cron expression cannot run a daemon with the
+    // trigger surface silently disabled.
     let (scheduler_shutdown_tx, scheduler_shutdown_rx) = tokio::sync::watch::channel(false);
     let scheduler_handle = if config.schedules.is_empty() {
         None
     } else {
-        match scheduler::Scheduler::from_config(&config.schedules, trigger.clone()) {
-            Ok(s) => {
-                let rx = scheduler_shutdown_rx.clone();
-                Some(tokio::spawn(async move {
-                    s.run(scheduler::DEFAULT_TICK_INTERVAL, rx).await;
-                }))
-            }
-            Err(err) => {
-                eprintln!("warn: scheduler refused config: {err}");
-                None
-            }
-        }
+        let s = scheduler::Scheduler::from_config(&config.schedules, trigger.clone())
+            .map_err(|err| anyhow::anyhow!("invalid [[schedule]] config: {err}"))?;
+        let rx = scheduler_shutdown_rx.clone();
+        Some(tokio::spawn(async move {
+            s.run(scheduler::DEFAULT_TICK_INTERVAL, rx).await;
+        }))
     };
 
     let shutdown = async {
