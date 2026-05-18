@@ -1684,9 +1684,43 @@ async fn drive_verify_for_finding(
     let Some((payload, spec)) = load_payload_and_spec(store, &finding.id).await? else {
         return Ok(VerifyOutcome::Skipped);
     };
+    let prompt_version = payload.prompt_version.clone();
+    let spec_id = spec.id.clone();
+    let started_at = now_epoch_ms();
     let result = run_one_verify(runner, &finding.id, payload, spec, workspace).await?;
+    let finished_at = now_epoch_ms();
     persist_finding_verdict(store, finding, &result).await?;
+    persist_verifier_trace(
+        store,
+        Some(finding.id.clone()),
+        runner.backend.as_str(),
+        prompt_version.as_deref().unwrap_or(&spec_id),
+        started_at,
+        finished_at,
+    )
+    .await;
     Ok(VerifyOutcome::Verdict(result.verdict))
+}
+
+async fn persist_verifier_trace(
+    store: &Store,
+    finding_id: Option<String>,
+    backend: &str,
+    prompt_version: &str,
+    started_at: i64,
+    finished_at: i64,
+) {
+    let row = build_trace_row(
+        TaskKind::Verifier,
+        finding_id,
+        backend,
+        backend,
+        prompt_version,
+        0,
+        started_at,
+        finished_at,
+    );
+    persist_trace_row(store, row).await;
 }
 
 async fn drive_verify_for_candidate(
@@ -1722,13 +1756,28 @@ async fn drive_verify_for_candidate(
         attack_provenance: AttackProvenance::LlmSynthesised,
         workspace: workspace.workspace().to_path_buf(),
     };
+    let prompt_version = candidate
+        .prompt_version
+        .clone()
+        .unwrap_or_else(|| format!("builtin-cap:{}", candidate.cap));
+    let started_at = now_epoch_ms();
     let result = match runner.verify(run).await {
         Ok(r) => r,
         Err(err) => {
             tracing::warn!(error = %err, candidate = %candidate.id, "verifier errored on candidate");
+            persist_verifier_trace(
+                store,
+                None,
+                runner.backend.as_str(),
+                &prompt_version,
+                started_at,
+                now_epoch_ms(),
+            )
+            .await;
             return Ok(VerifyOutcome::Verdict(VerifyVerdict::Errored));
         }
     };
+    let finished_at = now_epoch_ms();
     if matches!(result.verdict, VerifyVerdict::Confirmed) {
         promote_candidate(store, candidate, &result, now_ms).await?;
     } else {
@@ -1738,6 +1787,21 @@ async fn drive_verify_for_candidate(
             "verifier ran on candidate but did not promote"
         );
     }
+    // Candidate trace row carries `finding_id = None` until the
+    // data-model convergence stitches candidate ids into trace rows
+    // (deferred). When promoted, the same call's verdict is also
+    // attributed via the freshly minted `findings` row's
+    // `verdict_blob`, so operators still have a path back to this
+    // call.
+    persist_verifier_trace(
+        store,
+        None,
+        runner.backend.as_str(),
+        &prompt_version,
+        started_at,
+        finished_at,
+    )
+    .await;
     Ok(VerifyOutcome::Verdict(result.verdict))
 }
 
@@ -3583,6 +3647,16 @@ mod tests {
         assert_eq!(result.verdict, VerifyVerdict::Confirmed);
         assert!(result.vuln_run.oracle_fired);
         assert!(!result.benign_run.oracle_fired);
+
+        let traces = store.agent_traces().list_for_finding(&fid).await.unwrap();
+        let verifier_rows: Vec<_> =
+            traces.into_iter().filter(|t| t.task_kind == "Verifier").collect();
+        assert_eq!(verifier_rows.len(), 1, "expected one Verifier trace row");
+        let trace = &verifier_rows[0];
+        assert_eq!(trace.runtime_name, "process");
+        assert_eq!(trace.cost_usd_micros, 0);
+        assert!(trace.duration_ms.is_some());
+        assert!(trace.finished_at.is_some());
     }
 
     #[tokio::test]

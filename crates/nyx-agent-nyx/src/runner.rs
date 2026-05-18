@@ -150,8 +150,36 @@ fn parse_version(raw: &str) -> Option<Version> {
         if let Ok(v) = Version::parse(candidate) {
             return Some(v);
         }
+        if let Some(padded) = pad_partial_semver(candidate) {
+            if let Ok(v) = Version::parse(&padded) {
+                return Some(v);
+            }
+        }
     }
     None
+}
+
+/// Pad `MAJOR` or `MAJOR.MINOR` shapes (with optional pre-release/build
+/// suffix) up to a full `MAJOR.MINOR.PATCH` form acceptable to
+/// `semver::Version::parse`. Returns `None` for any input that already has
+/// three or more numeric segments or carries non-numeric segments.
+fn pad_partial_semver(raw: &str) -> Option<String> {
+    let split_at = raw.find(['-', '+']).unwrap_or(raw.len());
+    let (core, suffix) = raw.split_at(split_at);
+    let parts: Vec<&str> = core.split('.').collect();
+    let (major, minor) = match parts.as_slice() {
+        [m] => (*m, "0"),
+        [m, n] => (*m, *n),
+        _ => return None,
+    };
+    if !is_numeric_segment(major) || !is_numeric_segment(minor) {
+        return None;
+    }
+    Some(format!("{major}.{minor}.0{suffix}"))
+}
+
+fn is_numeric_segment(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())
 }
 
 fn parse_diags(bytes: &[u8]) -> Result<Vec<Diag>, NyxError> {
@@ -216,6 +244,39 @@ mod tests {
     #[test]
     fn version_parser_rejects_garbage() {
         assert!(parse_version("hello world\n").is_none());
+    }
+
+    #[test]
+    fn version_parser_pads_major_minor() {
+        let v = parse_version("nyx 0.7\n").expect("parse");
+        assert_eq!(v, Version::new(0, 7, 0));
+    }
+
+    #[test]
+    fn version_parser_pads_major_only() {
+        let v = parse_version("nyx 2\n").expect("parse");
+        assert_eq!(v, Version::new(2, 0, 0));
+    }
+
+    #[test]
+    fn version_parser_pads_with_prerelease() {
+        let v = parse_version("nyx 0.7-rc.1\n").expect("parse");
+        assert_eq!(v.major, 0);
+        assert_eq!(v.minor, 7);
+        assert_eq!(v.patch, 0);
+        assert_eq!(v.pre.as_str(), "rc.1");
+    }
+
+    #[test]
+    fn version_parser_pads_with_build_metadata() {
+        let v = parse_version("nyx v0.7+commit.abc\n").expect("parse");
+        assert_eq!(v.patch, 0);
+        assert_eq!(v.build.as_str(), "commit.abc");
+    }
+
+    #[test]
+    fn version_parser_rejects_non_numeric_pad_candidate() {
+        assert!(parse_version("nyx alpha.beta\n").is_none());
     }
 
     #[test]
