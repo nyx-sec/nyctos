@@ -1213,6 +1213,7 @@ async fn upsert_repo_record(
         auth_ref: auth_descriptor_of(&ingested.source),
         i_own_this: true,
         last_scan_run_id: None,
+        last_scan_finished_at: None,
         created_at: now_ms,
         updated_at: now_ms,
     };
@@ -1728,6 +1729,7 @@ async fn project_add_repo(
         auth_ref: auth.map(str::to_string),
         i_own_this,
         last_scan_run_id: None,
+        last_scan_finished_at: None,
         created_at: now,
         updated_at: now,
     };

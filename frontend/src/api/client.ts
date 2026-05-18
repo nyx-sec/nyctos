@@ -91,6 +91,9 @@ export interface RepoRecord {
   auth_ref: string | null;
   i_own_this: boolean;
   last_scan_run_id: string | null;
+  // Joined `runs.finished_at` for the run named by `last_scan_run_id`.
+  // Distinct from `updated_at`, which a PATCH on this repo also bumps.
+  last_scan_finished_at: number | null;
   created_at: number;
   updated_at: number;
 }

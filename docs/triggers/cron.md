@@ -66,11 +66,11 @@ sudo install -m 0644 packaging/com.nyx.agent.plist \
 sudo launchctl bootstrap system /Library/LaunchDaemons/com.nyx.agent.plist
 ```
 
-The plist runs `nyx-agent serve --headless` with `KeepAlive=true` and
-includes a `StartCalendarInterval` (`Monday 03:00`) as the launchd
-equivalent of the acceptance fixture's `0 3 * * 1` cron. Pick either
-the launchd calendar interval OR the in-process `[[schedule]]`
-entries, not both, to avoid double-firing.
+The plist runs `nyx-agent serve --headless` with `KeepAlive=true`, so
+the daemon stays up across reboots. Periodic kicks come from the
+in-process scheduler reading `[[schedule]]` entries out of
+`nyx-agent.toml`; there is no separate launchd calendar trigger to
+configure.
 
 ## Verifying
 

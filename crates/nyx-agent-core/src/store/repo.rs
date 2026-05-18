@@ -35,6 +35,13 @@ pub struct RepoRecord {
     pub auth_ref: Option<String>,
     pub i_own_this: bool,
     pub last_scan_run_id: Option<String>,
+    /// `runs.finished_at` for the run pointed to by `last_scan_run_id`,
+    /// resolved through a `LEFT JOIN` on read. `None` when no scan has
+    /// completed yet (no row in `runs` with that id, or the run is still
+    /// in flight). Distinct from `updated_at`, which a `PATCH` on this
+    /// row also bumps.
+    #[serde(default)]
+    pub last_scan_finished_at: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -108,15 +115,18 @@ impl<'a> RepoStore<'a> {
     pub async fn get(&self, name: &str) -> Result<Option<RepoRecord>, StoreError> {
         let row = sqlx::query!(
             r#"
-            SELECT name AS "name!", project_id AS "project_id!",
-                   source_kind AS "source_kind!",
-                   source_url_or_path AS "source_url_or_path!",
-                   branch, auth_ref,
-                   i_own_this AS "i_own_this!: i64",
-                   last_scan_run_id,
-                   created_at AS "created_at!: i64",
-                   updated_at AS "updated_at!: i64"
-            FROM repos WHERE name = ?
+            SELECT repos.name AS "name!", repos.project_id AS "project_id!",
+                   repos.source_kind AS "source_kind!",
+                   repos.source_url_or_path AS "source_url_or_path!",
+                   repos.branch, repos.auth_ref,
+                   repos.i_own_this AS "i_own_this!: i64",
+                   repos.last_scan_run_id,
+                   runs.finished_at AS "last_scan_finished_at: i64",
+                   repos.created_at AS "created_at!: i64",
+                   repos.updated_at AS "updated_at!: i64"
+            FROM repos
+            LEFT JOIN runs ON runs.id = repos.last_scan_run_id
+            WHERE repos.name = ?
             "#,
             name
         )
@@ -131,6 +141,7 @@ impl<'a> RepoStore<'a> {
             auth_ref: r.auth_ref,
             i_own_this: r.i_own_this != 0,
             last_scan_run_id: r.last_scan_run_id,
+            last_scan_finished_at: r.last_scan_finished_at,
             created_at: r.created_at,
             updated_at: r.updated_at,
         }))
@@ -139,15 +150,18 @@ impl<'a> RepoStore<'a> {
     pub async fn list(&self) -> Result<Vec<RepoRecord>, StoreError> {
         let rows = sqlx::query!(
             r#"
-            SELECT name AS "name!", project_id AS "project_id!",
-                   source_kind AS "source_kind!",
-                   source_url_or_path AS "source_url_or_path!",
-                   branch, auth_ref,
-                   i_own_this AS "i_own_this!: i64",
-                   last_scan_run_id,
-                   created_at AS "created_at!: i64",
-                   updated_at AS "updated_at!: i64"
-            FROM repos ORDER BY name
+            SELECT repos.name AS "name!", repos.project_id AS "project_id!",
+                   repos.source_kind AS "source_kind!",
+                   repos.source_url_or_path AS "source_url_or_path!",
+                   repos.branch, repos.auth_ref,
+                   repos.i_own_this AS "i_own_this!: i64",
+                   repos.last_scan_run_id,
+                   runs.finished_at AS "last_scan_finished_at: i64",
+                   repos.created_at AS "created_at!: i64",
+                   repos.updated_at AS "updated_at!: i64"
+            FROM repos
+            LEFT JOIN runs ON runs.id = repos.last_scan_run_id
+            ORDER BY repos.name
             "#
         )
         .fetch_all(self.pool)
@@ -163,6 +177,7 @@ impl<'a> RepoStore<'a> {
                 auth_ref: r.auth_ref,
                 i_own_this: r.i_own_this != 0,
                 last_scan_run_id: r.last_scan_run_id,
+                last_scan_finished_at: r.last_scan_finished_at,
                 created_at: r.created_at,
                 updated_at: r.updated_at,
             })
@@ -173,15 +188,19 @@ impl<'a> RepoStore<'a> {
     pub async fn list_by_project(&self, project_id: &str) -> Result<Vec<RepoRecord>, StoreError> {
         let rows = sqlx::query!(
             r#"
-            SELECT name AS "name!", project_id AS "project_id!",
-                   source_kind AS "source_kind!",
-                   source_url_or_path AS "source_url_or_path!",
-                   branch, auth_ref,
-                   i_own_this AS "i_own_this!: i64",
-                   last_scan_run_id,
-                   created_at AS "created_at!: i64",
-                   updated_at AS "updated_at!: i64"
-            FROM repos WHERE project_id = ? ORDER BY name
+            SELECT repos.name AS "name!", repos.project_id AS "project_id!",
+                   repos.source_kind AS "source_kind!",
+                   repos.source_url_or_path AS "source_url_or_path!",
+                   repos.branch, repos.auth_ref,
+                   repos.i_own_this AS "i_own_this!: i64",
+                   repos.last_scan_run_id,
+                   runs.finished_at AS "last_scan_finished_at: i64",
+                   repos.created_at AS "created_at!: i64",
+                   repos.updated_at AS "updated_at!: i64"
+            FROM repos
+            LEFT JOIN runs ON runs.id = repos.last_scan_run_id
+            WHERE repos.project_id = ?
+            ORDER BY repos.name
             "#,
             project_id
         )
@@ -198,6 +217,7 @@ impl<'a> RepoStore<'a> {
                 auth_ref: r.auth_ref,
                 i_own_this: r.i_own_this != 0,
                 last_scan_run_id: r.last_scan_run_id,
+                last_scan_finished_at: r.last_scan_finished_at,
                 created_at: r.created_at,
                 updated_at: r.updated_at,
             })
@@ -230,6 +250,7 @@ impl<'a> RepoStore<'a> {
             },
             i_own_this: patch.i_own_this.unwrap_or(existing.i_own_this),
             last_scan_run_id: existing.last_scan_run_id,
+            last_scan_finished_at: existing.last_scan_finished_at,
             created_at: existing.created_at,
             updated_at: patch.updated_at,
         };
@@ -395,6 +416,43 @@ mod tests {
         };
         let updated = s.repos().update(&patch).await.expect("update");
         assert!(!updated);
+    }
+
+    #[tokio::test]
+    async fn last_scan_finished_at_joins_runs_table() {
+        use crate::store::testutil::sample_run;
+        let (_tmp, s) = fresh_store().await;
+        s.repos().upsert(&sample_repo("nyx-pro")).await.expect("insert repo");
+
+        // No scan yet: pointer null, joined timestamp null.
+        let before = s.repos().get("nyx-pro").await.expect("get").expect("row");
+        assert!(before.last_scan_run_id.is_none());
+        assert!(before.last_scan_finished_at.is_none());
+
+        // Run row exists but is still in flight (finished_at = NULL): the
+        // pointer points at it, joined timestamp stays null.
+        s.runs().insert(&sample_run("run-flight")).await.expect("insert run");
+        s.repos().set_last_scan("nyx-pro", "run-flight", 4_000).await.expect("set last_scan");
+        let in_flight = s.repos().get("nyx-pro").await.expect("get").expect("row");
+        assert_eq!(in_flight.last_scan_run_id.as_deref(), Some("run-flight"));
+        assert!(in_flight.last_scan_finished_at.is_none());
+
+        // Run finishes: joined timestamp surfaces. updated_at is the
+        // dispatcher's stamp from set_last_scan, distinct from the run's
+        // finished_at.
+        s.runs().finish("run-flight", 5_500, "Succeeded", 3_500).await.expect("finish run");
+        let after = s.repos().get("nyx-pro").await.expect("get").expect("row");
+        assert_eq!(after.last_scan_run_id.as_deref(), Some("run-flight"));
+        assert_eq!(after.last_scan_finished_at, Some(5_500));
+        assert_eq!(after.updated_at, 4_000);
+
+        // Pointer at a run id that does not exist (e.g. retention swept
+        // the run row out from under us): join falls back to null
+        // without erroring.
+        s.repos().set_last_scan("nyx-pro", "run-missing", 6_000).await.expect("dangling");
+        let dangling = s.repos().get("nyx-pro").await.expect("get").expect("row");
+        assert_eq!(dangling.last_scan_run_id.as_deref(), Some("run-missing"));
+        assert!(dangling.last_scan_finished_at.is_none());
     }
 
     #[tokio::test]

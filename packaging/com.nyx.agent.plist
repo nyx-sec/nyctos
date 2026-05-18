@@ -19,23 +19,6 @@
     <key>KeepAlive</key>
     <true/>
 
-    <!-- Phase 27 acceptance: a `0 3 * * 1` cron entry triggers a run
-         every Monday at 03:00. launchd does not consume a cron string
-         directly; the calendar interval below is the launchd-native
-         equivalent. The in-process Rust scheduler also reads
-         `[[schedule]]` entries from `nyx-agent.toml`; pick one path
-         per host (this plist is here for operators who prefer launchd
-         to manage the kick). -->
-    <key>StartCalendarInterval</key>
-    <dict>
-        <key>Weekday</key>
-        <integer>1</integer>
-        <key>Hour</key>
-        <integer>3</integer>
-        <key>Minute</key>
-        <integer>0</integer>
-    </dict>
-
     <key>WorkingDirectory</key>
     <string>/usr/local/var/lib/nyx-agent</string>
 

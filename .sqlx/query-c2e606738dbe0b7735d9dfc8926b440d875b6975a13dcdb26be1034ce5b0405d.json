@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "\n            SELECT name AS \"name!\", project_id AS \"project_id!\",\n                   source_kind AS \"source_kind!\",\n                   source_url_or_path AS \"source_url_or_path!\",\n                   branch, auth_ref,\n                   i_own_this AS \"i_own_this!: i64\",\n                   last_scan_run_id,\n                   created_at AS \"created_at!: i64\",\n                   updated_at AS \"updated_at!: i64\"\n            FROM repos ORDER BY name\n            ",
+  "query": "\n            SELECT repos.name AS \"name!\", repos.project_id AS \"project_id!\",\n                   repos.source_kind AS \"source_kind!\",\n                   repos.source_url_or_path AS \"source_url_or_path!\",\n                   repos.branch, repos.auth_ref,\n                   repos.i_own_this AS \"i_own_this!: i64\",\n                   repos.last_scan_run_id,\n                   runs.finished_at AS \"last_scan_finished_at: i64\",\n                   repos.created_at AS \"created_at!: i64\",\n                   repos.updated_at AS \"updated_at!: i64\"\n            FROM repos\n            LEFT JOIN runs ON runs.id = repos.last_scan_run_id\n            WHERE repos.name = ?\n            ",
   "describe": {
     "columns": [
       {
@@ -44,18 +44,23 @@
         "type_info": "Text"
       },
       {
-        "name": "created_at!: i64",
+        "name": "last_scan_finished_at: i64",
         "ordinal": 8,
         "type_info": "Integer"
       },
       {
-        "name": "updated_at!: i64",
+        "name": "created_at!: i64",
         "ordinal": 9,
+        "type_info": "Integer"
+      },
+      {
+        "name": "updated_at!: i64",
+        "ordinal": 10,
         "type_info": "Integer"
       }
     ],
     "parameters": {
-      "Right": 0
+      "Right": 1
     },
     "nullable": [
       true,
@@ -66,9 +71,10 @@
       true,
       false,
       true,
+      true,
       false,
       false
     ]
   },
-  "hash": "c5c8cae76adca3d98e631d202dd8c31eed2f6dca4abb113e39b0ae368da43010"
+  "hash": "c2e606738dbe0b7735d9dfc8926b440d875b6975a13dcdb26be1034ce5b0405d"
 }

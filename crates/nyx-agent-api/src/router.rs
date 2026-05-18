@@ -756,6 +756,7 @@ async fn create_project_repo(
         auth_ref: req.auth_ref,
         i_own_this: req.i_own_this,
         last_scan_run_id: existing.as_ref().and_then(|r| r.last_scan_run_id.clone()),
+        last_scan_finished_at: existing.as_ref().and_then(|r| r.last_scan_finished_at),
         created_at: existing.as_ref().map(|r| r.created_at).unwrap_or(now),
         updated_at: now,
     };

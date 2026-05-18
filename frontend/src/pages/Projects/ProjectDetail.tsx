@@ -301,9 +301,13 @@ function RepoRow({ repo, live, onScan, onDelete, busy }: RepoRowProps) {
 
 function formatLastScan(repo: RepoRecord): string {
   if (!repo.last_scan_run_id) return "—";
-  if (!repo.updated_at) return repo.last_scan_run_id;
-  const date = new Date(repo.updated_at);
-  return date.toLocaleString();
+  if (repo.last_scan_finished_at) {
+    return new Date(repo.last_scan_finished_at).toLocaleString();
+  }
+  // Pointer set but no joined finished_at: run is still in flight, or
+  // the run row was swept by retention. Surface the id so the operator
+  // can still navigate to it.
+  return repo.last_scan_run_id;
 }
 
 function surfaceRunBanner(

@@ -33,6 +33,7 @@ pub fn sample_repo_for_project(name: &str, project_id: &str) -> RepoRecord {
         auth_ref: None,
         i_own_this: true,
         last_scan_run_id: None,
+        last_scan_finished_at: None,
         created_at: 1_000,
         updated_at: 1_000,
     }
