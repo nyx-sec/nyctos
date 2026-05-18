@@ -7,18 +7,9 @@ sandbox. It runs continuously across your repositories, validates
 findings inside an isolated dev environment, and emits reproducible
 evidence for every exploitable finding.
 
-The shipping binary is `nyx-agent` (the binary will be renamed to `nyctos` in a future phase; see Naming + rename status below).
+The shipping binary is `nyx-agent`; the rename to `nyctos` is queued
+as its own phase (see Naming below).
 <!-- /nyx: verbatim -->
-
-## Naming + rename status
-
-The product brand is **Nyctos** (Greek genitive of `Nyx`, literally "of-the-night"). The supporting cargo workspace, binary, config file, state directory, and service unit currently still use the legacy `nyx-agent` / `nyx-pro` identifiers. Renaming those to `nyctos` is queued as its own dedicated phase. Until that phase lands:
-
-- Public-facing prose, marketing, and design docs use **Nyctos**.
-- CLI invocations, file paths, and crate names in this README and in code still read as `nyx-agent` / `nyx-agent-core` / `nyx-agent.toml` / `~/.local/share/nyx-agent/` because that is what currently ships.
-- The OSS dynamic verification engine (`nyx`, GPL-3.0-or-later) keeps its name. The Nyctos rename only touches the commercial product layer that wraps it.
-
-See `.pitboss/nyctos-spec.md` for the target naming surface in full.
 
 ## Licensing
 
@@ -37,6 +28,16 @@ communication.
 The upstream `nyx` core scanner is a separate project under
 GPL-3.0-or-later. That GPL-licensed scanner is the OSS component of the
 stack; the `nyx-agent` daemon in this repository is not.
+
+## Naming
+
+**Nyctos** (Greek genitive of `Nyx`, "of-the-night") is the product
+brand. The shipping crates, binary (`nyx-agent`), config
+(`nyx-agent.toml`), and state directory (`~/.local/share/nyx-agent/`)
+still carry their legacy names; the code rename to `nyctos` is queued
+as its own phase. The upstream dynamic-verification engine `nyx`
+(GPL-3.0-or-later) keeps its name. Full target surface at
+`.pitboss/nyctos-spec.md`.
 
 ## Status
 
@@ -85,6 +86,12 @@ nyx-agent project create acme-app --target-base-url http://localhost:3000
 nyx-agent project add-repo acme-app acme-backend --path /abs/path/backend --i-own-this
 nyx-agent scan --project acme-app
 ```
+
+`nyx-agent --help` shows the rest of the surface (scan, project,
+pr-comment, reverify, inspect, budget, traces, doctor, serve) plus
+the top-level flags every subcommand inherits:
+
+![nyx-agent --help output listing the nine subcommands (scan, project, pr-comment, reverify, inspect, budget, traces, doctor, serve) and the top-level --config, --state-dir, --log-level flags](assets/screenshots/cli-help.png)
 
 See [`docs/quickstart.md`](docs/quickstart.md) for the worked
 walkthrough (wizard, TOML form, HTTP form, output shape) and
