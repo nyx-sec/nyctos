@@ -21,6 +21,7 @@ use std::time::Duration;
 use thiserror::Error;
 
 pub mod backend;
+pub mod env;
 pub mod payload_runner;
 pub mod shim;
 pub mod workspace;
