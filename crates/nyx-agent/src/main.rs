@@ -436,7 +436,7 @@ async fn drive_scan(
         &secrets,
         &bundle,
         &workspaces_for_ai,
-        events,
+        events.clone(),
     )
     .await
     {
@@ -456,6 +456,42 @@ async fn drive_scan(
             }
         }
         Err(err) => tracing::warn!(error = %err, "chain reasoning pass failed"),
+    }
+
+    // Phase 17: scan repo source for candidate vulnerabilities the
+    // static pass missed. Most-expensive pass; each batch is gated on a
+    // per-run cap ($5 default), and every emitted CandidateFinding
+    // lands in `candidate_findings.Pending` so nothing surfaces to the
+    // operator until the Phase 19 verifier promotes it.
+    match ai_pipeline::run_novel_finding_discovery_pass(
+        &config.ai,
+        store,
+        &secrets,
+        &bundle,
+        &workspaces_for_ai,
+        events,
+    )
+    .await
+    {
+        Ok(report) => {
+            if verbose
+                && (report.candidates_persisted > 0
+                    || report.batches_dispatched > 0
+                    || report.batches_halted > 0
+                    || report.failed > 0)
+            {
+                println!(
+                    "scan: novel finding discovery - {} candidates, {} batches dispatched ({} halted), {} failed ({} attempts, ${:.6})",
+                    report.candidates_persisted,
+                    report.batches_dispatched,
+                    report.batches_halted,
+                    report.failed,
+                    report.attempts,
+                    report.spend_usd_micros as f64 / 1_000_000.0,
+                );
+            }
+        }
+        Err(err) => tracing::warn!(error = %err, "novel finding discovery pass failed"),
     }
 
     let counts = bundle.counts();

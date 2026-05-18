@@ -22,6 +22,7 @@ pub use runtime::{
     deterministic_seed, AiRuntime, BudgetTracker, InMemoryBudgetTracker, SharedBudgetTracker,
 };
 pub use tasks::chain_reasoning::{run as run_chain_reasoning, ChainReasoningOutcome};
+pub use tasks::novel_findings::{run as run_novel_findings, NovelFindingDiscoveryOutcome};
 pub use tasks::payload_synthesis::{
     run as run_payload_synthesis, PayloadSynthesisOutcome,
 };

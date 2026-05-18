@@ -7,6 +7,7 @@ pub mod budget;
 pub mod chain;
 pub mod event;
 pub mod finding;
+pub mod novel;
 pub mod payload;
 pub mod repo;
 pub mod run;
