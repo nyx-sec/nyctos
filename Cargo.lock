@@ -1992,6 +1992,7 @@ dependencies = [
  "anyhow",
  "birdcage",
  "libc",
+ "nyx-agent-core",
  "nyx-agent-types",
  "regex",
  "serde",

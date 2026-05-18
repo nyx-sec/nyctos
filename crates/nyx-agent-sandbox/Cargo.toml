@@ -16,6 +16,7 @@ path = "src/bin/escape_attempt.rs"
 
 [dependencies]
 nyx-agent-types = { path = "../nyx-agent-types" }
+nyx-agent-core = { path = "../nyx-agent-core" }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

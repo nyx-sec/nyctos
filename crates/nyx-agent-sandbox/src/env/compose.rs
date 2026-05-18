@@ -27,6 +27,22 @@ pub struct ComposeFile {
     pub path: PathBuf,
 }
 
+/// Project-level extras the env-builder threads through `merge` so the
+/// final super-compose carries enough context for downstream tools
+/// (trace-viewer, scanner) to find the operator-declared target URL and
+/// env config without reading the agent's TOML.
+///
+/// Both fields are written as compose `x-nyx-*` extension keys. The
+/// compose schema reserves the `x-` prefix for arbitrary user extras —
+/// docker compose silently ignores them but preserves them on round-trip
+/// so a `docker compose config` dump exposes the values to a downstream
+/// consumer.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ProjectOverrides<'a> {
+    pub target_base_url: Option<&'a str>,
+    pub env_config: Option<&'a serde_json::Value>,
+}
+
 #[derive(Debug, Error)]
 pub enum ComposeError {
     #[error("compose read failed at {path}: {source}")]
@@ -67,9 +83,14 @@ pub fn detect(repo_root: &Path, repo_name: &str) -> Option<ComposeFile> {
 }
 
 /// Merge `files` into a single super-compose written to `out_path`.
+/// Project-level overrides are folded in as `x-nyx-*` extension keys.
 /// Returns the list of namespaced service names so callers can capture
 /// per-service health without re-parsing.
-pub fn merge(files: &[ComposeFile], out_path: &Path) -> Result<Vec<String>, ComposeError> {
+pub fn merge(
+    files: &[ComposeFile],
+    out_path: &Path,
+    overrides: &ProjectOverrides<'_>,
+) -> Result<Vec<String>, ComposeError> {
     let mut services = Mapping::new();
     let mut volumes = Mapping::new();
     let mut networks = Mapping::new();
@@ -115,6 +136,16 @@ pub fn merge(files: &[ComposeFile], out_path: &Path) -> Result<Vec<String>, Comp
     }
     if !networks.is_empty() {
         merged.insert(Value::String("networks".into()), Value::Mapping(networks));
+    }
+    if let Some(url) = overrides.target_base_url {
+        merged.insert(
+            Value::String("x-nyx-target-base-url".into()),
+            Value::String(url.to_string()),
+        );
+    }
+    if let Some(env_cfg) = overrides.env_config {
+        let yaml = serde_yaml::to_value(env_cfg).map_err(ComposeError::Emit)?;
+        merged.insert(Value::String("x-nyx-env-config".into()), yaml);
     }
 
     let body = serde_yaml::to_string(&Value::Mapping(merged)).map_err(ComposeError::Emit)?;
@@ -327,7 +358,7 @@ services:
             ComposeFile { repo_name: "beta".into(), path: b.join("docker-compose.yml") },
         ];
         let out = tmp.path().join("super.yml");
-        let services = merge(&files, &out).expect("merge ok");
+        let services = merge(&files, &out, &ProjectOverrides::default()).expect("merge ok");
         assert_eq!(
             services,
             vec!["alpha_db", "alpha_cache", "beta_db"]
@@ -368,8 +399,58 @@ services:
         let p = tmp.path().join("bogus.yml");
         std::fs::write(&p, "- a list\n- not a mapping\n").unwrap();
         let files = vec![ComposeFile { repo_name: "x".into(), path: p }];
-        let err = merge(&files, &tmp.path().join("super.yml")).unwrap_err();
+        let err = merge(&files, &tmp.path().join("super.yml"), &ProjectOverrides::default())
+            .unwrap_err();
         assert!(matches!(err, ComposeError::NotMapping { .. }));
+    }
+
+    #[test]
+    fn merge_stamps_project_overrides() {
+        let tmp = tempdir().unwrap();
+        let a = tmp.path().join("a");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::write(a.join("docker-compose.yml"), "services:\n  api:\n    image: alpine\n")
+            .unwrap();
+        let files = vec![ComposeFile {
+            repo_name: "alpha".into(),
+            path: a.join("docker-compose.yml"),
+        }];
+        let out = tmp.path().join("super.yml");
+        let env_config = serde_json::json!({ "feature_x": true, "max": 7 });
+        let overrides = ProjectOverrides {
+            target_base_url: Some("http://localhost:3000"),
+            env_config: Some(&env_config),
+        };
+        merge(&files, &out, &overrides).expect("merge ok");
+
+        let raw = std::fs::read_to_string(&out).unwrap();
+        let doc: Value = serde_yaml::from_str(&raw).unwrap();
+        assert_eq!(
+            doc.get("x-nyx-target-base-url").and_then(|v| v.as_str()),
+            Some("http://localhost:3000")
+        );
+        let cfg = doc.get("x-nyx-env-config").expect("env config stamped");
+        assert_eq!(cfg.get("feature_x").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(cfg.get("max").and_then(|v| v.as_i64()), Some(7));
+    }
+
+    #[test]
+    fn merge_omits_overrides_when_unset() {
+        let tmp = tempdir().unwrap();
+        let a = tmp.path().join("a");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::write(a.join("docker-compose.yml"), "services:\n  api:\n    image: alpine\n")
+            .unwrap();
+        let files = vec![ComposeFile {
+            repo_name: "alpha".into(),
+            path: a.join("docker-compose.yml"),
+        }];
+        let out = tmp.path().join("super.yml");
+        merge(&files, &out, &ProjectOverrides::default()).expect("merge ok");
+        let raw = std::fs::read_to_string(&out).unwrap();
+        let doc: Value = serde_yaml::from_str(&raw).unwrap();
+        assert!(doc.get("x-nyx-target-base-url").is_none());
+        assert!(doc.get("x-nyx-env-config").is_none());
     }
 
     #[test]

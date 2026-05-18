@@ -2,6 +2,14 @@
 //! repos, merge into a super-compose, spin up via `docker compose`, and
 //! tear down at run completion.
 //!
+//! Project-scoped (Phase 7 of the project-entity refactor). One
+//! [`EnvBuilder`] instance operates over the repos of a single
+//! [`Project`]. The super-compose filename embeds the project name so
+//! two projects under the same workspace cannot clobber each other, and
+//! the project's `target_base_url` / `env_config` are stamped onto the
+//! merged compose document as `x-nyx-*` extension keys for downstream
+//! tools to read.
+//!
 //! This phase is docker-compose only. Kubernetes + devcontainer
 //! detection ships in a later release.
 //!
@@ -14,12 +22,13 @@
 pub mod compose;
 pub mod secrets;
 
-pub use compose::{detect, merge, ComposeError, ComposeFile};
+pub use compose::{detect, merge, ComposeError, ComposeFile, ProjectOverrides};
 pub use secrets::{check, SecretsBundle, SecretsError};
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use nyx_agent_core::project::Project;
 use serde::Deserialize;
 use thiserror::Error;
 use tokio::io::AsyncReadExt;
@@ -88,11 +97,19 @@ pub struct EnvBuilder {
     /// Persistent state root; the secrets check resolves
     /// `<state_root>/secrets/test.env` from it.
     pub state_root: PathBuf,
-    /// Project name passed to `docker compose --project-name`. The
-    /// project name namespaces every container, volume, and network
-    /// docker creates so a teardown does not collide with the
-    /// operator's own running containers.
+    /// docker-compose project name. Always derived from
+    /// [`Project::name`] in [`EnvBuilder::discover`] so a single
+    /// operator project maps 1:1 to a `--project-name` namespace and
+    /// teardown cannot collide with the operator's own containers.
     pub project_name: String,
+    /// Optional target base URL the project points at — stamped onto
+    /// the merged compose document as `x-nyx-target-base-url` so the
+    /// trace-viewer and scanner can pick it up.
+    pub target_base_url: Option<String>,
+    /// Optional project-level env config (free-form JSON) — stamped
+    /// onto the merged compose document as `x-nyx-env-config` for
+    /// downstream consumers.
+    pub env_config: Option<serde_json::Value>,
     /// Connected repos to walk for compose files. Repos with no
     /// compose file are silently skipped.
     pub repos: Vec<RepoInput>,
@@ -103,11 +120,14 @@ pub struct EnvBuilder {
 
 impl EnvBuilder {
     /// Build with `docker` resolved from `$PATH`. Returns
-    /// [`EnvError::DockerMissing`] if docker is not installed.
+    /// [`EnvError::DockerMissing`] if docker is not installed. The
+    /// project's `name`, `target_base_url`, and `env_config` are
+    /// captured and used to derive the docker-compose project name and
+    /// to stamp `x-nyx-*` extension keys onto the merged compose.
     pub fn discover(
         workspace: PathBuf,
         state_root: PathBuf,
-        project_name: String,
+        project: &Project,
         repos: Vec<RepoInput>,
     ) -> Result<Self, EnvError> {
         let docker = which_on_path("docker").ok_or(EnvError::DockerMissing)?;
@@ -115,10 +135,19 @@ impl EnvBuilder {
             docker_binary: docker,
             workspace,
             state_root,
-            project_name,
+            project_name: project.name.clone(),
+            target_base_url: project.target_base_url.clone(),
+            env_config: project.env_config.clone(),
             repos,
             command_timeout: DEFAULT_DOCKER_TIMEOUT,
         })
+    }
+
+    /// Filename written into [`Self::workspace`]. Includes the project
+    /// name so two builders sharing a workspace cannot clobber each
+    /// other's super-compose.
+    pub fn super_compose_filename(&self) -> String {
+        format!("nyx-super-compose-{}.yml", sanitise_filename(&self.project_name))
     }
 
     /// Spin the env up. Steps, in order:
@@ -126,14 +155,19 @@ impl EnvBuilder {
     /// 1. Verify `<state>/secrets/test.env` exists and contains no prod
     ///    tokens. Fail-closed on any match.
     /// 2. Detect compose files across every connected repo.
-    /// 3. Merge into `<workspace>/nyx-super-compose.yml`.
+    /// 3. Merge into `<workspace>/nyx-super-compose-<project>.yml`,
+    ///    folding project-level overrides into `x-nyx-*` extension keys.
     /// 4. `docker compose --project-name <p> -f <super> --env-file <test.env> up -d --build`.
     /// 5. Capture per-service health via `docker compose ps --format json`.
     pub async fn up(&self) -> Result<RunningEnv, EnvError> {
         let secrets_bundle = check(&self.state_root)?;
         let compose_files = self.detect_compose_files();
-        let super_compose = self.workspace.join("nyx-super-compose.yml");
-        let services = merge(&compose_files, &super_compose)?;
+        let super_compose = self.workspace.join(self.super_compose_filename());
+        let overrides = ProjectOverrides {
+            target_base_url: self.target_base_url.as_deref(),
+            env_config: self.env_config.as_ref(),
+        };
+        let services = merge(&compose_files, &super_compose, &overrides)?;
 
         let mut cmd = self.compose_command(&super_compose, &secrets_bundle.path);
         cmd.arg("up").arg("-d").arg("--build");
@@ -358,6 +392,25 @@ async fn run_command(mut cmd: Command, cap: Duration) -> Result<CommandOutcome, 
         Ok(Ok((status, stdout, stderr))) => {
             Ok(CommandOutcome { exit_code: status.code(), stdout, stderr })
         }
+    }
+}
+
+/// Reduce an arbitrary project name to characters safe inside a
+/// filename: ascii alphanumerics pass through; everything else becomes
+/// `_`. An empty / all-punctuation name falls back to `project`.
+fn sanitise_filename(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+        } else {
+            out.push('_');
+        }
+    }
+    if out.is_empty() || out.chars().all(|c| c == '_') {
+        "project".to_string()
+    } else {
+        out
     }
 }
 

@@ -14,8 +14,19 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use nyx_agent_core::project::{Project, ProjectId};
 use nyx_agent_sandbox::env::{EnvBuilder, EnvError, RepoInput, SecretsError};
 use tempfile::tempdir;
+
+fn make_project(name: &str) -> Project {
+    Project {
+        id: ProjectId::new(format!("proj-{name}")),
+        name: name.to_string(),
+        description: None,
+        target_base_url: None,
+        env_config: None,
+    }
+}
 
 fn fixture_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -52,6 +63,8 @@ async fn prod_secret_blocks_run() {
         workspace,
         state_root: state,
         project_name: "nyx-env-test".into(),
+        target_base_url: None,
+        env_config: None,
         repos,
         command_timeout: Duration::from_secs(5),
     };
@@ -112,9 +125,10 @@ async fn two_service_compose_spins_up() {
         RepoInput { name: "alpha".into(), root: fixture.join("repo_a") },
         RepoInput { name: "beta".into(), root: fixture.join("repo_b") },
     ];
-    let project = format!("nyx-env-{}", std::process::id());
+    let project_name = format!("nyx-env-{}", std::process::id());
+    let project = make_project(&project_name);
 
-    let builder = EnvBuilder::discover(workspace.clone(), state.clone(), project.clone(), repos)
+    let builder = EnvBuilder::discover(workspace.clone(), state.clone(), &project, repos)
         .expect("docker discovered");
     let env = match builder.up().await {
         Ok(e) => e,
@@ -144,7 +158,7 @@ async fn two_service_compose_spins_up() {
     let ps_out = tokio::process::Command::new(&docker)
         .arg("ps")
         .arg("--filter")
-        .arg(format!("label=com.docker.compose.project={project}"))
+        .arg(format!("label=com.docker.compose.project={project_name}"))
         .arg("--format")
         .arg("{{.Names}}")
         .stdin(std::process::Stdio::null())
@@ -166,7 +180,7 @@ async fn two_service_compose_spins_up() {
         .arg("ps")
         .arg("-a")
         .arg("--filter")
-        .arg(format!("label=com.docker.compose.project={project}"))
+        .arg(format!("label=com.docker.compose.project={project_name}"))
         .arg("--format")
         .arg("{{.Names}}")
         .stdin(std::process::Stdio::null())

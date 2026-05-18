@@ -41,6 +41,7 @@ use std::time::Duration;
 
 use thiserror::Error;
 
+use nyx_agent_core::project::ProjectId;
 use nyx_agent_types::payload::AttackProvenance;
 use nyx_agent_types::verify::Oracle;
 
@@ -64,6 +65,10 @@ const MAX_INLINE_PAYLOAD_BYTES: usize = 64 * 1024;
 #[derive(Debug, Clone)]
 pub struct ChainStep {
     pub finding_id: String,
+    /// Repo this step's harness comes from. [`ChainRun::new`] validates
+    /// the name is in the owning project's repo set so a chain cannot
+    /// silently stitch together harnesses from two projects.
+    pub repo_name: String,
     pub spec: HarnessSpecInput,
     pub harness_source: HarnessSource,
     pub payload: Vec<u8>,
@@ -76,6 +81,10 @@ pub struct ChainRun {
     /// any caller-chosen tag. The runner uses it only as a label on
     /// emitted diagnostics.
     pub chain_id: String,
+    /// Project the chain belongs to. Every step must reference a repo
+    /// owned by this project; [`ChainRun::new`] enforces that invariant
+    /// up-front so the runner cannot stitch harnesses across projects.
+    pub project_id: ProjectId,
     /// Steps in execution order (entry node first, sink last).
     pub members: Vec<ChainStep>,
     /// Sink probe the terminal step is gated against. Required to be a
@@ -91,6 +100,42 @@ pub struct ChainRun {
     /// Provenance of the chain's payloads as a whole. Recorded on the
     /// result for trail-back; the runner does not gate verdicts on it.
     pub attack_provenance: AttackProvenance,
+}
+
+impl ChainRun {
+    /// Build a chain-run, rejecting any step whose `repo_name` is not in
+    /// `project_repos`. Cross-project stitching is the bug class this
+    /// guard exists to catch: a finding lookup that joined across the
+    /// wrong project FK would otherwise produce a chain that silently
+    /// drives harnesses from two products.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        chain_id: String,
+        project_id: ProjectId,
+        project_repos: &[String],
+        members: Vec<ChainStep>,
+        terminal_oracle: Oracle,
+        workspace: PathBuf,
+        attack_provenance: AttackProvenance,
+    ) -> Result<Self, ChainRunnerError> {
+        for (idx, step) in members.iter().enumerate() {
+            if !project_repos.iter().any(|r| r == &step.repo_name) {
+                return Err(ChainRunnerError::CrossProjectStep {
+                    which: idx,
+                    repo_name: step.repo_name.clone(),
+                    project_id: project_id.as_str().to_string(),
+                });
+            }
+        }
+        Ok(Self {
+            chain_id,
+            project_id,
+            members,
+            terminal_oracle,
+            workspace,
+            attack_provenance,
+        })
+    }
 }
 
 /// Configuration shared across [`ChainRunner::run`] calls.
@@ -126,6 +171,10 @@ pub enum ChainRunnerError {
     EmptyChain,
     #[error("terminal step must use Oracle::SinkProbe")]
     TerminalOracleWrongKind,
+    #[error(
+        "step {which} references repo `{repo_name}` which is not owned by project `{project_id}`"
+    )]
+    CrossProjectStep { which: usize, repo_name: String, project_id: String },
     #[error("payload runner error: {0}")]
     Payload(#[from] PayloadRunnerError),
     #[error("workspace setup failed: {0}")]
@@ -468,6 +517,7 @@ mod tests {
     fn auth_bypass_step() -> ChainStep {
         ChainStep {
             finding_id: "repoA:auth-bypass".to_string(),
+            repo_name: "repo-a".to_string(),
             spec: HarnessSpecInput {
                 cap: "AUTH_BYPASS".to_string(),
                 lang: "shell".to_string(),
@@ -495,6 +545,7 @@ mod tests {
     fn sqli_sink_step() -> ChainStep {
         ChainStep {
             finding_id: "repoB:sqli-sink".to_string(),
+            repo_name: "repo-b".to_string(),
             spec: HarnessSpecInput {
                 cap: "SQL_QUERY".to_string(),
                 lang: "shell".to_string(),
@@ -523,22 +574,45 @@ mod tests {
         }
     }
 
+    fn test_project_id() -> ProjectId {
+        ProjectId::new("proj-test")
+    }
+
+    fn test_project_repos() -> Vec<String> {
+        vec!["repo-a".to_string(), "repo-b".to_string()]
+    }
+
+    fn build_run(
+        chain_id: &str,
+        members: Vec<ChainStep>,
+        oracle: Oracle,
+        workspace: PathBuf,
+    ) -> Result<ChainRun, ChainRunnerError> {
+        ChainRun::new(
+            chain_id.to_string(),
+            test_project_id(),
+            &test_project_repos(),
+            members,
+            oracle,
+            workspace,
+            AttackProvenance::LlmSynthesised,
+        )
+    }
+
     #[tokio::test]
     async fn two_step_cross_repo_chain_confirms() {
         // Phase 22 acceptance #1: ordered (auth bypass -> sqli sink)
         // chain confirms via the terminal sink probe.
         let dir = ws();
         let runner = ChainRunner::default();
-        let result = runner
-            .run(ChainRun {
-                chain_id: "chain-1".to_string(),
-                members: vec![auth_bypass_step(), sqli_sink_step()],
-                terminal_oracle: sink_oracle(),
-                workspace: dir.path().to_path_buf(),
-                attack_provenance: AttackProvenance::LlmSynthesised,
-            })
-            .await
-            .expect("run");
+        let run = build_run(
+            "chain-1",
+            vec![auth_bypass_step(), sqli_sink_step()],
+            sink_oracle(),
+            dir.path().to_path_buf(),
+        )
+        .expect("ChainRun::new");
+        let result = runner.run(run).await.expect("run");
         assert_eq!(result.verdict, ChainVerdict::Confirmed, "{result:?}");
         assert_eq!(result.steps.len(), 2);
         assert!(result.steps[0].error.is_none());
@@ -554,16 +628,14 @@ mod tests {
         // proceed, and the chain breaks at step 0.
         let dir = ws();
         let runner = ChainRunner::default();
-        let result = runner
-            .run(ChainRun {
-                chain_id: "chain-2".to_string(),
-                members: vec![sqli_sink_step(), auth_bypass_step()],
-                terminal_oracle: sink_oracle(),
-                workspace: dir.path().to_path_buf(),
-                attack_provenance: AttackProvenance::LlmSynthesised,
-            })
-            .await
-            .expect("run");
+        let run = build_run(
+            "chain-2",
+            vec![sqli_sink_step(), auth_bypass_step()],
+            sink_oracle(),
+            dir.path().to_path_buf(),
+        )
+        .expect("ChainRun::new");
+        let result = runner.run(run).await.expect("run");
         assert_eq!(
             result.verdict,
             ChainVerdict::Inconclusive(InconclusiveReason::ChainStepFailed { which: 0 }),
@@ -579,16 +651,14 @@ mod tests {
     async fn replay_stable_flag_stamped_when_check_enabled() {
         let dir = ws();
         let runner = ChainRunner { replay_stable_check: true, ..ChainRunner::default() };
-        let result = runner
-            .run(ChainRun {
-                chain_id: "chain-3".to_string(),
-                members: vec![auth_bypass_step(), sqli_sink_step()],
-                terminal_oracle: sink_oracle(),
-                workspace: dir.path().to_path_buf(),
-                attack_provenance: AttackProvenance::LlmSynthesised,
-            })
-            .await
-            .expect("run");
+        let run = build_run(
+            "chain-3",
+            vec![auth_bypass_step(), sqli_sink_step()],
+            sink_oracle(),
+            dir.path().to_path_buf(),
+        )
+        .expect("ChainRun::new");
+        let result = runner.run(run).await.expect("run");
         assert_eq!(result.verdict, ChainVerdict::Confirmed);
         assert_eq!(result.replay_stable, Some(true));
         let replay_steps =
@@ -611,16 +681,14 @@ mod tests {
             echo no-sentinel-written; true"
             .to_string();
         let runner = ChainRunner::default();
-        let result = runner
-            .run(ChainRun {
-                chain_id: "chain-4".to_string(),
-                members: vec![auth_bypass_step(), sink],
-                terminal_oracle: sink_oracle(),
-                workspace: dir.path().to_path_buf(),
-                attack_provenance: AttackProvenance::LlmSynthesised,
-            })
-            .await
-            .expect("run");
+        let run = build_run(
+            "chain-4",
+            vec![auth_bypass_step(), sink],
+            sink_oracle(),
+            dir.path().to_path_buf(),
+        )
+        .expect("ChainRun::new");
+        let result = runner.run(run).await.expect("run");
         assert_eq!(
             result.verdict,
             ChainVerdict::Inconclusive(InconclusiveReason::ChainStepFailed { which: 1 }),
@@ -634,16 +702,9 @@ mod tests {
     async fn empty_chain_is_refused() {
         let dir = ws();
         let runner = ChainRunner::default();
-        let err = runner
-            .run(ChainRun {
-                chain_id: "empty".to_string(),
-                members: vec![],
-                terminal_oracle: sink_oracle(),
-                workspace: dir.path().to_path_buf(),
-                attack_provenance: AttackProvenance::LlmSynthesised,
-            })
-            .await
-            .expect_err("must refuse");
+        let run = build_run("empty", vec![], sink_oracle(), dir.path().to_path_buf())
+            .expect("ChainRun::new accepts an empty list; runner enforces non-empty");
+        let err = runner.run(run).await.expect_err("must refuse");
         assert!(matches!(err, ChainRunnerError::EmptyChain));
     }
 
@@ -651,16 +712,44 @@ mod tests {
     async fn terminal_oracle_must_be_sink_probe() {
         let dir = ws();
         let runner = ChainRunner::default();
-        let err = runner
-            .run(ChainRun {
-                chain_id: "bad-oracle".to_string(),
-                members: vec![auth_bypass_step()],
-                terminal_oracle: Oracle::OutputContains { marker: "x".to_string() },
-                workspace: dir.path().to_path_buf(),
-                attack_provenance: AttackProvenance::LlmSynthesised,
-            })
-            .await
-            .expect_err("must refuse");
+        let run = build_run(
+            "bad-oracle",
+            vec![auth_bypass_step()],
+            Oracle::OutputContains { marker: "x".to_string() },
+            dir.path().to_path_buf(),
+        )
+        .expect("ChainRun::new");
+        let err = runner.run(run).await.expect_err("must refuse");
         assert!(matches!(err, ChainRunnerError::TerminalOracleWrongKind));
+    }
+
+    #[tokio::test]
+    async fn cross_project_step_refused_by_constructor() {
+        // A step whose repo is not in the project's repo list trips the
+        // CrossProjectStep guard before the runner is ever invoked.
+        let dir = ws();
+        let stray = ChainStep {
+            finding_id: "repoC:elsewhere".to_string(),
+            repo_name: "repo-elsewhere".to_string(),
+            ..auth_bypass_step()
+        };
+        let err = ChainRun::new(
+            "cross".to_string(),
+            test_project_id(),
+            &test_project_repos(),
+            vec![auth_bypass_step(), stray],
+            sink_oracle(),
+            dir.path().to_path_buf(),
+            AttackProvenance::LlmSynthesised,
+        )
+        .expect_err("must refuse");
+        match err {
+            ChainRunnerError::CrossProjectStep { which, repo_name, project_id } => {
+                assert_eq!(which, 1);
+                assert_eq!(repo_name, "repo-elsewhere");
+                assert_eq!(project_id, "proj-test");
+            }
+            other => panic!("expected CrossProjectStep, got {other:?}"),
+        }
     }
 }
