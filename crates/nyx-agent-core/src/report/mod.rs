@@ -1,6 +1,6 @@
 //! Run-level reports and per-finding repro bundles.
 //!
-//! Phase 25 ships two surfaces:
+//! Two surfaces ship here:
 //!
 //! * [`run_card`] aggregates per-run statistics from the persisted
 //!   store: finding counts by status/cap/origin/lang, AI spend split

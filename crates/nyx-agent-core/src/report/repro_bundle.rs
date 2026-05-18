@@ -172,8 +172,8 @@ fn render_readme(finding: &FindingRecord, payloads: &[PayloadRecord]) -> String 
                 p.cap,
                 p.lang,
                 p.vuln_bytes.len(),
-                p.benign_bytes.as_ref().map(|b| b.len().to_string()).unwrap_or_else(|| "—".to_string()),
-                p.prompt_version.as_deref().unwrap_or("—")
+                p.benign_bytes.as_ref().map(|b| b.len().to_string()).unwrap_or_else(|| "-".to_string()),
+                p.prompt_version.as_deref().unwrap_or("-")
             )
         })
         .unwrap_or_else(|| "## Payload\n_No AI-synthesised payload on this finding._\n".to_string());

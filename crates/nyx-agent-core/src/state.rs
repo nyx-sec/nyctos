@@ -80,7 +80,7 @@ impl StateDir {
     }
 
     /// Per-finding repro bundle output directory (`<state>/bundles`).
-    /// Phase 25 writes one tarball per finding here when the operator
+    /// One tarball per finding is written here when the operator
     /// requests a repro bundle.
     pub fn bundles(&self) -> PathBuf {
         self.root.join("bundles")

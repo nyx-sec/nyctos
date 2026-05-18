@@ -4,8 +4,8 @@
 //! its `project_id` field; the run dispatcher, sandbox env-builder, and
 //! chain runner all consume repos grouped by project, and on-disk
 //! workspace state lands under `<state>/projects/<project_id>/repos/
-//! <name>/`. See `docs/PROJECT_ENTITY_PLAN.md` (Phase 1) for the
-//! migration that introduced the FK.
+//! <name>/`. See `docs/PROJECT_ENTITY_PLAN.md` for the migration
+//! that introduced the FK.
 //!
 //! Two source kinds are supported:
 //!
@@ -73,7 +73,7 @@ impl GitAuth {
     /// Render this auth value back as the `<scheme>:<value>` descriptor
     /// string that [`GitAuth::parse`] accepts. Used as a stable
     /// identifier for the `repos.auth_ref` audit column (the raw token
-    /// or key bytes are never persisted — only the descriptor that
+    /// or key bytes are never persisted; only the descriptor that
     /// names where they came from).
     pub fn descriptor(&self) -> String {
         match self {

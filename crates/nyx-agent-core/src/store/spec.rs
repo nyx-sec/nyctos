@@ -1,7 +1,7 @@
 //! `harness_specs` table - AI-derived per-sink harness specifications.
 //!
-//! Phase 15 adds this table alongside a `findings.spec_id` back-link so
-//! the verifier can join a finding to the harness it should execute.
+//! Paired with a `findings.spec_id` back-link so the verifier can
+//! join a finding to the harness it should execute.
 //! Runtime-checked SQL is used throughout to keep the `.sqlx/` cache
 //! lean - the table only has insert / get / list-by-cap consumers and
 //! nothing in this module needs the macro's compile-time describe.

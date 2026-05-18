@@ -9,9 +9,9 @@ use sqlx::SqlitePool;
 use crate::store::StoreError;
 
 /// Stable, well-known id for the transitional "default" project that
-/// pre-Phase-3 callers (TOML config still flat, API still flat) attach
-/// repos to. Removed once Phase 3 lands the `[[project]]` config grouping
-/// and Phase 5 lands the nested API routes.
+/// legacy callers without an explicit project context attach repos
+/// to. Retained so older config files and older API consumers keep
+/// working through the nested-project rollout.
 pub const DEFAULT_PROJECT_ID: &str = "default-project";
 pub const DEFAULT_PROJECT_NAME: &str = "default";
 
@@ -91,10 +91,10 @@ impl<'a> ProjectStore<'a> {
         })
     }
 
-    /// Idempotent: insert the default project row if it does not exist.
-    /// Used as a transitional bootstrap so existing callers that have no
-    /// project context (pre-Phase-3 config, pre-Phase-5 API routes) can
-    /// still upsert repos against the FK.
+    /// Idempotent: insert the default project row if it does not
+    /// exist. Used as a transitional bootstrap so legacy callers
+    /// without an explicit project context can still upsert repos
+    /// against the FK.
     pub async fn ensure_default(&self, now_ms: i64) -> Result<ProjectRecord, StoreError> {
         if let Some(existing) = self.get(DEFAULT_PROJECT_ID).await? {
             return Ok(existing);

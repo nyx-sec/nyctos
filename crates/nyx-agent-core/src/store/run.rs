@@ -167,7 +167,7 @@ impl<'a> RunStore<'a> {
     }
 
     /// Most recent earlier run, ranked by `started_at`. Used by the
-    /// Phase 11 diff endpoint to anchor "new vs prior" badge logic.
+    /// findings diff endpoint to anchor "new vs prior" badge logic.
     pub async fn prior_run_id(
         &self,
         run_id: &str,

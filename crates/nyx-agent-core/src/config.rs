@@ -38,15 +38,15 @@ pub struct Config {
     pub triggers: TriggersConfig,
     pub nyx: NyxConfig,
     pub run: RunConfig,
-    /// Phase 3: projects own repos. Each `[[project]]` block declares
-    /// one product (e.g. backend + frontend) and groups its repos under
-    /// `[[project.repo]]`. The top-level `[[repo]]` shape is gone — all
-    /// repos must live under a project.
+    /// Projects own repos. Each `[[project]]` block declares one
+    /// product (e.g. backend + frontend) and groups its repos under
+    /// `[[project.repo]]`. The top-level `[[repo]]` shape is rejected;
+    /// every repo must live under a project.
     #[serde(rename = "project", default)]
     pub projects: Vec<ProjectConfig>,
-    /// Phase 27: cron-driven scan schedule entries. Each entry pairs a
-    /// 5-field cron expression with an optional repo filter (`None`
-    /// scans every enabled repo). The daemon's scheduler task evaluates
+    /// Cron-driven scan schedule entries. Each entry pairs a 5-field
+    /// cron expression with an optional repo filter (`None` scans
+    /// every enabled repo). The daemon's scheduler task evaluates
     /// every entry once per minute.
     #[serde(rename = "schedule", default)]
     pub schedules: Vec<ScheduleConfig>,
@@ -70,13 +70,13 @@ impl Default for GeneralConfig {
 pub struct PerformanceConfig {
     pub max_parallel_scans: u32,
     pub scan_timeout_secs: u64,
-    /// Phase 06: explicit override for the per-run static-pass fan-out.
+    /// Explicit override for the per-run static-pass fan-out.
     /// `None` -> dispatcher computes `min(num_cpus / 2, len(repos))`.
     /// `Some(n)` -> use exactly `n.max(1)` parallel jobs.
     #[serde(default)]
     pub static_concurrency: Option<usize>,
-    /// Phase 06: per-repo budget for the static-pass scan. A scan that
-    /// exceeds the budget is killed and its repo bundle records
+    /// Per-repo budget for the static-pass scan. A scan that exceeds
+    /// the budget is killed and its repo bundle records
     /// `Inconclusive(StaticPassTimeout)` while the rest of the run
     /// continues. `None` -> 30 minutes.
     #[serde(default)]
@@ -114,8 +114,8 @@ impl PerformanceConfig {
 pub struct SandboxConfig {
     pub enabled: bool,
     pub allow_network: bool,
-    /// Phase 09: the wizard records the operator's preferred sandbox
-    /// backend here. Later phases (Phase 18+) read it to pick a launcher.
+    /// The first-launch wizard records the operator's preferred
+    /// sandbox backend here; the launcher reads it to pick a backend.
     #[serde(default)]
     pub backend: SandboxBackend,
 }
@@ -150,14 +150,14 @@ pub struct AiConfig {
     pub provider: Option<String>,
     pub model: Option<String>,
     pub api_base: Option<String>,
-    /// Phase 09: operator-selected AI runtime. The wizard writes this;
-    /// later phases read it to decide which provider client to build.
+    /// Operator-selected AI runtime. The wizard writes this; the run
+    /// dispatcher reads it to pick which provider client to build.
     /// The API key itself is stored in the OS keychain, not in TOML.
     #[serde(default)]
     pub runtime: AiRuntime,
-    /// Phase 14: maximum number of in-flight `one_shot` AI calls per
-    /// run. PayloadSynthesis / SpecDerivation / ChainReasoning all
-    /// share this cap. `0` is floored to `1` by
+    /// Maximum number of in-flight `one_shot` AI calls per run.
+    /// PayloadSynthesis / SpecDerivation / ChainReasoning all share
+    /// this cap. `0` is floored to `1` by
     /// [`AiConfig::max_concurrent_one_shot_resolved`].
     #[serde(default = "default_max_concurrent_one_shot")]
     pub max_concurrent_one_shot: u32,
@@ -256,7 +256,7 @@ pub struct NyxConfig {
     pub min_version: Option<String>,
 }
 
-/// `[run]` section: Phase 19 verifier knobs.
+/// `[run]` section: verifier knobs.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RunConfig {
@@ -273,7 +273,7 @@ pub struct TriggersConfig {
     pub on_push: bool,
     pub on_pr: bool,
     pub schedule_cron: Option<String>,
-    /// Phase 27: HMAC-SHA256 secret for `POST /webhook/git`. When
+    /// HMAC-SHA256 secret for `POST /webhook/git`. When
     /// unset, the webhook handler returns 503 so a misconfigured host
     /// cannot accept unauthenticated triggers.
     #[serde(default)]
@@ -285,7 +285,7 @@ pub struct TriggersConfig {
     pub webhook_branch: Option<String>,
 }
 
-/// Phase 27: one `[[schedule]]` entry. A 5-field cron expression plus
+/// One `[[schedule]]` entry. A 5-field cron expression plus
 /// an optional repo filter. When `repo` is `None` the scheduler runs
 /// against every enabled repo (i.e. the same shape as the API's
 /// manual-scan endpoint with no `repo=` query).
@@ -309,13 +309,13 @@ fn default_schedule_label() -> String {
     "scheduled".to_string()
 }
 
-/// Phase 3: a project groups one or more repos that belong to the
-/// same product. Scan/run/env-builder/chain-runner operate per-project.
+/// A project groups one or more repos that belong to the same
+/// product. Scan/run/env-builder/chain-runner operate per-project.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectConfig {
     /// Unique project name. Used as the human-facing identifier and
-    /// (Phase 4+) as the workspace directory prefix.
+    /// as the workspace directory prefix.
     pub name: String,
     /// Optional free-form description surfaced in the UI.
     #[serde(default)]
@@ -565,7 +565,7 @@ mod tests {
 
     #[test]
     fn top_level_repo_block_rejected() {
-        // Phase 3: bare `[[repo]]` is no longer accepted. The TOML must
+        // Bare `[[repo]]` is no longer accepted. The TOML must
         // declare a `[[project]]` first and nest repos under it.
         let raw = "[[repo]]\nname = \"x\"\ni_own_this = true\n\
                    source = { kind = \"local-path\", path = \"/srv/x\" }\n";

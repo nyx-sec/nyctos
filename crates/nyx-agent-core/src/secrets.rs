@@ -1,6 +1,6 @@
 //! OS-keychain backed secret storage.
 //!
-//! Phase 09 stores AI provider API keys in the platform keychain via the
+//! AI provider API keys live in the platform keychain via the
 //! `keyring` crate (Keychain on macOS, libsecret/secret-service on Linux,
 //! Credential Manager on Windows) so the operator's tokens never land
 //! in `nyx-agent.toml` or the JSON log. The keychain entry name is

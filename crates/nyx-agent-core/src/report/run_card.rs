@@ -264,7 +264,7 @@ pub fn render_html(card: &RunCard) -> String {
         escape_html(&card.status),
         escape_html(&card.triggered_by),
         card.started_at,
-        card.finished_at.map(|v| v.to_string()).unwrap_or_else(|| "—".to_string()),
+        card.finished_at.map(|v| v.to_string()).unwrap_or_else(|| "-".to_string()),
         card.wall_clock_ms.unwrap_or(0),
         card.total_findings,
     ));
@@ -306,7 +306,7 @@ pub fn render_html(card: &RunCard) -> String {
 fn push_html_split(out: &mut String, title: &str, splits: &[BySplit]) {
     out.push_str(&format!("<section><h3>{}</h3>", escape_html(title)));
     if splits.is_empty() {
-        out.push_str("<p>—</p></section>");
+        out.push_str("<p>-</p></section>");
         return;
     }
     out.push_str("<ul>");
@@ -341,7 +341,7 @@ pub fn render_markdown(card: &RunCard) -> String {
     out.push_str(&format!("- **Started**: {}\n", card.started_at));
     out.push_str(&format!(
         "- **Finished**: {}\n",
-        card.finished_at.map(|v| v.to_string()).unwrap_or_else(|| "—".to_string())
+        card.finished_at.map(|v| v.to_string()).unwrap_or_else(|| "-".to_string())
     ));
     out.push_str(&format!("- **Wall clock**: {} ms\n", card.wall_clock_ms.unwrap_or(0)));
     out.push_str(&format!("- **Total findings**: {}\n\n", card.total_findings));

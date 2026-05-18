@@ -19,6 +19,8 @@ Both names appear in these pages for the reasons explained in
   read findings.
 - [cli.md](cli.md): every subcommand `nyx-agent` ships, the flags
   it accepts, and the exit codes it returns.
+- [config.md](config.md): `nyx-agent.toml` schema, defaults, and
+  failure modes section by section.
 
 ## Projects
 

@@ -29,11 +29,11 @@ impl FindingStatus {
 pub enum FindingOrigin {
     Static,
     Ai,
-    /// AI-discovered candidate finding that the Phase 19 verifier
-    /// promoted from `candidate_findings.Pending` to a real `findings`
-    /// row. Distinct from the bare `Ai` variant because the originating
-    /// signal is the agent's source-code exploration, not a static-pass
-    /// diag the agent later annotated.
+    /// AI-discovered candidate finding that the verifier promoted
+    /// from `candidate_findings.Pending` to a real `findings` row.
+    /// Distinct from the bare `Ai` variant because the originating
+    /// signal is the agent's source-code exploration, not a
+    /// static-pass diag the agent later annotated.
     AiExploration,
     Manual,
 }
@@ -110,8 +110,8 @@ pub struct FindingFilter<'a> {
     pub triage_state: Option<&'a str>,
     pub chain_id: Option<&'a str>,
     /// When `false` (default) rows with `status = 'Quarantine'` are
-    /// excluded. The Phase 11 list view leaves this off; the Quarantine
-    /// page passes `true`.
+    /// excluded. The default findings list view leaves this off;
+    /// the Quarantine page passes `true`.
     pub include_quarantine: bool,
     /// Optional row cap. `None` means "no LIMIT" - the UI is expected to
     /// stay below ~10k rows per page so a cap is informative, not a
@@ -275,7 +275,7 @@ impl<'a> FindingStore<'a> {
         Ok(rows)
     }
 
-    /// Composite filter used by the Phase 11 findings browser. Every
+    /// Composite filter used by the findings browser. Every
     /// field is optional; combining them ANDs in SQLite, and an empty
     /// filter returns every active row (i.e. status != Quarantine
     /// unless [`FindingFilter::include_quarantine`] is set). Ordering
@@ -439,10 +439,10 @@ impl<'a> FindingStore<'a> {
         Ok(())
     }
 
-    /// Stamp the Phase 19 verifier outcome on `id`: flips `status`
-    /// (Verified for Confirmed, Closed for NotConfirmed, untouched for
-    /// Errored — the caller passes the row's existing status in that
-    /// case) and overwrites `verdict_blob` + `attack_provenance`.
+    /// Stamp the verifier outcome on `id`: flips `status` (Verified
+    /// for Confirmed, Closed for NotConfirmed, untouched for Errored,
+    /// where the caller passes the row's existing status) and
+    /// overwrites `verdict_blob` + `attack_provenance`.
     pub async fn set_verify_result(
         &self,
         id: &str,
@@ -476,10 +476,10 @@ impl<'a> FindingStore<'a> {
     }
 
     /// Flip `id` to `status = 'Quarantine'`, stamping `verdict_blob`
-    /// with the supplied JSON reason. Phase 14's PayloadSynthesis
-    /// fallback calls this when both synthesis attempts fail to parse;
-    /// later phases (SpecDerivation, NovelFindingsDiscovery) reuse the
-    /// same shape so the quarantine page can surface a uniform reason
+    /// with the supplied JSON reason. PayloadSynthesis falls back
+    /// here when both synthesis attempts fail to parse;
+    /// SpecDerivation and NovelFindingsDiscovery reuse the same
+    /// shape so the quarantine page can surface a uniform reason
     /// field. Runtime-checked SQL to avoid bloating the `.sqlx/` cache
     /// with a one-off operator-facing helper; the parameter is bound,
     /// so injection is not a concern.
@@ -518,7 +518,7 @@ mod tests {
     #[test]
     fn stable_hash_is_16_hex_chars() {
         let h = finding_id_hash("r", "p", Some(1), "c", "rule");
-        assert_eq!(h.len(), 16, "phase 06: hash truncated to 16 hex chars");
+        assert_eq!(h.len(), 16, "finding id hash truncated to 16 hex chars");
         assert!(
             h.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
             "must be lowercase hex: {h}"

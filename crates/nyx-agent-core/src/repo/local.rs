@@ -521,7 +521,7 @@ mod tests {
 
     #[test]
     fn select_backend_for_maps_explicit_value() {
-        // Pure function — no env mutation, so this test never races other
+        // Pure function: no env mutation, so this test never races other
         // tests in the same binary that depend on the default backend.
         assert_eq!(select_backend_for(Some("bind-mount")), SnapshotBackend::BindMount);
         assert_eq!(select_backend_for(Some("apfs")), SnapshotBackend::ApfsSnapshot);

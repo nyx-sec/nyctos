@@ -149,9 +149,8 @@ impl Store {
     }
 
     /// Transitional bootstrap: seed the `DEFAULT_PROJECT_ID` row so
-    /// pre-Phase-3 callers (flat config) and pre-Phase-5 callers (flat
-    /// `/repos` API) can attach repos to it without a Project entity yet.
-    /// Removed once those phases land.
+    /// legacy callers without an explicit project context can still
+    /// attach repos via the FK.
     async fn ensure_default_project(pool: &SqlitePool) -> Result<(), StoreError> {
         let now_ms = crate::time::now_epoch_ms();
         ProjectStore::new(pool).ensure_default(now_ms).await?;

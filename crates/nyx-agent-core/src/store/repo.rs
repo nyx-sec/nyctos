@@ -205,7 +205,7 @@ impl<'a> RepoStore<'a> {
     }
 
     /// Partial update of mutable repo fields. Returns `Ok(false)` if no
-    /// row with `name` exists. `last_scan_run_id` is left untouched —
+    /// row with `name` exists. `last_scan_run_id` is left untouched;
     /// that pointer is owned by the dispatcher via [`Self::set_last_scan`].
     /// `created_at` is preserved.
     pub async fn update(&self, patch: &RepoPatch<'_>) -> Result<bool, StoreError> {

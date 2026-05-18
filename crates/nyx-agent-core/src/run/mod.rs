@@ -4,7 +4,7 @@
 //! [`ScanLane`] implementation, and a list of [`WorkspaceHandle`]s (one
 //! per ingested repo). The dispatcher schedules one rayon thread-pool
 //! job per workspace, enforces a per-repo timeout, publishes lifecycle
-//! events through the Phase-01 [`EventSink`], and aggregates the
+//! events through the [`EventSink`] broadcast bus, and aggregates the
 //! per-repo outputs into a single [`RunBundle`].
 //!
 //! Fan-out width defaults to `min(num_cpus / 2, repo_count)` and is
@@ -108,9 +108,9 @@ pub struct RepoBundle<D> {
     pub elapsed_ms: i64,
 }
 
-/// Cross-repo callgraph stub. Phase 06 records only the participating
-/// repos. The real cross-repo edges land in the prerequisites for Phase
-/// 17; until then this is a marker that aggregation happened.
+/// Cross-repo callgraph stub. Records only the participating repos
+/// today; real cross-repo edges land with the cross-repo chain
+/// runner. Until then this is a marker that aggregation happened.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CrossRepoCallgraphStub {
     pub nodes: Vec<String>,
@@ -218,9 +218,9 @@ pub struct RunDispatcher {
 impl RunDispatcher {
     /// Build a dispatcher from the operator's `[performance]` block and
     /// the planned repo count. The optional [`EventSink`] is the
-    /// Phase-01 broadcast bus; WebSocket subscribers attach in Phase 07
-    /// by calling [`tokio::sync::broadcast::Sender::subscribe`] on the
-    /// same sender without any signature change here.
+    /// broadcast bus; WebSocket subscribers attach by calling
+    /// [`tokio::sync::broadcast::Sender::subscribe`] on the same
+    /// sender without any signature change here.
     pub fn from_config(
         cfg: &PerformanceConfig,
         repo_count: usize,
@@ -257,11 +257,11 @@ impl RunDispatcher {
     /// `workspaces` list is consumed; each [`WorkspaceHandle`] is
     /// dropped when its rayon job returns, which fires the per-run
     /// snapshot cleanup installed during ingestion. The returned
-    /// [`RunBundle`] carries only per-repo names + outcomes — it
+    /// [`RunBundle`] carries only per-repo names + outcomes; it
     /// does **not** keep workspaces alive past dispatch. Downstream
-    /// phases that need the snapshot to survive (e.g. sandbox lane
-    /// in Phase 18) must hold their own [`WorkspaceHandle`] clones
-    /// before calling `dispatch_project`.
+    /// callers that need the snapshot to survive (e.g. the sandbox
+    /// lane) must hold their own [`WorkspaceHandle`] clones before
+    /// calling `dispatch_project`.
     ///
     /// Lifecycle event order on the bus:
     /// `RunStarted` → `ProjectStarted` → (per-repo events) →
@@ -369,8 +369,8 @@ impl RunDispatcher {
     fn emit(&self, ev: AgentEvent) {
         if let Some(sink) = &self.event_sink {
             // A closed bus is fine: subscribers may not be attached yet
-            // (Phase 07 wires the websocket). Discard the send error so
-            // the static pass keeps running.
+            // (the websocket attaches lazily). Discard the send error
+            // so the static pass keeps running.
             let _ = sink.send(ev);
         }
     }
@@ -487,10 +487,10 @@ static RUN_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Canonical run-id minter. Format: `run-<ms-hex>-<counter-hex>`.
 ///
-/// The counter component keeps the id unique even when two runs start
-/// inside the same millisecond. The Phase 05 implementation derived
-/// the id from `as_secs()` and would have collided on the snapshot
-/// directory under `<state>/repos/<name>/snapshots/<run_id>/`.
+/// The counter component keeps the id unique even when two runs
+/// start inside the same millisecond. An older `as_secs()`-derived
+/// id collided on the snapshot directory under
+/// `<state>/repos/<name>/snapshots/<run_id>/`.
 pub fn mint_run_id() -> String {
     let ms = now_epoch_ms();
     let n = RUN_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -741,7 +741,7 @@ mod tests {
             workspaces,
         );
         assert_eq!(bundle.callgraph.nodes, vec!["ok".to_string()]);
-        assert!(bundle.callgraph.edges.is_empty(), "edges deferred to Phase 17");
+        assert!(bundle.callgraph.edges.is_empty(), "cross-repo edges deferred");
         assert_eq!(bundle.counts().succeeded, 1);
     }
 

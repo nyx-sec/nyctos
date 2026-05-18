@@ -4,9 +4,7 @@
 //! that removes the snapshot directory; the dispatcher and any
 //! downstream consumer (sandbox, chain reasoning) must keep the same
 //! handle alive so the snapshot survives until end-of-run rather than
-//! being re-snapshotted per stage. The Phase-05 deferred item asks us
-//! to formalise that with a `WorkspaceHandle` owned by the run; this
-//! is the type.
+//! being re-snapshotted per stage. `WorkspaceHandle` is that owner.
 
 use std::path::Path;
 use std::sync::Arc;
