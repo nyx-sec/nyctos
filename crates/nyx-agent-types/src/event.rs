@@ -105,36 +105,13 @@ pub enum RepoOutcomeTag {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind")]
 pub enum AiEvent {
-    TokenReceived {
-        task_id: String,
-        token: String,
-    },
-    ToolCallStarted {
-        task_id: String,
-        name: String,
-    },
-    ToolCallFinished {
-        task_id: String,
-        name: String,
-        ok: bool,
-    },
-    CacheHit {
-        task_id: String,
-        tokens: u32,
-    },
-    CacheMiss {
-        task_id: String,
-        tokens: u32,
-    },
-    BudgetTick {
-        task_id: String,
-        run_id: String,
-        spent_usd_micros: i64,
-    },
-    TaskHalted {
-        task_id: String,
-        reason: HaltReason,
-    },
+    TokenReceived { task_id: String, token: String },
+    ToolCallStarted { task_id: String, name: String },
+    ToolCallFinished { task_id: String, name: String, ok: bool },
+    CacheHit { task_id: String, tokens: u32 },
+    CacheMiss { task_id: String, tokens: u32 },
+    BudgetTick { task_id: String, run_id: String, spent_usd_micros: i64 },
+    TaskHalted { task_id: String, reason: HaltReason },
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, TS)]

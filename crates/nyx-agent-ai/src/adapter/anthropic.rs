@@ -165,10 +165,7 @@ impl AiRuntime for AnthropicSdkAdapter {
         budget: Budget,
         sink: EventSink,
     ) -> Result<Response, AiError> {
-        let model = prompt
-            .model
-            .clone()
-            .unwrap_or_else(|| self.default_model.clone());
+        let model = prompt.model.clone().unwrap_or_else(|| self.default_model.clone());
         let pricing = pricing_for(&model);
 
         // Pre-call budget check: refuse outright if we already past cap.
@@ -202,10 +199,7 @@ impl AiRuntime for AnthropicSdkAdapter {
             .map_err(|e| AiError::Transport(e.to_string()))?;
 
         let status = res.status();
-        let bytes = res
-            .bytes()
-            .await
-            .map_err(|e| AiError::Transport(e.to_string()))?;
+        let bytes = res.bytes().await.map_err(|e| AiError::Transport(e.to_string()))?;
         if !status.is_success() {
             return Err(AiError::UpstreamRefused(format!(
                 "{} {}",
@@ -270,10 +264,7 @@ impl AiRuntime for AnthropicSdkAdapter {
             });
         }
 
-        let spent_after = self
-            .tracker
-            .add_spend(&budget.run_id, budget.kind, cost)
-            .await?;
+        let spent_after = self.tracker.add_spend(&budget.run_id, budget.kind, cost).await?;
         let _ = sink.send(AgentEvent::Ai {
             data: AiEvent::BudgetTick {
                 task_id: prompt.task_id.clone(),
@@ -318,22 +309,15 @@ impl AiRuntime for AnthropicSdkAdapter {
     }
 
     fn cost_estimate(&self, prompt: &Prompt) -> Option<CostEstimate> {
-        let model = prompt
-            .model
-            .clone()
-            .unwrap_or_else(|| self.default_model.clone());
+        let model = prompt.model.clone().unwrap_or_else(|| self.default_model.clone());
         let p = pricing_for(&model);
         // Input-token count is unknown without a tokenizer; estimate
         // 1 token per 4 chars (the rough Anthropic guideline). Output
         // upper bound is the requested `max_output_tokens`.
-        let approx_input_tokens =
-            ((prompt.system.len() + prompt.user.len()) / 4).max(1) as i64;
+        let approx_input_tokens = ((prompt.system.len() + prompt.user.len()) / 4).max(1) as i64;
         let min = approx_input_tokens * p.input_per_token_micros;
         let max = min + i64::from(prompt.max_output_tokens) * p.output_per_token_micros;
-        Some(CostEstimate {
-            min_usd_micros: min,
-            max_usd_micros: max,
-        })
+        Some(CostEstimate { min_usd_micros: min, max_usd_micros: max })
     }
 }
 
@@ -458,11 +442,7 @@ mod tests {
     }
 
     fn budget(cap_usd_micros: i64) -> Budget {
-        Budget {
-            run_id: "run-1".to_string(),
-            kind: BudgetKind::OneShot,
-            cap_usd_micros,
-        }
+        Budget { run_id: "run-1".to_string(), kind: BudgetKind::OneShot, cap_usd_micros }
     }
 
     async fn drain_ai_events(mut rx: broadcast::Receiver<AgentEvent>) -> Vec<AiEvent> {
@@ -482,30 +462,25 @@ mod tests {
             .and(path("/v1/messages"))
             .and(header("anthropic-version", ANTHROPIC_VERSION))
             .and(header("x-api-key", "test-key"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(
-                test_support::canned_response(
-                    "claude-haiku-4-5",
-                    "yes, the eval sink is reachable",
-                    1_000,
-                    200,
-                    Some(500),
-                    Some(2_000),
-                ),
-            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(test_support::canned_response(
+                "claude-haiku-4-5",
+                "yes, the eval sink is reachable",
+                1_000,
+                200,
+                Some(500),
+                Some(2_000),
+            )))
             .mount(&server)
             .await;
 
         let tracker = Arc::new(InMemoryBudgetTracker::new());
         tracker.set_cap("run-1", BudgetKind::OneShot, 1_000_000);
-        let adapter =
-            AnthropicSdkAdapter::new("test-key".to_string(), tracker.clone())
-                .with_base_url(server.uri());
+        let adapter = AnthropicSdkAdapter::new("test-key".to_string(), tracker.clone())
+            .with_base_url(server.uri());
 
         let (tx, rx) = broadcast::channel::<AgentEvent>(32);
-        let response = adapter
-            .one_shot(sample_prompt(), budget(1_000_000), tx)
-            .await
-            .expect("one_shot");
+        let response =
+            adapter.one_shot(sample_prompt(), budget(1_000_000), tx).await.expect("one_shot");
 
         assert_eq!(response.prompt_version, "phase12.test.v1");
         assert_eq!(response.task_id, "task-1");
@@ -524,19 +499,17 @@ mod tests {
         assert_eq!(tracker.spent("run-1", BudgetKind::OneShot), 2_500);
 
         let events = drain_ai_events(rx).await;
-        assert!(events
-            .iter()
-            .any(|e| matches!(e, AiEvent::TokenReceived { token, .. }
+        assert!(events.iter().any(|e| matches!(e, AiEvent::TokenReceived { token, .. }
                 if token == "yes, the eval sink is reachable")));
-        assert!(events.iter().any(|e| matches!(e, AiEvent::CacheMiss { tokens, .. } if *tokens == 500)));
-        assert!(events.iter().any(|e| matches!(e, AiEvent::CacheHit { tokens, .. } if *tokens == 2_000)));
         assert!(events
             .iter()
-            .any(|e| matches!(e, AiEvent::BudgetTick { spent_usd_micros, .. }
-                if *spent_usd_micros == 2_500)));
-        assert!(!events
+            .any(|e| matches!(e, AiEvent::CacheMiss { tokens, .. } if *tokens == 500)));
+        assert!(events
             .iter()
-            .any(|e| matches!(e, AiEvent::TaskHalted { .. })));
+            .any(|e| matches!(e, AiEvent::CacheHit { tokens, .. } if *tokens == 2_000)));
+        assert!(events.iter().any(|e| matches!(e, AiEvent::BudgetTick { spent_usd_micros, .. }
+                if *spent_usd_micros == 2_500)));
+        assert!(!events.iter().any(|e| matches!(e, AiEvent::TaskHalted { .. })));
     }
 
     #[tokio::test]
@@ -546,24 +519,21 @@ mod tests {
         // with a $0.01 cap. Haiku: 20_000 input * 1 + 0 output = 20_000.
         Mock::given(method("POST"))
             .and(path("/v1/messages"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(
-                test_support::canned_response(
-                    "claude-haiku-4-5",
-                    "ok",
-                    20_000,
-                    0,
-                    None,
-                    None,
-                ),
-            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(test_support::canned_response(
+                "claude-haiku-4-5",
+                "ok",
+                20_000,
+                0,
+                None,
+                None,
+            )))
             .mount(&server)
             .await;
 
         let tracker = Arc::new(InMemoryBudgetTracker::new());
         tracker.set_cap("run-1", BudgetKind::OneShot, 10_000);
         let adapter =
-            AnthropicSdkAdapter::new("k".to_string(), tracker.clone())
-                .with_base_url(server.uri());
+            AnthropicSdkAdapter::new("k".to_string(), tracker.clone()).with_base_url(server.uri());
 
         let (tx, rx) = broadcast::channel::<AgentEvent>(32);
         let err = adapter
@@ -571,10 +541,7 @@ mod tests {
             .await
             .expect_err("budget cap should halt");
         match err {
-            AiError::BudgetExceeded {
-                cap_usd_micros,
-                spent_usd_micros,
-            } => {
+            AiError::BudgetExceeded { cap_usd_micros, spent_usd_micros } => {
                 assert_eq!(cap_usd_micros, 10_000);
                 assert_eq!(spent_usd_micros, 20_000);
             }
@@ -615,10 +582,7 @@ mod tests {
         let tracker = Arc::new(InMemoryBudgetTracker::new());
         tracker.set_cap("run-1", BudgetKind::OneShot, 100);
         // Pre-load existing spend at the cap.
-        tracker
-            .add_spend("run-1", BudgetKind::OneShot, 100)
-            .await
-            .unwrap();
+        tracker.add_spend("run-1", BudgetKind::OneShot, 100).await.unwrap();
         let adapter = AnthropicSdkAdapter::new("k".to_string(), tracker.clone())
             .with_base_url("http://127.0.0.1:1");
 
@@ -669,9 +633,14 @@ mod tests {
                     "cache_control": { "type": "ephemeral" },
                 }]
             })))
-            .respond_with(ResponseTemplate::new(200).set_body_json(
-                test_support::canned_response("claude-haiku-4-5", "ok", 1, 1, None, None),
-            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(test_support::canned_response(
+                "claude-haiku-4-5",
+                "ok",
+                1,
+                1,
+                None,
+                None,
+            )))
             .mount(&server)
             .await;
 
@@ -681,10 +650,7 @@ mod tests {
             AnthropicSdkAdapter::new("k".to_string(), tracker).with_base_url(server.uri());
 
         let (tx, _rx) = broadcast::channel::<AgentEvent>(8);
-        let _ = adapter
-            .one_shot(sample_prompt(), budget(1_000_000), tx)
-            .await
-            .expect("one_shot");
+        let _ = adapter.one_shot(sample_prompt(), budget(1_000_000), tx).await.expect("one_shot");
     }
 
     #[test]

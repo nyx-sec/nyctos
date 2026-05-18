@@ -1796,6 +1796,7 @@ dependencies = [
  "assert_cmd",
  "axum",
  "clap",
+ "nyx-agent-ai",
  "nyx-agent-api",
  "nyx-agent-core",
  "nyx-agent-nyx",
@@ -1821,9 +1822,11 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
+ "which",
  "wiremock",
 ]
 

@@ -155,6 +155,12 @@ fn render() -> String {
     out.push_str("  max_turns: number;\n");
     out.push_str("}\n");
     out.push('\n');
+    out.push_str("export type ExtractedAgentResult =\n");
+    out.push_str("  | { kind: \"PayloadFound\"; rule_id: string; body: string }\n");
+    out.push_str("  | { kind: \"SpecFound\"; capability: string; spec: string }\n");
+    out.push_str("  | { kind: \"ChainsRanked\"; chain_ids: string[]; rationale: string }\n");
+    out.push_str("  | { kind: \"ExplorationEvent\"; message: string };\n");
+    out.push('\n');
     out.push_str("export interface AgentResult {\n");
     out.push_str("  prompt_version: string;\n");
     out.push_str("  task_id: string;\n");
@@ -162,6 +168,7 @@ fn render() -> String {
     out.push_str("  turns: number;\n");
     out.push_str("  usage: TokenUsage;\n");
     out.push_str("  cost_usd_micros: number;\n");
+    out.push_str("  extracted: ExtractedAgentResult[];\n");
     out.push_str("}\n");
     out.push('\n');
     out.push_str("export type SandboxEvent = Record<string, never>;\n");

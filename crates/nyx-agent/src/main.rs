@@ -437,14 +437,9 @@ async fn serve(
     let auth_config = AuthConfig::new(auth_token.clone());
 
     let ui_bootstrap = Arc::new(nyx_agent_ui::UiBootstrap { auth_token: auth_token.clone() });
-    let server_state = ServerState::new(
-        store.clone(),
-        events_tx.clone(),
-        trigger,
-        setup,
-        auth_config,
-    )
-    .with_state_repos_dir(state_dir.repos());
+    let server_state =
+        ServerState::new(store.clone(), events_tx.clone(), trigger, setup, auth_config)
+            .with_state_repos_dir(state_dir.repos());
 
     // Tap the broadcast channel and feed every event into the per-run
     // replay buffer so WS clients that attach after a scan kicks off
@@ -810,7 +805,7 @@ async fn doctor(
 
     let min_version = resolve_min_nyx_version(config)?;
     let override_path = config.nyx.binary_path.as_deref();
-    match NyxRunner::discover(override_path, &min_version).await {
+    let nyx_code = match NyxRunner::discover(override_path, &min_version).await {
         Ok(runner) => {
             println!(
                 "nyx OK at {} (version {}, minimum {})",
@@ -818,24 +813,31 @@ async fn doctor(
                 runner.version(),
                 min_version
             );
-            Ok(ExitCode::SUCCESS)
+            ExitCode::SUCCESS
         }
         Err(err @ NyxError::NyxNotFound { .. }) => {
             eprintln!("nyx FAIL: {err}");
             eprintln!(
                 "  install the upstream `nyx` scanner and put it on PATH, or set [nyx].binary_path"
             );
-            Ok(ExitCode::from(1))
+            ExitCode::from(1)
         }
         Err(err @ NyxError::VersionTooOld { .. }) => {
             eprintln!("nyx FAIL: {err}");
-            Ok(ExitCode::from(1))
+            ExitCode::from(1)
         }
         Err(err) => {
             eprintln!("nyx FAIL: {err}");
-            Ok(ExitCode::from(1))
+            ExitCode::from(1)
         }
+    };
+
+    match nyx_agent_ai::detect_claude_binary().await {
+        Ok(bin) => println!("claude-code: available v{} at {}", bin.version, bin.path.display()),
+        Err(err) => println!("claude-code: unavailable ({err})"),
     }
+
+    Ok(nyx_code)
 }
 
 fn resolve_min_nyx_version(config: &Config) -> anyhow::Result<Version> {

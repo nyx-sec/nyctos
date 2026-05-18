@@ -81,6 +81,12 @@ export interface AgentTask {
   max_turns: number;
 }
 
+export type ExtractedAgentResult =
+  | { kind: "PayloadFound"; rule_id: string; body: string }
+  | { kind: "SpecFound"; capability: string; spec: string }
+  | { kind: "ChainsRanked"; chain_ids: string[]; rationale: string }
+  | { kind: "ExplorationEvent"; message: string };
+
 export interface AgentResult {
   prompt_version: string;
   task_id: string;
@@ -88,6 +94,7 @@ export interface AgentResult {
   turns: number;
   usage: TokenUsage;
   cost_usd_micros: number;
+  extracted: ExtractedAgentResult[];
 }
 
 export type SandboxEvent = Record<string, never>;

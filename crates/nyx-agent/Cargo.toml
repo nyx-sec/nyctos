@@ -11,6 +11,7 @@ name = "nyx-agent"
 path = "src/main.rs"
 
 [dependencies]
+nyx-agent-ai = { path = "../nyx-agent-ai" }
 nyx-agent-api = { path = "../nyx-agent-api" }
 nyx-agent-core = { path = "../nyx-agent-core" }
 nyx-agent-nyx = { path = "../nyx-agent-nyx" }

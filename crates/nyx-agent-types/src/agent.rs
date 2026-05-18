@@ -141,6 +141,34 @@ pub struct AgentResult {
     pub turns: u32,
     pub usage: TokenUsage,
     pub cost_usd_micros: i64,
+    /// Structured artefacts the adapter lifted out of the agent loop's
+    /// tool-use trace. Phase 13's Claude Code adapter populates these
+    /// from recognised function calls; later phases (PayloadSynthesis,
+    /// SpecExtraction, ChainRanking, Exploration) read them as the
+    /// typed agent-loop output.
+    #[serde(default)]
+    pub extracted: Vec<ExtractedAgentResult>,
+}
+
+/// Typed view of the structured artefacts an agent loop produced.
+///
+/// The agent-loop trace is non-deterministic by nature; consumers do
+/// not depend on event order, only on the set of `ExtractedAgentResult`
+/// values the adapter recognised. Each variant carries the smallest
+/// stable payload the consuming phase needs; richer per-variant schemas
+/// land with the phase that owns that result type.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind")]
+pub enum ExtractedAgentResult {
+    /// Phase 14 — exploit payload candidate (rule id + payload body).
+    PayloadFound { rule_id: String, body: String },
+    /// Phase 15 — capability spec inferred for a sink.
+    SpecFound { capability: String, spec: String },
+    /// Phase 16 — chain ranking with a short rationale.
+    ChainsRanked { chain_ids: Vec<String>, rationale: String },
+    /// Free-form exploration trace event. Captures anything the agent
+    /// surfaced that does not fit a more specific variant.
+    ExplorationEvent { message: String },
 }
 
 /// Reason the adapter halted a task. Surfaced both on the event bus
@@ -155,10 +183,7 @@ pub enum HaltReason {
 #[derive(Debug, Error)]
 pub enum AiError {
     #[error("budget cap of {cap_usd_micros} usd-micros reached (spent {spent_usd_micros})")]
-    BudgetExceeded {
-        cap_usd_micros: i64,
-        spent_usd_micros: i64,
-    },
+    BudgetExceeded { cap_usd_micros: i64, spent_usd_micros: i64 },
     #[error("adapter does not support {0}")]
     UnsupportedMode(&'static str),
     #[error("upstream refused: {0}")]
@@ -169,4 +194,6 @@ pub enum AiError {
     Transport(String),
     #[error("budget tracker error: {0}")]
     BudgetTracker(String),
+    #[error("adapter unavailable: {0}")]
+    AdapterUnavailable(String),
 }

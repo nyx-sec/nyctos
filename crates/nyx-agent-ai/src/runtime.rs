@@ -59,12 +59,7 @@ pub trait BudgetTracker: Send + Sync {
 
     /// Atomically increment `spent_usd_micros` by `micros` and return
     /// the new total.
-    async fn add_spend(
-        &self,
-        run_id: &str,
-        kind: BudgetKind,
-        micros: i64,
-    ) -> Result<i64, AiError>;
+    async fn add_spend(&self, run_id: &str, kind: BudgetKind, micros: i64) -> Result<i64, AiError>;
 }
 
 /// Process-local budget tracker. Used by adapter tests and any future
@@ -92,10 +87,7 @@ impl InMemoryBudgetTracker {
     /// calls accumulate against this cap.
     pub fn set_cap(&self, run_id: &str, kind: BudgetKind, cap_usd_micros: i64) {
         let mut rows = self.inner.lock().expect("tracker poisoned");
-        if let Some(row) = rows
-            .iter_mut()
-            .find(|r| r.run_id == run_id && r.kind == kind)
-        {
+        if let Some(row) = rows.iter_mut().find(|r| r.run_id == run_id && r.kind == kind) {
             row.cap_usd_micros = Some(cap_usd_micros);
         } else {
             rows.push(Row {
@@ -126,17 +118,9 @@ impl BudgetTracker for InMemoryBudgetTracker {
             .and_then(|r| r.cap_usd_micros))
     }
 
-    async fn add_spend(
-        &self,
-        run_id: &str,
-        kind: BudgetKind,
-        micros: i64,
-    ) -> Result<i64, AiError> {
+    async fn add_spend(&self, run_id: &str, kind: BudgetKind, micros: i64) -> Result<i64, AiError> {
         let mut rows = self.inner.lock().expect("tracker poisoned");
-        if let Some(row) = rows
-            .iter_mut()
-            .find(|r| r.run_id == run_id && r.kind == kind)
-        {
+        if let Some(row) = rows.iter_mut().find(|r| r.run_id == run_id && r.kind == kind) {
             row.spent_usd_micros += micros;
             Ok(row.spent_usd_micros)
         } else {
@@ -189,14 +173,8 @@ mod tests {
         t.set_cap("run", BudgetKind::OneShot, 10_000);
         let cap = t.cap("run", BudgetKind::OneShot).await.unwrap();
         assert_eq!(cap, Some(10_000));
-        let after_a = t
-            .add_spend("run", BudgetKind::OneShot, 4_000)
-            .await
-            .unwrap();
-        let after_b = t
-            .add_spend("run", BudgetKind::OneShot, 1_500)
-            .await
-            .unwrap();
+        let after_a = t.add_spend("run", BudgetKind::OneShot, 4_000).await.unwrap();
+        let after_b = t.add_spend("run", BudgetKind::OneShot, 1_500).await.unwrap();
         assert_eq!(after_a, 4_000);
         assert_eq!(after_b, 5_500);
         assert_eq!(t.spent("run", BudgetKind::OneShot), 5_500);
