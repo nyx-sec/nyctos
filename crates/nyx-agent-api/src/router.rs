@@ -1503,11 +1503,13 @@ fn run_matches(ev: &AgentEvent, run_filter: Option<&str>) -> bool {
         let id = match data {
             RunEvent::Heartbeat { .. } => return true,
             RunEvent::RunStarted { run_id, .. }
+            | RunEvent::ProjectStarted { run_id, .. }
             | RunEvent::RepoStarted { run_id, .. }
             | RunEvent::RepoStaticDone { run_id, .. }
             | RunEvent::RepoDynamicDone { run_id, .. }
             | RunEvent::RepoFailed { run_id, .. }
             | RunEvent::RepoFinished { run_id, .. }
+            | RunEvent::ProjectFinished { run_id, .. }
             | RunEvent::RunFinished { run_id, .. } => run_id.as_str(),
         };
         id == want

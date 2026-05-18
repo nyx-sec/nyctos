@@ -14,9 +14,9 @@ use nyx_agent_core::store::{
     finding_id_hash, FindingRecord, RepoRecord, RunRecord, DEFAULT_PROJECT_ID,
 };
 use nyx_agent_core::{
-    ingest, now_epoch_ms, Config, IngestError, IngestedRepo, LogConfig, Repo, RepoOutcome,
-    RepoSource, Run, RunBundle, RunDispatcher, SandboxBackend, SecretStore, StateDir, Store,
-    WorkspaceHandle,
+    ingest, now_epoch_ms, Config, IngestError, IngestedRepo, LogConfig, Project, ProjectId, Repo,
+    RepoOutcome, RepoSource, Run, RunBundle, RunDispatcher, SandboxBackend, SecretStore, StateDir,
+    Store, WorkspaceHandle,
 };
 use nyx_agent_nyx::{Diag, NyxError, NyxRunner, NyxScanLane, MINIMUM_NYX_VERSION};
 use nyx_agent_sandbox::{select_backend, BackendChoice, BackendKind, Lane, LaneConcurrency};
@@ -448,13 +448,19 @@ async fn drive_scan(
     since_ref: Option<&str>,
 ) -> anyhow::Result<ScanReport> {
     let now_ms = now_epoch_ms();
-    let state_repos = state_dir.repos();
+    // Phase 4: per-repo workspace dirs live under
+    // `<state>/projects/<project_id>/repos/<name>/`. We resolve the
+    // project context per repo so a future multi-project scan walks the
+    // same code path; today every selected Repo carries the same
+    // project_id (the default project, until Phase 6 splits the CLI).
+    let project = resolve_run_project(store, &selected).await?;
     let mut ingest_failures: Vec<(String, IngestError)> = Vec::new();
     let mut workspaces: Vec<WorkspaceHandle> = Vec::new();
     for repo in &selected {
+        let state_repos = state_dir.project_repos(repo.project_id.as_str());
         match ingest(repo, &state_repos, &run.id).await {
             Ok(ingested) => {
-                upsert_repo_record(store, &ingested, now_ms).await?;
+                upsert_repo_record(store, &ingested, &repo.project_id, now_ms).await?;
                 if verbose {
                     println!(
                         "scan: ingested {} -> {} (backend: {})",
@@ -477,6 +483,7 @@ async fn drive_scan(
                 let _ = events.send(AgentEvent::Run {
                     data: RunEvent::RepoFailed {
                         run_id: run.id.clone(),
+                        project_id: repo.project_id.as_str().to_string(),
                         repo: repo.name.clone(),
                         message: format!("ingest failed: {err}"),
                         elapsed_ms: 0,
@@ -526,8 +533,14 @@ async fn drive_scan(
     let dispatcher =
         RunDispatcher::from_config(&config.performance, workspaces.len(), Some(events.clone()));
     let run_for_dispatch = run.clone();
+    let project_for_dispatch = project.clone();
     let dispatch_handle = tokio::task::spawn_blocking(move || {
-        dispatcher.dispatch::<NyxScanLane, Diag>(run_for_dispatch, lane, workspaces)
+        dispatcher.dispatch_project::<NyxScanLane, Diag>(
+            &project_for_dispatch,
+            run_for_dispatch,
+            lane,
+            workspaces,
+        )
     });
 
     // Guard the runs row: any failure between dispatch and finalise must still
@@ -1053,13 +1066,12 @@ async fn build_scan_lane(config: &Config) -> anyhow::Result<NyxScanLane> {
 async fn upsert_repo_record(
     store: &Store,
     ingested: &IngestedRepo,
+    project_id: &ProjectId,
     now_ms: i64,
 ) -> anyhow::Result<()> {
     let rec = RepoRecord {
         name: ingested.name.clone(),
-        // Phase-2 transitional: pre-config-grouping callers attach to the
-        // seeded default project. Phase 3 wires real project_id through.
-        project_id: DEFAULT_PROJECT_ID.to_string(),
+        project_id: project_id.as_str().to_string(),
         source_kind: source_kind_str(&ingested.source).to_string(),
         source_url_or_path: source_url_or_path(&ingested.source),
         branch: branch_of(&ingested.source),
@@ -1071,6 +1083,35 @@ async fn upsert_repo_record(
     };
     store.repos().upsert(&rec).await?;
     Ok(())
+}
+
+/// Resolve the [`Project`] that owns the selected repos for this run.
+///
+/// Phase 4 ingests + dispatches per-project. All `selected` repos are
+/// expected to share the same `project_id`; the Phase 6 CLI split will
+/// fan a multi-project scan out into one call per project. When
+/// `selected` is empty we fall back to the seeded default project so
+/// `drive_scan` can still emit a coherent `RunStarted` envelope before
+/// short-circuiting on the empty-workspace path.
+async fn resolve_run_project(store: &Store, selected: &[Repo]) -> anyhow::Result<Project> {
+    let project_id = selected
+        .first()
+        .map(|r| r.project_id.clone())
+        .unwrap_or_else(|| ProjectId::new(DEFAULT_PROJECT_ID));
+    let rec = match store.projects().get(project_id.as_str()).await? {
+        Some(r) => r,
+        None => store.projects().ensure_default(now_epoch_ms()).await?,
+    };
+    Ok(Project {
+        id: ProjectId::new(rec.id),
+        name: rec.name,
+        description: rec.description,
+        target_base_url: rec.target_base_url,
+        env_config: rec
+            .env_config_json
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok()),
+    })
 }
 
 async fn persist_run_results(store: &Store, bundle: &RunBundle<Diag>) -> anyhow::Result<()> {

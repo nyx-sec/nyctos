@@ -26,6 +26,7 @@ use rayon::ThreadPoolBuilder;
 use serde::{Deserialize, Serialize};
 
 use crate::config::PerformanceConfig;
+use crate::project::Project;
 use crate::repo::IngestedRepo;
 use crate::time::now_epoch_ms;
 
@@ -250,7 +251,7 @@ impl RunDispatcher {
         self.per_repo_timeout
     }
 
-    /// Drive the run.
+    /// Drive a project-scoped run.
     ///
     /// The `lane` is shared across rayon workers via `Arc`. The
     /// `workspaces` list is consumed; each [`WorkspaceHandle`] is
@@ -260,9 +261,15 @@ impl RunDispatcher {
     /// does **not** keep workspaces alive past dispatch. Downstream
     /// phases that need the snapshot to survive (e.g. sandbox lane
     /// in Phase 18) must hold their own [`WorkspaceHandle`] clones
-    /// before calling `dispatch`.
-    pub fn dispatch<L, D>(
+    /// before calling `dispatch_project`.
+    ///
+    /// Lifecycle event order on the bus:
+    /// `RunStarted` → `ProjectStarted` → (per-repo events) →
+    /// `ProjectFinished` → `RunFinished`. Every per-repo event carries
+    /// the project's id so subscribers can group without a side lookup.
+    pub fn dispatch_project<L, D>(
         &self,
+        project: &Project,
         run: Run,
         lane: Arc<L>,
         workspaces: Vec<WorkspaceHandle>,
@@ -271,10 +278,20 @@ impl RunDispatcher {
         L: ScanLane<D> + ?Sized,
         D: Send + 'static,
     {
+        let project_id = project.id.as_str().to_string();
         self.emit(AgentEvent::Run {
             data: RunEvent::RunStarted {
                 run_id: run.id.clone(),
+                project_id: project_id.clone(),
                 repos: workspaces.iter().map(|w| w.name().to_string()).collect(),
+                started_at_ms: run.started_at_ms,
+            },
+        });
+        self.emit(AgentEvent::Run {
+            data: RunEvent::ProjectStarted {
+                run_id: run.id.clone(),
+                project_id: project_id.clone(),
+                project_name: project.name.clone(),
                 started_at_ms: run.started_at_ms,
             },
         });
@@ -288,6 +305,7 @@ impl RunDispatcher {
         let wall_start = Instant::now();
         let dispatcher_view = DispatcherView {
             run_id: run.id.clone(),
+            project_id: project_id.clone(),
             timeout: self.per_repo_timeout,
             event_sink: self.event_sink.clone(),
         };
@@ -311,8 +329,16 @@ impl RunDispatcher {
         }
 
         self.emit(AgentEvent::Run {
+            data: RunEvent::ProjectFinished {
+                run_id: run.id.clone(),
+                project_id: project_id.clone(),
+                finished_at_ms,
+            },
+        });
+        self.emit(AgentEvent::Run {
             data: RunEvent::RunFinished {
                 run_id: run.id.clone(),
+                project_id: project_id.clone(),
                 finished_at_ms,
                 wall_clock_ms,
                 succeeded: counts.succeeded,
@@ -352,6 +378,7 @@ impl RunDispatcher {
 
 struct DispatcherView {
     run_id: String,
+    project_id: String,
     timeout: Duration,
     event_sink: Option<EventSink>,
 }
@@ -377,6 +404,7 @@ where
     view.emit(AgentEvent::Run {
         data: RunEvent::RepoStarted {
             run_id: view.run_id.clone(),
+            project_id: view.project_id.clone(),
             repo: workspace.name().to_string(),
             started_at_ms,
         },
@@ -391,6 +419,7 @@ where
             view.emit(AgentEvent::Run {
                 data: RunEvent::RepoStaticDone {
                     run_id: view.run_id.clone(),
+                    project_id: view.project_id.clone(),
                     repo: workspace.name().to_string(),
                     n_diags: diags.len() as u32,
                     elapsed_ms,
@@ -402,6 +431,7 @@ where
             view.emit(AgentEvent::Run {
                 data: RunEvent::RepoFailed {
                     run_id: view.run_id.clone(),
+                    project_id: view.project_id.clone(),
                     repo: workspace.name().to_string(),
                     message: format!("static-pass timeout after {}s", view.timeout.as_secs()),
                     elapsed_ms,
@@ -413,6 +443,7 @@ where
             view.emit(AgentEvent::Run {
                 data: RunEvent::RepoFailed {
                     run_id: view.run_id.clone(),
+                    project_id: view.project_id.clone(),
                     repo: workspace.name().to_string(),
                     message: msg.clone(),
                     elapsed_ms,
@@ -425,6 +456,7 @@ where
     view.emit(AgentEvent::Run {
         data: RunEvent::RepoFinished {
             run_id: view.run_id.clone(),
+            project_id: view.project_id.clone(),
             repo: workspace.name().to_string(),
             outcome: outcome.tag(),
             elapsed_ms,
@@ -482,6 +514,7 @@ pub fn workspace_path(handle: &WorkspaceHandle) -> &Path {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::project::ProjectId;
     use crate::repo::{Repo, RepoSource};
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
     use std::thread::sleep;
@@ -497,6 +530,16 @@ mod tests {
             cleanup: None,
         };
         WorkspaceHandle::new(ingested)
+    }
+
+    fn test_project() -> Project {
+        Project {
+            id: ProjectId::new("test-project"),
+            name: "test-project".to_string(),
+            description: None,
+            target_base_url: None,
+            env_config: None,
+        }
     }
 
     fn _types_compile_for_repo(_: &Repo) {}
@@ -547,7 +590,12 @@ mod tests {
         let run = Run::with_id("run-test-concurrent");
 
         let start = Instant::now();
-        let bundle = dispatcher.dispatch::<dyn ScanLane<()>, ()>(run, lane, workspaces);
+        let bundle = dispatcher.dispatch_project::<dyn ScanLane<()>, ()>(
+            &test_project(),
+            run,
+            lane,
+            workspaces,
+        );
         let elapsed = start.elapsed();
 
         assert!(
@@ -581,7 +629,12 @@ mod tests {
         let dispatcher = RunDispatcher::with_explicit(2, timeout, None);
         let run = Run::with_id("run-test-timeout");
 
-        let bundle = dispatcher.dispatch::<dyn ScanLane<()>, ()>(run, lane, workspaces);
+        let bundle = dispatcher.dispatch_project::<dyn ScanLane<()>, ()>(
+            &test_project(),
+            run,
+            lane,
+            workspaces,
+        );
 
         let fast = bundle.per_repo.iter().find(|b| b.repo == "fast").expect("fast bundle");
         assert!(
@@ -608,29 +661,40 @@ mod tests {
             });
         let dispatcher = RunDispatcher::with_explicit(1, Duration::from_secs(5), Some(tx.clone()));
         let run = Run::with_id("run-evt");
-        let _ = dispatcher.dispatch::<dyn ScanLane<()>, ()>(run, lane, workspaces);
+        let _ = dispatcher.dispatch_project::<dyn ScanLane<()>, ()>(
+            &test_project(),
+            run,
+            lane,
+            workspaces,
+        );
 
         let mut saw_run_started = false;
+        let mut saw_project_started = false;
         let mut saw_repo_started = false;
         let mut saw_repo_static_done = false;
         let mut saw_repo_finished = false;
+        let mut saw_project_finished = false;
         let mut saw_run_finished = false;
         while let Ok(ev) = rx.try_recv() {
             if let AgentEvent::Run { data } = ev {
                 match data {
                     RunEvent::RunStarted { .. } => saw_run_started = true,
+                    RunEvent::ProjectStarted { .. } => saw_project_started = true,
                     RunEvent::RepoStarted { .. } => saw_repo_started = true,
                     RunEvent::RepoStaticDone { .. } => saw_repo_static_done = true,
                     RunEvent::RepoFinished { .. } => saw_repo_finished = true,
+                    RunEvent::ProjectFinished { .. } => saw_project_finished = true,
                     RunEvent::RunFinished { .. } => saw_run_finished = true,
                     _ => {}
                 }
             }
         }
         assert!(saw_run_started);
+        assert!(saw_project_started);
         assert!(saw_repo_started);
         assert!(saw_repo_static_done);
         assert!(saw_repo_finished);
+        assert!(saw_project_finished);
         assert!(saw_run_finished);
     }
 
@@ -643,8 +707,12 @@ mod tests {
                 Err(ScanLaneError::Failed("scanner crashed".to_string()))
             });
         let dispatcher = RunDispatcher::with_explicit(1, Duration::from_secs(5), None);
-        let bundle =
-            dispatcher.dispatch::<dyn ScanLane<()>, ()>(Run::with_id("run-fail"), lane, workspaces);
+        let bundle = dispatcher.dispatch_project::<dyn ScanLane<()>, ()>(
+            &test_project(),
+            Run::with_id("run-fail"),
+            lane,
+            workspaces,
+        );
         let b = bundle.per_repo.into_iter().next().expect("one bundle");
         match b.outcome {
             RepoOutcome::Failed(msg) => assert!(msg.contains("scanner crashed")),
@@ -666,8 +734,12 @@ mod tests {
                 }
             });
         let dispatcher = RunDispatcher::with_explicit(2, Duration::from_secs(1), None);
-        let bundle =
-            dispatcher.dispatch::<dyn ScanLane<u32>, u32>(Run::with_id("run-cg"), lane, workspaces);
+        let bundle = dispatcher.dispatch_project::<dyn ScanLane<u32>, u32>(
+            &test_project(),
+            Run::with_id("run-cg"),
+            lane,
+            workspaces,
+        );
         assert_eq!(bundle.callgraph.nodes, vec!["ok".to_string()]);
         assert!(bundle.callgraph.edges.is_empty(), "edges deferred to Phase 17");
         assert_eq!(bundle.counts().succeeded, 1);
@@ -708,13 +780,18 @@ mod tests {
             out
         };
 
-        let bundle_a = dispatcher.dispatch::<dyn ScanLane<_>, _>(
+        let bundle_a = dispatcher.dispatch_project::<dyn ScanLane<_>, _>(
+            &test_project(),
             Run::with_id("run-first"),
             Arc::clone(&lane),
             workspaces.clone(),
         );
-        let bundle_b =
-            dispatcher.dispatch::<dyn ScanLane<_>, _>(Run::with_id("run-second"), lane, workspaces);
+        let bundle_b = dispatcher.dispatch_project::<dyn ScanLane<_>, _>(
+            &test_project(),
+            Run::with_id("run-second"),
+            lane,
+            workspaces,
+        );
         let ids_a = ids_from("run-first", &bundle_a);
         let ids_b = ids_from("run-second", &bundle_b);
         assert_eq!(ids_a, ids_b, "finding ids must be run-id independent");
@@ -739,7 +816,8 @@ mod tests {
                 Ok(Vec::new())
             });
         let dispatcher = RunDispatcher::with_explicit(2, Duration::from_secs(1), None);
-        let bundle = dispatcher.dispatch::<dyn ScanLane<()>, ()>(
+        let bundle = dispatcher.dispatch_project::<dyn ScanLane<()>, ()>(
+            &test_project(),
             Run::with_id("run-visit"),
             lane,
             workspaces,

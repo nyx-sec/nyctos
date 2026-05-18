@@ -421,6 +421,7 @@ async fn websocket_receives_repo_started_and_finished() {
         let _ = events.send(AgentEvent::Run {
             data: RunEvent::RunStarted {
                 run_id: "run-ws".to_string(),
+                project_id: "test-project".to_string(),
                 repos: vec!["alpha".to_string()],
                 started_at_ms: 1,
             },
@@ -428,6 +429,7 @@ async fn websocket_receives_repo_started_and_finished() {
         let _ = events.send(AgentEvent::Run {
             data: RunEvent::RepoStarted {
                 run_id: "run-ws".to_string(),
+                project_id: "test-project".to_string(),
                 repo: "alpha".to_string(),
                 started_at_ms: 2,
             },
@@ -436,6 +438,7 @@ async fn websocket_receives_repo_started_and_finished() {
         let _ = events.send(AgentEvent::Run {
             data: RunEvent::RepoStarted {
                 run_id: "other-run".to_string(),
+                project_id: "test-project".to_string(),
                 repo: "beta".to_string(),
                 started_at_ms: 3,
             },
@@ -443,6 +446,7 @@ async fn websocket_receives_repo_started_and_finished() {
         let _ = events.send(AgentEvent::Run {
             data: RunEvent::RepoFinished {
                 run_id: "run-ws".to_string(),
+                project_id: "test-project".to_string(),
                 repo: "alpha".to_string(),
                 outcome: RepoOutcomeTag::Success,
                 elapsed_ms: 7,
@@ -825,6 +829,7 @@ async fn websocket_with_run_filter_replays_buffered_frames() {
     let started = AgentEvent::Run {
         data: RunEvent::RunStarted {
             run_id: "r-1".to_string(),
+            project_id: "test-project".to_string(),
             repos: vec!["alpha".to_string()],
             started_at_ms: 1,
         },
@@ -832,6 +837,7 @@ async fn websocket_with_run_filter_replays_buffered_frames() {
     let repo_started = AgentEvent::Run {
         data: RunEvent::RepoStarted {
             run_id: "r-1".to_string(),
+            project_id: "test-project".to_string(),
             repo: "alpha".to_string(),
             started_at_ms: 2,
         },

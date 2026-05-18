@@ -59,6 +59,14 @@ impl StateDir {
         self.root.join("repos")
     }
 
+    /// Project-scoped repos directory at
+    /// `<root>/projects/<project_id>/repos`. Ingestion writes per-repo
+    /// workspace subdirs under this path so two repos with the same
+    /// name in different projects never collide.
+    pub fn project_repos(&self, project_id: &str) -> PathBuf {
+        self.root.join("projects").join(project_id).join("repos")
+    }
+
     pub fn findings(&self) -> PathBuf {
         self.root.join("findings")
     }
@@ -222,6 +230,10 @@ mod tests {
         let sd = StateDir::at("/var/state");
         assert_eq!(sd.runs(), Path::new("/var/state/runs"));
         assert_eq!(sd.repos(), Path::new("/var/state/repos"));
+        assert_eq!(
+            sd.project_repos("acme"),
+            Path::new("/var/state/projects/acme/repos")
+        );
         assert_eq!(sd.findings(), Path::new("/var/state/findings"));
         assert_eq!(sd.logs(), Path::new("/var/state/logs"));
         assert_eq!(sd.cache(), Path::new("/var/state/cache"));

@@ -176,11 +176,13 @@ fn run_id_for_event(ev: &AgentEvent) -> Option<&str> {
         AgentEvent::Run { data } => match data {
             RunEvent::Heartbeat { .. } => None,
             RunEvent::RunStarted { run_id, .. }
+            | RunEvent::ProjectStarted { run_id, .. }
             | RunEvent::RepoStarted { run_id, .. }
             | RunEvent::RepoStaticDone { run_id, .. }
             | RunEvent::RepoDynamicDone { run_id, .. }
             | RunEvent::RepoFailed { run_id, .. }
             | RunEvent::RepoFinished { run_id, .. }
+            | RunEvent::ProjectFinished { run_id, .. }
             | RunEvent::RunFinished { run_id, .. } => Some(run_id.as_str()),
         },
         _ => None,
@@ -332,6 +334,7 @@ mod tests {
         AgentEvent::Run {
             data: RunEvent::RunStarted {
                 run_id: run_id.to_string(),
+                project_id: "test-project".to_string(),
                 repos: vec!["alpha".to_string()],
                 started_at_ms: 0,
             },
@@ -342,6 +345,7 @@ mod tests {
         AgentEvent::Run {
             data: RunEvent::RepoStarted {
                 run_id: run_id.to_string(),
+                project_id: "test-project".to_string(),
                 repo: repo.to_string(),
                 started_at_ms: 0,
             },

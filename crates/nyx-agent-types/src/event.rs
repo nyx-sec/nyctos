@@ -32,7 +32,20 @@ pub enum RunEvent {
     /// fan out per-repo jobs.
     RunStarted {
         run_id: String,
+        project_id: String,
         repos: Vec<String>,
+        #[ts(type = "number")]
+        started_at_ms: i64,
+    },
+    /// Project-level lifecycle: emitted once per project before the
+    /// per-repo fan-out begins. A run scans exactly one project today;
+    /// the event carries the project's stable id and human-facing name
+    /// so subscribers can group per-repo events under the right project
+    /// without a side lookup.
+    ProjectStarted {
+        run_id: String,
+        project_id: String,
+        project_name: String,
         #[ts(type = "number")]
         started_at_ms: i64,
     },
@@ -40,6 +53,7 @@ pub enum RunEvent {
     /// pass is running.
     RepoStarted {
         run_id: String,
+        project_id: String,
         repo: String,
         #[ts(type = "number")]
         started_at_ms: i64,
@@ -47,6 +61,7 @@ pub enum RunEvent {
     /// Static pass returned (success or no findings).
     RepoStaticDone {
         run_id: String,
+        project_id: String,
         repo: String,
         n_diags: u32,
         #[ts(type = "number")]
@@ -57,6 +72,7 @@ pub enum RunEvent {
     /// the same bus without a `RunEvent` shape change.
     RepoDynamicDone {
         run_id: String,
+        project_id: String,
         repo: String,
         #[ts(type = "number")]
         elapsed_ms: i64,
@@ -65,6 +81,7 @@ pub enum RunEvent {
     /// the scan lane refused to start (e.g. binary missing).
     RepoFailed {
         run_id: String,
+        project_id: String,
         repo: String,
         message: String,
         #[ts(type = "number")]
@@ -75,15 +92,26 @@ pub enum RunEvent {
     /// the success / failure event streams.
     RepoFinished {
         run_id: String,
+        project_id: String,
         repo: String,
         outcome: RepoOutcomeTag,
         #[ts(type = "number")]
         elapsed_ms: i64,
     },
+    /// Project-level terminator. Emitted once every repo in the project
+    /// has produced a `RepoFinished` but before the run-level
+    /// `RunFinished`.
+    ProjectFinished {
+        run_id: String,
+        project_id: String,
+        #[ts(type = "number")]
+        finished_at_ms: i64,
+    },
     /// Run-level terminator. Emitted once every repo has produced a
     /// `RepoFinished`.
     RunFinished {
         run_id: String,
+        project_id: String,
         #[ts(type = "number")]
         finished_at_ms: i64,
         #[ts(type = "number")]
