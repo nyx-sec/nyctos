@@ -1651,6 +1651,16 @@ async fn run_one_verify(
     };
     let oracle = derive_oracle(&parsed.oracle);
     let attack_provenance = attack_provenance_from(payload.attack_provenance.as_deref());
+    if let Some(reason) = degenerate_oracle_reason(&oracle) {
+        return Ok(VerifyResult::errored(
+            finding_id.to_string(),
+            oracle,
+            empty_verify_run(&payload.vuln_bytes),
+            empty_verify_run(payload.benign_bytes.as_deref().unwrap_or_default()),
+            attack_provenance,
+            format!("oracle degenerate: {reason}"),
+        ));
+    }
     let benign_bytes = payload.benign_bytes.clone().unwrap_or_default();
     let run = PayloadRun {
         finding_id: finding_id.to_string(),
@@ -1708,6 +1718,23 @@ fn derive_oracle(raw: &str) -> Oracle {
         Oracle::SinkProbe { sentinel_path: path, expect_contains: expect }
     } else {
         Oracle::OutputContains { marker: raw.to_string() }
+    }
+}
+
+/// Detect oracle shapes that would silently coerce every verify to
+/// `NotConfirmed` because their predicate can never fire: an empty
+/// `OutputContains` marker, or a `SinkProbe` with no sentinel path.
+/// Returns a short diagnostic when degenerate so the caller can stamp
+/// `VerifyVerdict::Errored` instead of running the sandbox.
+fn degenerate_oracle_reason(oracle: &Oracle) -> Option<&'static str> {
+    match oracle {
+        Oracle::OutputContains { marker } if marker.trim().is_empty() => {
+            Some("OutputContains marker is empty")
+        }
+        Oracle::SinkProbe { sentinel_path, .. } if sentinel_path.trim().is_empty() => {
+            Some("SinkProbe sentinel_path is empty")
+        }
+        _ => None,
     }
 }
 
@@ -3235,5 +3262,42 @@ mod tests {
             Oracle::OutputContains { marker } => assert_eq!(marker, "TOP_SECRET"),
             other => panic!("expected OutputContains, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn degenerate_oracle_reason_flags_empty_marker_and_empty_sentinel() {
+        assert_eq!(
+            degenerate_oracle_reason(&Oracle::OutputContains { marker: String::new() }),
+            Some("OutputContains marker is empty"),
+        );
+        assert_eq!(
+            degenerate_oracle_reason(&Oracle::OutputContains { marker: "  ".into() }),
+            Some("OutputContains marker is empty"),
+        );
+        assert_eq!(
+            degenerate_oracle_reason(&Oracle::SinkProbe {
+                sentinel_path: String::new(),
+                expect_contains: None,
+            }),
+            Some("SinkProbe sentinel_path is empty"),
+        );
+        assert_eq!(
+            degenerate_oracle_reason(&Oracle::SinkProbe {
+                sentinel_path: "  ".into(),
+                expect_contains: Some("leaked".into()),
+            }),
+            Some("SinkProbe sentinel_path is empty"),
+        );
+        assert_eq!(
+            degenerate_oracle_reason(&Oracle::OutputContains { marker: "TOP_SECRET".into() }),
+            None,
+        );
+        assert_eq!(
+            degenerate_oracle_reason(&Oracle::SinkProbe {
+                sentinel_path: "flags/seen.txt".into(),
+                expect_contains: None,
+            }),
+            None,
+        );
     }
 }
