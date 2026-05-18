@@ -15,6 +15,9 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: sqlx-cli
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
       - name: cargo clippy
@@ -27,6 +30,13 @@ jobs:
           git diff --exit-code frontend/src/api/types.gen.ts
       - name: missing-instrument lint
         run: bash .ci/missing-instrument.sh
+      - name: sqlx cache up-to-date
+        run: |
+          rm -f /tmp/sqlx-prepare.db
+          export DATABASE_URL="sqlite:///tmp/sqlx-prepare.db?mode=rwc"
+          sqlx database create
+          sqlx migrate run --source crates/nyx-agent-core/migrations
+          cargo sqlx prepare --workspace --check
 
   guards:
     runs-on: ubuntu-latest

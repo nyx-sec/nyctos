@@ -13,13 +13,10 @@
   },
   "dependencies": {
     "@tanstack/react-query": "^5.59.0",
-    "elkjs": "^0.9.3",
-    "graphology": "^0.25.4",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-hook-form": "^7.53.0",
     "react-router-dom": "^7.0.0",
-    "sigma": "^3.0.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {

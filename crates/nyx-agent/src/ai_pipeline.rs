@@ -2046,7 +2046,7 @@ impl StaticEscapeSuiteGate {
         Self { verdict: EscapeSuiteVerdict::Green }
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn red(fixture: impl Into<String>, reason: impl Into<String>) -> Self {
         Self { verdict: EscapeSuiteVerdict::Red { fixture: fixture.into(), reason: reason.into() } }
     }
