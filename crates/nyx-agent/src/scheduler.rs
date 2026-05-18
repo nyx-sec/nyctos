@@ -150,10 +150,16 @@ impl Scheduler {
                 continue;
             }
             // `prev_or_match` does not exist on `cron::Schedule`; emulate
-            // by walking forward from one cron-window-min ago and
-            // checking whether the next fire time lies in [start, now].
-            let one_year_ago = now - chrono::Duration::days(366);
-            let due = entry.schedule.after(&one_year_ago).take_while(|t| *t <= now).last();
+            // by walking forward from a small lookback window and
+            // checking whether the next fire time lies in (start, now].
+            // The equality check below restricts firing to the current
+            // minute, so a two-minute window is large enough to catch
+            // the latest same-minute fire even under modest clock drift,
+            // and small enough that a high-frequency cron expression
+            // (e.g. a six-field `* * * * * *`) iterates at most ~120
+            // times per tick instead of millions.
+            let lookback_start = now - chrono::Duration::seconds(120);
+            let due = entry.schedule.after(&lookback_start).take_while(|t| *t <= now).last();
             let Some(scheduled_at) = due else { continue };
             if floor_to_minute_epoch(scheduled_at) != minute {
                 continue;

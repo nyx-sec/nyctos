@@ -579,10 +579,10 @@ async fn get_project(
 
 #[derive(Debug, Deserialize)]
 pub struct PatchProjectRequest {
-    #[serde(default, deserialize_with = "deserialize_tri_state_string")]
-    pub description: TriStateString,
-    #[serde(default, deserialize_with = "deserialize_tri_state_string")]
-    pub target_base_url: TriStateString,
+    #[serde(default, deserialize_with = "deserialize_double_option_string")]
+    pub description: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_double_option_string")]
+    pub target_base_url: Option<Option<String>>,
     /// Tri-state JSON value: omitted = no change, `null` = clear, value =
     /// set. The body is re-serialized verbatim into `env_config_json`.
     #[serde(default, deserialize_with = "deserialize_tri_state_json")]
@@ -628,11 +628,11 @@ async fn patch_project(
     Ok(Json(row))
 }
 
-fn project_patch_for(tri: &TriStateString) -> ProjectPatchOption<Option<&str>> {
-    match tri {
-        TriStateString::Unset => ProjectPatchOption::Unset,
-        TriStateString::Null => ProjectPatchOption::Set(None),
-        TriStateString::Some(v) => ProjectPatchOption::Set(Some(v.as_str())),
+fn project_patch_for(opt: &Option<Option<String>>) -> ProjectPatchOption<Option<&str>> {
+    match opt {
+        None => ProjectPatchOption::Unset,
+        Some(None) => ProjectPatchOption::Set(None),
+        Some(Some(v)) => ProjectPatchOption::Set(Some(v.as_str())),
     }
 }
 
@@ -789,10 +789,10 @@ pub struct PatchRepoRequest {
     #[serde(default)]
     pub source_url_or_path: Option<String>,
     /// Tri-state: omitted = no change, `null` = clear, string = set.
-    #[serde(default, deserialize_with = "deserialize_tri_state_string")]
-    pub branch: TriStateString,
-    #[serde(default, deserialize_with = "deserialize_tri_state_string")]
-    pub auth_ref: TriStateString,
+    #[serde(default, deserialize_with = "deserialize_double_option_string")]
+    pub branch: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_double_option_string")]
+    pub auth_ref: Option<Option<String>>,
     #[serde(default)]
     pub i_own_this: Option<bool>,
 }
@@ -849,31 +849,23 @@ async fn patch_project_repo(
     Ok(Json(row))
 }
 
-fn patch_option_for(tri: &TriStateString) -> PatchOption<Option<&str>> {
-    match tri {
-        TriStateString::Unset => PatchOption::Unset,
-        TriStateString::Null => PatchOption::Set(None),
-        TriStateString::Some(v) => PatchOption::Set(Some(v.as_str())),
+fn patch_option_for(opt: &Option<Option<String>>) -> PatchOption<Option<&str>> {
+    match opt {
+        None => PatchOption::Unset,
+        Some(None) => PatchOption::Set(None),
+        Some(Some(v)) => PatchOption::Set(Some(v.as_str())),
     }
 }
 
-#[derive(Debug, Default)]
-pub enum TriStateString {
-    #[default]
-    Unset,
-    Null,
-    Some(String),
-}
-
-fn deserialize_tri_state_string<'de, D>(d: D) -> Result<TriStateString, D::Error>
+/// Distinguish a missing JSON key (outer `None`) from `null` (`Some(None)`)
+/// from a present string value (`Some(Some(_))`). Paired with
+/// `#[serde(default)]` on the field so omitted keys produce the outer
+/// `None`.
+fn deserialize_double_option_string<'de, D>(d: D) -> Result<Option<Option<String>>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    let value = Option::<String>::deserialize(d)?;
-    Ok(match value {
-        None => TriStateString::Null,
-        Some(s) => TriStateString::Some(s),
-    })
+    Option::<String>::deserialize(d).map(Some)
 }
 
 async fn delete_project_repo(
