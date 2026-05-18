@@ -1,0 +1,3 @@
+phase23.exploration.v1 task=expl-demo
+survey-only run (ALLOWED HOSTS empty, TARGETS empty)
+findings emitted via record_exploration_finding payload below
