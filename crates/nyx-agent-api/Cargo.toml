@@ -10,10 +10,12 @@ repository.workspace = true
 nyx-agent-core = { path = "../nyx-agent-core" }
 nyx-agent-types = { path = "../nyx-agent-types" }
 anyhow = { workspace = true }
+async-stream = "0.3"
 axum = { workspace = true }
 futures-util = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tower-http = { workspace = true }

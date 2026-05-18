@@ -194,6 +194,28 @@ export interface AgentTraceRow {
   finished_at: number | null;
 }
 
+export interface BundleManifest {
+  finding_id: string;
+  bundle_path: string;
+  sha256: string;
+  byte_size: number;
+  artifacts: string[];
+}
+
+/**
+ * Streaming event surfaced by `POST /api/v1/findings/:id/replay`.
+ *
+ * `start` fires when bash spawns; `stdout` / `stderr` carry per-line
+ * output from the bundled `repro.sh`; `end` fires once with the exit
+ * status; `error` aborts the stream.
+ */
+export type ReplayEventKind = "start" | "stdout" | "stderr" | "end" | "error";
+
+export interface ReplayEvent {
+  kind: ReplayEventKind;
+  data: string;
+}
+
 export type RepoSourceKind = "git" | "local-path" | "github" | "gitlab" | "local";
 
 export interface CreateRepoRequest {
@@ -532,6 +554,112 @@ export function useFindingTraces(id: string | undefined) {
       request<AgentTraceRow[]>(`/findings/${encodeURIComponent(id!)}/traces`),
     enabled: Boolean(id),
   });
+}
+
+// ---- repro bundles ---------------------------------------------------------
+
+/**
+ * Build a per-finding repro bundle on the daemon and return its
+ * manifest. The bundle is written under `<state>/bundles/<id>.tar` and
+ * persisted in the `repro_bundles` table.
+ */
+export function useBuildReproBundle() {
+  return useMutation({
+    mutationFn: (id: string) =>
+      request<BundleManifest>(
+        `/findings/${encodeURIComponent(id)}/repro-bundle`,
+        { method: "POST" },
+      ),
+  });
+}
+
+/**
+ * URL the browser can `GET` to download the most-recent bundle. If
+ * none exists, the daemon builds one inline. The token is appended as
+ * a query parameter because anchor downloads cannot set
+ * `Authorization` headers.
+ */
+export function reproBundleDownloadUrl(id: string): string {
+  const token = getAuthToken();
+  const qs = token ? `?token=${encodeURIComponent(token)}` : "";
+  return `${API_BASE}/findings/${encodeURIComponent(id)}/repro-bundle.tar${qs}`;
+}
+
+/**
+ * Open an EventSource against `/findings/:id/replay` and yield parsed
+ * `ReplayEvent` frames. Returns the close handle so the caller can
+ * abort mid-stream. Stream ends naturally after the `end` event.
+ */
+export function startReplayStream(
+  id: string,
+  onEvent: (event: ReplayEvent) => void,
+): () => void {
+  const token = getAuthToken();
+  const qs = token ? `?token=${encodeURIComponent(token)}` : "";
+  const url = `${API_BASE}/findings/${encodeURIComponent(id)}/replay${qs}`;
+  // The replay surface uses POST under the hood (it has side effects -
+  // spawns a child + writes a replay status row) but EventSource is a
+  // GET-only API. Fall back to a tiny fetch-based SSE reader so the
+  // verb stays meaningful.
+  const ctl = new AbortController();
+  void runReplayFetch(url, ctl.signal, onEvent);
+  return () => ctl.abort();
+}
+
+async function runReplayFetch(
+  url: string,
+  signal: AbortSignal,
+  onEvent: (event: ReplayEvent) => void,
+) {
+  try {
+    const res = await fetch(url, { method: "POST", signal });
+    if (!res.ok || !res.body) {
+      onEvent({ kind: "error", data: `${res.status} ${res.statusText}` });
+      return;
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let idx = buf.indexOf("\n\n");
+      while (idx !== -1) {
+        const frame = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        const parsed = parseSseFrame(frame);
+        if (parsed) onEvent(parsed);
+        idx = buf.indexOf("\n\n");
+      }
+    }
+  } catch (e) {
+    if (signal.aborted) return;
+    onEvent({ kind: "error", data: String(e) });
+  }
+}
+
+function parseSseFrame(frame: string): ReplayEvent | null {
+  let kind: ReplayEventKind = "stdout";
+  const dataLines: string[] = [];
+  for (const line of frame.split("\n")) {
+    if (line.startsWith("event:")) {
+      const v = line.slice(6).trim();
+      if (
+        v === "start" ||
+        v === "stdout" ||
+        v === "stderr" ||
+        v === "end" ||
+        v === "error"
+      ) {
+        kind = v;
+      }
+    } else if (line.startsWith("data:")) {
+      dataLines.push(line.slice(5).replace(/^ /, ""));
+    }
+  }
+  if (dataLines.length === 0) return null;
+  return { kind, data: dataLines.join("\n") };
 }
 
 // ---- WebSocket event subscription -----------------------------------------

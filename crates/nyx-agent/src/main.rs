@@ -787,7 +787,8 @@ async fn serve(
     let ui_bootstrap = Arc::new(nyx_agent_ui::UiBootstrap { auth_token: auth_token.clone() });
     let server_state =
         ServerState::new(store.clone(), events_tx.clone(), trigger, setup, auth_config)
-            .with_state_repos_dir(state_dir.repos());
+            .with_state_repos_dir(state_dir.repos())
+            .with_state_bundles_dir(state_dir.bundles());
 
     // Tap the broadcast channel and feed every event into the per-run
     // replay buffer so WS clients that attach after a scan kicks off

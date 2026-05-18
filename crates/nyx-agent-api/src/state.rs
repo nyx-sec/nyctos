@@ -214,6 +214,11 @@ pub struct ServerState {
     /// subdir under this path so a re-add starts from a clean slate.
     /// `None` in tests that do not exercise workspace cleanup.
     pub state_repos_dir: Option<PathBuf>,
+    /// Per-finding repro bundle output directory (`<state>/bundles`).
+    /// The Phase-25 bundle handler writes one tarball per finding here
+    /// and stamps a `repro_bundles` row pointing at the resulting path.
+    /// `None` in tests that do not exercise bundle creation.
+    pub state_bundles_dir: Option<PathBuf>,
 }
 
 impl ServerState {
@@ -232,6 +237,7 @@ impl ServerState {
             auth,
             replay: Arc::new(EventReplay::new()),
             state_repos_dir: None,
+            state_bundles_dir: None,
         }
     }
 
@@ -239,6 +245,13 @@ impl ServerState {
     /// remove `<state_repos_dir>/<name>/` when a repo is removed.
     pub fn with_state_repos_dir(mut self, dir: PathBuf) -> Self {
         self.state_repos_dir = Some(dir);
+        self
+    }
+
+    /// Attach the on-disk repro bundle output root so the bundle
+    /// handler can write `<state_bundles_dir>/<finding-id>.tar`.
+    pub fn with_state_bundles_dir(mut self, dir: PathBuf) -> Self {
+        self.state_bundles_dir = Some(dir);
         self
     }
 }

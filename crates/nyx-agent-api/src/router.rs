@@ -9,21 +9,28 @@
 use std::time::Duration;
 
 use axum::{
+    body::Body,
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         Path, Query, Request, State,
     },
+    http::{header, StatusCode},
     middleware::{self, Next},
-    response::{IntoResponse, Response},
+    response::{sse::Event as SseEvent, sse::Sse, IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{stream, SinkExt, Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::broadcast::error::RecvError;
 use tower_http::trace::TraceLayer;
 
+use nyx_agent_core::report::{
+    build_bundle, build_run_card, render_html as render_run_card_html,
+    render_markdown as render_run_card_markdown, verify_sha256 as verify_bundle_sha256,
+    BundleError, BundleManifest, RunCard, RunCardError,
+};
 use nyx_agent_core::store::{
     AgentTraceRecord, CandidateFindingRecord, CandidateStatus, ChainRecord, FindingFilter,
     FindingRecord, PatchOption, RepoPatch, RepoRecord, RunRecord,
@@ -50,8 +57,17 @@ pub fn build_router(state: ServerState) -> Router {
         .route("/api/v1/runs", get(list_runs))
         .route("/api/v1/runs/:id", get(get_run))
         .route("/api/v1/runs/:id/findings", get(findings_for_run))
+        .route("/api/v1/runs/:id/summary", get(run_summary))
+        .route("/api/v1/runs/:id/summary.md", get(run_summary_markdown))
+        .route("/api/v1/runs/:id/summary.html", get(run_summary_html))
         .route("/api/v1/findings", get(list_findings))
         .route("/api/v1/findings/:id", get(get_finding))
+        .route("/api/v1/findings/:id/repro-bundle", post(create_repro_bundle))
+        .route(
+            "/api/v1/findings/:id/repro-bundle.tar",
+            get(download_repro_bundle),
+        )
+        .route("/api/v1/findings/:id/replay", post(replay_repro_bundle))
         .route("/api/v1/chains/:id", get(get_chain))
         .route("/api/v1/findings/:id/traces", get(traces_for_finding))
         .route("/api/v1/traces/:id", get(get_trace))
@@ -1529,6 +1545,418 @@ fn run_matches(ev: &AgentEvent, run_filter: Option<&str>) -> bool {
     } else {
         true
     }
+}
+
+// ---- /runs/:id/summary ------------------------------------------------------
+
+async fn run_summary(
+    State(s): State<ServerState>,
+    Path(id): Path<String>,
+) -> Result<Json<RunCard>, ApiError> {
+    let card = build_run_card(s.store.pool(), &id).await.map_err(run_card_to_api)?;
+    Ok(Json(card))
+}
+
+async fn run_summary_markdown(
+    State(s): State<ServerState>,
+    Path(id): Path<String>,
+) -> Result<Response, ApiError> {
+    let card = build_run_card(s.store.pool(), &id).await.map_err(run_card_to_api)?;
+    let body = render_run_card_markdown(&card);
+    Ok((
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "text/markdown; charset=utf-8")],
+        body,
+    )
+        .into_response())
+}
+
+async fn run_summary_html(
+    State(s): State<ServerState>,
+    Path(id): Path<String>,
+) -> Result<Response, ApiError> {
+    let card = build_run_card(s.store.pool(), &id).await.map_err(run_card_to_api)?;
+    let body = render_run_card_html(&card);
+    Ok((
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        body,
+    )
+        .into_response())
+}
+
+fn run_card_to_api(err: RunCardError) -> ApiError {
+    match err {
+        RunCardError::NotFound(id) => ApiError::NotFound(format!("run `{id}` not found")),
+        RunCardError::Store(e) => ApiError::Store(e),
+        RunCardError::Sqlx(e) => ApiError::Internal(format!("sqlx: {e}")),
+    }
+}
+
+// ---- /findings/:id/repro-bundle ---------------------------------------------
+
+async fn create_repro_bundle(
+    State(s): State<ServerState>,
+    Path(id): Path<String>,
+) -> Result<Json<BundleManifest>, ApiError> {
+    let out_dir = s
+        .state_bundles_dir
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| ApiError::Internal("bundle output dir is not configured".to_string()))?;
+    let manifest = build_bundle(&s.store, &id, &out_dir, now_epoch_ms())
+        .await
+        .map_err(bundle_to_api)?;
+    Ok(Json(manifest))
+}
+
+async fn download_repro_bundle(
+    State(s): State<ServerState>,
+    Path(id): Path<String>,
+) -> Result<Response, ApiError> {
+    let bundles = s.store.repro_bundles().list_for_finding(&id).await?;
+    // Most-recently-built bundle wins. If none, build one inline so the
+    // operator can hit the download URL directly without first calling
+    // POST /repro-bundle from a script.
+    let row = if let Some(latest) = bundles.last().cloned() {
+        latest
+    } else {
+        let out_dir = s.state_bundles_dir.as_ref().cloned().ok_or_else(|| {
+            ApiError::Internal("bundle output dir is not configured".to_string())
+        })?;
+        let manifest = build_bundle(&s.store, &id, &out_dir, now_epoch_ms())
+            .await
+            .map_err(bundle_to_api)?;
+        s.store
+            .repro_bundles()
+            .list_for_finding(&id)
+            .await?
+            .into_iter()
+            .find(|r| r.path == manifest.bundle_path.display().to_string())
+            .ok_or_else(|| ApiError::Internal("bundle row vanished after build".to_string()))?
+    };
+
+    let bytes = std::fs::read(&row.path)
+        .map_err(|e| ApiError::Internal(format!("read {}: {e}", row.path)))?;
+    let filename = format!("{id}.tar");
+    Ok((
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "application/x-tar".to_string()),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{filename}\""),
+            ),
+            ("X-Nyx-Bundle-Sha256".parse().unwrap(), row.sha256),
+        ],
+        Body::from(bytes),
+    )
+        .into_response())
+}
+
+fn bundle_to_api(err: BundleError) -> ApiError {
+    match err {
+        BundleError::FindingNotFound(id) => {
+            ApiError::NotFound(format!("finding `{id}` not found"))
+        }
+        BundleError::PathTooLong(p) => {
+            ApiError::BadRequest(format!("bundle path `{p}` exceeds USTAR limit"))
+        }
+        BundleError::Store(e) => ApiError::Store(e),
+        BundleError::Io { path, source } => {
+            ApiError::Internal(format!("bundle io at {}: {source}", path.display()))
+        }
+    }
+}
+
+// ---- /findings/:id/replay ---------------------------------------------------
+
+/// Hard wall-clock ceiling on a single replay invocation. A runaway
+/// `repro.sh` cannot keep a daemon worker pinned indefinitely.
+const REPLAY_WALL_CLOCK_TIMEOUT_SECS: u64 = 120;
+/// Grace window after SIGKILL for the kernel to reap the child.
+const REPLAY_REAP_GRACE_SECS: u64 = 5;
+
+async fn replay_repro_bundle(
+    State(s): State<ServerState>,
+    Path(id): Path<String>,
+) -> Result<Sse<impl Stream<Item = Result<SseEvent, std::convert::Infallible>>>, ApiError> {
+    // Resolve (or build) the most recent bundle on disk.
+    let bundles = s.store.repro_bundles().list_for_finding(&id).await?;
+    let bundle_path: std::path::PathBuf = match bundles.last() {
+        Some(row) => row.path.clone().into(),
+        None => {
+            let out_dir = s.state_bundles_dir.as_ref().cloned().ok_or_else(|| {
+                ApiError::Internal("bundle output dir is not configured".to_string())
+            })?;
+            let manifest = build_bundle(&s.store, &id, &out_dir, now_epoch_ms())
+                .await
+                .map_err(bundle_to_api)?;
+            manifest.bundle_path
+        }
+    };
+
+    let extract_root = match tempfile::tempdir() {
+        Ok(t) => t,
+        Err(e) => return Err(ApiError::Internal(format!("tempdir: {e}"))),
+    };
+    let extract_path = extract_root.path().to_path_buf();
+    let tar_bytes = std::fs::read(&bundle_path)
+        .map_err(|e| ApiError::Internal(format!("read {}: {e}", bundle_path.display())))?;
+    // Guard against on-disk substitution between build_bundle (which
+    // stamps repro_bundles.sha256) and this exec. If the row exists
+    // and the digest disagrees, refuse to extract.
+    if let Some(expected) = bundles.last().map(|r| r.sha256.as_str()) {
+        if !verify_bundle_sha256(&tar_bytes, expected) {
+            return Err(ApiError::Internal(format!(
+                "bundle integrity check failed for {}: stored sha256 does not match on-disk bytes",
+                bundle_path.display()
+            )));
+        }
+    }
+    extract_ustar(&tar_bytes, &extract_path)
+        .map_err(|e| ApiError::Internal(format!("extract bundle: {e}")))?;
+    let repro_sh = extract_path.join(&id).join("repro.sh");
+    if !repro_sh.exists() {
+        return Err(ApiError::Internal(format!(
+            "bundle did not contain repro.sh at {}",
+            repro_sh.display()
+        )));
+    }
+
+    let started_at = now_epoch_ms();
+    let store = s.store.clone();
+    let bundle_id_for_status = bundles.last().map(|r| r.id.clone());
+    let finding_id = id.clone();
+    let stream = async_stream::stream! {
+        yield Ok(SseEvent::default()
+            .event("start")
+            .data(serde_json::json!({
+                "finding_id": finding_id,
+                "bundle_path": bundle_path.display().to_string(),
+                "started_at_ms": started_at,
+            }).to_string()));
+
+        let mut cmd = tokio::process::Command::new("bash");
+        cmd.arg(&repro_sh);
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+        cmd.stdin(std::process::Stdio::null());
+        cmd.kill_on_drop(true);
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                yield Ok(SseEvent::default()
+                    .event("error")
+                    .data(format!("spawn bash: {e}")));
+                yield Ok(SseEvent::default().event("end").data("error"));
+                return;
+            }
+        };
+        let stdout = child.stdout.take().expect("piped stdout");
+        let stderr = child.stderr.take().expect("piped stderr");
+        let mut stdout_lines = tokio::io::AsyncBufReadExt::lines(
+            tokio::io::BufReader::new(stdout),
+        );
+        let mut stderr_lines = tokio::io::AsyncBufReadExt::lines(
+            tokio::io::BufReader::new(stderr),
+        );
+        // Deadline keeps a runaway repro.sh (infinite loop, `sleep
+        // infinity`, etc.) from pinning a daemon worker. On expiry we
+        // SIGKILL the child; kill_on_drop also fires if the SSE client
+        // disconnects.
+        let deadline = tokio::time::Instant::now()
+            + std::time::Duration::from_secs(REPLAY_WALL_CLOCK_TIMEOUT_SECS);
+        let mut stdout_done = false;
+        let mut stderr_done = false;
+        let mut timed_out = false;
+        while !(stdout_done && stderr_done) && !timed_out {
+            tokio::select! {
+                _ = tokio::time::sleep_until(deadline) => {
+                    let _ = child.start_kill();
+                    yield Ok(SseEvent::default()
+                        .event("error")
+                        .data(format!(
+                            "replay exceeded {REPLAY_WALL_CLOCK_TIMEOUT_SECS}s wall-clock timeout; killed"
+                        )));
+                    timed_out = true;
+                }
+                line = stdout_lines.next_line(), if !stdout_done => {
+                    match line {
+                        Ok(Some(text)) => {
+                            yield Ok(SseEvent::default().event("stdout").data(text));
+                        }
+                        Ok(None) => stdout_done = true,
+                        Err(e) => {
+                            yield Ok(SseEvent::default()
+                                .event("error")
+                                .data(format!("stdout read: {e}")));
+                            stdout_done = true;
+                        }
+                    }
+                }
+                line = stderr_lines.next_line(), if !stderr_done => {
+                    match line {
+                        Ok(Some(text)) => {
+                            yield Ok(SseEvent::default().event("stderr").data(text));
+                        }
+                        Ok(None) => stderr_done = true,
+                        Err(e) => {
+                            yield Ok(SseEvent::default()
+                                .event("error")
+                                .data(format!("stderr read: {e}")));
+                            stderr_done = true;
+                        }
+                    }
+                }
+            }
+        }
+        // Bound the wait so a child that ignores SIGKILL (or a kernel
+        // that is slow to reap) cannot pin the task forever either.
+        let status = match tokio::time::timeout(
+            std::time::Duration::from_secs(REPLAY_REAP_GRACE_SECS),
+            child.wait(),
+        )
+        .await
+        {
+            Ok(Ok(status)) => status,
+            Ok(Err(e)) => {
+                yield Ok(SseEvent::default()
+                    .event("error")
+                    .data(format!("wait: {e}")));
+                yield Ok(SseEvent::default().event("end").data("error"));
+                return;
+            }
+            Err(_) => {
+                yield Ok(SseEvent::default()
+                    .event("error")
+                    .data(format!(
+                        "child not reaped within {REPLAY_REAP_GRACE_SECS}s after kill"
+                    )));
+                yield Ok(SseEvent::default().event("end").data("error"));
+                return;
+            }
+        };
+        let exit_code = status.code().unwrap_or(-1);
+        let finished_at = now_epoch_ms();
+        let verdict = if exit_code == 0 { "Pass" } else { "Fail" };
+        if let Some(bid) = bundle_id_for_status.as_deref() {
+            if let Err(e) = store
+                .repro_bundles()
+                .record_replay(bid, finished_at, verdict)
+                .await
+            {
+                tracing::warn!(error = %e, "failed to record replay status");
+            }
+        }
+        // Keep the extracted tempdir alive until after the child exits.
+        drop(extract_root);
+        yield Ok(SseEvent::default()
+            .event("end")
+            .data(serde_json::json!({
+                "exit_code": exit_code,
+                "status": verdict,
+                "started_at_ms": started_at,
+                "finished_at_ms": finished_at,
+                "duration_ms": finished_at - started_at,
+            }).to_string()));
+    };
+    Ok(Sse::new(stream).keep_alive(Default::default()))
+}
+
+/// Minimal USTAR extractor for the format produced by
+/// `nyx_agent_core::report::repro_bundle::build_ustar`. Each entry is
+/// either a directory (`typeflag == '5'`) or a regular file (`'0'` or
+/// `'\0'`). The format-spec exit (two empty 512-byte blocks) stops the
+/// walk.
+fn extract_ustar(bytes: &[u8], dest: &std::path::Path) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut i = 0;
+    while i + 512 <= bytes.len() {
+        let header = &bytes[i..i + 512];
+        if header.iter().all(|b| *b == 0) {
+            break;
+        }
+        let name_end = header[..100].iter().position(|b| *b == 0).unwrap_or(100);
+        let name = std::str::from_utf8(&header[..name_end])
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?
+            .to_string();
+        let size = parse_octal(&header[124..135]);
+        let typeflag = header[156];
+        let safe_name = sanitise_tar_path(&name)
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "unsafe tar path"))?;
+        let target = dest.join(&safe_name);
+        if typeflag == b'5' || name.ends_with('/') {
+            std::fs::create_dir_all(&target)?;
+        } else {
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let mut f = std::fs::File::create(&target)?;
+            let data_start = i + 512;
+            let data_end = data_start + size as usize;
+            if data_end > bytes.len() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "truncated tar",
+                ));
+            }
+            f.write_all(&bytes[data_start..data_end])?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = parse_octal(&header[100..107]) as u32;
+                if mode > 0 {
+                    let _ = std::fs::set_permissions(
+                        &target,
+                        std::fs::Permissions::from_mode(mode & 0o777),
+                    );
+                }
+            }
+        }
+        let data_blocks = (size + 511) / 512;
+        i += 512 + (data_blocks as usize) * 512;
+    }
+    Ok(())
+}
+
+fn parse_octal(bytes: &[u8]) -> u64 {
+    let mut v: u64 = 0;
+    for b in bytes {
+        if *b == 0 || *b == b' ' {
+            break;
+        }
+        if !(b'0'..=b'7').contains(b) {
+            break;
+        }
+        v = v * 8 + (b - b'0') as u64;
+    }
+    v
+}
+
+/// Reject tar entries containing `..` components or absolute paths so
+/// extraction stays inside the destination tempdir.
+fn sanitise_tar_path(name: &str) -> Option<std::path::PathBuf> {
+    let p = std::path::Path::new(name);
+    if p.is_absolute() {
+        return None;
+    }
+    let mut out = std::path::PathBuf::new();
+    for component in p.components() {
+        match component {
+            std::path::Component::Normal(s) => out.push(s),
+            std::path::Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    Some(out)
+}
+
+// Silence the unused-import warnings the stream helpers would emit if a
+// future refactor stops using them; we keep the wildcard reachable.
+#[allow(dead_code)]
+fn _stream_marker() -> impl Stream<Item = u8> {
+    stream::empty()
 }
 
 // ---- helpers ----------------------------------------------------------------

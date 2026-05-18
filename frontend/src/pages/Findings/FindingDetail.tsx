@@ -1,10 +1,18 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Badge } from "@/components/Badge";
 import { Button } from "@/components/Button";
 import { CodeExcerpt, type CodeExcerptLine } from "@/components/CodeExcerpt";
 import { Spinner } from "@/components/Spinner";
 import { AiTraceViewer } from "@/components/AiTraceViewer";
-import { useFinding, type FindingRecord } from "@/api/client";
+import {
+  reproBundleDownloadUrl,
+  startReplayStream,
+  useBuildReproBundle,
+  useFinding,
+  type BundleManifest,
+  type FindingRecord,
+  type ReplayEvent,
+} from "@/api/client";
 import { ORIGIN_TONE, SEVERITY_TONE, STATUS_TONE } from "./diff";
 
 export interface FindingDetailProps {
@@ -134,8 +142,121 @@ function FindingDetailBody({ finding, evidence }: BodyProps) {
 
       <DynamicVerdict finding={finding} evidence={evidence} />
 
+      <ReproBundleSection finding={finding} />
+
       <AiReasoningSection finding={finding} />
     </>
+  );
+}
+
+interface ReproBundleSectionProps {
+  finding: FindingRecord;
+}
+
+function ReproBundleSection({ finding }: ReproBundleSectionProps) {
+  const build = useBuildReproBundle();
+  const [manifest, setManifest] = useState<BundleManifest | null>(null);
+  const [replayLines, setReplayLines] = useState<ReplayEvent[]>([]);
+  const [replayStatus, setReplayStatus] = useState<
+    "idle" | "running" | "done" | "error"
+  >("idle");
+  const stopRef = useRef<(() => void) | null>(null);
+
+  const downloadUrl = reproBundleDownloadUrl(finding.id);
+
+  const onBuild = async () => {
+    try {
+      const m = await build.mutateAsync(finding.id);
+      setManifest(m);
+    } catch {
+      // surfaced via build.error below
+    }
+  };
+
+  const onReplay = () => {
+    setReplayLines([]);
+    setReplayStatus("running");
+    stopRef.current?.();
+    stopRef.current = startReplayStream(finding.id, (ev) => {
+      setReplayLines((prev) => [...prev, ev]);
+      if (ev.kind === "end") setReplayStatus("done");
+      if (ev.kind === "error") setReplayStatus("error");
+    });
+  };
+
+  const onStop = () => {
+    stopRef.current?.();
+    stopRef.current = null;
+    setReplayStatus("idle");
+  };
+
+  return (
+    <section className="finding-detail__section">
+      <h3 className="finding-detail__h3">Repro bundle</h3>
+      <div className="finding-detail__actions">
+        <Button size="sm" onClick={onBuild} disabled={build.isPending}>
+          {build.isPending ? "Building…" : manifest ? "Rebuild bundle" : "Build bundle"}
+        </Button>
+        <a
+          className="btn btn--sm"
+          href={downloadUrl}
+          download={`${finding.id}.tar`}
+        >
+          Download repro bundle
+        </a>
+        <Button
+          size="sm"
+          variant="primary"
+          onClick={onReplay}
+          disabled={replayStatus === "running"}
+        >
+          {replayStatus === "running" ? "Replaying…" : "Replay locally"}
+        </Button>
+        {replayStatus === "running" && (
+          <Button size="sm" variant="ghost" onClick={onStop}>
+            Stop
+          </Button>
+        )}
+      </div>
+      {build.error && (
+        <p className="finding-detail__error" role="alert">
+          Bundle build failed: {String(build.error)}
+        </p>
+      )}
+      {manifest && (
+        <dl className="finding-detail__meta">
+          <dt>Bundle path</dt>
+          <dd>
+            <code className="finding-detail__code">{manifest.bundle_path}</code>
+          </dd>
+          <dt>SHA-256</dt>
+          <dd>
+            <code className="finding-detail__code">{manifest.sha256}</code>
+          </dd>
+          <dt>Size</dt>
+          <dd>{manifest.byte_size} bytes</dd>
+          <dt>Artifacts</dt>
+          <dd>{manifest.artifacts.join(", ")}</dd>
+        </dl>
+      )}
+      {replayLines.length > 0 && (
+        <pre className="finding-detail__replay-log" aria-live="polite">
+          {replayLines.map((ev, idx) => (
+            <span key={idx} className={`finding-detail__replay-line finding-detail__replay-line--${ev.kind}`}>
+              [{ev.kind}] {ev.data}
+              {"\n"}
+            </span>
+          ))}
+        </pre>
+      )}
+      {replayStatus === "idle" && replayLines.length === 0 && (
+        <p className="finding-detail__muted">
+          Build a bundle, then replay it locally on this host. The daemon
+          spawns <code>bash repro.sh</code> in a sandboxed tempdir and
+          streams stdout / stderr back into this panel.
+        </p>
+      )}
+    </section>
   );
 }
 

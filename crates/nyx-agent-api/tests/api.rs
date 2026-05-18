@@ -884,3 +884,121 @@ async fn websocket_with_run_filter_replays_buffered_frames() {
 
     h.abort();
 }
+
+#[tokio::test]
+async fn run_summary_endpoint_returns_card() {
+    let srv = TestServer::start().await;
+    srv.store.repos().upsert(&sample_repo("alpha")).await.expect("repo");
+    let mut run = sample_run("run-summary");
+    run.status = "Succeeded".to_string();
+    run.finished_at = Some(9_000);
+    run.wall_clock_ms = Some(7_000);
+    srv.store.runs().insert(&run).await.expect("run");
+    let f = sample_finding("run-summary", "alpha", "src/a.py", "rule-1");
+    srv.store.findings().upsert(&f).await.expect("finding");
+
+    let resp = reqwest::get(format!("{}/api/v1/runs/run-summary/summary", srv.base()))
+        .await
+        .expect("get");
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    let body: Value = resp.json().await.expect("json");
+    assert_eq!(body["run_id"], "run-summary");
+    assert_eq!(body["total_findings"], 1);
+    assert_eq!(body["status"], "Succeeded");
+
+    let md_resp = reqwest::get(format!("{}/api/v1/runs/run-summary/summary.md", srv.base()))
+        .await
+        .expect("get md");
+    assert_eq!(md_resp.status(), reqwest::StatusCode::OK);
+    let ct = md_resp.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("");
+    assert!(ct.contains("text/markdown"), "expected markdown content-type, got {ct}");
+    let md_body = md_resp.text().await.expect("md text");
+    assert!(md_body.contains("# Run run-summary"));
+
+    let html_resp = reqwest::get(format!("{}/api/v1/runs/run-summary/summary.html", srv.base()))
+        .await
+        .expect("get html");
+    assert_eq!(html_resp.status(), reqwest::StatusCode::OK);
+    let html = html_resp.text().await.expect("html text");
+    assert!(html.contains("<h2>Run run-summary</h2>"));
+}
+
+#[tokio::test]
+async fn run_summary_endpoint_404s_for_missing_run() {
+    let srv = TestServer::start().await;
+    let resp = reqwest::get(format!("{}/api/v1/runs/ghost/summary", srv.base()))
+        .await
+        .expect("get");
+    assert_eq!(resp.status(), reqwest::StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn repro_bundle_endpoint_builds_and_downloads() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = Store::open(tmp.path()).await.expect("open store");
+    let bundles_dir = tmp.path().join("bundles");
+    std::fs::create_dir_all(&bundles_dir).expect("mkdir bundles");
+
+    let (events, _rx) = broadcast::channel::<AgentEvent>(8);
+    let setup = SetupContext::new(
+        tmp.path().join("nyx-agent.toml"),
+        Config::default(),
+        true,
+        SecretStore::memory(),
+    );
+    let state = ServerState::new(
+        store.clone(),
+        events,
+        Arc::new(StubScanTrigger { run_id: "x".to_string() }) as Arc<dyn ScanTrigger>,
+        setup,
+        AuthConfig::default(),
+    )
+    .with_state_bundles_dir(bundles_dir.clone());
+
+    store.repos().upsert(&sample_repo("alpha")).await.expect("repo");
+    store.runs().insert(&sample_run("run-bundle")).await.expect("run");
+    let f = sample_finding("run-bundle", "alpha", "src/a.py", "rule-bundle");
+    let fid = f.id.clone();
+    store.findings().upsert(&f).await.expect("finding");
+
+    let app = build_router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let h = tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    let base = format!("http://{addr}");
+    let client = reqwest::Client::new();
+
+    // Build the bundle.
+    let post = client
+        .post(format!("{base}/api/v1/findings/{fid}/repro-bundle"))
+        .send()
+        .await
+        .expect("post");
+    assert_eq!(post.status(), reqwest::StatusCode::OK);
+    let manifest: Value = post.json().await.expect("manifest json");
+    assert_eq!(manifest["finding_id"], fid);
+    let bundle_path = manifest["bundle_path"].as_str().expect("path").to_string();
+    assert!(std::path::Path::new(&bundle_path).exists());
+
+    // Download the tar.
+    let resp = client
+        .get(format!("{base}/api/v1/findings/{fid}/repro-bundle.tar"))
+        .send()
+        .await
+        .expect("get tar");
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    let ct = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("");
+    assert_eq!(ct, "application/x-tar");
+    let cd = resp
+        .headers()
+        .get("content-disposition")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(cd.contains(&format!("filename=\"{fid}.tar\"")), "got: {cd}");
+    let bytes = resp.bytes().await.expect("bytes");
+    assert!(bytes.len() > 1024, "tar should have at least one entry + terminator");
+
+    h.abort();
+}

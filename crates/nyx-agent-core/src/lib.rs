@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod log_init;
+pub mod report;
 pub mod repo;
 pub mod run;
 pub mod secrets;

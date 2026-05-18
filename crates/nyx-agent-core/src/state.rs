@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
-const SUBDIRS: &[&str] = &["runs", "repos", "findings", "logs", "cache"];
+const SUBDIRS: &[&str] = &["runs", "repos", "findings", "logs", "cache", "bundles"];
 
 #[derive(Debug, Error)]
 pub enum StateError {
@@ -69,6 +69,13 @@ impl StateDir {
 
     pub fn cache(&self) -> PathBuf {
         self.root.join("cache")
+    }
+
+    /// Per-finding repro bundle output directory (`<state>/bundles`).
+    /// Phase 25 writes one tarball per finding here when the operator
+    /// requests a repro bundle.
+    pub fn bundles(&self) -> PathBuf {
+        self.root.join("bundles")
     }
 
     /// Bearer-token file consumed by the API auth middleware. Stored
@@ -217,6 +224,7 @@ mod tests {
         assert_eq!(sd.findings(), Path::new("/var/state/findings"));
         assert_eq!(sd.logs(), Path::new("/var/state/logs"));
         assert_eq!(sd.cache(), Path::new("/var/state/cache"));
+        assert_eq!(sd.bundles(), Path::new("/var/state/bundles"));
         assert_eq!(sd.auth_token_path(), Path::new("/var/state/auth_token"));
     }
 
