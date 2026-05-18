@@ -188,6 +188,12 @@ pub struct ChainResult {
     /// `Some(false)` when the second pass disagreed; `None` when the
     /// replay-stable check was disabled.
     pub replay_stable: Option<bool>,
+    /// Per-step captures from the replay pass. `Some` whenever the
+    /// replay-stable check ran (regardless of agreement) so operators
+    /// investigating a flaky chain can diff `steps` against
+    /// `replay_steps` instead of only seeing the boolean verdict.
+    /// `None` when the check was disabled.
+    pub replay_steps: Option<Vec<ChainStepCapture>>,
 }
 
 impl ChainRunner {
@@ -226,11 +232,11 @@ impl ChainRunner {
 
         let (verdict, steps) = self.execute_pass(&run, "pass0").await?;
 
-        let replay_stable = if self.replay_stable_check {
-            let (verdict_replay, _steps_replay) = self.execute_pass(&run, "pass1").await?;
-            Some(verdict_replay == verdict)
+        let (replay_stable, replay_steps) = if self.replay_stable_check {
+            let (verdict_replay, steps_replay) = self.execute_pass(&run, "pass1").await?;
+            (Some(verdict_replay == verdict), Some(steps_replay))
         } else {
-            None
+            (None, None)
         };
 
         Ok(ChainResult {
@@ -239,6 +245,7 @@ impl ChainRunner {
             steps,
             attack_provenance: run.attack_provenance,
             replay_stable,
+            replay_steps,
         })
     }
 
@@ -603,6 +610,11 @@ mod tests {
             .expect("run");
         assert_eq!(result.verdict, ChainVerdict::Confirmed);
         assert_eq!(result.replay_stable, Some(true));
+        let replay_steps = result
+            .replay_steps
+            .as_ref()
+            .expect("replay_steps populated when check ran");
+        assert_eq!(replay_steps.len(), result.steps.len());
     }
 
     #[tokio::test]

