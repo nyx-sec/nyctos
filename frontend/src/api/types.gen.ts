@@ -85,6 +85,7 @@ export type ExtractedAgentResult =
   | { kind: "PayloadFound"; rule_id: string; body: string }
   | { kind: "SpecFound"; capability: string; spec: string }
   | { kind: "ChainsRanked"; chain_ids: string[]; rationale: string }
+  | { kind: "ExplorationFinding"; path: string; line: number | null; cap: string; rationale: string; endpoint: string | null; suggested_payload_hint: string | null }
   | { kind: "ExplorationEvent"; message: string };
 
 export interface AgentResult {

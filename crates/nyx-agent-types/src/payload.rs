@@ -22,6 +22,10 @@ pub enum AttackProvenance {
     /// Synthesised by an LLM. The agent-trace store keeps the prompt
     /// version + conversation path so verdicts remain auditable.
     LlmSynthesised,
+    /// Surfaced by the Phase 23 AI exploration driver — the Claude
+    /// Code agent loop ran inside the chain-lane sandbox and recorded
+    /// the finding via the `record_exploration_finding` tool call.
+    AiExploration,
 }
 
 impl AttackProvenance {
@@ -29,6 +33,7 @@ impl AttackProvenance {
         match self {
             AttackProvenance::Curated => "Curated",
             AttackProvenance::LlmSynthesised => "LlmSynthesised",
+            AttackProvenance::AiExploration => "AiExploration",
         }
     }
 }
@@ -97,5 +102,6 @@ mod tests {
     fn attack_provenance_strings_are_stable() {
         assert_eq!(AttackProvenance::Curated.as_str(), "Curated");
         assert_eq!(AttackProvenance::LlmSynthesised.as_str(), "LlmSynthesised");
+        assert_eq!(AttackProvenance::AiExploration.as_str(), "AiExploration");
     }
 }

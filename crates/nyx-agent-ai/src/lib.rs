@@ -22,6 +22,13 @@ pub use runtime::{
     deterministic_seed, AiRuntime, BudgetTracker, InMemoryBudgetTracker, SharedBudgetTracker,
 };
 pub use tasks::chain_reasoning::{run as run_chain_reasoning, ChainReasoningOutcome};
+pub use tasks::exploration::{
+    run as run_exploration, AuditEntry as ExplorationAuditEntry, EscapeSuiteGate,
+    EscapeSuiteVerdict, ExplorationEndpoint, ExplorationFinding, ExplorationHaltReason,
+    ExplorationOutcome, ExplorationScope, DEFAULT_EXPLORATION_RUN_CAP_USD_MICROS,
+    DEFAULT_EXPLORATION_SOFT_CAP_USD_MICROS, DEFAULT_EXPLORATION_WALL_CLOCK,
+    EXPLORATION_PROMPT_VERSION,
+};
 pub use tasks::novel_findings::{run as run_novel_findings, NovelFindingDiscoveryOutcome};
 pub use tasks::payload_synthesis::{
     run as run_payload_synthesis, PayloadSynthesisOutcome,

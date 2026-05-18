@@ -166,6 +166,20 @@ pub enum ExtractedAgentResult {
     SpecFound { capability: String, spec: String },
     /// Phase 16 — chain ranking with a short rationale.
     ChainsRanked { chain_ids: Vec<String>, rationale: String },
+    /// Phase 23 — AI exploration candidate finding. Emitted by the
+    /// Claude Code agent loop when it identifies a new vulnerability
+    /// while exploring the workspace (shadow API, state machine flaw,
+    /// CORS misconfiguration, ...).
+    ExplorationFinding {
+        path: String,
+        line: Option<u32>,
+        cap: String,
+        rationale: String,
+        #[serde(default)]
+        endpoint: Option<String>,
+        #[serde(default)]
+        suggested_payload_hint: Option<String>,
+    },
     /// Free-form exploration trace event. Captures anything the agent
     /// surfaced that does not fit a more specific variant.
     ExplorationEvent { message: String },
@@ -212,6 +226,31 @@ pub fn classify_tool_use(
                 .unwrap_or_default()
                 .to_string();
             Some(ExtractedAgentResult::ChainsRanked { chain_ids, rationale })
+        }
+        "record_exploration_finding" => {
+            let path = input.get("path")?.as_str()?.to_string();
+            let cap = input.get("cap")?.as_str()?.to_string();
+            let rationale = input.get("rationale")?.as_str()?.to_string();
+            if path.trim().is_empty() || cap.trim().is_empty() || rationale.trim().is_empty() {
+                return None;
+            }
+            let line = input.get("line").and_then(|v| v.as_u64()).map(|n| n as u32);
+            let endpoint = input
+                .get("endpoint")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let suggested_payload_hint = input
+                .get("suggested_payload_hint")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            Some(ExtractedAgentResult::ExplorationFinding {
+                path,
+                line,
+                cap,
+                rationale,
+                endpoint,
+                suggested_payload_hint,
+            })
         }
         _ => Some(ExtractedAgentResult::ExplorationEvent {
             message: format!("tool {name} input={input}"),

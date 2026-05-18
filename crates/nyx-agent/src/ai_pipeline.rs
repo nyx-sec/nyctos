@@ -25,10 +25,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use nyx_agent_ai::{
-    read_spec_excerpt, run_chain_reasoning, run_novel_findings, run_payload_synthesis,
-    run_spec_derivation, AiRuntime, AnthropicSdkAdapter, BudgetTracker, ChainReasoningOutcome,
-    NovelFindingDiscoveryOutcome, PayloadSynthesisOutcome, SharedBudgetTracker,
-    SpecDerivationOutcome,
+    read_spec_excerpt, run_chain_reasoning, run_exploration, run_novel_findings,
+    run_payload_synthesis, run_spec_derivation, AiRuntime, AnthropicSdkAdapter, BudgetTracker,
+    ChainReasoningOutcome, ClaudeCodeAdapter, EscapeSuiteGate, EscapeSuiteVerdict,
+    ExplorationEndpoint, ExplorationFinding, ExplorationHaltReason, ExplorationOutcome,
+    ExplorationScope, NovelFindingDiscoveryOutcome, PayloadSynthesisOutcome, SharedBudgetTracker,
+    SpecDerivationOutcome, DEFAULT_EXPLORATION_RUN_CAP_USD_MICROS,
 };
 use nyx_agent_core::store::{
     CandidateFindingRecord, CandidateStatus, ChainRecord, FindingOrigin, FindingRecord,
@@ -1809,6 +1811,300 @@ async fn promote_candidate(
     Ok(())
 }
 
+// ----- AI Exploration (Phase 23) -----------------------------------------
+
+/// Counts surfaced by [`run_ai_exploration_pass`].
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct AiExplorationPassReport {
+    /// Repos for which the exploration driver dispatched the agent
+    /// loop (escape gate green, budget available).
+    pub explorations_dispatched: u32,
+    /// Repos that were skipped because the escape-suite gate returned
+    /// red. The driver halted before the agent loop fired; operators
+    /// see the failing fixture name in the structured log.
+    pub halted_escape_suite_red: u32,
+    /// Repos that were skipped because the per-run budget cap was
+    /// already exhausted before the call.
+    pub halted_budget_exhausted: u32,
+    /// `findings` rows written with `finding_origin = AiExploration`
+    /// and `status = Quarantine`. The Phase 19 verifier promotes them
+    /// to `Verified` when a payload + spec pair confirms.
+    pub findings_quarantined: u32,
+    /// Exploration calls that bubbled an unrecoverable upstream error
+    /// (transport, malformed response).
+    pub failed: u32,
+    /// Sum of `cost_usd_micros` reported by every dispatched call.
+    pub spend_usd_micros: i64,
+}
+
+/// Static escape-suite gate. Pre-records a verdict the binary supplies
+/// at startup so the AI driver can refer to a recent escape-suite
+/// run's result without spinning up a fresh probe on every
+/// exploration. Wiring this to a real periodic probe lives with the
+/// release-pipeline phase that already needs to think about the
+/// `nyx-sandbox-shim` install path; until then operators rely on CI's
+/// own escape-suite run.
+#[derive(Debug, Clone)]
+pub struct StaticEscapeSuiteGate {
+    verdict: EscapeSuiteVerdict,
+}
+
+impl StaticEscapeSuiteGate {
+    pub fn green() -> Self {
+        Self { verdict: EscapeSuiteVerdict::Green }
+    }
+
+    pub fn red(fixture: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self {
+            verdict: EscapeSuiteVerdict::Red {
+                fixture: fixture.into(),
+                reason: reason.into(),
+            },
+        }
+    }
+}
+
+#[async_trait]
+impl EscapeSuiteGate for StaticEscapeSuiteGate {
+    async fn check(&self) -> Result<EscapeSuiteVerdict, AiError> {
+        Ok(self.verdict.clone())
+    }
+}
+
+/// Fan-out AI Exploration across every successfully-ingested repo in
+/// `bundle`. No-op (returns a default report) when the runtime is not
+/// Anthropic / Claude Code or when no Claude Code binary is on PATH.
+///
+/// Each repo gets one exploration call routed through the Claude Code
+/// agent loop. Findings the model records via the
+/// `record_exploration_finding` tool land in the `findings` table with
+/// `finding_origin = AiExploration` and `status = Quarantine`; the
+/// Phase 19 verifier promotes them to `Verified` when a payload + spec
+/// pair confirms (the same dynamic-confirm gate Phase 17 candidates
+/// flow through).
+///
+/// Per the Phase 23 plan, the escape suite is a precondition: a red
+/// fixture halts the driver before any agent loop fires. A run-wide
+/// hard cap (default $10 in USD micros, tuned for Claude Opus pricing)
+/// bounds spend; a per-task soft cap emits a warning frame on the
+/// event bus without halting the run.
+pub async fn run_ai_exploration_pass(
+    config: &AiConfig,
+    store: &Store,
+    bundle: &RunBundle<Diag>,
+    workspaces: &HashMap<String, WorkspaceHandle>,
+    escape_gate: &dyn EscapeSuiteGate,
+    events: EventSink,
+) -> anyhow::Result<AiExplorationPassReport> {
+    // Phase 23 routes the exploration loop through Claude Code's
+    // agent loop adapter specifically — the Anthropic Messages
+    // adapter does not support agent_loop. Future phases may add
+    // additional agent-loop adapters; the dispatch picks Claude Code
+    // when the configured runtime is `claude-code` OR when the
+    // configured runtime is `anthropic` and a Claude Code binary is
+    // on PATH (since the Anthropic adapter cannot drive an agent
+    // loop).
+    let _ = config;
+    let adapter = match ClaudeCodeAdapter::discover(make_exploration_tracker(store)).await {
+        Ok(a) => a,
+        Err(err) => {
+            tracing::info!(
+                "ai exploration: claude-code unavailable ({err}); skipping pass"
+            );
+            return Ok(AiExplorationPassReport::default());
+        }
+    };
+
+    drive_ai_exploration_pass(&adapter, store, bundle, workspaces, escape_gate, events).await
+}
+
+/// Inner driver, generic over `AiRuntime` so tests can supply a
+/// scripted agent-loop runtime without going through the production
+/// Claude Code adapter. Shape mirrors the Phase-17 `drive_novel_finding_pass`
+/// inner driver.
+pub(crate) async fn drive_ai_exploration_pass<R: AiRuntime + ?Sized>(
+    runtime: &R,
+    store: &Store,
+    bundle: &RunBundle<Diag>,
+    workspaces: &HashMap<String, WorkspaceHandle>,
+    escape_gate: &dyn EscapeSuiteGate,
+    events: EventSink,
+) -> anyhow::Result<AiExplorationPassReport> {
+    let mut report = AiExplorationPassReport::default();
+    for repo_bundle in &bundle.per_repo {
+        let RepoOutcome::Success(_) = &repo_bundle.outcome else {
+            continue;
+        };
+        if !workspaces.contains_key(&repo_bundle.repo) {
+            continue;
+        }
+        let scope = build_exploration_scope(&bundle.run_id, &repo_bundle.repo);
+
+        let outcome = match run_exploration(runtime, &scope, escape_gate, events.clone()).await {
+            Ok(o) => o,
+            Err(err) => {
+                tracing::warn!(
+                    repo = %repo_bundle.repo,
+                    error = %err,
+                    "ai exploration call failed"
+                );
+                report.failed += 1;
+                continue;
+            }
+        };
+        apply_exploration_outcome(
+            store,
+            &bundle.run_id,
+            &repo_bundle.repo,
+            outcome,
+            &mut report,
+        )
+        .await?;
+    }
+    Ok(report)
+}
+
+fn make_exploration_tracker(store: &Store) -> SharedBudgetTracker {
+    Arc::new(BudgetStoreTracker::new(
+        store.clone(),
+        DEFAULT_EXPLORATION_RUN_CAP_USD_MICROS,
+    ))
+}
+
+fn build_exploration_scope(run_id: &str, repo: &str) -> ExplorationScope {
+    let mut scope = ExplorationScope::new(run_id, format!("expl-{repo}"));
+    // Endpoint discovery is the env-builder's job (Phase 20). Until
+    // that wiring lands, the agent receives an empty target list and
+    // the prompt instructs it to survey the workspace before probing.
+    // The allowed-host list stays empty by default; operators wire
+    // real hosts through the settings page once it ships.
+    scope.allowed_hosts = Vec::new();
+    scope.target_endpoints = Vec::<ExplorationEndpoint>::new();
+    scope
+}
+
+async fn apply_exploration_outcome(
+    store: &Store,
+    run_id: &str,
+    repo: &str,
+    outcome: ExplorationOutcome,
+    report: &mut AiExplorationPassReport,
+) -> anyhow::Result<()> {
+    match outcome {
+        ExplorationOutcome::Halted { reason } => match reason {
+            ExplorationHaltReason::EscapeSuiteRed { fixture, reason } => {
+                tracing::warn!(
+                    repo = %repo,
+                    fixture = %fixture,
+                    reason = %reason,
+                    "ai exploration: escape suite RED — halting driver"
+                );
+                report.halted_escape_suite_red += 1;
+            }
+            ExplorationHaltReason::BudgetCapAlreadyReached {
+                cap_usd_micros,
+                spent_usd_micros,
+            } => {
+                tracing::info!(
+                    repo = %repo,
+                    cap_usd_micros,
+                    spent_usd_micros,
+                    "ai exploration: run-wide budget cap already reached; skipping repo"
+                );
+                report.halted_budget_exhausted += 1;
+            }
+        },
+        ExplorationOutcome::Completed {
+            findings,
+            audit: _audit,
+            final_message: _final_message,
+            turns: _turns,
+            spent_usd_micros,
+            prompt_version,
+            soft_cap_exceeded,
+        } => {
+            report.explorations_dispatched += 1;
+            report.spend_usd_micros += spent_usd_micros;
+            if soft_cap_exceeded {
+                tracing::info!(
+                    repo = %repo,
+                    spent_usd_micros,
+                    "ai exploration: soft cap exceeded — operator warned, run continues"
+                );
+            }
+            let now_ms = now_epoch_ms();
+            for finding in findings {
+                match persist_exploration_finding(
+                    store,
+                    run_id,
+                    repo,
+                    &finding,
+                    &prompt_version,
+                    now_ms,
+                )
+                .await
+                {
+                    Ok(()) => report.findings_quarantined += 1,
+                    Err(err) => {
+                        tracing::warn!(
+                            repo = %repo,
+                            error = %err,
+                            "ai exploration: failed to persist finding"
+                        );
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn persist_exploration_finding(
+    store: &Store,
+    run_id: &str,
+    repo: &str,
+    finding: &ExplorationFinding,
+    prompt_version: &str,
+    now_ms: i64,
+) -> anyhow::Result<()> {
+    let line = finding.line.map(i64::from);
+    let rule = format!("ai-exploration:{}", finding.cap);
+    let id = nyx_agent_core::store::finding_id_hash(repo, &finding.path, line, &finding.cap, &rule);
+    let verdict_blob = serde_json::to_string(&serde_json::json!({
+        "kind": "AiExploration",
+        "rationale": finding.rationale,
+        "endpoint": finding.endpoint,
+        "suggested_payload_hint": finding.suggested_payload_hint,
+        "prompt_version": prompt_version,
+    }))?;
+    let rec = FindingRecord {
+        id,
+        run_id: run_id.to_string(),
+        repo: repo.to_string(),
+        path: finding.path.clone(),
+        line,
+        cap: finding.cap.clone(),
+        rule,
+        // Severity defaults to High pending verifier promotion; the
+        // verifier can downgrade or close the row on `NotConfirmed`.
+        severity: "High".to_string(),
+        status: "Quarantine".to_string(),
+        finding_origin: FindingOrigin::AiExploration.as_str().to_string(),
+        first_seen: now_ms,
+        last_seen: now_ms,
+        superseded_by: None,
+        triage_state: "Open".to_string(),
+        triage_assigned_to: None,
+        verdict_blob: Some(verdict_blob),
+        repro_path: None,
+        attack_provenance: Some(AttackProvenance::AiExploration.as_str().to_string()),
+        prompt_version: Some(prompt_version.to_string()),
+        chain_id: None,
+    };
+    store.findings().upsert(&rec).await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use nyx_agent_core::run::{CrossRepoCallgraphStub, RepoBundle};
@@ -3296,5 +3592,243 @@ mod tests {
             }),
             None,
         );
+    }
+
+    /// Scripted agent-loop runtime that mirrors the per-task
+    /// fixture. Each `agent_loop` call pops the next outcome off the
+    /// back of the queue; `one_shot` returns `UnsupportedMode` because
+    /// the exploration pass only drives the agent-loop surface.
+    struct ScriptedExplorationRuntime {
+        outcomes: StdMutex<Vec<Result<AgentResult, AiError>>>,
+        cost_per_call: i64,
+        tracker: Arc<dyn BudgetTracker>,
+    }
+
+    impl ScriptedExplorationRuntime {
+        fn new(
+            outcomes: Vec<Result<AgentResult, AiError>>,
+            cost_per_call: i64,
+            tracker: Arc<dyn BudgetTracker>,
+        ) -> Self {
+            Self {
+                outcomes: StdMutex::new(outcomes),
+                cost_per_call,
+                tracker,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl AiRuntime for ScriptedExplorationRuntime {
+        fn name(&self) -> &'static str {
+            "scripted-exploration"
+        }
+        fn default_model(&self) -> &str {
+            "scripted-model"
+        }
+        fn supports_agent_loop(&self) -> bool {
+            true
+        }
+        fn supports_prompt_cache(&self) -> bool {
+            false
+        }
+        fn supports_deterministic_sampling(&self) -> bool {
+            false
+        }
+
+        async fn one_shot(
+            &self,
+            _prompt: Prompt,
+            _budget: Budget,
+            _sink: nyx_agent_types::event::EventSink,
+        ) -> Result<Response, AiError> {
+            Err(AiError::UnsupportedMode("one_shot"))
+        }
+
+        async fn agent_loop(
+            &self,
+            task: AgentTask,
+            budget: Budget,
+            _sink: nyx_agent_types::event::EventSink,
+        ) -> Result<AgentResult, AiError> {
+            let mut next = self
+                .outcomes
+                .lock()
+                .unwrap()
+                .pop()
+                .expect("scripted exploration runtime: no more outcomes");
+            let cost = self.cost_per_call;
+            self.tracker.add_spend(&budget.run_id, budget.kind, cost).await?;
+            if let Ok(ref mut r) = next {
+                r.task_id = task.task_id.clone();
+                r.cost_usd_micros = cost;
+            }
+            next
+        }
+
+        fn cost_estimate(&self, _prompt: &Prompt) -> Option<CostEstimate> {
+            Some(CostEstimate { min_usd_micros: 0, max_usd_micros: self.cost_per_call })
+        }
+    }
+
+    fn empty_exploration_result() -> AgentResult {
+        AgentResult {
+            prompt_version: nyx_agent_ai::EXPLORATION_PROMPT_VERSION.to_string(),
+            task_id: String::new(),
+            final_message: "ok".to_string(),
+            turns: 1,
+            usage: TokenUsage { input_tokens: 100, output_tokens: 50 },
+            cost_usd_micros: 0,
+            extracted: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn drive_ai_exploration_persists_quarantined_finding() {
+        // Phase 23 acceptance: an AI-discovered finding flows into
+        // `findings` with `finding_origin = AiExploration` and
+        // `status = Quarantine`.
+        let tmp_db = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp_db.path()).await.unwrap();
+        store.repos().upsert(&seed_repo("repo-X")).await.unwrap();
+        let mut run_row = seed_run("run-expl-1");
+        run_row.id = "run-expl-1".into();
+        store.runs().insert(&run_row).await.unwrap();
+
+        let workspace = tempfile::tempdir().unwrap();
+        let mut workspaces = HashMap::new();
+        workspaces.insert(
+            "repo-X".to_string(),
+            WorkspaceHandle::for_local_path_test("repo-X", workspace.path().to_path_buf()),
+        );
+
+        let mut result = empty_exploration_result();
+        result.extracted.push(nyx_agent_types::agent::ExtractedAgentResult::ExplorationFinding {
+            path: "<api:/api/admin/orders>".into(),
+            line: None,
+            cap: "AUTH_BYPASS".into(),
+            rationale: "Admin endpoint accepts unauthenticated GET".into(),
+            endpoint: Some("GET /api/admin/orders".into()),
+            suggested_payload_hint: Some(
+                "curl -i http://127.0.0.1:3000/api/admin/orders".into(),
+            ),
+        });
+
+        let tracker = Arc::new(InMemoryBudgetTracker::new());
+        tracker.set_cap("run-expl-1", BudgetKind::AgentLoop, 10_000_000);
+        let runtime =
+            ScriptedExplorationRuntime::new(vec![Ok(result)], 250_000, tracker.clone());
+
+        let bundle = make_bundle("run-expl-1", "repo-X", Vec::new());
+        let (tx, _rx) = tokio::sync::broadcast::channel(4);
+        let gate = StaticEscapeSuiteGate::green();
+
+        let report = drive_ai_exploration_pass(
+            &runtime,
+            &store,
+            &bundle,
+            &workspaces,
+            &gate,
+            tx,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(report.explorations_dispatched, 1);
+        assert_eq!(report.findings_quarantined, 1);
+        assert_eq!(report.halted_escape_suite_red, 0);
+        assert_eq!(report.halted_budget_exhausted, 0);
+        assert_eq!(report.failed, 0);
+        assert_eq!(report.spend_usd_micros, 250_000);
+
+        // The finding landed in the `findings` table with the right
+        // origin + status. We do not call list_by_run because the
+        // finding's run_id may differ from the bundle's (the persister
+        // picks the repo's last_scan_run_id, which is None on a fresh
+        // seed). Query by repo via the active-list helper with a
+        // quarantine-inclusive filter.
+        let filter = nyx_agent_core::store::FindingFilter {
+            repo: Some("repo-X"),
+            include_quarantine: true,
+            ..nyx_agent_core::store::FindingFilter::default()
+        };
+        let rows = store.findings().list_filtered(&filter).await.unwrap();
+        assert_eq!(rows.len(), 1, "expected one quarantined finding, got {}", rows.len());
+        let row = &rows[0];
+        assert_eq!(row.finding_origin, "AiExploration");
+        assert_eq!(row.status, "Quarantine");
+        assert_eq!(row.cap, "AUTH_BYPASS");
+        assert_eq!(row.path, "<api:/api/admin/orders>");
+        assert_eq!(row.attack_provenance.as_deref(), Some("AiExploration"));
+        assert_eq!(
+            row.prompt_version.as_deref(),
+            Some(nyx_agent_ai::EXPLORATION_PROMPT_VERSION)
+        );
+        let blob = row.verdict_blob.as_deref().expect("verdict blob");
+        assert!(blob.contains("AiExploration"));
+        assert!(blob.contains("unauthenticated"));
+    }
+
+    #[tokio::test]
+    async fn drive_ai_exploration_red_gate_halts_with_banner() {
+        // Phase 23 acceptance: a red escape-suite fixture halts the AI
+        // driver. The agent loop must not fire (the scripted runtime's
+        // queue is empty, so a stray dispatch would panic), and the
+        // report counts the halt.
+        let tmp_db = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp_db.path()).await.unwrap();
+        store.repos().upsert(&seed_repo("repo-Y")).await.unwrap();
+        store.runs().insert(&seed_run("run-expl-2")).await.unwrap();
+
+        let workspace = tempfile::tempdir().unwrap();
+        let mut workspaces = HashMap::new();
+        workspaces.insert(
+            "repo-Y".to_string(),
+            WorkspaceHandle::for_local_path_test("repo-Y", workspace.path().to_path_buf()),
+        );
+
+        let tracker = Arc::new(InMemoryBudgetTracker::new());
+        tracker.set_cap("run-expl-2", BudgetKind::AgentLoop, 10_000_000);
+        // Empty outcomes queue: a dispatched agent_loop would panic.
+        let runtime = ScriptedExplorationRuntime::new(Vec::new(), 0, tracker.clone());
+
+        let bundle = make_bundle("run-expl-2", "repo-Y", Vec::new());
+        let (tx, mut rx) = tokio::sync::broadcast::channel(8);
+        let gate = StaticEscapeSuiteGate::red(
+            "write_outside_workspace_is_contained",
+            "wrote /tmp/escaped during regression suite",
+        );
+
+        let report = drive_ai_exploration_pass(
+            &runtime,
+            &store,
+            &bundle,
+            &workspaces,
+            &gate,
+            tx,
+        )
+        .await
+        .unwrap();
+        assert_eq!(report.halted_escape_suite_red, 1);
+        assert_eq!(report.explorations_dispatched, 0);
+        assert_eq!(report.findings_quarantined, 0);
+        assert_eq!(report.spend_usd_micros, 0);
+
+        // Banner frame on the event bus name-checks the failing fixture.
+        let mut saw_banner = false;
+        while let Ok(frame) = rx.try_recv() {
+            if let nyx_agent_types::event::AgentEvent::Ai {
+                data: nyx_agent_types::event::AiEvent::TokenReceived { token, .. },
+            } = frame
+            {
+                if token.contains("escape-suite RED")
+                    && token.contains("write_outside_workspace_is_contained")
+                {
+                    saw_banner = true;
+                    break;
+                }
+            }
+        }
+        assert!(saw_banner, "expected escape-suite RED banner on the bus");
     }
 }

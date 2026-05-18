@@ -7,11 +7,19 @@
 //! adapter layer can stay vendor-neutral.
 
 pub mod chain_reasoning;
+pub mod exploration;
 pub mod novel_findings;
 pub mod payload_synthesis;
 pub mod spec_derivation;
 
 pub use chain_reasoning::{run as run_chain_reasoning, ChainReasoningOutcome};
+pub use exploration::{
+    run as run_exploration, AuditEntry as ExplorationAuditEntry, EscapeSuiteGate,
+    EscapeSuiteVerdict, ExplorationEndpoint, ExplorationFinding, ExplorationHaltReason,
+    ExplorationOutcome, ExplorationScope, DEFAULT_EXPLORATION_RUN_CAP_USD_MICROS,
+    DEFAULT_EXPLORATION_SOFT_CAP_USD_MICROS, DEFAULT_EXPLORATION_WALL_CLOCK,
+    EXPLORATION_PROMPT_VERSION,
+};
 pub use novel_findings::{run as run_novel_findings, NovelFindingDiscoveryOutcome};
 pub use payload_synthesis::{run as run_payload_synthesis, PayloadSynthesisOutcome};
 pub use spec_derivation::{

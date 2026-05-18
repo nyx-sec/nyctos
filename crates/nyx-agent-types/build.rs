@@ -159,6 +159,11 @@ fn render() -> String {
     out.push_str("  | { kind: \"PayloadFound\"; rule_id: string; body: string }\n");
     out.push_str("  | { kind: \"SpecFound\"; capability: string; spec: string }\n");
     out.push_str("  | { kind: \"ChainsRanked\"; chain_ids: string[]; rationale: string }\n");
+    out.push_str(
+        "  | { kind: \"ExplorationFinding\"; path: string; line: number | null; \
+         cap: string; rationale: string; endpoint: string | null; \
+         suggested_payload_hint: string | null }\n",
+    );
     out.push_str("  | { kind: \"ExplorationEvent\"; message: string };\n");
     out.push('\n');
     out.push_str("export interface AgentResult {\n");

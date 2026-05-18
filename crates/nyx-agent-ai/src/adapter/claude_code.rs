@@ -669,6 +669,31 @@ mod tests {
     }
 
     #[test]
+    fn classify_tool_use_records_exploration_finding() {
+        let input = serde_json::json!({
+            "path": "<api:/api/admin/orders>",
+            "line": 42,
+            "cap": "AUTH_BYPASS",
+            "rationale": "GET admin endpoint accepts unauthenticated requests",
+            "endpoint": "GET /api/admin/orders",
+            "suggested_payload_hint": "curl -i http://127.0.0.1:3000/api/admin/orders",
+        });
+        let ev = classify_tool_use("record_exploration_finding", &input).expect("extracted");
+        assert!(matches!(
+            ev,
+            ExtractedAgentResult::ExplorationFinding {
+                ref path, line: Some(42), ref cap, ref endpoint, ..
+            } if path == "<api:/api/admin/orders>"
+                && cap == "AUTH_BYPASS"
+                && endpoint.as_deref() == Some("GET /api/admin/orders")
+        ));
+        // Empty required fields fall back to None (gating against
+        // malformed tool-use blocks).
+        let bad = serde_json::json!({ "path": "", "cap": "X", "rationale": "y" });
+        assert!(classify_tool_use("record_exploration_finding", &bad).is_none());
+    }
+
+    #[test]
     fn render_task_markdown_includes_all_fields() {
         let md = render_task_markdown(&sample_task());
         assert!(md.contains("phase13.test.v1"));

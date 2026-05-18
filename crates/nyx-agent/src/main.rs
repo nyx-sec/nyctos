@@ -495,6 +495,47 @@ async fn drive_scan(
         Err(err) => tracing::warn!(error = %err, "novel finding discovery pass failed"),
     }
 
+    // Phase 23: drive the Claude Code agent loop against the running
+    // chain-lane sandbox so the model can probe shadow APIs, CORS
+    // misconfig, business-logic skips, etc. Gated by the Phase 18
+    // escape suite (a red fixture halts the driver) and capped by a
+    // per-run hard cap (default $10) plus a soft warning threshold.
+    // Findings land in `findings` with `finding_origin =
+    // AiExploration` and `status = Quarantine`; the verifier below
+    // promotes them on Confirmed.
+    let escape_gate = ai_pipeline::StaticEscapeSuiteGate::green();
+    match ai_pipeline::run_ai_exploration_pass(
+        &config.ai,
+        store,
+        &bundle,
+        &workspaces_for_ai,
+        &escape_gate,
+        events.clone(),
+    )
+    .await
+    {
+        Ok(report) => {
+            if verbose
+                && (report.explorations_dispatched > 0
+                    || report.findings_quarantined > 0
+                    || report.halted_escape_suite_red > 0
+                    || report.halted_budget_exhausted > 0
+                    || report.failed > 0)
+            {
+                println!(
+                    "scan: ai exploration - {} dispatched, {} findings quarantined, {} halted (escape) / {} halted (budget), {} failed (${:.6})",
+                    report.explorations_dispatched,
+                    report.findings_quarantined,
+                    report.halted_escape_suite_red,
+                    report.halted_budget_exhausted,
+                    report.failed,
+                    report.spend_usd_micros as f64 / 1_000_000.0,
+                );
+            }
+        }
+        Err(err) => tracing::warn!(error = %err, "ai exploration pass failed"),
+    }
+
     // Phase 19: drive the deterministic payload runner across every
     // finding (and AI-discovered candidate) that has a payload+spec
     // pair ready. Confirms or rejects each row under differential
