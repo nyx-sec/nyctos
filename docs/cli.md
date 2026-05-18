@@ -1,6 +1,6 @@
 # CLI reference
 
-`nyx-agent` is a single binary with eight subcommands. This page
+`nyx-agent` is a single binary with nine subcommands. This page
 documents every subcommand that currently ships, the flags it accepts,
 and the exit codes it returns. Subcommands the binary advertises in
 `--help` but that are not yet wired (`reverify`, `budget`) are called
@@ -70,35 +70,43 @@ unrecoverable HTTP server error.
 ## `scan`
 
 Run a one-shot scan from the command line. Mirrors the `POST
-/api/v1/scans` path used by the SPA, but writes its output to
-stdout (and optionally to a JSON report on disk).
+/api/v1/projects/:project_id/scan` path used by the SPA, but writes
+its output to stdout (and optionally to a JSON report on disk).
+
+Scan selection is project-scoped. `--project NAME` (repeatable)
+targets a whole project; pair with `--repo NAME` (repeatable) to
+narrow within the selected projects. Bare `--repo` without a
+`--project` is rejected to keep scoping explicit.
 
 ```bash
 nyx-agent scan
-nyx-agent scan --repo my-service
-nyx-agent scan --repo my-service --output report.json --since-ref origin/main
+nyx-agent scan --project acme-app
+nyx-agent scan --project acme-app --repo acme-backend
+nyx-agent scan --project acme-app --output report.json --since-ref origin/main
 ```
 
 | Flag | Effect |
 |---|---|
-| `--repo REPO` | Scan a specific repository by name (matched against `[[repos]] name` in config). Pass `--repo` once per repo, or omit to scan every `enabled = true` repository. |
+| `--project PROJECT` | Project to scan, by name from `[[project]] name` in config. Pass once per project; omit to scan every enabled project. |
+| `--repo REPO` | Repository to scan, narrowed within `--project`. Requires at least one `--project` to be set. Matched against `[[project.repo]] name`. Pass `--repo` once per repo. |
 | `--headless` | Accepted for compatibility with `serve` invocations re-used in CI. `scan` never opens a browser, so the flag is a no-op. |
 | `--output PATH` | Write a machine-readable JSON report to `PATH`. Consumed by `pr-comment --report` and external dashboards. |
 | `--since-ref REF` | Filter the report to findings whose `path` was touched by `git diff --name-only --diff-filter=AMR REF...HEAD` in each workspace. Computed per repo; requires a git workspace. |
 
-Each invocation drives the full pipeline: ingest, static lane via
-the upstream `nyx` scanner, AI payload synthesis, spec derivation,
-chain reasoning, novel-finding discovery, AI exploration, and the
-deterministic payload verifier. Each AI pass is a no-op when
-`[ai] runtime = "none"` or no API key is available; the static
-lane always runs.
+Each invocation drives the full pipeline per project: ingest, static
+lane via the upstream `nyx` scanner, AI payload synthesis, spec
+derivation, chain reasoning, novel-finding discovery, AI exploration,
+and the deterministic payload verifier. Each AI pass is a no-op
+when `[ai] runtime = "none"` or no API key is available; the static
+lane always runs. When multiple projects are selected, the
+dispatcher walks them sequentially and emits one run per project.
 
 The stdout summary line, then per-repo outcome lines, are emitted
-in this order:
+in this order (one block per project):
 
 <!-- nyx: verbatim -->
 ```
-scan: run <run-id> finished in <ms>ms - <n> succeeded, <n> inconclusive, <n> failed
+scan: project <project> run <run-id> finished in <ms>ms - <n> succeeded, <n> inconclusive, <n> failed
   - <repo>: <Outcome> (diags: <n>, <ms>ms)
 ```
 <!-- /nyx: verbatim -->
@@ -109,6 +117,9 @@ and any cross-repo chains discovered in the run.
 
 **Edge cases.**
 
+- `--repo` without `--project`: stderr emits `scan: --repo requires
+  --project context (or use --project to scan whole projects)` and
+  exit `2`.
 - No matching repos: stderr emits `scan: no repositories selected;
   configure one in nyx-agent.toml` and exit `1`.
 - `--since-ref` starts with `-`: scan refuses, since the value
@@ -124,7 +135,66 @@ and any cross-repo chains discovered in the run.
   exits `1`.
 
 **Exit codes.** `0` if every repo succeeded and no ingest errors
-occurred. `1` if any repo failed or scan refused to start.
+occurred. `1` if any repo failed or scan refused to start. `2` if
+`--repo` was passed without `--project`.
+
+## `project`
+
+Manage `Project` rows in the agent's state DB. Projects are the
+top-level scan unit; repos are nested under a project via
+`[[project.repo]]` in `nyx-agent.toml` and via a `project_id` FK in
+the SQLite store. Every CLI/API/sandbox surface operates per
+project, so the canonical first step in a fresh deployment is
+`nyx-agent project create`.
+
+```bash
+nyx-agent project create acme-app --description "Acme web product" --target-base-url http://localhost:3000
+nyx-agent project list
+nyx-agent project show acme-app
+nyx-agent project add-repo acme-app acme-backend --path /abs/path/backend --i-own-this
+nyx-agent project add-repo acme-app acme-frontend --git-url https://github.com/acme/frontend.git --branch main --i-own-this
+nyx-agent project delete acme-app
+```
+
+### `project create NAME`
+
+Create a project row by name. The name must be unique; the daemon
+returns an error if the name is already taken.
+
+| Flag | Effect |
+|---|---|
+| `--description TEXT` | Optional free-form description shown in the SPA's project header. |
+| `--target-base-url URL` | Optional base URL for the project's deployed target. Flows into the sandbox env-builder as a compose override so confirmed exploits can address the right host. |
+
+### `project list`
+
+List every project row, alphabetical by name.
+
+### `project show NAME`
+
+Print one project plus the repos attached to it. Useful as a
+sanity check after `add-repo`.
+
+### `project delete NAME`
+
+Delete a project by name. Cascades to attached repos via the FK,
+so removing a project removes the repo rows it owned as well.
+
+### `project add-repo PROJECT NAME`
+
+Attach a repo to an existing project. The source is either local
+(`--path`) or git (`--git-url`); the two are mutually exclusive.
+
+| Flag | Effect |
+|---|---|
+| `--path PATH` | Absolute path to a checkout on disk. Mutually exclusive with `--git-url`. |
+| `--git-url URL` | Remote git clone URL. Mutually exclusive with `--path`. |
+| `--branch REF` | Optional branch hint for git sources. Defaults to the remote HEAD. |
+| `--auth DESCRIPTOR` | Optional credential descriptor for git sources. Accepts `ssh-key:<path>`, `token-env:<var>`, or `gh-app:<id>`. |
+| `--i-own-this` | Required attestation. The daemon refuses to ingest a repo without it. |
+
+**Exit codes.** `0` on success. `1` on a missing project, a
+duplicate name, or a store error.
 
 ## `pr-comment`
 

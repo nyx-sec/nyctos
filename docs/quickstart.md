@@ -44,6 +44,28 @@ Common flags:
 stops the in-process scheduler, drains any in-flight scan worker,
 and closes the SQLite store.
 
+## Create a project
+
+Nyctos groups one or more repos under a `Project`. Everything below
+— the wizard, the TOML, the scan command — operates per project, so
+a fresh deployment starts with a project row.
+
+The fastest path is the CLI:
+
+```bash
+nyx-agent project create acme-app \
+  --description "Acme web product" \
+  --target-base-url http://localhost:3000
+```
+
+`project create` writes a row to the SQLite store and returns the
+generated `project_id`. The project name must be unique. From here
+you can attach repos via `nyx-agent project add-repo` (worked
+example below) or by hand-editing `nyx-agent.toml`.
+
+You can also create the project from the SPA after the first-launch
+wizard completes — the projects list lives at `/projects`.
+
 ## Walk the first-launch wizard
 
 The SPA at `/setup` asks for five things. Each maps to a single
@@ -63,32 +85,55 @@ The wizard is mounted on the same daemon, so you do not need to
 restart after submitting. The SPA redirects to `/` once the POST
 returns `200`.
 
-## Configure a repo
+## Attach a repo to the project
 
-The wizard does not register repos. Add one to `nyx-agent.toml`:
+The wizard does not register repos. Two paths: the CLI or
+hand-editing `nyx-agent.toml`.
 
-```toml
-[[repo]]
-name = "demo"
-i_own_this = true
+CLI (uses the project you created above):
 
-[repo.source]
-kind = "local-path"
-path = "/abs/path/to/your/checkout"
+```bash
+nyx-agent project add-repo acme-app acme-backend \
+  --path /abs/path/to/your/checkout \
+  --i-own-this
 ```
 
-Or, for a remote git source:
+For a remote git source:
+
+```bash
+nyx-agent project add-repo acme-app acme-backend \
+  --git-url https://github.com/your-org/demo.git \
+  --branch main \
+  --i-own-this
+```
+
+TOML form (every repo lives inside a `[[project]]` block):
 
 ```toml
-[[repo]]
-name = "demo"
-i_own_this = true
+[[project]]
+name = "acme-app"
+description = "Acme web product"
+target_base_url = "http://localhost:3000"
 
-[repo.source]
-kind = "git"
-url = "https://github.com/your-org/demo.git"
-branch = "main"     # optional; defaults to the remote HEAD
-# auth = "token-env:GITHUB_TOKEN"   # optional; see config.md
+  [[project.repo]]
+  name = "acme-backend"
+  i_own_this = true
+  enabled = true
+
+    [project.repo.source]
+    kind = "local-path"
+    path = "/abs/path/to/your/checkout"
+
+  [[project.repo]]
+  name = "acme-frontend"
+  i_own_this = true
+  enabled = true
+
+    [project.repo.source]
+    kind = "git"
+    url = "https://github.com/your-org/frontend.git"
+    branch = "main"             # optional; defaults to the remote HEAD
+    # auth = "token-env:GITHUB_TOKEN"
 ```
 
 Save the file and the daemon picks up the change on the next scan.
@@ -99,14 +144,17 @@ Field reference:
 
 | Field | Meaning |
 |---|---|
-| `name` | Operator-facing identifier. Used in CLI flags, the UI, and run records. |
-| `i_own_this` | Per-repo consent gate. The daemon refuses to ingest without it. |
-| `enabled` | Defaults to `true`. Set `false` to keep the entry in the file but skip it during scans. |
-| `[repo.source] kind` | `local-path` or `git`. |
-| `[repo.source] path` | `local-path` only. Absolute path to a checkout on disk. |
-| `[repo.source] url` | `git` only. Clone URL. |
-| `[repo.source] branch` | `git` only. Optional branch override. |
-| `[repo.source] auth` | `git` only. Credential descriptor: `ssh-key:<path>`, `token-env:<var>`, or `gh-app:<id>`. |
+| `[[project]] name` | Unique project name. Used in CLI flags (`--project NAME`), in API paths (`/api/v1/projects/:id`), and in run records. |
+| `[[project]] description` | Optional free-form description rendered in the SPA. |
+| `[[project]] target_base_url` | Optional deployed-target base URL. Flows into the sandbox env-builder as a compose override so confirmed exploits can address the right host. |
+| `[[project.repo]] name` | Operator-facing repo identifier. Used in `--repo NAME`, the UI, and run records. Must be unique within the project. |
+| `[[project.repo]] i_own_this` | Per-repo consent gate. The daemon refuses to ingest without it. |
+| `[[project.repo]] enabled` | Defaults to `true`. Set `false` to keep the entry in the file but skip it during scans. |
+| `[project.repo.source] kind` | `local-path` or `git`. |
+| `[project.repo.source] path` | `local-path` only. Absolute path to a checkout on disk. |
+| `[project.repo.source] url` | `git` only. Clone URL. |
+| `[project.repo.source] branch` | `git` only. Optional branch override. |
+| `[project.repo.source] auth` | `git` only. Credential descriptor: `ssh-key:<path>`, `token-env:<var>`, or `gh-app:<id>`. |
 
 ## Trigger a scan
 
@@ -119,16 +167,18 @@ to the WebSocket and streams `RunStarted`, `RepoStarted`,
 **From the CLI:**
 
 ```bash
-nyx-agent scan --repo demo
+nyx-agent scan --project acme-app
+nyx-agent scan --project acme-app --repo acme-backend
 ```
 
-Without `--repo`, every enabled repo runs. With `--output report.json`
-the scan writes a machine-readable report you can pass to
-`pr-comment --report` or to an external dashboard. With
-`--since-ref main` the report is filtered to findings whose `path`
-the working tree changed against `main` (uses `git diff
---name-only`); the scan exits non-zero if the diff cannot be
-computed.
+Without `--project`, every enabled project runs. `--repo NAME`
+narrows within the selected projects and is rejected unless at
+least one `--project` is set. With `--output report.json` the scan
+writes a machine-readable report you can pass to `pr-comment
+--report` or to an external dashboard. With `--since-ref main` the
+report is filtered to findings whose `path` the working tree
+changed against `main` (uses `git diff --name-only`); the scan
+exits non-zero if the diff cannot be computed.
 
 **Via HTTP** (assumes the loopback default and an auth token):
 
@@ -136,21 +186,22 @@ computed.
 TOKEN=$(cat ~/.local/share/nyx-agent/auth_token)
 curl -sS -X POST \
   -H "Authorization: Bearer $TOKEN" \
-  http://127.0.0.1:8765/api/v1/scans?repo=demo
+  http://127.0.0.1:8765/api/v1/projects/<project_id>/scan
 ```
 
 The dispatcher responds `202` with a `run_id` you can poll on
 `/api/v1/runs/<id>` or subscribe to via `/api/v1/runs/<id>/events`
-(WebSocket). See `docs/api.md` (forthcoming) for the full route
-reference.
+(WebSocket). The `<project_id>` is the id returned from `nyx-agent
+project list` or `POST /api/v1/projects`. See `docs/api.md`
+(forthcoming) for the full route reference.
 
 ## Read the results
 
-CLI:
+CLI (one block per scanned project):
 
 ```
-scan: run 01J... finished in 12_345ms - 1 succeeded, 0 inconclusive, 0 failed
-  - demo: Succeeded (diags: 7, 12_180ms)
+scan: project acme-app run 01J... finished in 12_345ms - 1 succeeded, 0 inconclusive, 0 failed
+  - acme-backend: Succeeded (diags: 7, 12_180ms)
 ```
 
 SPA: the findings table shows every persisted finding with severity,
@@ -182,9 +233,16 @@ posts a dedup'd PR comment. See `docs/ci/github-actions.md`.
 
 ### `scan: no repositories selected; configure one in nyx-agent.toml`
 
-`[[repo]]` is empty, every entry has `enabled = false`, or `--repo
-NAME` did not match a configured entry. Add a repo per the
-[Configure a repo](#configure-a-repo) section.
+No `[[project]]` blocks define any repos, every entry has `enabled
+= false`, or `--project NAME` / `--repo NAME` did not match a
+configured entry. Add one per the [Attach a repo to the
+project](#attach-a-repo-to-the-project) section.
+
+### `scan: --repo requires --project context (or use --project to scan whole projects)`
+
+`--repo NAME` was passed without a `--project`. Scoping is
+intentionally explicit; add `--project NAME` (repeatable) to
+narrow the search space first.
 
 ### Browser opens but the SPA shows "needs configuration"
 

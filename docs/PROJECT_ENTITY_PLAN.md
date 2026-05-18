@@ -418,3 +418,11 @@ CREATE INDEX idx_repos_project ON repos(project_id);
 - Cross-project finding correlation
 - Project templates (canned configs for common stacks)
 - Project import from `docker-compose.yml` discovery (auto-create project from compose file)
+
+---
+
+**Status: COMPLETE — merged 2026-05-18.** All nine phases landed:
+schema baseline, core types, store layer, config grouping, run
+dispatcher scoping, API nesting, CLI `project` subcommand, sandbox
+env-builder + chain-runner project scoping, frontend project tree,
+and the docs/cleanup pass that produced this footer.

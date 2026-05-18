@@ -15,9 +15,28 @@ Both names appear in these pages for the reasons explained in
   scanner dependency, the optional `claude-code` CLI, and
   `nyx-agent doctor` line-by-line.
 - [quickstart.md](quickstart.md): start the daemon, walk the
-  first-launch wizard, register a repo, kick a scan, read findings.
+  first-launch wizard, create a project, attach repos, kick a scan,
+  read findings.
 - [cli.md](cli.md): every subcommand `nyx-agent` ships, the flags
   it accepts, and the exit codes it returns.
+
+## Projects
+
+Nyctos groups one or more repos under a `Project`. Projects are the
+top-level scan unit: scan, run dispatcher, sandbox env-builder, and
+chain runner all operate per project, so a multi-repo product
+(e.g. backend + frontend) scans, sandboxes, and chains as one unit.
+
+- [cli.md#project](cli.md#project): `project create / list / show /
+  delete / add-repo` plus the project-scoped `scan --project /
+  --repo` flags.
+- [quickstart.md#create-a-project](quickstart.md#create-a-project):
+  worked example that creates a project and attaches a repo end to
+  end.
+- The TOML shape is `[[project]]` blocks that nest `[[project.repo]]`
+  entries. See [`nyx-agent.toml`](../nyx-agent.toml) at the repo
+  root for a populated example, and `docs/PROJECT_ENTITY_PLAN.md`
+  for the phased refactor that introduced the model.
 
 ## Triggers
 

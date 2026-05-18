@@ -1,10 +1,18 @@
 //! Repository ingestion.
 //!
-//! Two source kinds are supported per the Nyx Pro spec:
+//! Every [`Repo`] belongs to a [`Project`](crate::project::Project) via
+//! its `project_id` field; the run dispatcher, sandbox env-builder, and
+//! chain runner all consume repos grouped by project, and on-disk
+//! workspace state lands under `<state>/projects/<project_id>/repos/
+//! <name>/`. See `docs/PROJECT_ENTITY_PLAN.md` (Phase 1) for the
+//! migration that introduced the FK.
 //!
-//! - [`RepoSource::Git`]: shallow clone or fetch into
-//!   `<state>/repos/<name>/`. Subsequent runs reuse the checkout via a
-//!   shallow `git fetch`.
+//! Two source kinds are supported:
+//!
+//! - [`RepoSource::Git`]: shallow clone or fetch into the
+//!   project-scoped `<state>/projects/<project_id>/repos/<name>/`
+//!   directory. Subsequent runs reuse the checkout via a shallow
+//!   `git fetch`.
 //! - [`RepoSource::LocalPath`]: read-only snapshot of a directory
 //!   already on disk. The snapshot is rebuilt per run and removed at end
 //!   of run so concurrent local edits in an IDE never race the scan.

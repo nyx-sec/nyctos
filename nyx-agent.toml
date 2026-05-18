@@ -1,16 +1,3 @@
-# Declare projects below. Each project groups one or more repos.
-#
-# [[project]]
-# name = "example-app"
-# description = "Example multi-repo product"
-# target_base_url = "http://localhost:3000"
-#
-#   [[project.repo]]
-#   name = "example-backend"
-#   i_own_this = true
-#   enabled = true
-#   source = { kind = "local-path", path = "/path/to/backend" }
-
 schedule = []
 
 [general]
@@ -42,3 +29,28 @@ on_pr = false
 
 [run]
 replay_stable_check = false
+
+# Declare projects below. Each project groups one or more repos.
+# Scan, run dispatcher, sandbox env-builder, and chain runner all
+# operate per project — repos cannot live outside a project.
+#
+# Replace the local-path values with absolute paths to your own
+# checkouts, or delete this block and run `nyx-agent project create`
+# / `nyx-agent project add-repo` to drive it from the CLI.
+
+[[project]]
+name = "example-app"
+description = "Example multi-repo product"
+target_base_url = "http://localhost:3000"
+
+  [[project.repo]]
+  name = "example-backend"
+  i_own_this = true
+  enabled = true
+  source = { kind = "local-path", path = "/path/to/backend" }
+
+  [[project.repo]]
+  name = "example-frontend"
+  i_own_this = true
+  enabled = true
+  source = { kind = "local-path", path = "/path/to/frontend" }

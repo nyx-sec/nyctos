@@ -52,12 +52,28 @@ here:
 - [`docs/install.md`](docs/install.md): prerequisites, source build,
   and `nyx-agent doctor`.
 - [`docs/quickstart.md`](docs/quickstart.md): first daemon, first
-  scan, first findings.
+  project, first scan, first findings.
 - [`docs/triggers/cron.md`](docs/triggers/cron.md) and
   [`docs/triggers/webhook.md`](docs/triggers/webhook.md): no-touch
   scan triggers.
 - [`docs/ci/github-actions.md`](docs/ci/github-actions.md): the
   shipped composite Action for PR gating.
+
+### Quickstart in three commands
+
+Repos in Nyctos are always nested under a `Project`. A fresh
+install reaches a first scan in three steps:
+
+```bash
+nyx-agent project create acme-app --target-base-url http://localhost:3000
+nyx-agent project add-repo acme-app acme-backend --path /abs/path/backend --i-own-this
+nyx-agent scan --project acme-app
+```
+
+See [`docs/quickstart.md`](docs/quickstart.md) for the worked
+walkthrough (wizard, TOML form, HTTP form, output shape) and
+[`docs/cli.md#project`](docs/cli.md) for the full `project`
+subcommand reference.
 
 ## Upstream `nyx` scanner
 
