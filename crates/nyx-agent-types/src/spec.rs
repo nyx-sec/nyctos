@@ -1,14 +1,14 @@
 //! AI-derived harness-spec schemas.
 //!
-//! Phase 15 ships the on-the-wire types the SpecDerivation task
-//! produces. The vendored `HarnessSpec` schema itself lives in
-//! `nyx-agent-nyx` (close to the static-scanner driver that consumes
-//! it); only the agent-side input envelope and a stable prompt-version
-//! tag live here so the task crate can stay vendor-neutral.
+//! On-the-wire types the SpecDerivation task produces. The vendored
+//! `HarnessSpec` schema itself lives in `nyx-agent-nyx` (close to the
+//! static-scanner driver that consumes it); only the agent-side input
+//! envelope and a stable prompt-version tag live here so the task
+//! crate can stay vendor-neutral.
 //!
-//! Like [`crate::payload`], these types are deliberately plain serde
-//! and do not derive `ts-rs`; the UI surface lands with the trace
-//! viewer (Phase 24).
+//! Like [`crate::payload`], these types are plain serde and do not
+//! derive `ts-rs`; the trace viewer reaches them through a separate
+//! surface.
 
 use serde::{Deserialize, Serialize};
 

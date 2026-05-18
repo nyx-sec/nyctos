@@ -67,8 +67,9 @@ pub enum RunEvent {
         #[ts(type = "number")]
         elapsed_ms: i64,
     },
-    /// Dynamic / sandbox pass returned. Phase 06 does not emit this
-    /// yet; the variant exists so Phase 18 (sandbox) can publish into
+    /// Dynamic / sandbox pass returned. Reserved for the sandbox
+    /// publisher; the static-pass dispatcher does not emit this yet
+    /// and the variant exists so the sandbox crate can publish into
     /// the same bus without a `RunEvent` shape change.
     RepoDynamicDone {
         run_id: String,

@@ -786,3 +786,15 @@ notes (pass 15):
 - the ai_pipeline.rs rewrite at lines 313-321 and 660-666 collapses what used to be a `tracing::warn!` fallback into a hard `await?`; this is the right direction for the payload path (no orphan) but inherits the spec helper's silent-no-op behaviour above. Worth a follow-up rows_affected() check inside the helper rather than re-introducing the warn at the call site.
 - no http.probe firing this pass: ALLOWED HOSTS empty per the task contract; pass-15 is one row pinned to the working-tree diff, no probes against the live service.
 
+
+
+pass 16 (task=expl-demo): re-walked the working-tree diff against HEAD (M router.rs, M state.rs, M webhook.rs, M nyx-agent-types/{agent,chain,event,novel,payload,spec,verify}.rs). git diff confirms every modified hunk is comment churn — phase-number scrub ("Phase 27" → bare prose, "Phase 11" → "LiveScanView"), em-dash → colon/comma, doc grammar polish. Zero behaviour change: no new routes, no new sinks, no auth path moved, no parser swapped. Rows 1-15 from prior passes re-validated against current router.rs / state.rs / webhook.rs and STAND. No new record_exploration_finding emitted this pass; forcing a row on a doc-only diff would dilute the audit log.
+
+notes (pass 16):
+- specifically re-checked the four highest-blast-radius rows after the diff:
+  * row 1 (CSWSH at events_ws): router.rs:1649 still calls ws.on_upgrade without an Origin/Host check — STANDS.
+  * row 2 (transient-trust window at /setup): auth_layer at router.rs:108-113 still grants pre-completion bypass with i_own_this as a single-bit attestation — STANDS.
+  * row 3 (DNS rebind): no Host-header allowlist landed; main.rs binds operator-supplied listen_addr verbatim — STANDS.
+  * row 4 (CRED_EXPOSURE via ?token= in TraceLayer logs): check_query_token at router.rs:141 unchanged; TraceLayer::new_for_http() at router.rs:89 unchanged — STANDS.
+- spec.rs:80 silent-no-op UPDATE row from pass 15 not re-checked here (no change in working-tree diff to nyx-agent-core), STANDS by absence-of-fix.
+- no http.probe firing: ALLOWED HOSTS empty per the task contract.

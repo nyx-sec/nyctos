@@ -124,10 +124,10 @@ pub struct CostEstimate {
     pub max_usd_micros: i64,
 }
 
-/// Multi-turn agent task. Phase 12 adapters return
-/// `AiError::UnsupportedMode` from `agent_loop`; the type is defined
-/// here so Phase 13's Claude Code adapter compiles against it without
-/// a follow-up schema change.
+/// Multi-turn agent task. The Anthropic adapter returns
+/// `AiError::UnsupportedMode` from `agent_loop`; the Claude Code
+/// adapter implements it. The type is defined here so both adapters
+/// share one schema.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct AgentTask {
     pub prompt_version: String,
@@ -148,10 +148,10 @@ pub struct AgentResult {
     #[ts(type = "number")]
     pub cost_usd_micros: i64,
     /// Structured artefacts the adapter lifted out of the agent loop's
-    /// tool-use trace. Phase 13's Claude Code adapter populates these
-    /// from recognised function calls; later phases (PayloadSynthesis,
-    /// SpecExtraction, ChainRanking, Exploration) read them as the
-    /// typed agent-loop output.
+    /// tool-use trace. The Claude Code adapter populates these from
+    /// recognised function calls; PayloadSynthesis, SpecDerivation,
+    /// ChainReasoning, and exploration consume them as the typed
+    /// agent-loop output.
     #[serde(default)]
     pub extracted: Vec<ExtractedAgentResult>,
 }
@@ -161,21 +161,22 @@ pub struct AgentResult {
 /// The agent-loop trace is non-deterministic by nature; consumers do
 /// not depend on event order, only on the set of `ExtractedAgentResult`
 /// values the adapter recognised. Each variant carries the smallest
-/// stable payload the consuming phase needs; richer per-variant schemas
-/// land with the phase that owns that result type.
+/// stable payload its consumer needs; richer per-variant schemas live
+/// alongside the consuming task.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind")]
 pub enum ExtractedAgentResult {
-    /// Phase 14 — exploit payload candidate (rule id + payload body).
+    /// PayloadSynthesis output: exploit payload candidate (rule id +
+    /// payload body).
     PayloadFound { rule_id: String, body: String },
-    /// Phase 15 — capability spec inferred for a sink.
+    /// SpecDerivation output: capability spec inferred for a sink.
     SpecFound { capability: String, spec: String },
-    /// Phase 16 — chain ranking with a short rationale.
+    /// ChainReasoning output: ranked chain ids with a short rationale.
     ChainsRanked { chain_ids: Vec<String>, rationale: String },
-    /// Phase 23 — AI exploration candidate finding. Emitted by the
-    /// Claude Code agent loop when it identifies a new vulnerability
-    /// while exploring the workspace (shadow API, state machine flaw,
-    /// CORS misconfiguration, ...).
+    /// Exploration output: AI-discovered candidate finding. Emitted by
+    /// the Claude Code agent loop when it identifies a new
+    /// vulnerability while exploring the workspace (shadow API, state
+    /// machine flaw, CORS misconfiguration, ...).
     ExplorationFinding {
         path: String,
         line: Option<u32>,

@@ -21,6 +21,9 @@ Both names appear in these pages for the reasons explained in
   it accepts, and the exit codes it returns.
 - [config.md](config.md): `nyx-agent.toml` schema, defaults, and
   failure modes section by section.
+- [state-dir.md](state-dir.md): on-disk layout of the state
+  directory: SQLite file, logs, repo workspaces, repro bundles,
+  bearer token, plus permissions and override flags.
 
 ## Projects
 

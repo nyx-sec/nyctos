@@ -1,13 +1,13 @@
 //! AI-synthesised payload schemas.
 //!
-//! Phase 14 ships the on-the-wire types the PayloadSynthesis task
-//! produces. They are deliberately plain serde so the task crate
-//! (`nyx-agent-ai`) does not have to pull in `nyx-agent-core::store`'s
-//! SQLx surface; the binary turns a [`PayloadSynthesisOutput`] +
-//! [`PayloadSynthesisInput`] into a `PayloadRecord` at persistence time.
+//! On-the-wire types the PayloadSynthesis task produces. They are
+//! plain serde so the task crate (`nyx-agent-ai`) does not have to
+//! pull in `nyx-agent-core::store`'s SQLx surface; the binary turns a
+//! [`PayloadSynthesisOutput`] + [`PayloadSynthesisInput`] into a
+//! `PayloadRecord` at persistence time.
 //!
-//! `ts-rs` derives are intentionally absent until a UI surface in a
-//! later phase actually renders these types.
+//! `ts-rs` derives are absent until a UI surface actually renders
+//! these types.
 
 use serde::{Deserialize, Serialize};
 
@@ -22,9 +22,9 @@ pub enum AttackProvenance {
     /// Synthesised by an LLM. The agent-trace store keeps the prompt
     /// version + conversation path so verdicts remain auditable.
     LlmSynthesised,
-    /// Surfaced by the Phase 23 AI exploration driver — the Claude
-    /// Code agent loop ran inside the chain-lane sandbox and recorded
-    /// the finding via the `record_exploration_finding` tool call.
+    /// Surfaced by the AI exploration driver: the Claude Code agent
+    /// loop ran inside the chain-lane sandbox and recorded the
+    /// finding via the `record_exploration_finding` tool call.
     AiExploration,
 }
 

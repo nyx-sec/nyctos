@@ -1,4 +1,4 @@
-//! Verifier wire types (Phase 19).
+//! Verifier wire types.
 //!
 //! The deterministic payload runner emits a [`VerifyResult`] per
 //! finding. The shape mirrors nyx's existing dynamic-verify schema: a
@@ -91,7 +91,7 @@ pub struct VerifyRun {
     pub duration_ms: i64,
 }
 
-/// Phase 19 wire shape. The runner emits one [`VerifyResult`] per
+/// Verifier wire shape. The runner emits one [`VerifyResult`] per
 /// finding it confirms or rejects.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VerifyResult {

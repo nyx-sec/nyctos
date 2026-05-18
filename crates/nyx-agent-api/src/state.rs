@@ -37,18 +37,18 @@ pub enum ScanTriggerError {
     Rejected(String),
     #[error("daemon is shutting down")]
     Closed,
-    /// Phase 27: the scan request queue is full. The API maps this to
-    /// HTTP 429 so external schedulers / webhooks / CI loops back off
-    /// instead of stalling on `send().await`.
+    /// The scan request queue is full. The API maps this to HTTP 429
+    /// so external schedulers, webhooks, and CI loops back off instead
+    /// of stalling on `send().await`.
     #[error("scan request queue is full: {0}")]
     Backpressure(String),
     #[error("internal error: {0}")]
     Internal(String),
 }
 
-/// Phase-09 wizard context. Lets the API write `nyx-agent.toml` on
-/// behalf of the operator, see whether setup is complete, and stash
-/// API keys in the OS keychain.
+/// First-launch wizard context. Lets the API write `nyx-agent.toml`
+/// on behalf of the operator, see whether setup is complete, and
+/// stash API keys in the OS keychain.
 #[derive(Clone)]
 pub struct SetupContext {
     pub config_path: PathBuf,
@@ -87,9 +87,9 @@ impl SetupContext {
     }
 }
 
-/// Bounded per-run event replay buffer. Closes the broadcast race
-/// described in the Phase 07 deferred item: a client that calls
-/// `POST /api/v1/scan` and *then* opens the WebSocket would miss
+/// Bounded per-run event replay buffer. Closes a broadcast race: a
+/// client that calls `POST /api/v1/scan` and *then* opens the
+/// WebSocket would miss
 /// `RunStarted` (and possibly the first few `RepoStarted`/`RepoFailed`)
 /// frames because tokio's `broadcast::Sender` does not replay history.
 /// `events_ws` reads back the snapshot here before joining the live
@@ -106,10 +106,10 @@ impl SetupContext {
 #[derive(Debug)]
 pub struct EventReplay {
     inner: Mutex<ReplayInner>,
-    /// Hard cap on events stored per run. The Phase 11 acceptance set
-    /// is small (one RunStarted + N RepoStarted/RepoFinished pairs +
-    /// RunFinished). 128 frames covers ~60 repos before the head is
-    /// dropped, which is more than the static-pass budget.
+    /// Hard cap on events stored per run. The LiveScanView acceptance
+    /// set is small (one RunStarted + N RepoStarted/RepoFinished
+    /// pairs + RunFinished). 128 frames covers ~60 repos before the
+    /// head is dropped, which is more than the static-pass budget.
     pub max_per_run: usize,
     /// Cap on tracked runs. Past this we evict the least-recently-
     /// touched tracked run. 16 covers the realistic concurrent-
@@ -230,12 +230,12 @@ pub struct ServerState {
     /// `None` in tests that do not exercise workspace cleanup.
     pub state_repos_dir: Option<PathBuf>,
     /// Per-finding repro bundle output directory (`<state>/bundles`).
-    /// The Phase-25 bundle handler writes one tarball per finding here
-    /// and stamps a `repro_bundles` row pointing at the resulting path.
+    /// The bundle handler writes one tarball per finding here and
+    /// stamps a `repro_bundles` row pointing at the resulting path.
     /// `None` in tests that do not exercise bundle creation.
     pub state_bundles_dir: Option<PathBuf>,
-    /// Phase 27: `POST /webhook/git` config. `None` disables the route
-    /// (the daemon hands a populated struct only when the operator has
+    /// `POST /webhook/git` config. `None` disables the route (the
+    /// daemon hands a populated struct only when the operator has
     /// configured `triggers.webhook_secret_ref`).
     pub webhook: Option<Arc<crate::webhook::WebhookConfig>>,
 }
@@ -275,8 +275,8 @@ impl ServerState {
         self
     }
 
-    /// Phase 27: enable `POST /webhook/git`. The handler returns the
-    /// standard error envelope (HTTP 500) when this is not called.
+    /// Enable `POST /webhook/git`. The handler returns the standard
+    /// error envelope (HTTP 500) when this is not called.
     pub fn with_webhook(mut self, cfg: crate::webhook::WebhookConfig) -> Self {
         self.webhook = Some(Arc::new(cfg));
         self

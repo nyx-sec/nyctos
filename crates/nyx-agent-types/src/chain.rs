@@ -1,14 +1,12 @@
 //! AI-derived chain-reasoning schemas.
 //!
-//! Phase 16 ships the on-the-wire types the ChainReasoning task
-//! produces. The model is handed a compact graph (nodes + edges) drawn
-//! from the run's static-pass findings and asked to rank up to K
-//! candidate exploit chains by exploitability, with a written rationale
-//! per chain.
+//! On-the-wire types the ChainReasoning task produces. The model is
+//! handed a compact graph (nodes + edges) drawn from the run's
+//! static-pass findings and asked to rank up to K candidate exploit
+//! chains by exploitability, with a written rationale per chain.
 //!
-//! These types are deliberately plain serde and do not derive `ts-rs`;
-//! the UI surface lands with the chains explorer (Phase 24's trace
-//! viewer is the natural home).
+//! These types are plain serde and do not derive `ts-rs`; the chains
+//! explorer reaches them through a separate surface.
 
 use serde::{Deserialize, Serialize};
 
@@ -43,7 +41,7 @@ pub struct ChainReasoningNode {
 /// `Reaches` (taint/data-flow reachability between findings). The
 /// `cross_repo` flag is pre-computed by the graph builder so the model
 /// does not have to recover it from the per-node `repo` field on every
-/// edge — both views are available.
+/// edge. Both views are available.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChainReasoningEdge {
     pub from: String,

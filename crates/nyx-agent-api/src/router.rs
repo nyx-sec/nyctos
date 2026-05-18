@@ -92,7 +92,7 @@ pub fn build_router(state: ServerState) -> Router {
 
 /// Bearer-token gate. Skipped entirely when [`AuthConfig::token`] is
 /// unset (the `--headless` path), and skipped on a per-route basis for
-/// `/health` plus the wizard endpoints — but only while setup is still
+/// `/health` plus the wizard endpoints, but only while setup is still
 /// pending. Once `nyx-agent.toml` exists the wizard endpoints require
 /// the bearer token like every other mutation endpoint so an attacker
 /// cannot overwrite the operator's config.
@@ -442,7 +442,7 @@ async fn setup_doctor(
         AiRuntime::None => checks.push(DoctorCheck {
             name: "ai".to_string(),
             passed: true,
-            message: "AI disabled — static pass only".to_string(),
+            message: "AI disabled: static pass only".to_string(),
         }),
         AiRuntime::Anthropic => checks.push(DoctorCheck {
             name: "ai-anthropic".to_string(),
@@ -1205,11 +1205,11 @@ async fn get_finding(
 }
 
 /// Diff status for one finding relative to a baseline run. Surfaced as
-/// the "new / regressed / closed" chips the Phase 11 findings browser
-/// renders. `Unchanged` means the finding existed and was Open in the
-/// prior run too. The `Regressed` and `Closed` shapes are reserved for
-/// when a per-run finding-membership history lands; today the API only
-/// emits `New` and `Unchanged`.
+/// the "new / regressed / closed" chips the findings browser renders.
+/// `Unchanged` means the finding existed and was Open in the prior run
+/// too. The `Regressed` and `Closed` shapes are reserved for when a
+/// per-run finding-membership history lands; today the API only emits
+/// `New` and `Unchanged`.
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum FindingDiffStatus {
@@ -1320,8 +1320,8 @@ pub enum QuarantineKind {
 
 /// Unified row the Quarantine page renders. Combines both sources of
 /// "AI-proposed, not yet dynamic-confirmed" rows so the operator sees
-/// one list. The Phase-23 deferred "converge on a single quarantine
-/// path" item asks for the eventual fold; the API joins them today.
+/// one list. A deferred "converge on a single quarantine path" item
+/// asks for the eventual fold; the API joins them today.
 #[derive(Debug, Clone, Serialize)]
 pub struct QuarantineItem {
     pub kind: QuarantineKind,

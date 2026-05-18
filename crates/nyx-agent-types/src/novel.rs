@@ -1,15 +1,15 @@
 //! AI-discovered candidate finding schemas.
 //!
-//! Phase 17 ships the on-the-wire types the NovelFindingDiscovery task
-//! produces. The model is handed a batch of source files plus the nyx
-//! findings that already exist on those files (so it can avoid
-//! rediscovering them) and asked to identify additional candidate
-//! vulnerabilities the static scanner missed.
+//! On-the-wire types the NovelFindingDiscovery task produces. The
+//! model is handed a batch of source files plus the nyx findings that
+//! already exist on those files (so it can avoid rediscovering them)
+//! and asked to identify additional candidate vulnerabilities the
+//! static scanner missed.
 //!
 //! Like the other task envelopes ([`crate::payload`], [`crate::spec`],
-//! [`crate::chain`]) these types are deliberately plain serde and do
-//! not derive `ts-rs`; the UI surface lands with the quarantine view
-//! (Phase 24).
+//! [`crate::chain`]) these types are plain serde and do not derive
+//! `ts-rs`; the quarantine view reaches them through a separate
+//! surface.
 
 use serde::{Deserialize, Serialize};
 

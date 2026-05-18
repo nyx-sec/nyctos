@@ -1,4 +1,4 @@
-//! Phase 27: `POST /webhook/git` route.
+//! `POST /webhook/git` route.
 //!
 //! Accepts a GitHub-shaped push payload, verifies the HMAC-SHA256
 //! signature against the operator's configured shared secret, applies
@@ -76,9 +76,9 @@ impl WebhookSecretResolver for EnvSecretResolver {
         } else {
             spec.as_bytes().to_vec()
         };
-        // Refuse empty secrets — an empty key satisfies the HMAC API
-        // but trivially accepts any HMAC over the empty byte string,
-        // which is not authentication.
+        // Refuse empty secrets. An empty key satisfies the HMAC API
+        // but accepts any HMAC over the empty byte string, which is
+        // not authentication.
         if raw.is_empty() {
             None
         } else {
@@ -146,7 +146,7 @@ pub async fn webhook_git(
 
     let Some(secret) = cfg.secret.resolve() else {
         // Webhook is configured but the secret cannot be resolved
-        // (e.g. unset env var). Refuse the delivery — accepting it
+        // (e.g. unset env var). Refuse the delivery: accepting it
         // would be unauthenticated.
         return Ok((
             StatusCode::SERVICE_UNAVAILABLE,
@@ -210,8 +210,9 @@ pub async fn webhook_git(
 
     let trigger: Arc<dyn ScanTrigger> = Arc::clone(&state.scan);
     // Webhook config does not yet plumb a project filter; scope-all is
-    // preserved by passing `None` for project_id. Phase 6+ may add an
-    // optional `project = "..."` field to the trigger config block.
+    // preserved by passing `None` for project_id. An optional
+    // `project = "..."` field in the trigger config block could narrow
+    // this later.
     let run_id = trigger.trigger(None, cfg.repo.clone()).await?;
     Ok((
         StatusCode::ACCEPTED,
