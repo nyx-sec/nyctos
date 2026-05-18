@@ -14,7 +14,82 @@ export type RunEvent =
   | { kind: "RepoFinished"; run_id: string; repo: string; outcome: RepoOutcomeTag; elapsed_ms: number }
   | { kind: "RunFinished"; run_id: string; finished_at_ms: number; wall_clock_ms: number; succeeded: number; inconclusive: number; failed: number };
 
-export type AiEvent = Record<string, never>;
+export type HaltReason =
+  | "BudgetCapReached"
+  | "OperatorCancelled"
+  | "UpstreamRefused";
+
+export type AiEvent =
+  | { kind: "TokenReceived"; task_id: string; token: string }
+  | { kind: "ToolCallStarted"; task_id: string; name: string }
+  | { kind: "ToolCallFinished"; task_id: string; name: string; ok: boolean }
+  | { kind: "CacheHit"; task_id: string; tokens: number }
+  | { kind: "CacheMiss"; task_id: string; tokens: number }
+  | { kind: "BudgetTick"; task_id: string; run_id: string; spent_usd_micros: number }
+  | { kind: "TaskHalted"; task_id: string; reason: HaltReason };
+
+export type BudgetKind = "OneShot" | "AgentLoop" | "Total";
+
+export interface TokenUsage {
+  input_tokens: number;
+  output_tokens: number;
+}
+
+export interface CacheStats {
+  cache_creation_tokens: number;
+  cache_read_tokens: number;
+}
+
+export interface Budget {
+  run_id: string;
+  kind: BudgetKind;
+  cap_usd_micros: number;
+}
+
+export interface CostEstimate {
+  min_usd_micros: number;
+  max_usd_micros: number;
+}
+
+export interface Prompt {
+  prompt_version: string;
+  task_id: string;
+  model: string | null;
+  system: string;
+  user: string;
+  max_output_tokens: number;
+  temperature: number;
+  seed: number | null;
+}
+
+export interface Response {
+  prompt_version: string;
+  task_id: string;
+  model: string;
+  content: string;
+  usage: TokenUsage;
+  cache: CacheStats | null;
+  cost_usd_micros: number;
+}
+
+export interface AgentTask {
+  prompt_version: string;
+  task_id: string;
+  system: string;
+  objective: string;
+  tools: string[];
+  max_turns: number;
+}
+
+export interface AgentResult {
+  prompt_version: string;
+  task_id: string;
+  final_message: string;
+  turns: number;
+  usage: TokenUsage;
+  cost_usd_micros: number;
+}
+
 export type SandboxEvent = Record<string, never>;
 export type FindingEvent = Record<string, never>;
 export type BudgetEvent = Record<string, never>;

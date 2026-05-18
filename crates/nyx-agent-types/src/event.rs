@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use ts_rs::TS;
 
+use crate::agent::HaltReason;
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind")]
 pub enum AgentEvent {
@@ -95,8 +97,45 @@ pub enum RepoOutcomeTag {
     Failed,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
-pub struct AiEvent {}
+/// AI-runtime event stream. Adapters publish one of these per token /
+/// tool call / cache event / budget tick / halt as a `one_shot` or
+/// `agent_loop` progresses. `task_id` is the caller-supplied
+/// identifier from the `Prompt` / `AgentTask`; subscribers fan out by
+/// it to multiplex concurrent calls on a single bus.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind")]
+pub enum AiEvent {
+    TokenReceived {
+        task_id: String,
+        token: String,
+    },
+    ToolCallStarted {
+        task_id: String,
+        name: String,
+    },
+    ToolCallFinished {
+        task_id: String,
+        name: String,
+        ok: bool,
+    },
+    CacheHit {
+        task_id: String,
+        tokens: u32,
+    },
+    CacheMiss {
+        task_id: String,
+        tokens: u32,
+    },
+    BudgetTick {
+        task_id: String,
+        run_id: String,
+        spent_usd_micros: i64,
+    },
+    TaskHalted {
+        task_id: String,
+        reason: HaltReason,
+    },
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct SandboxEvent {}

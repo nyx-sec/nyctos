@@ -1,2 +1,172 @@
-// Placeholder. AiRuntime request/response envelopes get defined here in
-// the ai-driver phase.
+//! Shared types for the AI runtime layer.
+//!
+//! Every adapter (Anthropic SDK, Claude Code, OpenAI, ...) consumes the
+//! same `Prompt` / `Response` envelope so the rest of the agent never
+//! depends on a vendor SDK shape. The `prompt_version` field on `Prompt`
+//! is persisted with every trace so a verdict can always be traced back
+//! to the exact prompt that produced it.
+//!
+//! All types derive `ts_rs::TS` so the frontend consumes them directly
+//! through the `build.rs`-generated bindings.
+
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+use ts_rs::TS;
+
+/// Single-turn prompt envelope. The `prompt_version` field is the only
+/// load-bearing constant - every adapter persists it alongside any
+/// response so traces remain explainable across prompt edits.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+pub struct Prompt {
+    /// Stable identifier of the prompt template. Adapters and the trace
+    /// store both persist this so a verdict can be tied back to the
+    /// exact prompt revision that produced it.
+    pub prompt_version: String,
+    /// Logical task identifier used to namespace streaming events on
+    /// the bus. The caller supplies it; adapters echo it back in every
+    /// emitted `AiEvent`.
+    pub task_id: String,
+    /// Model override. When `None`, the adapter's `default_model()` is
+    /// used.
+    pub model: Option<String>,
+    /// System prompt. Adapters that support prompt caching may attach a
+    /// `cache_control` block to this slot.
+    pub system: String,
+    /// User message body.
+    pub user: String,
+    /// Hard ceiling on output tokens. Adapters clamp to vendor limits.
+    pub max_output_tokens: u32,
+    /// Sampling temperature. `0.0` for deterministic decoding.
+    pub temperature: f32,
+    /// Adapter-specific seed for deterministic sampling. Adapters that
+    /// do not expose a seed ignore this.
+    pub seed: Option<u64>,
+}
+
+/// Adapter response envelope. Carries the model's final text plus the
+/// accounting needed to persist a trace and reconcile budgets.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct Response {
+    /// Echoes the `prompt_version` from the request.
+    pub prompt_version: String,
+    /// Echoes the `task_id` from the request.
+    pub task_id: String,
+    /// Model name as reported by the vendor (which may differ from the
+    /// requested alias).
+    pub model: String,
+    /// Final completion text.
+    pub content: String,
+    /// Token accounting.
+    pub usage: TokenUsage,
+    /// Prompt-cache statistics, if the adapter reports them. `None`
+    /// when the runtime does not support caching.
+    pub cache: Option<CacheStats>,
+    /// Total cost charged for this call, in USD micros (1e-6 USD).
+    pub cost_usd_micros: i64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct TokenUsage {
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct CacheStats {
+    pub cache_creation_tokens: u32,
+    pub cache_read_tokens: u32,
+}
+
+/// Per-call budget contract. The adapter checks `cap_usd_micros` against
+/// the per-run spend tracked by the host before and after every model
+/// call; on cap-exceeded it emits `AiEvent::TaskHalted` and returns
+/// `AiError::BudgetExceeded`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct Budget {
+    /// Run identifier used as the budget-store key.
+    pub run_id: String,
+    /// Budget bucket. `OneShot` for `one_shot` calls; `AgentLoop` for
+    /// multi-turn loops; `Total` is reserved for the per-run aggregate
+    /// the host writes itself.
+    pub kind: BudgetKind,
+    /// Hard cap, in USD micros. Exceeding this cap halts the task.
+    pub cap_usd_micros: i64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub enum BudgetKind {
+    OneShot,
+    AgentLoop,
+    Total,
+}
+
+impl BudgetKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BudgetKind::OneShot => "OneShot",
+            BudgetKind::AgentLoop => "AgentLoop",
+            BudgetKind::Total => "Total",
+        }
+    }
+}
+
+/// Pre-call cost prediction. Adapters that price deterministically
+/// return this from `cost_estimate`; the host uses it for an early
+/// halt check before the round-trip.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct CostEstimate {
+    pub min_usd_micros: i64,
+    pub max_usd_micros: i64,
+}
+
+/// Multi-turn agent task. Phase 12 adapters return
+/// `AiError::UnsupportedMode` from `agent_loop`; the type is defined
+/// here so Phase 13's Claude Code adapter compiles against it without
+/// a follow-up schema change.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct AgentTask {
+    pub prompt_version: String,
+    pub task_id: String,
+    pub system: String,
+    pub objective: String,
+    pub tools: Vec<String>,
+    pub max_turns: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct AgentResult {
+    pub prompt_version: String,
+    pub task_id: String,
+    pub final_message: String,
+    pub turns: u32,
+    pub usage: TokenUsage,
+    pub cost_usd_micros: i64,
+}
+
+/// Reason the adapter halted a task. Surfaced both on the event bus
+/// (`AiEvent::TaskHalted`) and as part of the typed error.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub enum HaltReason {
+    BudgetCapReached,
+    OperatorCancelled,
+    UpstreamRefused,
+}
+
+#[derive(Debug, Error)]
+pub enum AiError {
+    #[error("budget cap of {cap_usd_micros} usd-micros reached (spent {spent_usd_micros})")]
+    BudgetExceeded {
+        cap_usd_micros: i64,
+        spent_usd_micros: i64,
+    },
+    #[error("adapter does not support {0}")]
+    UnsupportedMode(&'static str),
+    #[error("upstream refused: {0}")]
+    UpstreamRefused(String),
+    #[error("upstream returned malformed response: {0}")]
+    MalformedResponse(String),
+    #[error("transport error: {0}")]
+    Transport(String),
+    #[error("budget tracker error: {0}")]
+    BudgetTracker(String),
+}
