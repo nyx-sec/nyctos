@@ -329,6 +329,26 @@ impl PayloadRunner {
                 sb.run(opts).await?;
                 sb.wait().await
             }
+            // The deterministic payload runner does not yet drive the
+            // chain-lane VM backends — Phase 19's verifier is wired
+            // only to the fast lane. Surfacing BackendUnavailable
+            // keeps the error path uniform until the chain-lane
+            // verifier lands.
+            BackendKind::Libkrun => Err(SandboxError::BackendUnavailable {
+                backend: "libkrun",
+                reason: "payload runner is fast-lane only; libkrun is reserved for chain lane"
+                    .into(),
+            }),
+            BackendKind::Firecracker => Err(SandboxError::BackendUnavailable {
+                backend: "firecracker",
+                reason: "payload runner is fast-lane only; firecracker is reserved for chain lane"
+                    .into(),
+            }),
+            BackendKind::Docker => Err(SandboxError::BackendUnavailable {
+                backend: "docker",
+                reason: "payload runner is fast-lane only; docker is reserved for chain lane"
+                    .into(),
+            }),
         }
     }
 }

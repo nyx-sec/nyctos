@@ -3,17 +3,23 @@
 //! call). The trait stays independent of every other nyx-agent crate so a
 //! future VM backend can ship without dragging core/api/ai changes along.
 //!
-//! Two backends ship in this phase:
+//! Backends shipped today:
 //!
 //! * `process` — fork+exec with no isolation upgrade. The unhardened
 //!   default used when an operator picks the `process` backend, or when
-//!   the host kernel cannot support `birdcage`.
+//!   no stronger backend is available on this host.
 //! * `birdcage` — wraps the `birdcage` crate, which compiles to Linux
 //!   landlock + seccomp or macOS Seatbelt. FS deny-by-default plus a
 //!   single workspace-write exception; network deny unless
 //!   [`SandboxOpts::allow_loopback`] is set.
-//!
-//! Chain-lane VM backends (libkrun, Firecracker) land in Phase 21.
+//! * `libkrun` — macOS-first microVM via HVF (Linux+KVM also
+//!   supported). Routed through a `libkrun-runner` helper binary so
+//!   FFI symbol drift cannot crash the daemon.
+//! * `firecracker` — Linux+KVM microVM. Routed through a
+//!   `nyx-fc-runner` helper binary.
+//! * `docker` — fallback container backend used when no stronger
+//!   isolation is available; the chain-lane delegates to Phase 20's
+//!   docker-compose env-builder for the actual spin-up.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -27,6 +33,8 @@ pub mod shim;
 pub mod workspace;
 
 pub use backend::birdcage::BirdcageSandbox;
+pub use backend::firecracker::{firecracker_host_supported, FirecrackerSandbox, FirecrackerSpec};
+pub use backend::libkrun::{libkrun_host_supported, LibkrunSandbox, LibkrunSpec};
 pub use backend::process::ProcessSandbox;
 pub use payload_runner::{
     HarnessSource, HarnessSpecInput, PayloadRun, PayloadRunner, PayloadRunnerError,
@@ -39,6 +47,13 @@ pub enum BackendKind {
     Process,
     /// Landlock+seccomp on Linux, Seatbelt on macOS.
     Birdcage,
+    /// libkrun microVM via HVF (macOS) or KVM (Linux).
+    Libkrun,
+    /// Firecracker microVM (Linux+KVM).
+    Firecracker,
+    /// docker container fallback. Chain-lane spin-up delegates to
+    /// Phase 20's docker-compose env-builder.
+    Docker,
 }
 
 impl BackendKind {
@@ -46,6 +61,180 @@ impl BackendKind {
         match self {
             BackendKind::Process => "process",
             BackendKind::Birdcage => "birdcage",
+            BackendKind::Libkrun => "libkrun",
+            BackendKind::Firecracker => "firecracker",
+            BackendKind::Docker => "docker",
+        }
+    }
+}
+
+/// Which scan lane the sandbox runs under. The chain lane spins up the
+/// full dev-env replay alongside the AI-driven exploitation, which is
+/// expensive — it gets a stricter concurrency cap than the fast lane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Lane {
+    /// Static-pass + lightweight verifier work. Tolerates high
+    /// fan-out.
+    Fast,
+    /// Full env-replay + AI exploitation. RAM-bound.
+    Chain,
+}
+
+impl Lane {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Lane::Fast => "fast",
+            Lane::Chain => "chain",
+        }
+    }
+}
+
+/// Per-lane simultaneous-spinup caps. The chain lane defaults to 2 (a
+/// full env-replay can easily consume several GB of RAM); the fast
+/// lane defaults to 8 (matches Phase 06's `static_concurrency`
+/// ceiling on a typical 8-core dev box).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LaneConcurrency {
+    pub chain: usize,
+    pub fast: usize,
+}
+
+impl LaneConcurrency {
+    pub const DEFAULT_CHAIN: usize = 2;
+    pub const DEFAULT_FAST: usize = 8;
+
+    pub const fn defaults() -> Self {
+        Self {
+            chain: Self::DEFAULT_CHAIN,
+            fast: Self::DEFAULT_FAST,
+        }
+    }
+
+    pub fn for_lane(&self, lane: Lane) -> usize {
+        match lane {
+            Lane::Chain => self.chain,
+            Lane::Fast => self.fast,
+        }
+    }
+}
+
+impl Default for LaneConcurrency {
+    fn default() -> Self {
+        Self::defaults()
+    }
+}
+
+/// Which backend the selector chose, plus a human-readable reason the
+/// doctor / live-scan UI surfaces verbatim.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackendSelection {
+    pub backend: BackendKind,
+    pub reason: String,
+}
+
+/// Operator-facing backend label. Mirrors
+/// `nyx_agent_core::config::SandboxBackend` but lives in this crate so
+/// the sandbox layer does not depend on core.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackendChoice {
+    /// Pick the strongest available backend for the lane at runtime.
+    Auto,
+    /// Pin to a specific backend; fall back if it cannot run here.
+    Pinned(BackendKind),
+}
+
+/// Pick a backend for `lane` honouring the operator's `choice`. Auto
+/// picks the strongest backend that can run on this host:
+///
+/// * Chain lane on macOS:   libkrun -> docker -> birdcage -> process.
+/// * Chain lane on Linux:   firecracker -> libkrun -> docker -> birdcage -> process.
+/// * Fast lane on macOS:    birdcage -> process.
+/// * Fast lane on Linux:    birdcage -> process.
+///
+/// A pinned choice that cannot run here is downgraded to the same
+/// auto-pick ladder with a reason explaining what failed.
+pub fn select_backend(choice: BackendChoice, lane: Lane) -> BackendSelection {
+    let auto = || auto_select(lane);
+    match choice {
+        BackendChoice::Auto => auto(),
+        BackendChoice::Pinned(kind) => match probe(kind) {
+            Ok(()) => BackendSelection {
+                backend: kind,
+                reason: format!("pinned to {}", kind.as_str()),
+            },
+            Err(err) => {
+                let auto = auto();
+                BackendSelection {
+                    backend: auto.backend,
+                    reason: format!(
+                        "pinned {} unavailable ({err}); fell back to {} ({})",
+                        kind.as_str(),
+                        auto.backend.as_str(),
+                        auto.reason
+                    ),
+                }
+            }
+        },
+    }
+}
+
+fn auto_select(lane: Lane) -> BackendSelection {
+    let ladder = auto_ladder(lane);
+    for kind in ladder {
+        match probe(*kind) {
+            Ok(()) => {
+                return BackendSelection {
+                    backend: *kind,
+                    reason: format!("auto-selected for {} lane", lane.as_str()),
+                };
+            }
+            Err(_) => continue,
+        }
+    }
+    // ProcessSandbox always probes Ok; this branch is unreachable in
+    // practice but keeps the function total without a panic.
+    BackendSelection {
+        backend: BackendKind::Process,
+        reason: format!("auto-selected fallback for {} lane", lane.as_str()),
+    }
+}
+
+fn auto_ladder(lane: Lane) -> &'static [BackendKind] {
+    match lane {
+        Lane::Chain => {
+            #[cfg(target_os = "macos")]
+            {
+                &[
+                    BackendKind::Libkrun,
+                    BackendKind::Docker,
+                    BackendKind::Birdcage,
+                    BackendKind::Process,
+                ]
+            }
+            #[cfg(target_os = "linux")]
+            {
+                &[
+                    BackendKind::Firecracker,
+                    BackendKind::Libkrun,
+                    BackendKind::Docker,
+                    BackendKind::Birdcage,
+                    BackendKind::Process,
+                ]
+            }
+            #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+            {
+                &[BackendKind::Docker, BackendKind::Process]
+            }
+        }
+        Lane::Fast => {
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            {
+                &[BackendKind::Birdcage, BackendKind::Process]
+            }
+            #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+            {
+                &[BackendKind::Process]
+            }
         }
     }
 }
@@ -188,24 +377,39 @@ pub trait Sandbox: Send {
     fn logs(&self) -> (&[u8], &[u8]);
 }
 
-/// Lightweight readiness probe: returns the static set of backends that
-/// could run on this host. Backends that depend on optional kernel
-/// features (KVM, landlock LSM) are not surfaced here — those are checked
-/// at scan time.
+/// Lightweight readiness probe: returns the static set of backends
+/// that the platform *could* run. Construction-time probes
+/// ([`probe`]) further check that the kernel surface + helper binaries
+/// are present.
 pub fn available_backends() -> &'static [BackendKind] {
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(target_os = "macos")]
     {
-        &[BackendKind::Process, BackendKind::Birdcage]
+        &[
+            BackendKind::Process,
+            BackendKind::Birdcage,
+            BackendKind::Libkrun,
+            BackendKind::Docker,
+        ]
+    }
+    #[cfg(target_os = "linux")]
+    {
+        &[
+            BackendKind::Process,
+            BackendKind::Birdcage,
+            BackendKind::Libkrun,
+            BackendKind::Firecracker,
+            BackendKind::Docker,
+        ]
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
-        &[BackendKind::Process]
+        &[BackendKind::Process, BackendKind::Docker]
     }
 }
 
 /// Return `Ok(())` if `backend` can be constructed on this host, else
 /// describe why it cannot. Callers use this to short-circuit a doctor
-/// check or to fall back to `process`.
+/// check or to fall back to a weaker backend.
 pub fn probe(backend: BackendKind) -> Result<(), SandboxError> {
     match backend {
         BackendKind::Process => Ok(()),
@@ -221,6 +425,130 @@ pub fn probe(backend: BackendKind) -> Result<(), SandboxError> {
                     reason: "requires Linux landlock or macOS Seatbelt".into(),
                 })
             }
+        }
+        BackendKind::Libkrun => {
+            if !libkrun_host_supported() {
+                return Err(SandboxError::BackendUnavailable {
+                    backend: "libkrun",
+                    reason: "requires macOS with Hypervisor.framework or Linux with KVM".into(),
+                });
+            }
+            // Helper binary presence is the second gate.
+            backend::libkrun::LibkrunSandbox::new().map(|_| ())
+        }
+        BackendKind::Firecracker => {
+            if !firecracker_host_supported() {
+                return Err(SandboxError::BackendUnavailable {
+                    backend: "firecracker",
+                    reason: "requires Linux with /dev/kvm".into(),
+                });
+            }
+            backend::firecracker::FirecrackerSandbox::new().map(|_| ())
+        }
+        BackendKind::Docker => {
+            if which_on_path("docker").is_some() {
+                Ok(())
+            } else {
+                Err(SandboxError::BackendUnavailable {
+                    backend: "docker",
+                    reason: "docker not found on PATH".into(),
+                })
+            }
+        }
+    }
+}
+
+fn which_on_path(bin: &str) -> Option<std::path::PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        let candidate = dir.join(bin);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lane_concurrency_defaults_match_plan() {
+        let cap = LaneConcurrency::defaults();
+        assert_eq!(cap.chain, 2);
+        assert_eq!(cap.fast, 8);
+        assert_eq!(cap.for_lane(Lane::Chain), 2);
+        assert_eq!(cap.for_lane(Lane::Fast), 8);
+    }
+
+    #[test]
+    fn select_auto_chain_picks_strongest_for_host() {
+        let sel = select_backend(BackendChoice::Auto, Lane::Chain);
+        // The ladder is platform-specific; what matters is that some
+        // backend always selects, the auto reason is filled in, and
+        // the chosen backend probes Ok at the time of the call.
+        assert!(probe(sel.backend).is_ok(), "selected backend must probe Ok");
+        assert!(sel.reason.contains("chain"));
+    }
+
+    #[test]
+    fn select_auto_fast_picks_birdcage_or_process() {
+        let sel = select_backend(BackendChoice::Auto, Lane::Fast);
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            assert!(matches!(
+                sel.backend,
+                BackendKind::Birdcage | BackendKind::Process
+            ));
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            assert_eq!(sel.backend, BackendKind::Process);
+        }
+    }
+
+    #[test]
+    fn select_pinned_falls_back_when_unavailable() {
+        // Force libkrun unavailable by pointing the env override at a
+        // non-existent helper. The selector should fall back to the
+        // auto-pick and stamp a reason explaining the downgrade.
+        std::env::set_var(
+            "NYX_LIBKRUN_RUNNER",
+            "/definitely/does/not/exist/libkrun-runner",
+        );
+        let sel = select_backend(BackendChoice::Pinned(BackendKind::Libkrun), Lane::Chain);
+        std::env::remove_var("NYX_LIBKRUN_RUNNER");
+        assert_ne!(
+            sel.backend,
+            BackendKind::Libkrun,
+            "pinned libkrun must downgrade when runner is missing"
+        );
+        assert!(sel.reason.contains("unavailable"));
+        assert!(sel.reason.contains("fell back"));
+    }
+
+    #[test]
+    fn probe_process_is_always_ok() {
+        assert!(probe(BackendKind::Process).is_ok());
+    }
+
+    #[test]
+    fn available_backends_includes_process() {
+        let kinds = available_backends();
+        assert!(kinds.contains(&BackendKind::Process));
+    }
+
+    #[test]
+    fn backend_kind_as_str_round_trip() {
+        for k in [
+            BackendKind::Process,
+            BackendKind::Birdcage,
+            BackendKind::Libkrun,
+            BackendKind::Firecracker,
+            BackendKind::Docker,
+        ] {
+            assert!(!k.as_str().is_empty());
         }
     }
 }

@@ -1,6 +1,8 @@
 //! Concrete [`crate::Sandbox`] implementations.
 
 pub mod birdcage;
+pub mod firecracker;
+pub mod libkrun;
 pub mod process;
 
 use std::io;

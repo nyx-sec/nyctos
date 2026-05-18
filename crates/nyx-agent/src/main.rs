@@ -13,9 +13,10 @@ use nyx_agent_api::{
 use nyx_agent_core::store::{finding_id_hash, FindingRecord, RepoRecord, RunRecord};
 use nyx_agent_core::{
     ingest, Config, IngestError, IngestedRepo, LogConfig, Repo, RepoOutcome, RepoSource, Run,
-    RunBundle, RunDispatcher, SecretStore, StateDir, Store, WorkspaceHandle,
+    RunBundle, RunDispatcher, SandboxBackend, SecretStore, StateDir, Store, WorkspaceHandle,
 };
 use nyx_agent_nyx::{Diag, NyxError, NyxRunner, NyxScanLane, MINIMUM_NYX_VERSION};
+use nyx_agent_sandbox::{select_backend, BackendChoice, BackendKind, Lane, LaneConcurrency};
 use nyx_agent_types::event::{AgentEvent, EventSink, RunEvent};
 use semver::Version;
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -1013,7 +1014,35 @@ async fn doctor(
         Err(err) => println!("claude-code: unavailable ({err})"),
     }
 
+    report_sandbox_backends(config);
+
     Ok(nyx_code)
+}
+
+fn report_sandbox_backends(config: &Config) {
+    let choice = match config.sandbox.backend {
+        SandboxBackend::Auto => BackendChoice::Auto,
+        SandboxBackend::Process => BackendChoice::Pinned(BackendKind::Process),
+        SandboxBackend::Birdcage => BackendChoice::Pinned(BackendKind::Birdcage),
+        SandboxBackend::Libkrun => BackendChoice::Pinned(BackendKind::Libkrun),
+        SandboxBackend::Firecracker => BackendChoice::Pinned(BackendKind::Firecracker),
+        SandboxBackend::Docker => BackendChoice::Pinned(BackendKind::Docker),
+    };
+    let chain = select_backend(choice, Lane::Chain);
+    let fast = select_backend(choice, Lane::Fast);
+    let cap = LaneConcurrency::defaults();
+    println!(
+        "sandbox chain lane -> {} ({}) [{} simultaneous]",
+        chain.backend.as_str(),
+        chain.reason,
+        cap.chain
+    );
+    println!(
+        "sandbox fast lane  -> {} ({}) [{} simultaneous]",
+        fast.backend.as_str(),
+        fast.reason,
+        cap.fast
+    );
 }
 
 fn resolve_min_nyx_version(config: &Config) -> anyhow::Result<Version> {
