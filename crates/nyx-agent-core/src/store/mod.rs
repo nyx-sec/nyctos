@@ -122,10 +122,7 @@ impl Store {
     /// a real `created_at` on first run. Subsequent opens leave
     /// `created_at` untouched so it remains the install timestamp.
     async fn populate_meta(pool: &SqlitePool) -> Result<(), sqlx::Error> {
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0);
+        let now_ms = crate::time::now_epoch_ms();
         let agent_version = env!("CARGO_PKG_VERSION");
         let max_migration: (Option<i64>,) =
             sqlx::query_as("SELECT MAX(version) FROM _sqlx_migrations").fetch_one(pool).await?;

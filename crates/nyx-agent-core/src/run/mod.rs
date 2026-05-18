@@ -18,7 +18,7 @@
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use nyx_agent_types::event::{AgentEvent, EventSink, RepoOutcomeTag, RunEvent};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
@@ -460,7 +460,7 @@ static RUN_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// the id from `as_secs()` and would have collided on the snapshot
 /// directory under `<state>/repos/<name>/snapshots/<run_id>/`.
 pub fn mint_run_id() -> String {
-    let ms = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+    let ms = now_epoch_ms();
     let n = RUN_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
     format!("run-{ms:013x}-{n:08x}")
 }

@@ -45,7 +45,9 @@ plan; this commit lands Phase 01 (cargo workspace + CI guards).
 
 ## Documentation
 
-Operator-facing docs live under [`docs/`](docs/). Start here:
+Operator-facing docs live under [`docs/`](docs/); the
+[`docs/SUMMARY.md`](docs/SUMMARY.md) index lists every page. Start
+here:
 
 - [`docs/install.md`](docs/install.md): prerequisites, source build,
   and `nyx-agent doctor`.
