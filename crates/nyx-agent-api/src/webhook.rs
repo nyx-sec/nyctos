@@ -79,7 +79,11 @@ impl WebhookSecretResolver for EnvSecretResolver {
         // Refuse empty secrets — an empty key satisfies the HMAC API
         // but trivially accepts any HMAC over the empty byte string,
         // which is not authentication.
-        if raw.is_empty() { None } else { Some(raw) }
+        if raw.is_empty() {
+            None
+        } else {
+            Some(raw)
+        }
     }
 }
 
@@ -136,8 +140,7 @@ pub async fn webhook_git(
 ) -> Result<impl IntoResponse, ApiError> {
     let Some(cfg) = state.webhook.as_ref() else {
         return Err(ApiError::Internal(
-            "webhook not enabled; set [triggers].webhook_secret_ref in nyx-agent.toml"
-                .to_string(),
+            "webhook not enabled; set [triggers].webhook_secret_ref in nyx-agent.toml".to_string(),
         ));
     };
 
@@ -209,11 +212,7 @@ pub async fn webhook_git(
     let run_id = trigger.trigger(cfg.repo.clone()).await?;
     Ok((
         StatusCode::ACCEPTED,
-        Json(WebhookResponse {
-            triggered: true,
-            run_id: Some(run_id),
-            message: String::new(),
-        }),
+        Json(WebhookResponse { triggered: true, run_id: Some(run_id), message: String::new() }),
     )
         .into_response())
 }
@@ -302,10 +301,7 @@ mod tests {
     #[test]
     fn env_resolver_refuses_empty_literal() {
         let resolver = EnvSecretResolver { spec: Some(String::new()) };
-        assert!(
-            resolver.resolve().is_none(),
-            "empty literal secret must not pass HMAC auth"
-        );
+        assert!(resolver.resolve().is_none(), "empty literal secret must not pass HMAC auth");
     }
 
     #[test]
@@ -313,10 +309,7 @@ mod tests {
         let var = format!("NYX_TEST_WEBHOOK_EMPTY_{}", std::process::id());
         std::env::set_var(&var, "");
         let resolver = EnvSecretResolver { spec: Some(format!("env:{var}")) };
-        assert!(
-            resolver.resolve().is_none(),
-            "empty env-backed secret must not pass HMAC auth"
-        );
+        assert!(resolver.resolve().is_none(), "empty env-backed secret must not pass HMAC auth");
         std::env::remove_var(&var);
     }
 }

@@ -228,11 +228,7 @@ impl RunningEnv {
     /// trace-viewer phase can upgrade to a live stream later.
     pub async fn service_logs(&self, service: &str) -> Result<Vec<u8>, EnvError> {
         let mut cmd = self.compose_command();
-        cmd.arg("logs")
-            .arg("--no-color")
-            .arg("--timestamps")
-            .arg("--no-log-prefix")
-            .arg(service);
+        cmd.arg("logs").arg("--no-color").arg("--timestamps").arg("--no-log-prefix").arg(service);
         let outcome = run_command(cmd, self.command_timeout).await?;
         if !outcome.status_ok() {
             return Err(EnvError::LogsFailed {
@@ -359,11 +355,9 @@ async fn run_command(mut cmd: Command, cap: Duration) -> Result<CommandOutcome, 
             Err(EnvError::Timeout(cap))
         }
         Ok(Err(io)) => Err(EnvError::Io(io)),
-        Ok(Ok((status, stdout, stderr))) => Ok(CommandOutcome {
-            exit_code: status.code(),
-            stdout,
-            stderr,
-        }),
+        Ok(Ok((status, stdout, stderr))) => {
+            Ok(CommandOutcome { exit_code: status.code(), stdout, stderr })
+        }
     }
 }
 

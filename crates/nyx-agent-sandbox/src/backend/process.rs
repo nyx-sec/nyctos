@@ -73,10 +73,7 @@ impl Sandbox for ProcessSandbox {
     }
 
     async fn wait(&mut self) -> Result<SandboxOutcome, SandboxError> {
-        let mut state = self
-            .inner
-            .take()
-            .ok_or(SandboxError::State("no child to wait on"))?;
+        let mut state = self.inner.take().ok_or(SandboxError::State("no child to wait on"))?;
         let outcome = drive_to_completion(&mut state, BackendKind::Process).await?;
         self.last_logs = (outcome.stdout.clone(), outcome.stderr.clone());
         Ok(outcome)
@@ -114,19 +111,9 @@ pub(crate) async fn drive_to_completion(
     let stderr = stderr_task.await.unwrap_or_default();
     let duration = state.started_at.elapsed();
 
-    let sandbox_status = if timed_out {
-        SandboxStatus::TimedOut
-    } else {
-        classify(status)
-    };
+    let sandbox_status = if timed_out { SandboxStatus::TimedOut } else { classify(status) };
 
-    Ok(SandboxOutcome {
-        backend,
-        status: sandbox_status,
-        stdout,
-        stderr,
-        duration,
-    })
+    Ok(SandboxOutcome { backend, status: sandbox_status, stdout, stderr, duration })
 }
 
 #[cfg(unix)]
@@ -143,10 +130,7 @@ fn classify(status: std::process::ExitStatus) -> SandboxStatus {
     SandboxStatus::Exited(status.code().unwrap_or(-1))
 }
 
-async fn read_capped<R: tokio::io::AsyncRead + Unpin>(
-    reader: Option<R>,
-    cap: usize,
-) -> Vec<u8> {
+async fn read_capped<R: tokio::io::AsyncRead + Unpin>(reader: Option<R>, cap: usize) -> Vec<u8> {
     let Some(mut reader) = reader else {
         return Vec::new();
     };

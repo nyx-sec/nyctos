@@ -110,12 +110,7 @@ pub enum ChainReasoningOutcome {
     /// Both attempts produced malformed or empty output. The binary
     /// surfaces `reason` in the agent-trace store; nothing is persisted
     /// to the `chains` table.
-    NoChains {
-        run_id: String,
-        reason: String,
-        spent_usd_micros: i64,
-        attempts: u32,
-    },
+    NoChains { run_id: String, reason: String, spent_usd_micros: i64, attempts: u32 },
 }
 
 /// Drive one ChainReasoning call for `input`.
@@ -130,11 +125,8 @@ pub async fn run<R: AiRuntime + ?Sized>(
     cap_usd_micros: i64,
 ) -> Result<ChainReasoningOutcome, AiError> {
     let task_id = format!("chain-{}", input.run_id);
-    let budget = || Budget {
-        run_id: input.run_id.clone(),
-        kind: BudgetKind::OneShot,
-        cap_usd_micros,
-    };
+    let budget =
+        || Budget { run_id: input.run_id.clone(), kind: BudgetKind::OneShot, cap_usd_micros };
 
     let node_ids: HashSet<String> = input.nodes.iter().map(|n| n.id.clone()).collect();
 
@@ -205,8 +197,7 @@ fn render_user_message(input: &ChainReasoningInput) -> String {
 
     out.push_str("nodes:\n");
     for n in &input.nodes {
-        let line_str =
-            n.line.map(|l| format!(" L{l}")).unwrap_or_default();
+        let line_str = n.line.map(|l| format!(" L{l}")).unwrap_or_default();
         out.push_str(&format!(
             "- id={} repo={} kind={} cap={} rule={} sev={} path={}{}\n",
             n.id, n.repo, n.kind, n.cap, n.rule, n.severity, n.path, line_str,
@@ -219,12 +210,8 @@ fn render_user_message(input: &ChainReasoningInput) -> String {
         out.push_str("- (none)\n");
     } else {
         for e in &input.edges {
-            let cross =
-                if e.cross_repo { " cross_repo" } else { "" };
-            out.push_str(&format!(
-                "- {} --[{}]--> {}{}\n",
-                e.from, e.label, e.to, cross
-            ));
+            let cross = if e.cross_repo { " cross_repo" } else { "" };
+            out.push_str(&format!("- {} --[{}]--> {}{}\n", e.from, e.label, e.to, cross));
         }
     }
     out
@@ -244,24 +231,17 @@ fn parse_and_validate(
     Ok(out)
 }
 
-fn validate_chains(
-    chains: &[ChainCandidate],
-    node_ids: &HashSet<String>,
-) -> Result<(), String> {
+fn validate_chains(chains: &[ChainCandidate], node_ids: &HashSet<String>) -> Result<(), String> {
     for (i, c) in chains.iter().enumerate() {
         if c.member_ids.len() < 2 {
-            return Err(format!(
-                "chain {i}: member_ids must contain at least 2 entries"
-            ));
+            return Err(format!("chain {i}: member_ids must contain at least 2 entries"));
         }
         if c.rationale.trim().is_empty() {
             return Err(format!("chain {i}: rationale was empty"));
         }
         for id in &c.member_ids {
             if !node_ids.contains(id) {
-                return Err(format!(
-                    "chain {i}: member id {id:?} not present in the input graph"
-                ));
+                return Err(format!("chain {i}: member id {id:?} not present in the input graph"));
             }
         }
         // Real exploit chains never visit the same node twice in
@@ -269,10 +249,7 @@ fn validate_chains(
         // a "1-step loop" with no analytic value.
         for w in c.member_ids.windows(2) {
             if w[0] == w[1] {
-                return Err(format!(
-                    "chain {i}: member_ids has consecutive duplicate {:?}",
-                    w[0]
-                ));
+                return Err(format!("chain {i}: member_ids has consecutive duplicate {:?}", w[0]));
             }
         }
     }
@@ -533,9 +510,7 @@ mod tests {
         let (tx, _rx) = broadcast::channel::<AgentEvent>(8);
         let outcome = run(&rt, &two_repo_input(), tx, 5_000_000).await.expect("ok");
         match outcome {
-            ChainReasoningOutcome::NoChains {
-                run_id, reason, spent_usd_micros, attempts,
-            } => {
+            ChainReasoningOutcome::NoChains { run_id, reason, spent_usd_micros, attempts } => {
                 assert_eq!(run_id, "run-1");
                 assert_eq!(attempts, 2);
                 assert_eq!(spent_usd_micros, 2_000);

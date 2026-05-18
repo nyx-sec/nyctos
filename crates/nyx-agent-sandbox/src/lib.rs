@@ -109,10 +109,7 @@ impl LaneConcurrency {
     pub const DEFAULT_FAST: usize = 8;
 
     pub const fn defaults() -> Self {
-        Self {
-            chain: Self::DEFAULT_CHAIN,
-            fast: Self::DEFAULT_FAST,
-        }
+        Self { chain: Self::DEFAULT_CHAIN, fast: Self::DEFAULT_FAST }
     }
 
     pub fn for_lane(&self, lane: Lane) -> usize {
@@ -163,10 +160,9 @@ pub fn select_backend(choice: BackendChoice, lane: Lane) -> BackendSelection {
     match choice {
         BackendChoice::Auto => auto(),
         BackendChoice::Pinned(kind) => match probe(kind) {
-            Ok(()) => BackendSelection {
-                backend: kind,
-                reason: format!("pinned to {}", kind.as_str()),
-            },
+            Ok(()) => {
+                BackendSelection { backend: kind, reason: format!("pinned to {}", kind.as_str()) }
+            }
             Err(err) => {
                 let auto = auto();
                 BackendSelection {
@@ -332,10 +328,7 @@ pub struct SandboxOutcome {
 pub enum SandboxError {
     /// The backend cannot run on this host (e.g. birdcage on Windows).
     #[error("backend {backend} unavailable: {reason}")]
-    BackendUnavailable {
-        backend: &'static str,
-        reason: String,
-    },
+    BackendUnavailable { backend: &'static str, reason: String },
     /// `fork`/`exec` failed before any sandbox lock was applied.
     #[error("spawn failed: {0}")]
     Spawn(#[source] std::io::Error),
@@ -389,12 +382,7 @@ pub trait Sandbox: Send {
 pub fn available_backends() -> &'static [BackendKind] {
     #[cfg(target_os = "macos")]
     {
-        &[
-            BackendKind::Process,
-            BackendKind::Birdcage,
-            BackendKind::Libkrun,
-            BackendKind::Docker,
-        ]
+        &[BackendKind::Process, BackendKind::Birdcage, BackendKind::Libkrun, BackendKind::Docker]
     }
     #[cfg(target_os = "linux")]
     {
@@ -500,10 +488,7 @@ mod tests {
         let sel = select_backend(BackendChoice::Auto, Lane::Fast);
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
-            assert!(matches!(
-                sel.backend,
-                BackendKind::Birdcage | BackendKind::Process
-            ));
+            assert!(matches!(sel.backend, BackendKind::Birdcage | BackendKind::Process));
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
@@ -517,10 +502,7 @@ mod tests {
         // non-existent helper. The selector should fall back to the
         // auto-pick and stamp a reason explaining the downgrade.
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        std::env::set_var(
-            "NYX_LIBKRUN_RUNNER",
-            "/definitely/does/not/exist/libkrun-runner",
-        );
+        std::env::set_var("NYX_LIBKRUN_RUNNER", "/definitely/does/not/exist/libkrun-runner");
         let sel = select_backend(BackendChoice::Pinned(BackendKind::Libkrun), Lane::Chain);
         std::env::remove_var("NYX_LIBKRUN_RUNNER");
         assert_ne!(

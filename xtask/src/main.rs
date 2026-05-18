@@ -48,11 +48,7 @@ fn gen_ts() -> Result<(), String> {
     let workspace_root = manifest_dir
         .parent()
         .ok_or_else(|| "xtask Cargo.toml is not in a workspace".to_string())?;
-    let out_path = workspace_root
-        .join("frontend")
-        .join("src")
-        .join("api")
-        .join("types.gen.ts");
+    let out_path = workspace_root.join("frontend").join("src").join("api").join("types.gen.ts");
 
     if let Some(parent) = out_path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;

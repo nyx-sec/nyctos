@@ -105,10 +105,7 @@ fn symlink(target: &Path, link: &Path) -> io::Result<()> {
 
 #[cfg(not(unix))]
 fn symlink(_target: &Path, _link: &Path) -> io::Result<()> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "symlinks not supported on this platform",
-    ))
+    Err(io::Error::new(io::ErrorKind::Unsupported, "symlinks not supported on this platform"))
 }
 
 #[cfg(target_os = "macos")]
@@ -117,7 +114,8 @@ fn clonefile(src: &Path, dst: &Path) -> io::Result<()> {
     use std::os::unix::ffi::OsStrExt;
 
     extern "C" {
-        fn clonefile(src: *const libc::c_char, dst: *const libc::c_char, flags: u32) -> libc::c_int;
+        fn clonefile(src: *const libc::c_char, dst: *const libc::c_char, flags: u32)
+            -> libc::c_int;
     }
 
     let src_c = CString::new(src.as_os_str().as_bytes())
@@ -174,10 +172,7 @@ fn reflink_file(src: &Path, dst: &Path) -> io::Result<()> {
     const FICLONE: libc::c_ulong = 0x4004_9409;
 
     let src_file = fs::File::open(src)?;
-    let dst_file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(dst)?;
+    let dst_file = fs::OpenOptions::new().write(true).create_new(true).open(dst)?;
 
     // SAFETY: both fds remain live for the duration of the ioctl call;
     // FICLONE only reads from src and writes into dst.

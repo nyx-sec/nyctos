@@ -2,12 +2,13 @@
 
 pub mod config;
 pub mod log_init;
-pub mod report;
 pub mod repo;
+pub mod report;
 pub mod run;
 pub mod secrets;
 pub mod state;
 pub mod store;
+pub mod time;
 
 pub use config::{
     AiConfig, AiRuntime, Config, ConfigError, GeneralConfig, NyxConfig, PerformanceConfig,
@@ -27,3 +28,4 @@ pub use secrets::{
 };
 pub use state::{mint_token, StateDir, StateError};
 pub use store::{Store, StoreError, CURRENT_SCHEMA_VERSION};
+pub use time::now_epoch_ms;

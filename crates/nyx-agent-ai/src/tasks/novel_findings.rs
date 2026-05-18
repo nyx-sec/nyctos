@@ -155,11 +155,8 @@ pub async fn run<R: AiRuntime + ?Sized>(
     cap_usd_micros: i64,
 ) -> Result<NovelFindingDiscoveryOutcome, AiError> {
     let task_id = format!("novel-{}", input.batch_id);
-    let budget = || Budget {
-        run_id: input.run_id.clone(),
-        kind: BudgetKind::OneShot,
-        cap_usd_micros,
-    };
+    let budget =
+        || Budget { run_id: input.run_id.clone(), kind: BudgetKind::OneShot, cap_usd_micros };
     let known_paths: HashSet<&str> = input.files.iter().map(|f| f.path.as_str()).collect();
 
     let prompt = build_prompt(SYSTEM_PROMPT_V1, &task_id, input);
@@ -238,10 +235,7 @@ fn render_user_message(input: &NovelFindingDiscoveryInput) -> String {
         out.push_str("- (none)\n");
     } else {
         for p in &input.priors {
-            out.push_str(&format!(
-                "- {} L{} cap={} rule={}\n",
-                p.path, p.line, p.cap, p.rule,
-            ));
+            out.push_str(&format!("- {} L{} cap={} rule={}\n", p.path, p.line, p.cap, p.rule,));
         }
     }
     out.push('\n');
@@ -256,7 +250,9 @@ fn render_user_message(input: &NovelFindingDiscoveryInput) -> String {
         }
         out.push_str("```\n");
         if f.truncated {
-            out.push_str("(note: this file was truncated; do not invent lines past the visible region)\n");
+            out.push_str(
+                "(note: this file was truncated; do not invent lines past the visible region)\n",
+            );
         }
     }
     out
@@ -464,7 +460,13 @@ mod tests {
         let outcome = run(&rt, &sample_input(), tx, 5_000_000).await.expect("ok");
         match outcome {
             NovelFindingDiscoveryOutcome::Discovered {
-                run_id, repo, batch_id, output, prompt_version, spent_usd_micros, attempts,
+                run_id,
+                repo,
+                batch_id,
+                output,
+                prompt_version,
+                spent_usd_micros,
+                attempts,
             } => {
                 assert_eq!(run_id, "run-N");
                 assert_eq!(repo, "repo-1");
@@ -492,11 +494,8 @@ mod tests {
     async fn empty_candidates_array_is_accepted() {
         let tracker = Arc::new(InMemoryBudgetTracker::new());
         tracker.set_cap("run-N", BudgetKind::OneShot, 5_000_000);
-        let rt = ScriptedRuntime::new(
-            vec![Ok(ok_body(serde_json::json!([])))],
-            tracker.clone(),
-            1_000,
-        );
+        let rt =
+            ScriptedRuntime::new(vec![Ok(ok_body(serde_json::json!([])))], tracker.clone(), 1_000);
         let (tx, _rx) = broadcast::channel::<AgentEvent>(8);
         let outcome = run(&rt, &sample_input(), tx, 5_000_000).await.expect("ok");
         match outcome {
@@ -604,7 +603,12 @@ mod tests {
         let outcome = run(&rt, &sample_input(), tx, 5_000_000).await.expect("ok");
         match outcome {
             NovelFindingDiscoveryOutcome::NoCandidates {
-                run_id, repo, batch_id, reason, spent_usd_micros, attempts,
+                run_id,
+                repo,
+                batch_id,
+                reason,
+                spent_usd_micros,
+                attempts,
             } => {
                 assert_eq!(run_id, "run-N");
                 assert_eq!(repo, "repo-1");

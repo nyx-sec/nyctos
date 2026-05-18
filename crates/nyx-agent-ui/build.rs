@@ -33,13 +33,7 @@ fn main() {
     let frontend_dir = workspace_root.join("frontend");
     let crate_dist_dir = manifest_dir.join("dist");
 
-    for source in [
-        "package.json",
-        "vite.config.ts",
-        "tsconfig.json",
-        "index.html",
-        "src",
-    ] {
+    for source in ["package.json", "vite.config.ts", "tsconfig.json", "index.html", "src"] {
         let entry = frontend_dir.join(source);
         if entry.exists() {
             println!("cargo:rerun-if-changed={}", entry.display());

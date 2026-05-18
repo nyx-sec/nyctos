@@ -367,14 +367,8 @@ mod tests {
         replay.push(&repo_started("r1", "alpha")).await;
         let frames = replay.snapshot("r1").await;
         assert_eq!(frames.len(), 2);
-        assert!(matches!(
-            frames[0],
-            AgentEvent::Run { data: RunEvent::RunStarted { .. } }
-        ));
-        assert!(matches!(
-            frames[1],
-            AgentEvent::Run { data: RunEvent::RepoStarted { .. } }
-        ));
+        assert!(matches!(frames[0], AgentEvent::Run { data: RunEvent::RunStarted { .. } }));
+        assert!(matches!(frames[1], AgentEvent::Run { data: RunEvent::RepoStarted { .. } }));
     }
 
     #[tokio::test]
@@ -391,9 +385,7 @@ mod tests {
         let repos: Vec<String> = frames
             .iter()
             .filter_map(|ev| match ev {
-                AgentEvent::Run { data: RunEvent::RepoStarted { repo, .. } } => {
-                    Some(repo.clone())
-                }
+                AgentEvent::Run { data: RunEvent::RepoStarted { repo, .. } } => Some(repo.clone()),
                 _ => None,
             })
             .collect();

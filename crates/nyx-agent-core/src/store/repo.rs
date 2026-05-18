@@ -270,10 +270,7 @@ mod tests {
         let mut r = sample_repo("billing");
         r.branch = Some("main".to_string());
         s.repos().upsert(&r).await.expect("insert");
-        s.repos()
-            .set_last_scan("billing", "run-prior", 5_000)
-            .await
-            .expect("seed last_scan");
+        s.repos().set_last_scan("billing", "run-prior", 5_000).await.expect("seed last_scan");
 
         let patch = RepoPatch {
             name: "billing",

@@ -37,21 +37,12 @@ async fn prod_secret_blocks_run() {
     let workspace = tmp.path().join("workspace");
     std::fs::create_dir_all(&state).unwrap();
     std::fs::create_dir_all(&workspace).unwrap();
-    write_test_env(
-        &state,
-        "DB_USER=test\nSTRIPE_KEY=sk_live_abcDEF0123456789xyz\n",
-    );
+    write_test_env(&state, "DB_USER=test\nSTRIPE_KEY=sk_live_abcDEF0123456789xyz\n");
 
     let fixture = fixture_root();
     let repos = vec![
-        RepoInput {
-            name: "alpha".into(),
-            root: fixture.join("repo_a"),
-        },
-        RepoInput {
-            name: "beta".into(),
-            root: fixture.join("repo_b"),
-        },
+        RepoInput { name: "alpha".into(), root: fixture.join("repo_a") },
+        RepoInput { name: "beta".into(), root: fixture.join("repo_b") },
     ];
     // Use a fake docker path so even on hosts where docker is installed
     // the test cannot accidentally spin a real container — the secrets
@@ -118,14 +109,8 @@ async fn two_service_compose_spins_up() {
 
     let fixture = fixture_root();
     let repos = vec![
-        RepoInput {
-            name: "alpha".into(),
-            root: fixture.join("repo_a"),
-        },
-        RepoInput {
-            name: "beta".into(),
-            root: fixture.join("repo_b"),
-        },
+        RepoInput { name: "alpha".into(), root: fixture.join("repo_a") },
+        RepoInput { name: "beta".into(), root: fixture.join("repo_b") },
     ];
     let project = format!("nyx-env-{}", std::process::id());
 
@@ -144,10 +129,7 @@ async fn two_service_compose_spins_up() {
     };
 
     let services = env.services().to_vec();
-    assert_eq!(
-        services,
-        vec!["alpha_worker".to_string(), "beta_worker".to_string()]
-    );
+    assert_eq!(services, vec!["alpha_worker".to_string(), "beta_worker".to_string()]);
 
     let health = env.services_health().await.expect("services_health");
     let mut got: Vec<String> = health.iter().map(|h| h.service.clone()).collect();
@@ -175,11 +157,7 @@ async fn two_service_compose_spins_up() {
     assert!(ps_out.status.success(), "docker ps failed");
     let names = String::from_utf8_lossy(&ps_out.stdout);
     let lines: Vec<_> = names.lines().filter(|l| !l.is_empty()).collect();
-    assert_eq!(
-        lines.len(),
-        2,
-        "docker ps must list both project containers (got {lines:?})"
-    );
+    assert_eq!(lines.len(), 2, "docker ps must list both project containers (got {lines:?})");
 
     env.down().await.expect("docker compose down");
 
@@ -201,8 +179,5 @@ async fn two_service_compose_spins_up() {
     assert!(ps_after.status.success(), "docker ps after teardown failed");
     let after_names = String::from_utf8_lossy(&ps_after.stdout);
     let remaining: Vec<_> = after_names.lines().filter(|l| !l.is_empty()).collect();
-    assert!(
-        remaining.is_empty(),
-        "containers leaked after teardown: {remaining:?}"
-    );
+    assert!(remaining.is_empty(), "containers leaked after teardown: {remaining:?}");
 }

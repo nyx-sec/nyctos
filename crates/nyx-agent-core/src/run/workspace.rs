@@ -34,7 +34,10 @@ impl WorkspaceHandle {
     /// Production code paths always go through [`ingest`] +
     /// [`WorkspaceHandle::new`].
     #[cfg(any(test, feature = "test-util"))]
-    pub fn for_local_path_test(name: impl Into<String>, path: impl Into<std::path::PathBuf>) -> Self {
+    pub fn for_local_path_test(
+        name: impl Into<String>,
+        path: impl Into<std::path::PathBuf>,
+    ) -> Self {
         let path: std::path::PathBuf = path.into();
         let ingested = IngestedRepo {
             name: name.into(),

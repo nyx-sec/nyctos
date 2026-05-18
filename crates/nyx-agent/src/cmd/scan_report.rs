@@ -70,10 +70,8 @@ pub enum ScanReportError {
 impl ScanReport {
     /// Read a report from disk. Used by `pr-comment`.
     pub fn load(path: &Path) -> Result<Self, ScanReportError> {
-        let bytes = std::fs::read(path).map_err(|source| ScanReportError::Read {
-            path: path.display().to_string(),
-            source,
-        })?;
+        let bytes = std::fs::read(path)
+            .map_err(|source| ScanReportError::Read { path: path.display().to_string(), source })?;
         Ok(serde_json::from_slice(&bytes)?)
     }
 
@@ -147,10 +145,7 @@ fn keep_finding(
 ) -> bool {
     match changed_files {
         None => true,
-        Some(map) => map
-            .get(&f.repo)
-            .map(|paths| paths.contains(&f.path))
-            .unwrap_or(false),
+        Some(map) => map.get(&f.repo).map(|paths| paths.contains(&f.path)).unwrap_or(false),
     }
 }
 
@@ -175,19 +170,10 @@ fn map_chain(c: ChainRecord) -> ReportChain {
     // round-trips through the same shape and sometimes hands us a
     // comma-separated list, so try JSON first and fall back to CSV.
     let member_ids: Vec<String> = serde_json::from_str(&c.member_ids).unwrap_or_else(|_| {
-        c.member_ids
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect()
+        c.member_ids.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
     });
     let rationale = c.rationale_blob.and_then(extract_rationale);
-    ReportChain {
-        id: c.id,
-        cross_repo: c.cross_repo,
-        member_ids,
-        rationale,
-    }
+    ReportChain { id: c.id, cross_repo: c.cross_repo, member_ids, rationale }
 }
 
 /// Pull the human-facing string out of the rationale blob the chain
@@ -252,9 +238,7 @@ mod tests {
     #[test]
     fn keep_finding_with_changed_files_filter() {
         let mut map: HashMap<String, HashSet<String>> = HashMap::new();
-        map.entry("alpha".into())
-            .or_default()
-            .insert("src/a.py".into());
+        map.entry("alpha".into()).or_default().insert("src/a.py".into());
         let kept = FindingRecord {
             id: "x".into(),
             run_id: "r".into(),

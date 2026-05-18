@@ -118,12 +118,8 @@ pub struct FilteredFindings<'a> {
 /// Everything else stays in the operator's local UI so the PR comment
 /// does not spam noise.
 pub fn filter_for_pr(report: &ScanReport) -> FilteredFindings<'_> {
-    let cross_repo_chains: std::collections::HashSet<&str> = report
-        .chains
-        .iter()
-        .filter(|c| c.cross_repo)
-        .map(|c| c.id.as_str())
-        .collect();
+    let cross_repo_chains: std::collections::HashSet<&str> =
+        report.chains.iter().filter(|c| c.cross_repo).map(|c| c.id.as_str()).collect();
     let cross_repo_members: std::collections::HashSet<&str> = report
         .chains
         .iter()
@@ -135,20 +131,13 @@ pub fn filter_for_pr(report: &ScanReport) -> FilteredFindings<'_> {
         .iter()
         .filter(|f| {
             let confirmed = f.status == "Verified";
-            let in_cross_repo_chain = f
-                .chain_id
-                .as_deref()
-                .map(|cid| cross_repo_chains.contains(cid))
-                .unwrap_or(false)
-                || cross_repo_members.contains(f.id.as_str());
+            let in_cross_repo_chain =
+                f.chain_id.as_deref().map(|cid| cross_repo_chains.contains(cid)).unwrap_or(false)
+                    || cross_repo_members.contains(f.id.as_str());
             confirmed || in_cross_repo_chain
         })
         .collect();
-    let visible_chains: Vec<&ReportChain> = report
-        .chains
-        .iter()
-        .filter(|c| c.cross_repo)
-        .collect();
+    let visible_chains: Vec<&ReportChain> = report.chains.iter().filter(|c| c.cross_repo).collect();
     FilteredFindings { findings, chains: visible_chains }
 }
 
@@ -166,11 +155,7 @@ pub fn build_comment_body(
     out.push('\n');
     out.push_str("## nyx-agent: confirmed findings on this PR\n\n");
 
-    let confirmed_count = filtered
-        .findings
-        .iter()
-        .filter(|f| f.status == "Verified")
-        .count();
+    let confirmed_count = filtered.findings.iter().filter(|f| f.status == "Verified").count();
     let chain_count = filtered.chains.len();
     let total_count = filtered.findings.len();
     out.push_str(&format!(
@@ -243,9 +228,7 @@ fn group_by_file<'a>(
 ) -> BTreeMap<(String, String), Vec<&'a ReportFinding>> {
     let mut map: BTreeMap<(String, String), Vec<&ReportFinding>> = BTreeMap::new();
     for f in findings {
-        map.entry((f.repo.clone(), f.path.clone()))
-            .or_default()
-            .push(*f);
+        map.entry((f.repo.clone(), f.path.clone())).or_default().push(*f);
     }
     for rows in map.values_mut() {
         rows.sort_by(|a, b| {
@@ -315,8 +298,7 @@ fn code_safe(s: &str) -> String {
     }
     let fence_len = max_run + 1;
     let fence: String = "`".repeat(fence_len);
-    let needs_pad =
-        s.starts_with('`') || s.ends_with('`') || s.chars().all(|c| c.is_whitespace());
+    let needs_pad = s.starts_with('`') || s.ends_with('`') || s.chars().all(|c| c.is_whitespace());
     let pad = if needs_pad && !s.is_empty() { " " } else { "" };
     format!("{fence}{pad}{s}{pad}{fence}")
 }
@@ -326,16 +308,13 @@ fn trim_url(url: &str) -> &str {
 }
 
 fn split_repo(repo: &str) -> Result<(&str, &str), PrCommentError> {
-    let (owner, name) = repo
-        .split_once('/')
-        .ok_or_else(|| PrCommentError::BadRepo(repo.to_string()))?;
+    let (owner, name) =
+        repo.split_once('/').ok_or_else(|| PrCommentError::BadRepo(repo.to_string()))?;
     if owner.is_empty() || name.is_empty() || name.contains('/') {
         return Err(PrCommentError::BadRepo(repo.to_string()));
     }
-    let safe = |s: &str| {
-        s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
-    };
+    let safe =
+        |s: &str| s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
     if !safe(owner) || !safe(name) {
         return Err(PrCommentError::BadRepo(repo.to_string()));
     }
@@ -390,10 +369,7 @@ struct GitHubAppRef {
 /// legitimately, so picking up its id would trigger a 403 on update
 /// and silence the agent on that PR.
 fn comment_owned_by_known_bot(c: &CommentEnvelope) -> bool {
-    if c.performed_via_github_app
-        .as_ref()
-        .is_some_and(|a| !a.slug.is_empty())
-    {
+    if c.performed_via_github_app.as_ref().is_some_and(|a| !a.slug.is_empty()) {
         return true;
     }
     match &c.user {
@@ -430,21 +406,14 @@ async fn find_existing_comment(
         );
         let res = client.get(&url).send().await?;
         if !res.status().is_success() {
-            return Err(PrCommentError::GitHub(format!(
-                "list comments returned {}",
-                res.status()
-            )));
+            return Err(PrCommentError::GitHub(format!("list comments returned {}", res.status())));
         }
         let comments: Vec<CommentEnvelope> = res.json().await?;
         if comments.is_empty() {
             return Ok(None);
         }
         for c in &comments {
-            let has_marker = c
-                .body
-                .as_deref()
-                .map(|b| b.contains(COMMENT_MARKER))
-                .unwrap_or(false);
+            let has_marker = c.body.as_deref().map(|b| b.contains(COMMENT_MARKER)).unwrap_or(false);
             if has_marker && comment_owned_by_known_bot(c) {
                 return Ok(Some(c.id));
             }
@@ -467,19 +436,10 @@ async fn create_comment(
     pr: u32,
     body: &str,
 ) -> Result<(), PrCommentError> {
-    let url = format!(
-        "{}/repos/{}/{}/issues/{}/comments",
-        trim_url(api_base),
-        owner,
-        repo,
-        pr
-    );
+    let url = format!("{}/repos/{}/{}/issues/{}/comments", trim_url(api_base), owner, repo, pr);
     let res = client.post(&url).json(&CommentBody { body }).send().await?;
     if !res.status().is_success() {
-        return Err(PrCommentError::GitHub(format!(
-            "create comment returned {}",
-            res.status()
-        )));
+        return Err(PrCommentError::GitHub(format!("create comment returned {}", res.status())));
     }
     Ok(())
 }
@@ -492,19 +452,11 @@ async fn update_comment(
     comment_id: u64,
     body: &str,
 ) -> Result<(), PrCommentError> {
-    let url = format!(
-        "{}/repos/{}/{}/issues/comments/{}",
-        trim_url(api_base),
-        owner,
-        repo,
-        comment_id
-    );
+    let url =
+        format!("{}/repos/{}/{}/issues/comments/{}", trim_url(api_base), owner, repo, comment_id);
     let res = client.patch(&url).json(&CommentBody { body }).send().await?;
     if !res.status().is_success() {
-        return Err(PrCommentError::GitHub(format!(
-            "update comment returned {}",
-            res.status()
-        )));
+        return Err(PrCommentError::GitHub(format!("update comment returned {}", res.status())));
     }
     Ok(())
 }
@@ -668,10 +620,7 @@ mod tests {
         let attacker = CommentEnvelope {
             id: 42,
             body: Some(format!("{COMMENT_MARKER}\nharmless preview")),
-            user: Some(CommentUser {
-                login: "drive-by-attacker".into(),
-                user_type: "User".into(),
-            }),
+            user: Some(CommentUser { login: "drive-by-attacker".into(), user_type: "User".into() }),
             performed_via_github_app: None,
         };
         assert!(!comment_owned_by_known_bot(&attacker));
@@ -690,13 +639,8 @@ mod tests {
         let app = CommentEnvelope {
             id: 9,
             body: Some(COMMENT_MARKER.into()),
-            user: Some(CommentUser {
-                login: "nyx-agent[bot]".into(),
-                user_type: "Bot".into(),
-            }),
-            performed_via_github_app: Some(GitHubAppRef {
-                slug: "nyx-agent".into(),
-            }),
+            user: Some(CommentUser { login: "nyx-agent[bot]".into(), user_type: "Bot".into() }),
+            performed_via_github_app: Some(GitHubAppRef { slug: "nyx-agent".into() }),
         };
         assert!(comment_owned_by_known_bot(&app));
 
@@ -712,14 +656,8 @@ mod tests {
     #[test]
     fn comment_body_neutralises_attacker_backticks_in_path() {
         let mut report = empty_report();
-        report.findings = vec![finding(
-            "abcd",
-            "alpha",
-            "src/evil`<img src=x>`.py",
-            "High",
-            "Verified",
-            None,
-        )];
+        report.findings =
+            vec![finding("abcd", "alpha", "src/evil`<img src=x>`.py", "High", "Verified", None)];
         let filtered = filter_for_pr(&report);
         let body = build_comment_body(&filtered, &report, None);
         // Attacker payload must not leak as raw HTML/markdown — every
@@ -728,10 +666,7 @@ mod tests {
         assert!(body.contains("<img"));
         for (idx, _) in body.match_indices("<img") {
             let lead = &body[..idx];
-            assert!(
-                lead.ends_with('`'),
-                "`<img` must stay inside a code span: {body}"
-            );
+            assert!(lead.ends_with('`'), "`<img` must stay inside a code span: {body}");
         }
     }
 }

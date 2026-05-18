@@ -82,23 +82,13 @@ impl LibkrunSandbox {
     /// [`SandboxError::BackendUnavailable`] when neither resolves.
     pub fn new() -> Result<Self, SandboxError> {
         let runner_path = resolve_runner_path()?;
-        Ok(Self {
-            runner_path,
-            env_image: None,
-            inner: None,
-            last_logs: (Vec::new(), Vec::new()),
-        })
+        Ok(Self { runner_path, env_image: None, inner: None, last_logs: (Vec::new(), Vec::new()) })
     }
 
     /// Construct a backend with an explicit runner path. Used by tests
     /// that script `libkrun-runner` with a deterministic fixture.
     pub fn with_runner_path(runner_path: PathBuf) -> Self {
-        Self {
-            runner_path,
-            env_image: None,
-            inner: None,
-            last_logs: (Vec::new(), Vec::new()),
-        }
+        Self { runner_path, env_image: None, inner: None, last_logs: (Vec::new(), Vec::new()) }
     }
 
     /// Attach a built env image (e.g. the chain-lane's merged
@@ -188,10 +178,7 @@ impl Sandbox for LibkrunSandbox {
                 .stdin
                 .take()
                 .ok_or(SandboxError::State("libkrun-runner stdin unavailable"))?;
-            stdin
-                .write_all(&spec_json)
-                .await
-                .map_err(SandboxError::Io)?;
+            stdin.write_all(&spec_json).await.map_err(SandboxError::Io)?;
             stdin.shutdown().await.map_err(SandboxError::Io)?;
         }
 
@@ -212,10 +199,7 @@ impl Sandbox for LibkrunSandbox {
     }
 
     async fn wait(&mut self) -> Result<SandboxOutcome, SandboxError> {
-        let mut state = self
-            .inner
-            .take()
-            .ok_or(SandboxError::State("no child to wait on"))?;
+        let mut state = self.inner.take().ok_or(SandboxError::State("no child to wait on"))?;
         let outcome = drive_to_completion(&mut state, BackendKind::Libkrun).await?;
         self.last_logs = (outcome.stdout.clone(), outcome.stderr.clone());
         Ok(outcome)

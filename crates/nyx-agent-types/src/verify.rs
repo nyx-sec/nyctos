@@ -209,11 +209,7 @@ mod tests {
             run(true),
             AttackProvenance::Curated,
         );
-        assert_eq!(
-            v.verdict,
-            VerifyVerdict::NotConfirmed,
-            "benign trip ruins the differential"
-        );
+        assert_eq!(v.verdict, VerifyVerdict::NotConfirmed, "benign trip ruins the differential");
 
         let v = VerifyResult::from_runs(
             "f".into(),
@@ -227,10 +223,8 @@ mod tests {
 
     #[test]
     fn errored_carries_message_and_provenance() {
-        let oracle = Oracle::SinkProbe {
-            sentinel_path: ".nyx/sentinel".into(),
-            expect_contains: None,
-        };
+        let oracle =
+            Oracle::SinkProbe { sentinel_path: ".nyx/sentinel".into(), expect_contains: None };
         let v = VerifyResult::errored(
             "f".into(),
             oracle,

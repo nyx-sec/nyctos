@@ -176,8 +176,9 @@ mod tests {
     #[test]
     fn validate_rejects_duplicate_payload_slots() {
         let mut v: Value = serde_json::from_str(&ok_spec_json()).unwrap();
-        v["invoke"] =
-            Value::String("db.execute('SELECT * FROM t WHERE a=' + @PAYLOAD + ' OR b=' + @PAYLOAD)".to_string());
+        v["invoke"] = Value::String(
+            "db.execute('SELECT * FROM t WHERE a=' + @PAYLOAD + ' OR b=' + @PAYLOAD)".to_string(),
+        );
         let (spec, _) = HarnessSpec::from_json(&v.to_string()).expect("parse");
         let err = spec.validate().expect_err("must reject");
         assert_eq!(err, HarnessSpecValidationError::InvokeHasMultiplePayloadSlots(2));
@@ -205,8 +206,7 @@ mod tests {
 
     #[test]
     fn parse_rejects_missing_required_field() {
-        let bad =
-            r#"{"schema_version":1,"cap":"x","lang":"y","entry":"e","invoke":"@PAYLOAD"}"#;
+        let bad = r#"{"schema_version":1,"cap":"x","lang":"y","entry":"e","invoke":"@PAYLOAD"}"#;
         // `oracle` missing.
         let err = HarnessSpec::from_json(bad).expect_err("must fail to deserialise");
         assert!(err.to_string().contains("oracle"), "got: {err}");

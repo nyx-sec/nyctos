@@ -326,7 +326,9 @@ mod tests {
         // virtually every other hosted runner; local dev keeps the
         // skip-on-missing behaviour.
         if !ok && std::env::var("CI").is_ok() {
-            panic!("CI=true but `git --version` did not succeed; install git in the test environment");
+            panic!(
+                "CI=true but `git --version` did not succeed; install git in the test environment"
+            );
         }
         ok
     }

@@ -65,11 +65,7 @@ pub struct UiResponse {
 }
 
 impl UiResponse {
-    fn from_embedded(
-        path: &str,
-        file: rust_embed::EmbeddedFile,
-        bootstrap: &UiBootstrap,
-    ) -> Self {
+    fn from_embedded(path: &str, file: rust_embed::EmbeddedFile, bootstrap: &UiBootstrap) -> Self {
         let mime = mime_guess::from_path(path).first_or_octet_stream();
         let body = if path == "index.html" {
             inject_bootstrap(&file.data, bootstrap)
@@ -84,10 +80,8 @@ fn inject_bootstrap(html: &[u8], bootstrap: &UiBootstrap) -> Vec<u8> {
     let Ok(text) = std::str::from_utf8(html) else {
         return html.to_vec();
     };
-    let payload = format!(
-        "<script>window.__NYX_BOOTSTRAP__={};</script>",
-        serde_payload(bootstrap)
-    );
+    let payload =
+        format!("<script>window.__NYX_BOOTSTRAP__={};</script>", serde_payload(bootstrap));
     // Inject right after the opening <head>. Falls back to prepending
     // if no <head> tag is present.
     if let Some(pos) = text.find("<head>") {

@@ -48,9 +48,7 @@ use crate::payload_runner::{
     bytes_contains, classify_status, pick_lang, render_synthesised, HarnessLang, HarnessSource,
     HarnessSpecInput, PayloadRunnerError,
 };
-use crate::{
-    BackendKind, BirdcageSandbox, ProcessSandbox, Sandbox, SandboxError, SandboxOpts,
-};
+use crate::{BackendKind, BirdcageSandbox, ProcessSandbox, Sandbox, SandboxError, SandboxOpts};
 
 /// Inline-payload ceiling. Mirrors the payload runner's limit so a
 /// chain step cannot smuggle a larger blob through the chain lane than
@@ -264,30 +262,22 @@ impl ChainRunner {
             let is_terminal = idx == terminal_idx;
             let lang = pick_lang(&step.spec.lang)?;
 
-            let capture = self
-                .run_step(run, label, idx, step, lang, &prev_output)
-                .await?;
+            let capture = self.run_step(run, label, idx, step, lang, &prev_output).await?;
 
             // Non-terminal step: clean iff sandbox launched, did not
             // time out, and exit code is 0. Terminal step: additionally
             // requires the sink probe to fire.
-            let clean_exit = capture.error.is_none()
-                && !capture.timed_out
-                && capture.exit_code == 0;
-            let step_passed = if is_terminal {
-                clean_exit && capture.probe_fired
-            } else {
-                clean_exit
-            };
+            let clean_exit =
+                capture.error.is_none() && !capture.timed_out && capture.exit_code == 0;
+            let step_passed =
+                if is_terminal { clean_exit && capture.probe_fired } else { clean_exit };
 
             prev_output = capture.stdout.clone();
             captures.push(capture);
 
             if !step_passed {
                 return Ok((
-                    ChainVerdict::Inconclusive(InconclusiveReason::ChainStepFailed {
-                        which: idx,
-                    }),
+                    ChainVerdict::Inconclusive(InconclusiveReason::ChainStepFailed { which: idx }),
                     captures,
                 ));
             }
@@ -328,10 +318,8 @@ impl ChainRunner {
             "NYX_PREV_OUTPUT".to_string(),
             String::from_utf8_lossy(prev_output).into_owned(),
         ));
-        opts.env
-            .push(("NYX_CHAIN_ID".to_string(), run.chain_id.clone()));
-        opts.env
-            .push(("NYX_CHAIN_STEP".to_string(), idx.to_string()));
+        opts.env.push(("NYX_CHAIN_ID".to_string(), run.chain_id.clone()));
+        opts.env.push(("NYX_CHAIN_STEP".to_string(), idx.to_string()));
 
         let outcome = match self.spawn(opts).await {
             Ok(o) => o,
@@ -366,7 +354,12 @@ impl ChainRunner {
 
         let is_terminal = idx == run.members.len() - 1;
         let probe_fired = if is_terminal {
-            eval_terminal_probe(&run.workspace, &run.terminal_oracle, &outcome.stdout, &outcome.stderr)
+            eval_terminal_probe(
+                &run.workspace,
+                &run.terminal_oracle,
+                &outcome.stdout,
+                &outcome.stderr,
+            )
         } else {
             false
         };
@@ -429,17 +422,9 @@ fn clear_sentinel(workspace: &Path, oracle: &Oracle) -> Result<(), ChainRunnerEr
     Ok(())
 }
 
-fn eval_terminal_probe(
-    workspace: &Path,
-    oracle: &Oracle,
-    stdout: &[u8],
-    stderr: &[u8],
-) -> bool {
+fn eval_terminal_probe(workspace: &Path, oracle: &Oracle, stdout: &[u8], stderr: &[u8]) -> bool {
     match oracle {
-        Oracle::SinkProbe {
-            sentinel_path,
-            expect_contains,
-        } => {
+        Oracle::SinkProbe { sentinel_path, expect_contains } => {
             let abs = workspace.join(sentinel_path);
             if !abs.is_file() {
                 return false;
@@ -458,8 +443,7 @@ fn eval_terminal_probe(
         // terminal step is still observed rather than silently
         // dropped.
         Oracle::OutputContains { marker } => {
-            bytes_contains(stdout, marker.as_bytes())
-                || bytes_contains(stderr, marker.as_bytes())
+            bytes_contains(stdout, marker.as_bytes()) || bytes_contains(stderr, marker.as_bytes())
         }
     }
 }
@@ -594,10 +578,7 @@ mod tests {
     #[tokio::test]
     async fn replay_stable_flag_stamped_when_check_enabled() {
         let dir = ws();
-        let runner = ChainRunner {
-            replay_stable_check: true,
-            ..ChainRunner::default()
-        };
+        let runner = ChainRunner { replay_stable_check: true, ..ChainRunner::default() };
         let result = runner
             .run(ChainRun {
                 chain_id: "chain-3".to_string(),
@@ -610,10 +591,8 @@ mod tests {
             .expect("run");
         assert_eq!(result.verdict, ChainVerdict::Confirmed);
         assert_eq!(result.replay_stable, Some(true));
-        let replay_steps = result
-            .replay_steps
-            .as_ref()
-            .expect("replay_steps populated when check ran");
+        let replay_steps =
+            result.replay_steps.as_ref().expect("replay_steps populated when check ran");
         assert_eq!(replay_steps.len(), result.steps.len());
     }
 

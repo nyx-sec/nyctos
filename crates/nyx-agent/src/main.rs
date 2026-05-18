@@ -13,8 +13,9 @@ use nyx_agent_api::{
 };
 use nyx_agent_core::store::{finding_id_hash, FindingRecord, RepoRecord, RunRecord};
 use nyx_agent_core::{
-    ingest, Config, IngestError, IngestedRepo, LogConfig, Repo, RepoOutcome, RepoSource, Run,
-    RunBundle, RunDispatcher, SandboxBackend, SecretStore, StateDir, Store, WorkspaceHandle,
+    ingest, now_epoch_ms, Config, IngestError, IngestedRepo, LogConfig, Repo, RepoOutcome,
+    RepoSource, Run, RunBundle, RunDispatcher, SandboxBackend, SecretStore, StateDir, Store,
+    WorkspaceHandle,
 };
 use nyx_agent_nyx::{Diag, NyxError, NyxRunner, NyxScanLane, MINIMUM_NYX_VERSION};
 use nyx_agent_sandbox::{select_backend, BackendChoice, BackendKind, Lane, LaneConcurrency};
@@ -214,15 +215,8 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Doctor => doctor(&state_dir, &config_path, &log_cfg, &config).await,
         Command::Scan { repos, headless: _, output, since_ref } => {
             nyx_agent_core::init_logging(&log_cfg)?;
-            scan(
-                &state_dir,
-                &config,
-                &repos,
-                "Manual",
-                output.as_deref(),
-                since_ref.as_deref(),
-            )
-            .await
+            scan(&state_dir, &config, &repos, "Manual", output.as_deref(), since_ref.as_deref())
+                .await
         }
         Command::PrComment { report, repo, pr, ui_url, gh_api, token_env } => {
             nyx_agent_core::init_logging(&log_cfg)?;
@@ -294,19 +288,12 @@ async fn inspect_quarantine(state_dir: &StateDir) -> anyhow::Result<ExitCode> {
             c.line.map(|l| l.to_string()).unwrap_or_else(|| "?".into()),
         );
     }
-    println!(
-        "\n{} finding(s) + {} candidate(s) quarantined",
-        findings.len(),
-        pending.len()
-    );
+    println!("\n{} finding(s) + {} candidate(s) quarantined", findings.len(), pending.len());
     store.close().await;
     Ok(ExitCode::SUCCESS)
 }
 
-async fn inspect_traces(
-    state_dir: &StateDir,
-    finding: Option<&str>,
-) -> anyhow::Result<ExitCode> {
+async fn inspect_traces(state_dir: &StateDir, finding: Option<&str>) -> anyhow::Result<ExitCode> {
     let store = Store::open(state_dir.root()).await?;
     let rows = if let Some(fid) = finding {
         store.agent_traces().list_for_finding(fid).await?
@@ -315,13 +302,9 @@ async fn inspect_traces(
         // bucket so the CLI surface stays useful while a dedicated reader
         // lands later.
         let mut all = Vec::new();
-        for kind in [
-            "PayloadSynthesis",
-            "SpecDerivation",
-            "ChainReasoning",
-            "NovelFindings",
-            "Exploration",
-        ] {
+        for kind in
+            ["PayloadSynthesis", "SpecDerivation", "ChainReasoning", "NovelFindings", "Exploration"]
+        {
             all.extend(store.agent_traces().list_by_task_kind(kind).await?);
         }
         all.sort_by_key(|r| r.started_at);
@@ -590,9 +573,7 @@ async fn drive_scan(
     .await
     {
         Ok(report) => {
-            if verbose
-                && (report.synthesised > 0 || report.quarantined > 0 || report.failed > 0)
-            {
+            if verbose && (report.synthesised > 0 || report.quarantined > 0 || report.failed > 0) {
                 println!(
                     "scan: payload synthesis - {} synthesised, {} quarantined, {} failed ({} attempts, ${:.6})",
                     report.synthesised,
@@ -621,9 +602,7 @@ async fn drive_scan(
     .await
     {
         Ok(report) => {
-            if verbose
-                && (report.synthesised > 0 || report.quarantined > 0 || report.failed > 0)
-            {
+            if verbose && (report.synthesised > 0 || report.quarantined > 0 || report.failed > 0) {
                 println!(
                     "scan: spec derivation - {} synthesised, {} quarantined, {} failed ({} attempts, ${:.6})",
                     report.synthesised,
@@ -652,9 +631,7 @@ async fn drive_scan(
     .await
     {
         Ok(report) => {
-            if verbose
-                && (report.chains_persisted > 0 || report.failed > 0)
-            {
+            if verbose && (report.chains_persisted > 0 || report.failed > 0) {
                 println!(
                     "scan: chain reasoning - {} chains ({} cross-repo), {} members stamped, {} failed ({} attempts, ${:.6})",
                     report.chains_persisted,
@@ -800,14 +777,9 @@ async fn drive_scan(
             status: final_status,
             triggered_by: "Manual",
         };
-        let report = cmd::scan_report::build_report(
-            store,
-            &run.id,
-            meta,
-            since_ref,
-            changed.as_ref(),
-        )
-        .await?;
+        let report =
+            cmd::scan_report::build_report(store, &run.id, meta, since_ref, changed.as_ref())
+                .await?;
         report.write(path)?;
         if verbose {
             println!(
@@ -901,9 +873,8 @@ async fn serve(
     // request so a wizard rotate flow does not require a daemon
     // restart.
     if config.triggers.webhook_secret_ref.is_some() {
-        let resolver = Arc::new(EnvSecretResolver {
-            spec: config.triggers.webhook_secret_ref.clone(),
-        });
+        let resolver =
+            Arc::new(EnvSecretResolver { spec: config.triggers.webhook_secret_ref.clone() });
         server_state = server_state.with_webhook(WebhookConfig {
             secret: resolver,
             branch: config.triggers.webhook_branch.clone(),
@@ -1077,8 +1048,7 @@ impl ScanTrigger for MpscScanTrigger {
             // profile demands a deeper queue.
             self.tx.try_send(ScanRequest { repo, reply }).map_err(|err| match err {
                 mpsc::error::TrySendError::Full(_) => ScanTriggerError::Backpressure(
-                    "scan request queue is full; retry after the current run completes"
-                        .to_string(),
+                    "scan request queue is full; retry after the current run completes".to_string(),
                 ),
                 mpsc::error::TrySendError::Closed(_) => ScanTriggerError::Closed,
             })?;
@@ -1121,8 +1091,7 @@ async fn run_scan_for_api(
     let cfg = config.clone();
     let sd = state_dir.clone();
     tokio::spawn(async move {
-        let res =
-            drive_scan(&sd, &cfg, &store, selected, &run, events, false, None, None).await;
+        let res = drive_scan(&sd, &cfg, &store, selected, &run, events, false, None, None).await;
         store.close().await;
         if let Err(err) = res {
             eprintln!("scan (api): {err:#}");
@@ -1318,13 +1287,7 @@ async fn pr_comment_cmd(
             return Ok(ExitCode::from(1));
         }
     };
-    let cfg = cmd::pr_comment::PrCommentConfig {
-        repo,
-        pr: pr_number,
-        token,
-        ui_url,
-        gh_api,
-    };
+    let cfg = cmd::pr_comment::PrCommentConfig { repo, pr: pr_number, token, ui_url, gh_api };
     match cmd::pr_comment::run(report_path, cfg).await {
         Ok(outcome) => {
             if outcome.skipped_empty {
@@ -1409,13 +1372,6 @@ fn auth_descriptor_of(src: &RepoSource) -> Option<String> {
         RepoSource::Git { auth: Some(a), .. } => Some(a.descriptor()),
         _ => None,
     }
-}
-
-fn now_epoch_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 async fn doctor(

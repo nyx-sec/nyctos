@@ -98,12 +98,7 @@ pub enum PayloadSynthesisOutcome {
     /// Both attempts failed validation. The caller flips the finding
     /// row to `status = Quarantine` and surfaces `reason` in the
     /// verdict blob so the operator sees why.
-    Quarantined {
-        finding_id: String,
-        reason: String,
-        spent_usd_micros: i64,
-        attempts: u32,
-    },
+    Quarantined { finding_id: String, reason: String, spent_usd_micros: i64, attempts: u32 },
 }
 
 /// Drive one PayloadSynthesis call for `input`.
@@ -118,11 +113,8 @@ pub async fn run<R: AiRuntime + ?Sized>(
     cap_usd_micros: i64,
 ) -> Result<PayloadSynthesisOutcome, AiError> {
     let task_id = format!("payload-{}", input.finding_id);
-    let budget = || Budget {
-        run_id: input.run_id.clone(),
-        kind: BudgetKind::OneShot,
-        cap_usd_micros,
-    };
+    let budget =
+        || Budget { run_id: input.run_id.clone(), kind: BudgetKind::OneShot, cap_usd_micros };
 
     let prompt = build_prompt(SYSTEM_PROMPT_V1, &task_id, input);
     let resp1: Response = runtime.one_shot(prompt, budget(), sink.clone()).await?;
@@ -392,8 +384,7 @@ mod tests {
         );
 
         let (tx, _rx) = broadcast::channel::<AgentEvent>(16);
-        let outcome =
-            run(&rt, &sample_input("SQL_QUERY"), tx, 1_000_000).await.expect("ok");
+        let outcome = run(&rt, &sample_input("SQL_QUERY"), tx, 1_000_000).await.expect("ok");
 
         match outcome {
             PayloadSynthesisOutcome::Synthesised { attempts, spent_usd_micros, .. } => {
@@ -415,17 +406,13 @@ mod tests {
         let tracker = Arc::new(InMemoryBudgetTracker::new());
         tracker.set_cap("run-1", BudgetKind::OneShot, 1_000_000);
         let rt = ScriptedRuntime::new(
-            vec![
-                Ok("still not json".to_string()),
-                Ok("not json at all".to_string()),
-            ],
+            vec![Ok("still not json".to_string()), Ok("not json at all".to_string())],
             tracker.clone(),
             1_000,
         );
 
         let (tx, _rx) = broadcast::channel::<AgentEvent>(16);
-        let outcome =
-            run(&rt, &sample_input("SQL_QUERY"), tx, 1_000_000).await.expect("ok");
+        let outcome = run(&rt, &sample_input("SQL_QUERY"), tx, 1_000_000).await.expect("ok");
 
         match outcome {
             PayloadSynthesisOutcome::Quarantined {
@@ -460,8 +447,7 @@ mod tests {
         let rt = ScriptedRuntime::new(vec![Ok(good), Ok(bad)], tracker.clone(), 1_000);
 
         let (tx, _rx) = broadcast::channel::<AgentEvent>(16);
-        let outcome =
-            run(&rt, &sample_input("SQL_QUERY"), tx, 1_000_000).await.expect("ok");
+        let outcome = run(&rt, &sample_input("SQL_QUERY"), tx, 1_000_000).await.expect("ok");
         assert!(matches!(outcome, PayloadSynthesisOutcome::Synthesised { attempts: 2, .. }));
     }
 
@@ -474,8 +460,7 @@ mod tests {
         let rt = ScriptedRuntime::new(vec![Ok(good), Ok(blank)], tracker.clone(), 1_000);
 
         let (tx, _rx) = broadcast::channel::<AgentEvent>(16);
-        let outcome =
-            run(&rt, &sample_input("SQL_QUERY"), tx, 1_000_000).await.expect("ok");
+        let outcome = run(&rt, &sample_input("SQL_QUERY"), tx, 1_000_000).await.expect("ok");
         assert!(matches!(outcome, PayloadSynthesisOutcome::Synthesised { attempts: 2, .. }));
     }
 

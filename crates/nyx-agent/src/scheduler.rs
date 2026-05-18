@@ -27,13 +27,13 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
-#[cfg(not(test))]
-use chrono::{DateTime, Utc};
 #[cfg(test)]
 use chrono::{DateTime, TimeZone, Utc};
+#[cfg(not(test))]
+use chrono::{DateTime, Utc};
 use cron::Schedule;
-use nyx_agent_core::ScheduleConfig;
 use nyx_agent_api::{ScanTrigger, ScanTriggerError};
+use nyx_agent_core::ScheduleConfig;
 use tokio::sync::watch;
 use tracing::{debug, error, warn};
 
@@ -122,13 +122,12 @@ impl Scheduler {
         let mut parsed = Vec::with_capacity(entries.len());
         for cfg in entries {
             let expr = expand_to_cron_crate(&cfg.cron);
-            let schedule = Schedule::from_str(&expr).map_err(|source| {
-                SchedulerError::InvalidCron {
+            let schedule =
+                Schedule::from_str(&expr).map_err(|source| SchedulerError::InvalidCron {
                     label: cfg.label.clone(),
                     expr: cfg.cron.clone(),
                     source,
-                }
-            })?;
+                })?;
             parsed.push(Entry {
                 cron_expr: cfg.cron.clone(),
                 repo: cfg.repo.clone(),
@@ -156,11 +155,7 @@ impl Scheduler {
             // by walking forward from one cron-window-min ago and
             // checking whether the next fire time lies in [start, now].
             let one_year_ago = now - chrono::Duration::days(366);
-            let due = entry
-                .schedule
-                .after(&one_year_ago)
-                .take_while(|t| *t <= now)
-                .last();
+            let due = entry.schedule.after(&one_year_ago).take_while(|t| *t <= now).last();
             let Some(scheduled_at) = due else { continue };
             if floor_to_minute_epoch(scheduled_at) != minute {
                 continue;
@@ -202,11 +197,7 @@ impl Scheduler {
     /// Drive the scheduler until `shutdown` flips to `true`. Sleeps
     /// `tick_interval` between iterations; one iteration runs every
     /// entry through [`Self::tick`].
-    pub async fn run(
-        mut self,
-        tick_interval: Duration,
-        mut shutdown: watch::Receiver<bool>,
-    ) {
+    pub async fn run(mut self, tick_interval: Duration, mut shutdown: watch::Receiver<bool>) {
         loop {
             self.tick().await;
             tokio::select! {
@@ -266,11 +257,7 @@ fn expand_to_cron_crate(expr: &str) -> String {
 /// names (`MON`, `FRI`) pass through unchanged because the cron crate
 /// already accepts them.
 fn translate_dow_field(field: &str) -> String {
-    field
-        .split(',')
-        .map(translate_dow_item)
-        .collect::<Vec<_>>()
-        .join(",")
+    field.split(',').map(translate_dow_item).collect::<Vec<_>>().join(",")
 }
 
 fn translate_dow_item(item: &str) -> String {
@@ -318,8 +305,7 @@ mod tests {
         fn trigger<'a>(
             &'a self,
             repo: Option<String>,
-        ) -> Pin<Box<dyn Future<Output = Result<String, ScanTriggerError>> + Send + 'a>>
-        {
+        ) -> Pin<Box<dyn Future<Output = Result<String, ScanTriggerError>> + Send + 'a>> {
             Box::pin(async move {
                 let mut g = self.calls.lock().await;
                 let run_id = format!("run-{}", g.len());
@@ -423,12 +409,9 @@ mod tests {
             repo: None,
             label: "weekly".to_string(),
         }];
-        let mut sched = Scheduler::with_clock(
-            &entries,
-            Arc::clone(&trigger) as Arc<dyn ScanTrigger>,
-            clock,
-        )
-        .unwrap();
+        let mut sched =
+            Scheduler::with_clock(&entries, Arc::clone(&trigger) as Arc<dyn ScanTrigger>, clock)
+                .unwrap();
         assert_eq!(sched.tick().await.len(), 1);
         // Advance 30 seconds — still inside 03:00 — second tick must
         // observe last_fired_minute and skip.
@@ -472,9 +455,7 @@ mod tests {
                 _repo: Option<String>,
             ) -> Pin<Box<dyn Future<Output = Result<String, ScanTriggerError>> + Send + 'a>>
             {
-                Box::pin(async {
-                    Err(ScanTriggerError::Backpressure("queue full".to_string()))
-                })
+                Box::pin(async { Err(ScanTriggerError::Backpressure("queue full".to_string())) })
             }
         }
         let mon_3am = Utc.with_ymd_and_hms(2026, 5, 18, 3, 0, 0).unwrap();

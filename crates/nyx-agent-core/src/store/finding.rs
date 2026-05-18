@@ -251,10 +251,7 @@ impl<'a> FindingStore<'a> {
 
     /// List findings for `repo` filtered by the UI's standard
     /// `(cap, status, origin)` triple. Quarantine rows are excluded.
-    pub async fn list_active_for_repo(
-        &self,
-        repo: &str,
-    ) -> Result<Vec<FindingRecord>, StoreError> {
+    pub async fn list_active_for_repo(&self, repo: &str) -> Result<Vec<FindingRecord>, StoreError> {
         let rows = sqlx::query_as!(
             FindingRecord,
             r#"
@@ -433,14 +430,12 @@ impl<'a> FindingStore<'a> {
         attack_provenance: &str,
         prompt_version: &str,
     ) -> Result<(), StoreError> {
-        sqlx::query(
-            "UPDATE findings SET attack_provenance = ?, prompt_version = ? WHERE id = ?",
-        )
-        .bind(attack_provenance)
-        .bind(prompt_version)
-        .bind(id)
-        .execute(self.pool)
-        .await?;
+        sqlx::query("UPDATE findings SET attack_provenance = ?, prompt_version = ? WHERE id = ?")
+            .bind(attack_provenance)
+            .bind(prompt_version)
+            .bind(id)
+            .execute(self.pool)
+            .await?;
         Ok(())
     }
 
@@ -489,13 +484,12 @@ impl<'a> FindingStore<'a> {
     /// with a one-off operator-facing helper; the parameter is bound,
     /// so injection is not a concern.
     pub async fn quarantine(&self, id: &str, reason_json: &str) -> Result<u64, StoreError> {
-        let res = sqlx::query(
-            "UPDATE findings SET status = 'Quarantine', verdict_blob = ? WHERE id = ?",
-        )
-        .bind(reason_json)
-        .bind(id)
-        .execute(self.pool)
-        .await?;
+        let res =
+            sqlx::query("UPDATE findings SET status = 'Quarantine', verdict_blob = ? WHERE id = ?")
+                .bind(reason_json)
+                .bind(id)
+                .execute(self.pool)
+                .await?;
         Ok(res.rows_affected())
     }
 }
@@ -706,10 +700,7 @@ mod tests {
 
         let by_origin = s
             .findings()
-            .list_filtered(&FindingFilter {
-                origin: Some("AI"),
-                ..Default::default()
-            })
+            .list_filtered(&FindingFilter { origin: Some("AI"), ..Default::default() })
             .await
             .expect("origin");
         assert_eq!(by_origin.len(), 1);

@@ -26,8 +26,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use nyx_agent_types::agent::{
-    classify_tool_use, AgentResult, AgentTask, AiError, Budget, CostEstimate,
-    ExtractedAgentResult, HaltReason, Prompt, Response, TokenUsage,
+    classify_tool_use, AgentResult, AgentTask, AiError, Budget, CostEstimate, ExtractedAgentResult,
+    HaltReason, Prompt, Response, TokenUsage,
 };
 use nyx_agent_types::event::{AgentEvent, AiEvent, EventSink};
 use serde::Deserialize;

@@ -137,10 +137,7 @@ impl<'a> AgentTraceStore<'a> {
         Ok(rows)
     }
 
-    pub async fn list_by_task_kind(
-        &self,
-        kind: &str,
-    ) -> Result<Vec<AgentTraceRecord>, StoreError> {
+    pub async fn list_by_task_kind(&self, kind: &str) -> Result<Vec<AgentTraceRecord>, StoreError> {
         let rows = sqlx::query_as!(
             AgentTraceRecord,
             r#"

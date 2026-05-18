@@ -118,12 +118,7 @@ pub enum SpecDerivationOutcome {
     /// Both attempts failed validation. The caller flips the finding
     /// row to `status = Quarantine` and surfaces `reason` in the
     /// verdict blob so the operator sees why.
-    Quarantined {
-        finding_id: String,
-        reason: String,
-        spent_usd_micros: i64,
-        attempts: u32,
-    },
+    Quarantined { finding_id: String, reason: String, spent_usd_micros: i64, attempts: u32 },
 }
 
 /// Drive one SpecDerivation call for `input`.
@@ -138,11 +133,8 @@ pub async fn run<R: AiRuntime + ?Sized>(
     cap_usd_micros: i64,
 ) -> Result<SpecDerivationOutcome, AiError> {
     let task_id = format!("spec-{}", input.finding_id);
-    let budget = || Budget {
-        run_id: input.run_id.clone(),
-        kind: BudgetKind::OneShot,
-        cap_usd_micros,
-    };
+    let budget =
+        || Budget { run_id: input.run_id.clone(), kind: BudgetKind::OneShot, cap_usd_micros };
 
     let prompt = build_prompt(SYSTEM_PROMPT_V1, &task_id, input);
     let resp1: Response = runtime.one_shot(prompt, budget(), sink.clone()).await?;
@@ -209,8 +201,7 @@ fn render_user_message(input: &SpecDerivationInput) -> String {
     out.push_str(&format!("callee = {}\n", input.callee));
     out.push('\n');
     for ex in &input.excerpts {
-        let line_marker =
-            ex.line.map(|l| format!(" (line {l})")).unwrap_or_default();
+        let line_marker = ex.line.map(|l| format!(" (line {l})")).unwrap_or_default();
         out.push_str(&format!("--- {} @ {}{} ---\n", ex.kind, ex.path, line_marker));
         out.push_str("```");
         out.push_str(&input.lang);
@@ -276,12 +267,7 @@ pub fn read_excerpt(
     for (i, l) in lines[lo..hi].iter().enumerate() {
         body.push_str(&format!("{:>4}: {l}\n", lo + i + 1));
     }
-    Some(FileExcerpt {
-        path: path.to_string(),
-        line,
-        kind: kind.to_string(),
-        body,
-    })
+    Some(FileExcerpt { path: path.to_string(), line, kind: kind.to_string(), body })
 }
 
 #[cfg(test)]
@@ -400,8 +386,7 @@ mod tests {
                     path: "app/handlers.py".to_string(),
                     line: Some(19),
                     kind: "sink".to_string(),
-                    body: "  19: cursor.execute('SELECT * FROM users WHERE n=' + q)\n"
-                        .to_string(),
+                    body: "  19: cursor.execute('SELECT * FROM users WHERE n=' + q)\n".to_string(),
                 },
             ],
         }
@@ -470,11 +455,7 @@ mod tests {
             "oracle": "row count > 0",
         })
         .to_string();
-        let rt = ScriptedRuntime::new(
-            vec![Ok(ok_spec_body()), Ok(bad)],
-            tracker.clone(),
-            1_500,
-        );
+        let rt = ScriptedRuntime::new(vec![Ok(ok_spec_body()), Ok(bad)], tracker.clone(), 1_500);
 
         let (tx, _rx) = broadcast::channel::<AgentEvent>(16);
         let outcome = run(&rt, &sample_input(), tx, 1_000_000).await.expect("ok");
@@ -498,11 +479,7 @@ mod tests {
         let bad =
             r#"{"schema_version":1,"cap":"x","lang":"y","entry":"e","invoke":"x","payload_arg":0,"oracle":"o"}"#
                 .to_string();
-        let rt = ScriptedRuntime::new(
-            vec![Ok(bad.clone()), Ok(bad)],
-            tracker.clone(),
-            1_000,
-        );
+        let rt = ScriptedRuntime::new(vec![Ok(bad.clone()), Ok(bad)], tracker.clone(), 1_000);
         let (tx, _rx) = broadcast::channel::<AgentEvent>(8);
         let outcome = run(&rt, &sample_input(), tx, 1_000_000).await.expect("ok");
         match outcome {

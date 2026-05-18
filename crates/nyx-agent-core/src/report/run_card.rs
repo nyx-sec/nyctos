@@ -153,10 +153,8 @@ pub async fn build_run_card(pool: &SqlitePool, run_id: &str) -> Result<RunCard, 
         *by_cap.entry(f.cap.clone()).or_default() += 1;
         *by_origin.entry(f.finding_origin.clone()).or_default() += 1;
         *by_repo.entry(f.repo.clone()).or_default() += 1;
-        let lang = finding_lang
-            .get(&f.id)
-            .cloned()
-            .unwrap_or_else(|| lang_from_path(&f.path).to_string());
+        let lang =
+            finding_lang.get(&f.id).cloned().unwrap_or_else(|| lang_from_path(&f.path).to_string());
         *by_lang.entry(lang).or_default() += 1;
     }
 
@@ -175,10 +173,7 @@ pub async fn build_run_card(pool: &SqlitePool, run_id: &str) -> Result<RunCard, 
         *phase_calls.entry(t.task_kind.clone()).or_default() += 1;
         let start = t.started_at;
         let finish = t.finished_at.unwrap_or(start);
-        phase_min
-            .entry(t.task_kind.clone())
-            .and_modify(|e| *e = (*e).min(start))
-            .or_insert(start);
+        phase_min.entry(t.task_kind.clone()).and_modify(|e| *e = (*e).min(start)).or_insert(start);
         phase_max
             .entry(t.task_kind.clone())
             .and_modify(|e| *e = (*e).max(finish))
@@ -222,7 +217,8 @@ pub async fn build_run_card(pool: &SqlitePool, run_id: &str) -> Result<RunCard, 
 }
 
 fn into_sorted_split(map: BTreeMap<String, i64>) -> Vec<BySplit> {
-    let mut out: Vec<BySplit> = map.into_iter().map(|(key, count)| BySplit { key, count }).collect();
+    let mut out: Vec<BySplit> =
+        map.into_iter().map(|(key, count)| BySplit { key, count }).collect();
     out.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.key.cmp(&b.key)));
     out
 }
@@ -268,9 +264,7 @@ pub fn render_html(card: &RunCard) -> String {
         escape_html(&card.status),
         escape_html(&card.triggered_by),
         card.started_at,
-        card.finished_at
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| "—".to_string()),
+        card.finished_at.map(|v| v.to_string()).unwrap_or_else(|| "—".to_string()),
         card.wall_clock_ms.unwrap_or(0),
         card.total_findings,
     ));
@@ -317,11 +311,7 @@ fn push_html_split(out: &mut String, title: &str, splits: &[BySplit]) {
     }
     out.push_str("<ul>");
     for s in splits {
-        out.push_str(&format!(
-            "<li>{}: {}</li>",
-            escape_html(&s.key),
-            s.count,
-        ));
+        out.push_str(&format!("<li>{}: {}</li>", escape_html(&s.key), s.count,));
     }
     out.push_str("</ul></section>");
 }
@@ -351,14 +341,9 @@ pub fn render_markdown(card: &RunCard) -> String {
     out.push_str(&format!("- **Started**: {}\n", card.started_at));
     out.push_str(&format!(
         "- **Finished**: {}\n",
-        card.finished_at
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| "—".to_string())
+        card.finished_at.map(|v| v.to_string()).unwrap_or_else(|| "—".to_string())
     ));
-    out.push_str(&format!(
-        "- **Wall clock**: {} ms\n",
-        card.wall_clock_ms.unwrap_or(0)
-    ));
+    out.push_str(&format!("- **Wall clock**: {} ms\n", card.wall_clock_ms.unwrap_or(0)));
     out.push_str(&format!("- **Total findings**: {}\n\n", card.total_findings));
 
     push_markdown_split(&mut out, "Status", &card.by_status);
@@ -375,11 +360,7 @@ pub fn render_markdown(card: &RunCard) -> String {
         usd_from_micros(card.spend.total_usd_micros()),
     ));
     for split in &card.spend.by_task_kind {
-        out.push_str(&format!(
-            "- {}: ${:.6}\n",
-            split.key,
-            usd_from_micros(split.count)
-        ));
+        out.push_str(&format!("- {}: ${:.6}\n", split.key, usd_from_micros(split.count)));
     }
     out.push('\n');
 
@@ -550,11 +531,8 @@ mod tests {
         assert_eq!(card.spend.agent_loop_usd_micros, 500_000);
         assert_eq!(card.spend.total_usd_micros(), 623_456);
 
-        let static_phase = card
-            .phase_durations
-            .iter()
-            .find(|p| p.phase == "static")
-            .expect("static phase");
+        let static_phase =
+            card.phase_durations.iter().find(|p| p.phase == "static").expect("static phase");
         assert_eq!(static_phase.wall_clock_ms, 10_000);
 
         let exploration = card

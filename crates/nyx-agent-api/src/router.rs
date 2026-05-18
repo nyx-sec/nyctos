@@ -35,7 +35,9 @@ use nyx_agent_core::store::{
     AgentTraceRecord, CandidateFindingRecord, CandidateStatus, ChainRecord, FindingFilter,
     FindingRecord, PatchOption, RepoPatch, RepoRecord, RunRecord,
 };
-use nyx_agent_core::{AiRuntime, SandboxBackend, ACCOUNT_AI_ANTHROPIC, ACCOUNT_AI_LOCAL_LLM};
+use nyx_agent_core::{
+    now_epoch_ms, AiRuntime, SandboxBackend, ACCOUNT_AI_ANTHROPIC, ACCOUNT_AI_LOCAL_LLM,
+};
 use nyx_agent_types::event::{AgentEvent, RunEvent};
 
 use crate::state::{ApiError, ServerState};
@@ -49,10 +51,7 @@ pub fn build_router(state: ServerState) -> Router {
         .route("/api/v1/setup/doctor", post(setup_doctor))
         .route("/api/v1/repos", get(list_repos).post(create_repo))
         .route("/api/v1/repos/test", post(test_repo_connectivity))
-        .route(
-            "/api/v1/repos/:name",
-            get(get_repo).patch(patch_repo).delete(delete_repo),
-        )
+        .route("/api/v1/repos/:name", get(get_repo).patch(patch_repo).delete(delete_repo))
         .route("/api/v1/scan", post(trigger_scan))
         .route("/api/v1/runs", get(list_runs))
         .route("/api/v1/runs/:id", get(get_run))
@@ -63,10 +62,7 @@ pub fn build_router(state: ServerState) -> Router {
         .route("/api/v1/findings", get(list_findings))
         .route("/api/v1/findings/:id", get(get_finding))
         .route("/api/v1/findings/:id/repro-bundle", post(create_repro_bundle))
-        .route(
-            "/api/v1/findings/:id/repro-bundle.tar",
-            get(download_repro_bundle),
-        )
+        .route("/api/v1/findings/:id/repro-bundle.tar", get(download_repro_bundle))
         .route("/api/v1/findings/:id/replay", post(replay_repro_bundle))
         .route("/api/v1/chains/:id", get(get_chain))
         .route("/api/v1/findings/:id/traces", get(traces_for_finding))
@@ -116,10 +112,7 @@ fn is_always_open(path: &str) -> bool {
 }
 
 fn is_setup_path(path: &str) -> bool {
-    matches!(
-        path,
-        "/api/v1/setup" | "/api/v1/setup/status" | "/api/v1/setup/doctor"
-    )
+    matches!(path, "/api/v1/setup" | "/api/v1/setup/status" | "/api/v1/setup/doctor")
 }
 
 fn check_bearer(req: &Request, expected: &str) -> bool {
@@ -315,11 +308,7 @@ async fn submit_setup(
     // half-written config file. The keychain may legitimately reject
     // calls in non-interactive environments (e.g. CI); surface that as
     // a 500 with the precise reason.
-    if let Some(key) = req
-        .anthropic_api_key
-        .as_deref()
-        .filter(|v| !v.trim().is_empty())
-    {
+    if let Some(key) = req.anthropic_api_key.as_deref().filter(|v| !v.trim().is_empty()) {
         s.setup
             .secrets
             .set(ACCOUNT_AI_ANTHROPIC, key.trim())
@@ -350,17 +339,13 @@ async fn submit_setup(
     };
     cfg.sandbox.backend = sandbox_backend;
 
-    let rendered = cfg
-        .to_toml_string()
-        .map_err(|e| ApiError::Internal(format!("render toml: {e}")))?;
+    let rendered =
+        cfg.to_toml_string().map_err(|e| ApiError::Internal(format!("render toml: {e}")))?;
     write_config_atomic(&s.setup.config_path, &rendered)
         .map_err(|e| ApiError::Internal(format!("write {}: {e}", s.setup.config_path.display())))?;
     *s.setup.config.write().await = cfg;
     s.setup.mark_complete();
-    Ok(Json(SetupResponse {
-        ok: true,
-        config_path: s.setup.config_path.display().to_string(),
-    }))
+    Ok(Json(SetupResponse { ok: true, config_path: s.setup.config_path.display().to_string() }))
 }
 
 fn parse_ai_runtime(raw: &str) -> Result<AiRuntime, ApiError> {
@@ -391,11 +376,8 @@ fn write_config_atomic(path: &std::path::Path, body: &str) -> std::io::Result<()
     std::fs::create_dir_all(parent)?;
     let tmp = path.with_extension("toml.tmp");
     {
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&tmp)?;
+        let mut f =
+            std::fs::OpenOptions::new().write(true).create(true).truncate(true).open(&tmp)?;
         f.write_all(body.as_bytes())?;
         f.flush()?;
     }
@@ -499,10 +481,9 @@ fn which_on_path(bin: &str) -> Option<String> {
 fn sandbox_backend_probe(b: SandboxBackend) -> (bool, String) {
     match b {
         SandboxBackend::Auto => (true, "Backend will be chosen at scan time".to_string()),
-        SandboxBackend::Process => (
-            true,
-            "Process-only sandbox — no kernel isolation. Static pass only.".to_string(),
-        ),
+        SandboxBackend::Process => {
+            (true, "Process-only sandbox — no kernel isolation. Static pass only.".to_string())
+        }
         SandboxBackend::Birdcage => (
             cfg!(target_os = "macos"),
             if cfg!(target_os = "macos") {
@@ -563,10 +544,7 @@ async fn create_repo(
         return Err(ApiError::BadRequest("name is required".to_string()));
     }
     if !matches!(req.source_kind.as_str(), "git" | "local-path" | "github" | "gitlab" | "local") {
-        return Err(ApiError::BadRequest(format!(
-            "unknown source_kind `{}`",
-            req.source_kind
-        )));
+        return Err(ApiError::BadRequest(format!("unknown source_kind `{}`", req.source_kind)));
     }
     if !req.i_own_this {
         return Err(ApiError::BadRequest(
@@ -711,10 +689,8 @@ async fn delete_repo(
                         error = %err,
                         "failed to remove repo workspace; row was still deleted",
                     );
-                    workspace_msg = format!(
-                        " (workspace {} could not be removed: {err})",
-                        target.display()
-                    );
+                    workspace_msg =
+                        format!(" (workspace {} could not be removed: {err})", target.display());
                 }
             }
         }
@@ -780,10 +756,8 @@ async fn test_repo_connectivity(
                 Some(url) => format!(
                     "path readable; on-disk `.git/config` remote = `{url}`. Confirm before adding.",
                 ),
-                None => {
-                    "path readable; no `.git/config` remote on disk (untracked directory)."
-                        .to_string()
-                }
+                None => "path readable; no `.git/config` remote on disk (untracked directory)."
+                    .to_string(),
             };
             Ok(Json(TestRepoResponse { ok: true, message, on_disk_git_remote: remote }))
         }
@@ -795,11 +769,7 @@ const GIT_PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 
 async fn git_ls_remote_probe(url: &str, branch: Option<&str>) -> (bool, String) {
     let mut cmd = tokio::process::Command::new("git");
-    cmd.arg("-c")
-        .arg("credential.helper=")
-        .arg("ls-remote")
-        .arg("--exit-code")
-        .arg(url);
+    cmd.arg("-c").arg("credential.helper=").arg("ls-remote").arg("--exit-code").arg(url);
     if let Some(b) = branch {
         cmd.arg(format!("refs/heads/{b}"));
     }
@@ -834,10 +804,13 @@ async fn git_ls_remote_probe(url: &str, branch: Option<&str>) -> (bool, String) 
                     },
                 )
             } else if output.status.code() == Some(2) {
-                (false, match branch {
-                    Some(b) => format!("upstream reachable but branch `{b}` does not exist"),
-                    None => "upstream reachable but has no refs".to_string(),
-                })
+                (
+                    false,
+                    match branch {
+                        Some(b) => format!("upstream reachable but branch `{b}` does not exist"),
+                        None => "upstream reachable but has no refs".to_string(),
+                    },
+                )
             } else {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 let trimmed = stderr.trim();
@@ -852,10 +825,9 @@ async fn git_ls_remote_probe(url: &str, branch: Option<&str>) -> (bool, String) 
             }
         }
         Ok(Err(err)) => (false, format!("git wait failed: {err}")),
-        Err(_) => (
-            false,
-            format!("git ls-remote timed out after {}s", GIT_PROBE_TIMEOUT.as_secs()),
-        ),
+        Err(_) => {
+            (false, format!("git ls-remote timed out after {}s", GIT_PROBE_TIMEOUT.as_secs()))
+        }
     }
 }
 
@@ -1045,11 +1017,8 @@ async fn findings_for_run(
     let started_at = run.started_at;
     let prior_run_id = s.store.runs().prior_run_id(&run_id, started_at).await?;
 
-    let filter = FindingFilter {
-        run_id: Some(&run_id),
-        include_quarantine: false,
-        ..Default::default()
-    };
+    let filter =
+        FindingFilter { run_id: Some(&run_id), include_quarantine: false, ..Default::default() };
     let rows = s.store.findings().list_filtered(&filter).await?;
     let items = rows
         .into_iter()
@@ -1225,10 +1194,7 @@ async fn dismiss_quarantine(
                 cand.status
             )));
         }
-        s.store
-            .candidate_findings()
-            .set_status(&id, CandidateStatus::Dismissed.as_str())
-            .await?;
+        s.store.candidate_findings().set_status(&id, CandidateStatus::Dismissed.as_str()).await?;
         Ok(Json(candidate_to_quarantine_item(&cand)))
     } else {
         let row = promote_finding_row(&s, &id, "Closed").await?;
@@ -1255,10 +1221,7 @@ async fn promote_finding_row(
     }
     let blob = existing.verdict_blob.as_deref().unwrap_or("");
     let provenance = existing.attack_provenance.as_deref().unwrap_or("Curated");
-    s.store
-        .findings()
-        .set_verify_result(id, new_status, blob, provenance)
-        .await?;
+    s.store.findings().set_verify_result(id, new_status, blob, provenance).await?;
     s.store
         .findings()
         .get(id)
@@ -1271,10 +1234,7 @@ async fn promote_candidate_to_finding(
     cand: &CandidateFindingRecord,
 ) -> Result<(), ApiError> {
     let line = cand.line.unwrap_or(-1);
-    let rule = cand
-        .rule_hint
-        .clone()
-        .unwrap_or_else(|| format!("ai-exploration:{}", cand.cap));
+    let rule = cand.rule_hint.clone().unwrap_or_else(|| format!("ai-exploration:{}", cand.cap));
     let id = nyx_agent_core::store::finding_id_hash(
         &cand.repo,
         &cand.path,
@@ -1317,10 +1277,7 @@ async fn promote_candidate_to_finding(
         chain_id: None,
     };
     s.store.findings().upsert(&rec).await?;
-    s.store
-        .candidate_findings()
-        .set_status(&cand.id, CandidateStatus::Promoted.as_str())
-        .await?;
+    s.store.candidate_findings().set_status(&cand.id, CandidateStatus::Promoted.as_str()).await?;
     Ok(())
 }
 
@@ -1566,11 +1523,7 @@ async fn run_summary_markdown(
 ) -> Result<Response, ApiError> {
     let card = build_run_card(s.store.pool(), &id).await.map_err(run_card_to_api)?;
     let body = render_run_card_markdown(&card);
-    Ok((
-        StatusCode::OK,
-        [(header::CONTENT_TYPE, "text/markdown; charset=utf-8")],
-        body,
-    )
+    Ok((StatusCode::OK, [(header::CONTENT_TYPE, "text/markdown; charset=utf-8")], body)
         .into_response())
 }
 
@@ -1580,12 +1533,7 @@ async fn run_summary_html(
 ) -> Result<Response, ApiError> {
     let card = build_run_card(s.store.pool(), &id).await.map_err(run_card_to_api)?;
     let body = render_run_card_html(&card);
-    Ok((
-        StatusCode::OK,
-        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
-        body,
-    )
-        .into_response())
+    Ok((StatusCode::OK, [(header::CONTENT_TYPE, "text/html; charset=utf-8")], body).into_response())
 }
 
 fn run_card_to_api(err: RunCardError) -> ApiError {
@@ -1607,9 +1555,8 @@ async fn create_repro_bundle(
         .as_ref()
         .cloned()
         .ok_or_else(|| ApiError::Internal("bundle output dir is not configured".to_string()))?;
-    let manifest = build_bundle(&s.store, &id, &out_dir, now_epoch_ms())
-        .await
-        .map_err(bundle_to_api)?;
+    let manifest =
+        build_bundle(&s.store, &id, &out_dir, now_epoch_ms()).await.map_err(bundle_to_api)?;
     Ok(Json(manifest))
 }
 
@@ -1624,12 +1571,12 @@ async fn download_repro_bundle(
     let row = if let Some(latest) = bundles.last().cloned() {
         latest
     } else {
-        let out_dir = s.state_bundles_dir.as_ref().cloned().ok_or_else(|| {
-            ApiError::Internal("bundle output dir is not configured".to_string())
-        })?;
-        let manifest = build_bundle(&s.store, &id, &out_dir, now_epoch_ms())
-            .await
-            .map_err(bundle_to_api)?;
+        let out_dir =
+            s.state_bundles_dir.as_ref().cloned().ok_or_else(|| {
+                ApiError::Internal("bundle output dir is not configured".to_string())
+            })?;
+        let manifest =
+            build_bundle(&s.store, &id, &out_dir, now_epoch_ms()).await.map_err(bundle_to_api)?;
         s.store
             .repro_bundles()
             .list_for_finding(&id)
@@ -1647,10 +1594,7 @@ async fn download_repro_bundle(
         StatusCode::OK,
         [
             (header::CONTENT_TYPE, "application/x-tar".to_string()),
-            (
-                header::CONTENT_DISPOSITION,
-                format!("attachment; filename=\"{filename}\""),
-            ),
+            (header::CONTENT_DISPOSITION, format!("attachment; filename=\"{filename}\"")),
             ("X-Nyx-Bundle-Sha256".parse().unwrap(), row.sha256),
         ],
         Body::from(bytes),
@@ -1667,9 +1611,8 @@ fn ensure_bundle_path_inside_root(
     path: &str,
     bundles_dir: Option<&std::path::Path>,
 ) -> Result<std::path::PathBuf, ApiError> {
-    let root = bundles_dir.ok_or_else(|| {
-        ApiError::Internal("bundle output dir is not configured".to_string())
-    })?;
+    let root = bundles_dir
+        .ok_or_else(|| ApiError::Internal("bundle output dir is not configured".to_string()))?;
     let canonical_root = root
         .canonicalize()
         .map_err(|e| ApiError::Internal(format!("canonicalize bundles root: {e}")))?;
@@ -1677,18 +1620,14 @@ fn ensure_bundle_path_inside_root(
         .canonicalize()
         .map_err(|e| ApiError::Internal(format!("canonicalize bundle path `{path}`: {e}")))?;
     if !canonical_path.starts_with(&canonical_root) {
-        return Err(ApiError::Internal(
-            "bundle path escapes configured root".to_string(),
-        ));
+        return Err(ApiError::Internal("bundle path escapes configured root".to_string()));
     }
     Ok(canonical_path)
 }
 
 fn bundle_to_api(err: BundleError) -> ApiError {
     match err {
-        BundleError::FindingNotFound(id) => {
-            ApiError::NotFound(format!("finding `{id}` not found"))
-        }
+        BundleError::FindingNotFound(id) => ApiError::NotFound(format!("finding `{id}` not found")),
         BundleError::PathTooLong(p) => {
             ApiError::BadRequest(format!("bundle path `{p}` exceeds USTAR limit"))
         }
@@ -1916,8 +1855,9 @@ fn extract_ustar(bytes: &[u8], dest: &std::path::Path) -> std::io::Result<()> {
             .to_string();
         let size = parse_octal(&header[124..135]);
         let typeflag = header[156];
-        let safe_name = sanitise_tar_path(&name)
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "unsafe tar path"))?;
+        let safe_name = sanitise_tar_path(&name).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "unsafe tar path")
+        })?;
         let target = dest.join(&safe_name);
         if typeflag == b'5' || name.ends_with('/') {
             std::fs::create_dir_all(&target)?;
@@ -2003,11 +1943,4 @@ impl IntoResponse for StatusBody {
     fn into_response(self) -> Response {
         Json(self).into_response()
     }
-}
-
-fn now_epoch_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }

@@ -21,9 +21,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use nyx_agent_sandbox::{
-    BirdcageSandbox, Sandbox, SandboxOpts, SandboxOutcome, SandboxStatus,
-};
+use nyx_agent_sandbox::{BirdcageSandbox, Sandbox, SandboxOpts, SandboxOutcome, SandboxStatus};
 use tempfile::tempdir;
 
 const SHIM: &str = env!("CARGO_BIN_EXE_nyx-sandbox-shim");
@@ -59,10 +57,7 @@ async fn write_outside_workspace_is_contained() {
     let secret_dir = tempdir().unwrap();
     let target = secret_dir.path().join("escaped.txt");
 
-    let opts = base_opts(
-        &workspace,
-        vec!["write-outside".into(), target.display().to_string()],
-    );
+    let opts = base_opts(&workspace, vec!["write-outside".into(), target.display().to_string()]);
     let outcome = run(opts).await;
 
     assert!(
@@ -72,11 +67,7 @@ async fn write_outside_workspace_is_contained() {
         String::from_utf8_lossy(&outcome.stdout),
         String::from_utf8_lossy(&outcome.stderr),
     );
-    assert!(
-        !target.exists(),
-        "escape file unexpectedly created at {}",
-        target.display()
-    );
+    assert!(!target.exists(), "escape file unexpectedly created at {}", target.display());
 }
 
 // 2. fs_read_secret_outside_workspace
@@ -89,17 +80,10 @@ async fn read_secret_outside_workspace_is_contained() {
     let secret = secret_dir.path().join("secret.txt");
     std::fs::write(&secret, b"top-secret-do-not-leak").unwrap();
 
-    let opts = base_opts(
-        &workspace,
-        vec!["read-outside".into(), secret.display().to_string()],
-    );
+    let opts = base_opts(&workspace, vec!["read-outside".into(), secret.display().to_string()]);
     let outcome = run(opts).await;
 
-    assert!(
-        outcome.status.contained(),
-        "read_secret escaped: {:?}",
-        outcome.status
-    );
+    assert!(outcome.status.contained(), "read_secret escaped: {:?}", outcome.status);
     assert!(
         !outcome.stdout.windows(4).any(|w| w == b"top-"),
         "secret leaked to stdout: {:?}",
@@ -120,16 +104,9 @@ async fn tcp_connect_is_contained() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
-    let opts = base_opts(
-        &workspace,
-        vec!["connect-tcp".into(), addr.to_string()],
-    );
+    let opts = base_opts(&workspace, vec!["connect-tcp".into(), addr.to_string()]);
     let outcome = run(opts).await;
-    assert!(
-        outcome.status.contained(),
-        "tcp_connect escaped: {:?}",
-        outcome.status
-    );
+    assert!(outcome.status.contained(), "tcp_connect escaped: {:?}", outcome.status);
     // Sandbox has exited; any successful handshake would already be
     // accept-ready on the host listener.
     let accepted = tokio::time::timeout(Duration::from_millis(100), listener.accept()).await;
@@ -153,23 +130,13 @@ async fn udp_send_is_contained() {
     let listener = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
-    let opts = base_opts(
-        &workspace,
-        vec!["udp-send".into(), addr.to_string()],
-    );
+    let opts = base_opts(&workspace, vec!["udp-send".into(), addr.to_string()]);
     let outcome = run(opts).await;
-    assert!(
-        outcome.status.contained(),
-        "udp_send escaped: {:?}",
-        outcome.status
-    );
+    assert!(outcome.status.contained(), "udp_send escaped: {:?}", outcome.status);
     let mut buf = [0u8; 16];
-    let recvd = tokio::time::timeout(Duration::from_millis(100), listener.recv_from(&mut buf)).await;
-    assert!(
-        recvd.is_err(),
-        "loopback datagram from sandboxed probe was received: {:?}",
-        recvd
-    );
+    let recvd =
+        tokio::time::timeout(Duration::from_millis(100), listener.recv_from(&mut buf)).await;
+    assert!(recvd.is_err(), "loopback datagram from sandboxed probe was received: {:?}", recvd);
 }
 
 // 5. fork_exec_inherits_sandbox
@@ -181,21 +148,11 @@ async fn forked_child_inherits_sandbox() {
     let secret_dir = tempdir().unwrap();
     let target = secret_dir.path().join("forked-escape.txt");
 
-    let opts = base_opts(
-        &workspace,
-        vec!["fork-write-outside".into(), target.display().to_string()],
-    );
+    let opts =
+        base_opts(&workspace, vec!["fork-write-outside".into(), target.display().to_string()]);
     let outcome = run(opts).await;
-    assert!(
-        outcome.status.contained(),
-        "fork_write_outside escaped: {:?}",
-        outcome.status
-    );
-    assert!(
-        !target.exists(),
-        "forked-escape file unexpectedly created at {}",
-        target.display()
-    );
+    assert!(outcome.status.contained(), "fork_write_outside escaped: {:?}", outcome.status);
+    assert!(!target.exists(), "forked-escape file unexpectedly created at {}", target.display());
 }
 
 // 6. symlink_redirect_outside_workspace
@@ -210,23 +167,11 @@ async fn symlink_pointing_outside_workspace_is_contained() {
 
     let opts = base_opts(
         &workspace,
-        vec![
-            "symlink-write".into(),
-            link.display().to_string(),
-            target.display().to_string(),
-        ],
+        vec!["symlink-write".into(), link.display().to_string(), target.display().to_string()],
     );
     let outcome = run(opts).await;
-    assert!(
-        outcome.status.contained(),
-        "symlink_write escaped: {:?}",
-        outcome.status
-    );
-    assert!(
-        !target.exists(),
-        "symlink-escape file unexpectedly created at {}",
-        target.display()
-    );
+    assert!(outcome.status.contained(), "symlink_write escaped: {:?}", outcome.status);
+    assert!(!target.exists(), "symlink-escape file unexpectedly created at {}", target.display());
 }
 
 #[tokio::test]

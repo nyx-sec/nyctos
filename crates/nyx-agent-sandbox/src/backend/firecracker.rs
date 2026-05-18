@@ -198,14 +198,9 @@ impl Sandbox for FirecrackerSandbox {
 
         let mut child = cmd.spawn().map_err(SandboxError::Spawn)?;
         {
-            let mut stdin = child
-                .stdin
-                .take()
-                .ok_or(SandboxError::State("nyx-fc-runner stdin unavailable"))?;
-            stdin
-                .write_all(&spec_json)
-                .await
-                .map_err(SandboxError::Io)?;
+            let mut stdin =
+                child.stdin.take().ok_or(SandboxError::State("nyx-fc-runner stdin unavailable"))?;
+            stdin.write_all(&spec_json).await.map_err(SandboxError::Io)?;
             stdin.shutdown().await.map_err(SandboxError::Io)?;
         }
 
@@ -226,10 +221,7 @@ impl Sandbox for FirecrackerSandbox {
     }
 
     async fn wait(&mut self) -> Result<SandboxOutcome, SandboxError> {
-        let mut state = self
-            .inner
-            .take()
-            .ok_or(SandboxError::State("no child to wait on"))?;
+        let mut state = self.inner.take().ok_or(SandboxError::State("no child to wait on"))?;
         let outcome = drive_to_completion(&mut state, BackendKind::Firecracker).await?;
         self.last_logs = (outcome.stdout.clone(), outcome.stderr.clone());
         Ok(outcome)

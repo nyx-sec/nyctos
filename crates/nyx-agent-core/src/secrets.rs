@@ -276,10 +276,7 @@ mod tests {
         let store = SecretStore::memory();
         assert_eq!(store.get(ACCOUNT_AI_ANTHROPIC).unwrap(), None);
         store.set(ACCOUNT_AI_ANTHROPIC, "sk-ant-test").unwrap();
-        assert_eq!(
-            store.get(ACCOUNT_AI_ANTHROPIC).unwrap().as_deref(),
-            Some("sk-ant-test"),
-        );
+        assert_eq!(store.get(ACCOUNT_AI_ANTHROPIC).unwrap().as_deref(), Some("sk-ant-test"),);
         store.delete(ACCOUNT_AI_ANTHROPIC).unwrap();
         assert_eq!(store.get(ACCOUNT_AI_ANTHROPIC).unwrap(), None);
     }

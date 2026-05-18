@@ -30,9 +30,7 @@ pub use tasks::exploration::{
     EXPLORATION_PROMPT_VERSION,
 };
 pub use tasks::novel_findings::{run as run_novel_findings, NovelFindingDiscoveryOutcome};
-pub use tasks::payload_synthesis::{
-    run as run_payload_synthesis, PayloadSynthesisOutcome,
-};
+pub use tasks::payload_synthesis::{run as run_payload_synthesis, PayloadSynthesisOutcome};
 pub use tasks::spec_derivation::{
     read_excerpt as read_spec_excerpt, run as run_spec_derivation, SpecDerivationOutcome,
 };

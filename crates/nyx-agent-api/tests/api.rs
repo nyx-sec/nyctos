@@ -208,18 +208,12 @@ async fn repos_crud_roundtrip() {
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].name, "alpha");
 
-    let del = client
-        .delete(format!("{}/api/v1/repos/alpha", srv.base()))
-        .send()
-        .await
-        .expect("delete");
+    let del =
+        client.delete(format!("{}/api/v1/repos/alpha", srv.base())).send().await.expect("delete");
     assert_eq!(del.status(), reqwest::StatusCode::OK);
 
-    let del_again = client
-        .delete(format!("{}/api/v1/repos/alpha", srv.base()))
-        .send()
-        .await
-        .expect("delete");
+    let del_again =
+        client.delete(format!("{}/api/v1/repos/alpha", srv.base())).send().await.expect("delete");
     assert_eq!(del_again.status(), reqwest::StatusCode::NOT_FOUND);
 }
 
@@ -261,9 +255,8 @@ async fn runs_endpoint_lists_and_gets_by_id() {
         .expect("json");
     assert!(listed.iter().any(|r| r.id == "run-A"));
 
-    let missing = reqwest::get(format!("{}/api/v1/runs/does-not-exist", srv.base()))
-        .await
-        .expect("get");
+    let missing =
+        reqwest::get(format!("{}/api/v1/runs/does-not-exist", srv.base())).await.expect("get");
     assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
 }
 
@@ -293,13 +286,12 @@ async fn findings_endpoints_filter_by_repo_and_run() {
             .expect("json");
     assert_eq!(by_run.len(), 1);
 
-    let got: FindingRecord =
-        reqwest::get(format!("{}/api/v1/findings/{}", srv.base(), finding.id))
-            .await
-            .expect("get")
-            .json()
-            .await
-            .expect("json");
+    let got: FindingRecord = reqwest::get(format!("{}/api/v1/findings/{}", srv.base(), finding.id))
+        .await
+        .expect("get")
+        .json()
+        .await
+        .expect("json");
     assert_eq!(got.id, finding.id);
 
     // Global view (no filter) returns every active finding.
@@ -412,8 +404,7 @@ async fn websocket_receives_repo_started_and_finished() {
     let srv = TestServer::start().await;
     let url = format!("{}/api/v1/events?run_id=run-ws", srv.ws_base());
 
-    let (ws_stream, _) =
-        tokio_tungstenite::connect_async(&url).await.expect("ws connect");
+    let (ws_stream, _) = tokio_tungstenite::connect_async(&url).await.expect("ws connect");
     let (mut ws_tx, mut ws_rx) = ws_stream.split();
 
     // Push frames after the client has connected.
@@ -681,7 +672,9 @@ async fn patch_repo_returns_404_when_missing() {
 
 #[tokio::test]
 async fn delete_repo_removes_workspace_dir_when_configured() {
-    use nyx_agent_api::{build_router, AuthConfig, ScanTrigger, ScanTriggerError, ServerState, SetupContext};
+    use nyx_agent_api::{
+        build_router, AuthConfig, ScanTrigger, ScanTriggerError, ServerState, SetupContext,
+    };
     use nyx_agent_core::{Config, SecretStore, Store};
     use tokio::sync::broadcast;
 
@@ -787,16 +780,13 @@ async fn test_repo_endpoint_stats_local_path() {
 async fn websocket_without_run_filter_receives_all_runs() {
     let srv = TestServer::start().await;
     let url = format!("{}/api/v1/events", srv.ws_base());
-    let (ws_stream, _) =
-        tokio_tungstenite::connect_async(&url).await.expect("ws connect");
+    let (ws_stream, _) = tokio_tungstenite::connect_async(&url).await.expect("ws connect");
     let (_, mut ws_rx) = ws_stream.split();
 
     let events = srv.events.clone();
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(50)).await;
-        let _ = events.send(AgentEvent::Run {
-            data: RunEvent::Heartbeat { ts: 1 },
-        });
+        let _ = events.send(AgentEvent::Run { data: RunEvent::Heartbeat { ts: 1 } });
     });
 
     let frame = tokio::time::timeout(Duration::from_secs(2), ws_rx.next())
@@ -822,8 +812,7 @@ async fn websocket_with_run_filter_replays_buffered_frames() {
     let (events, _rx) = broadcast::channel::<AgentEvent>(16);
     let config_path = tmp.path().join("nyx-agent.toml");
     let setup = SetupContext::new(config_path, Config::default(), true, SecretStore::memory());
-    let trigger: Arc<dyn ScanTrigger> =
-        Arc::new(StubScanTrigger { run_id: "r-1".to_string() });
+    let trigger: Arc<dyn ScanTrigger> = Arc::new(StubScanTrigger { run_id: "r-1".to_string() });
     let state =
         ServerState::new(store.clone(), events.clone(), trigger, setup, AuthConfig::default());
 
@@ -855,8 +844,7 @@ async fn websocket_with_run_filter_replays_buffered_frames() {
     });
 
     let url = format!("ws://{addr}/api/v1/events?run_id=r-1");
-    let (ws_stream, _) =
-        tokio_tungstenite::connect_async(&url).await.expect("ws connect");
+    let (ws_stream, _) = tokio_tungstenite::connect_async(&url).await.expect("ws connect");
     let (_, mut ws_rx) = ws_stream.split();
 
     let first = tokio::time::timeout(Duration::from_secs(2), ws_rx.next())
@@ -897,9 +885,8 @@ async fn run_summary_endpoint_returns_card() {
     let f = sample_finding("run-summary", "alpha", "src/a.py", "rule-1");
     srv.store.findings().upsert(&f).await.expect("finding");
 
-    let resp = reqwest::get(format!("{}/api/v1/runs/run-summary/summary", srv.base()))
-        .await
-        .expect("get");
+    let resp =
+        reqwest::get(format!("{}/api/v1/runs/run-summary/summary", srv.base())).await.expect("get");
     assert_eq!(resp.status(), reqwest::StatusCode::OK);
     let body: Value = resp.json().await.expect("json");
     assert_eq!(body["run_id"], "run-summary");
@@ -926,9 +913,8 @@ async fn run_summary_endpoint_returns_card() {
 #[tokio::test]
 async fn run_summary_endpoint_404s_for_missing_run() {
     let srv = TestServer::start().await;
-    let resp = reqwest::get(format!("{}/api/v1/runs/ghost/summary", srv.base()))
-        .await
-        .expect("get");
+    let resp =
+        reqwest::get(format!("{}/api/v1/runs/ghost/summary", srv.base())).await.expect("get");
     assert_eq!(resp.status(), reqwest::StatusCode::NOT_FOUND);
 }
 
@@ -991,11 +977,7 @@ async fn repro_bundle_endpoint_builds_and_downloads() {
     assert_eq!(resp.status(), reqwest::StatusCode::OK);
     let ct = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("");
     assert_eq!(ct, "application/x-tar");
-    let cd = resp
-        .headers()
-        .get("content-disposition")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
+    let cd = resp.headers().get("content-disposition").and_then(|v| v.to_str().ok()).unwrap_or("");
     assert!(cd.contains(&format!("filename=\"{fid}.tar\"")), "got: {cd}");
     let bytes = resp.bytes().await.expect("bytes");
     assert!(bytes.len() > 1024, "tar should have at least one entry + terminator");
@@ -1009,21 +991,17 @@ async fn start_webhook_server(
     secret: &[u8],
     branch: Option<&str>,
     repo: Option<&str>,
-) -> (std::net::SocketAddr, Arc<RecordingTrigger>, tokio::task::JoinHandle<()>, tempfile::TempDir)
-{
+) -> (std::net::SocketAddr, Arc<RecordingTrigger>, tokio::task::JoinHandle<()>, tempfile::TempDir) {
     let tmp = tempfile::tempdir().expect("tempdir");
     let store = Store::open(tmp.path()).await.expect("open store");
     let (events, _rx) = broadcast::channel::<AgentEvent>(64);
     let config_path = tmp.path().join("nyx-agent.toml");
-    let setup =
-        SetupContext::new(config_path, Config::default(), true, SecretStore::memory());
+    let setup = SetupContext::new(config_path, Config::default(), true, SecretStore::memory());
     let trigger = Arc::new(RecordingTrigger::default());
     let scan_trigger: Arc<dyn ScanTrigger> = trigger.clone();
     let state = ServerState::new(store, events, scan_trigger, setup, AuthConfig::default())
         .with_webhook(nyx_agent_api::WebhookConfig {
-            secret: Arc::new(nyx_agent_api::StaticSecretResolver {
-                secret: Some(secret.to_vec()),
-            }),
+            secret: Arc::new(nyx_agent_api::StaticSecretResolver { secret: Some(secret.to_vec()) }),
             branch: branch.map(str::to_string),
             repo: repo.map(str::to_string),
         });
@@ -1058,8 +1036,7 @@ impl ScanTrigger for RecordingTrigger {
 #[tokio::test]
 async fn webhook_with_valid_hmac_triggers_scan() {
     let secret = b"shared-secret";
-    let (addr, trigger, h, _tmp) =
-        start_webhook_server(secret, Some("main"), None).await;
+    let (addr, trigger, h, _tmp) = start_webhook_server(secret, Some("main"), None).await;
     let body = br#"{"ref":"refs/heads/main","after":"deadbeef"}"#.to_vec();
     let sig = nyx_agent_api::sign_webhook(secret, &body);
     let url = format!("http://{}/webhook/git", addr);

@@ -101,10 +101,7 @@ pub async fn build_bundle(
         mode: 0o644,
         contents: render_readme(&finding, &payloads).into_bytes(),
     });
-    let payload_bytes = payloads
-        .first()
-        .map(|p| p.vuln_bytes.clone())
-        .unwrap_or_default();
+    let payload_bytes = payloads.first().map(|p| p.vuln_bytes.clone()).unwrap_or_default();
     artifacts.push(BundleArtifact {
         path: PAYLOAD_FILENAME.to_string(),
         mode: 0o644,
@@ -127,15 +124,11 @@ pub async fn build_bundle(
     });
 
     let tar_bytes = build_ustar(&finding.id, &artifacts, now_ms)?;
-    std::fs::create_dir_all(out_dir).map_err(|source| BundleError::Io {
-        path: out_dir.to_path_buf(),
-        source,
-    })?;
+    std::fs::create_dir_all(out_dir)
+        .map_err(|source| BundleError::Io { path: out_dir.to_path_buf(), source })?;
     let bundle_path = out_dir.join(format!("{}.tar", finding.id));
-    std::fs::write(&bundle_path, &tar_bytes).map_err(|source| BundleError::Io {
-        path: bundle_path.clone(),
-        source,
-    })?;
+    std::fs::write(&bundle_path, &tar_bytes)
+        .map_err(|source| BundleError::Io { path: bundle_path.clone(), source })?;
     let sha256 = blake3_hex(&tar_bytes);
 
     let record = ReproBundleRecord {
@@ -207,10 +200,7 @@ fn render_readme(finding: &FindingRecord, payloads: &[PayloadRecord]) -> String 
         run = finding.run_id,
         repo = finding.repo,
         path = finding.path,
-        line = finding
-            .line
-            .map(|n| format!(":{n}"))
-            .unwrap_or_default(),
+        line = finding.line.map(|n| format!(":{n}")).unwrap_or_default(),
         rule = finding.rule,
         cap = finding.cap,
         sev = finding.severity,
@@ -466,9 +456,7 @@ mod tests {
         let (_tmp, store) = fresh_store().await;
         let fid = seed_finding(&store).await;
         let bundle_dir = tempfile::tempdir().expect("bundle dir");
-        let manifest = build_bundle(&store, &fid, bundle_dir.path(), 6_000)
-            .await
-            .expect("bundle");
+        let manifest = build_bundle(&store, &fid, bundle_dir.path(), 6_000).await.expect("bundle");
 
         assert_eq!(manifest.finding_id, fid);
         assert!(manifest.bundle_path.exists(), "tarball must exist on disk");
@@ -491,9 +479,7 @@ mod tests {
         let (_tmp, store) = fresh_store().await;
         let fid = seed_finding(&store).await;
         let bundle_dir = tempfile::tempdir().expect("bundle dir");
-        let manifest = build_bundle(&store, &fid, bundle_dir.path(), 8_000)
-            .await
-            .expect("bundle");
+        let manifest = build_bundle(&store, &fid, bundle_dir.path(), 8_000).await.expect("bundle");
         let bytes = std::fs::read(&manifest.bundle_path).expect("read tar");
         // USTAR header names live at offset 0..100 of each 512-byte block.
         // Walk the blocks and collect the names we recognise.
@@ -530,9 +516,7 @@ mod tests {
     async fn build_bundle_missing_finding_errors() {
         let (_tmp, store) = fresh_store().await;
         let bundle_dir = tempfile::tempdir().expect("bundle dir");
-        let err = build_bundle(&store, "ghost", bundle_dir.path(), 0)
-            .await
-            .expect_err("missing");
+        let err = build_bundle(&store, "ghost", bundle_dir.path(), 0).await.expect_err("missing");
         assert!(matches!(err, BundleError::FindingNotFound(_)));
     }
 

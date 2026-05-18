@@ -198,10 +198,7 @@ pub enum ExtractedAgentResult {
 /// that surface tool calls (Claude Code today, Anthropic agent-loop if
 /// it ever ships) share this mapping so the trace store sees a single
 /// stable shape.
-pub fn classify_tool_use(
-    name: &str,
-    input: &serde_json::Value,
-) -> Option<ExtractedAgentResult> {
+pub fn classify_tool_use(name: &str, input: &serde_json::Value) -> Option<ExtractedAgentResult> {
     match name {
         "record_payload" => {
             let rule_id = input.get("rule_id")?.as_str()?.to_string();
@@ -226,11 +223,8 @@ pub fn classify_tool_use(
                 .iter()
                 .filter_map(|v| v.as_str().map(|s| s.to_string()))
                 .collect::<Vec<_>>();
-            let rationale = input
-                .get("rationale")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
+            let rationale =
+                input.get("rationale").and_then(|v| v.as_str()).unwrap_or_default().to_string();
             Some(ExtractedAgentResult::ChainsRanked { chain_ids, rationale })
         }
         "record_exploration_finding" => {
@@ -241,14 +235,9 @@ pub fn classify_tool_use(
                 return None;
             }
             let line = input.get("line").and_then(|v| v.as_u64()).map(|n| n as u32);
-            let endpoint = input
-                .get("endpoint")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            let suggested_payload_hint = input
-                .get("suggested_payload_hint")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
+            let endpoint = input.get("endpoint").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let suggested_payload_hint =
+                input.get("suggested_payload_hint").and_then(|v| v.as_str()).map(|s| s.to_string());
             Some(ExtractedAgentResult::ExplorationFinding {
                 path,
                 line,

@@ -39,11 +39,7 @@ pub enum SecretsError {
          regex. nyx-agent refuses to start with production secrets in test.env; remove \
          the credential (or replace it with a test-mode equivalent) and try again."
     )]
-    ProdToken {
-        path: PathBuf,
-        line: usize,
-        kind: &'static str,
-    },
+    ProdToken { path: PathBuf, line: usize, kind: &'static str },
 }
 
 /// Parsed contents of a validated `test.env`. The runner forwards
@@ -63,10 +59,8 @@ pub fn check(state_root: &Path) -> Result<SecretsBundle, SecretsError> {
     if !path.is_file() {
         return Err(SecretsError::Missing { path });
     }
-    let raw = std::fs::read_to_string(&path).map_err(|source| SecretsError::Read {
-        path: path.clone(),
-        source,
-    })?;
+    let raw = std::fs::read_to_string(&path)
+        .map_err(|source| SecretsError::Read { path: path.clone(), source })?;
     scan(&path, &raw)
 }
 
@@ -88,10 +82,7 @@ fn scan(path: &Path, raw: &str) -> Result<SecretsBundle, SecretsError> {
             entries.push((k, v));
         }
     }
-    Ok(SecretsBundle {
-        path: path.to_path_buf(),
-        entries,
-    })
+    Ok(SecretsBundle { path: path.to_path_buf(), entries })
 }
 
 fn parse_env_line(line: &str) -> Option<(String, String)> {
@@ -119,10 +110,7 @@ fn prod_token_regexes() -> &'static Vec<(&'static str, Regex)> {
     static CELL: OnceLock<Vec<(&'static str, Regex)>> = OnceLock::new();
     CELL.get_or_init(|| {
         vec![
-            (
-                "Stripe live key (sk_live_...)",
-                Regex::new(r"sk_live_[0-9a-zA-Z]{16,}").unwrap(),
-            ),
+            ("Stripe live key (sk_live_...)", Regex::new(r"sk_live_[0-9a-zA-Z]{16,}").unwrap()),
             (
                 "GitHub personal access token (ghp_<40>)",
                 Regex::new(r"\bghp_[A-Za-z0-9]{36}\b").unwrap(),
@@ -131,18 +119,9 @@ fn prod_token_regexes() -> &'static Vec<(&'static str, Regex)> {
                 "GitHub fine-grained PAT (github_pat_...)",
                 Regex::new(r"\bgithub_pat_[A-Za-z0-9_]{40,}\b").unwrap(),
             ),
-            (
-                "GitHub OAuth token (gho_<36>)",
-                Regex::new(r"\bgho_[A-Za-z0-9]{36}\b").unwrap(),
-            ),
-            (
-                "AWS access key id (AKIA...)",
-                Regex::new(r"\bAKIA[0-9A-Z]{16}\b").unwrap(),
-            ),
-            (
-                "AWS ARN",
-                Regex::new(r"\barn:aws:[a-z0-9-]+:[a-z0-9-]*:\d{12}:[^\s'\x22]+").unwrap(),
-            ),
+            ("GitHub OAuth token (gho_<36>)", Regex::new(r"\bgho_[A-Za-z0-9]{36}\b").unwrap()),
+            ("AWS access key id (AKIA...)", Regex::new(r"\bAKIA[0-9A-Z]{16}\b").unwrap()),
+            ("AWS ARN", Regex::new(r"\barn:aws:[a-z0-9-]+:[a-z0-9-]*:\d{12}:[^\s'\x22]+").unwrap()),
             (
                 "Slack token (xox[abprs]-...)",
                 Regex::new(r"\bxox[abprs]-[A-Za-z0-9-]{10,}").unwrap(),
@@ -178,10 +157,7 @@ mod tests {
     #[test]
     fn clean_file_parses_entries() {
         let tmp = tempdir().unwrap();
-        write_state(
-            tmp.path(),
-            "# comment\nDB_USER=test\nDB_PASS=\"shh\"\nEMPTY=\n",
-        );
+        write_state(tmp.path(), "# comment\nDB_USER=test\nDB_PASS=\"shh\"\nEMPTY=\n");
         let bundle = check(tmp.path()).expect("clean");
         let map: std::collections::HashMap<_, _> = bundle.entries.into_iter().collect();
         assert_eq!(map.get("DB_USER").unwrap(), "test");
@@ -192,10 +168,7 @@ mod tests {
     #[test]
     fn stripe_live_key_blocks_run() {
         let tmp = tempdir().unwrap();
-        write_state(
-            tmp.path(),
-            "DB_USER=test\nSTRIPE_KEY=sk_live_abcDEF0123456789xyz\n",
-        );
+        write_state(tmp.path(), "DB_USER=test\nSTRIPE_KEY=sk_live_abcDEF0123456789xyz\n");
         let err = check(tmp.path()).unwrap_err();
         let SecretsError::ProdToken { kind, line, .. } = err else {
             panic!("expected ProdToken");
@@ -224,10 +197,7 @@ mod tests {
     #[test]
     fn aws_arn_blocks_run() {
         let tmp = tempdir().unwrap();
-        write_state(
-            tmp.path(),
-            "ROLE=arn:aws:iam::123456789012:role/prod-admin\n",
-        );
+        write_state(tmp.path(), "ROLE=arn:aws:iam::123456789012:role/prod-admin\n");
         let err = check(tmp.path()).unwrap_err();
         assert!(matches!(err, SecretsError::ProdToken { .. }));
     }

@@ -37,21 +37,13 @@ impl BirdcageSandbox {
     /// or — failing that — as a sibling of `std::env::current_exe()`.
     pub fn new() -> Result<Self, SandboxError> {
         let shim_path = resolve_shim_path()?;
-        Ok(Self {
-            shim_path,
-            inner: None,
-            last_logs: (Vec::new(), Vec::new()),
-        })
+        Ok(Self { shim_path, inner: None, last_logs: (Vec::new(), Vec::new()) })
     }
 
     /// Construct a backend with an explicit shim binary path. The
     /// regression tests use this to point at the cargo-built shim.
     pub fn with_shim_path(shim_path: PathBuf) -> Self {
-        Self {
-            shim_path,
-            inner: None,
-            last_logs: (Vec::new(), Vec::new()),
-        }
+        Self { shim_path, inner: None, last_logs: (Vec::new(), Vec::new()) }
     }
 }
 
@@ -128,10 +120,8 @@ impl Sandbox for BirdcageSandbox {
         // Write the JSON config to the shim's stdin, then close it so
         // the shim's `read_to_string` returns.
         {
-            let mut stdin = child
-                .stdin
-                .take()
-                .ok_or(SandboxError::State("shim stdin unavailable"))?;
+            let mut stdin =
+                child.stdin.take().ok_or(SandboxError::State("shim stdin unavailable"))?;
             stdin.write_all(&cfg_json).await.map_err(SandboxError::Io)?;
             stdin.shutdown().await.map_err(SandboxError::Io)?;
         }
@@ -153,10 +143,7 @@ impl Sandbox for BirdcageSandbox {
     }
 
     async fn wait(&mut self) -> Result<SandboxOutcome, SandboxError> {
-        let mut state = self
-            .inner
-            .take()
-            .ok_or(SandboxError::State("no child to wait on"))?;
+        let mut state = self.inner.take().ok_or(SandboxError::State("no child to wait on"))?;
         let outcome = drive_to_completion(&mut state, BackendKind::Birdcage).await?;
         self.last_logs = (outcome.stdout.clone(), outcome.stderr.clone());
         Ok(outcome)
@@ -189,9 +176,7 @@ fn resolve_program(arg: &str) -> Result<PathBuf, SandboxError> {
         if p.is_file() {
             return Ok(p);
         }
-        return Err(SandboxError::Config(format!(
-            "program {arg} does not exist"
-        )));
+        return Err(SandboxError::Config(format!("program {arg} does not exist")));
     }
     if let Some(path_env) = std::env::var_os("PATH") {
         for dir in std::env::split_paths(&path_env) {
@@ -201,9 +186,7 @@ fn resolve_program(arg: &str) -> Result<PathBuf, SandboxError> {
             }
         }
     }
-    Err(SandboxError::Config(format!(
-        "program {arg} not found on PATH"
-    )))
+    Err(SandboxError::Config(format!("program {arg} not found on PATH")))
 }
 
 fn default_system_read_paths() -> &'static [&'static str] {

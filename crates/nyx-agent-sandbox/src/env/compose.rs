@@ -17,12 +17,8 @@ use serde_yaml::{Mapping, Value};
 use thiserror::Error;
 
 /// Filenames docker compose recognises out of the box.
-const CANDIDATE_FILES: &[&str] = &[
-    "docker-compose.yml",
-    "docker-compose.yaml",
-    "compose.yml",
-    "compose.yaml",
-];
+const CANDIDATE_FILES: &[&str] =
+    &["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"];
 
 /// A compose file located inside a connected repo.
 #[derive(Debug, Clone)]
@@ -64,10 +60,7 @@ pub fn detect(repo_root: &Path, repo_name: &str) -> Option<ComposeFile> {
     for name in CANDIDATE_FILES {
         let p = repo_root.join(name);
         if p.is_file() {
-            return Some(ComposeFile {
-                repo_name: repo_name.to_string(),
-                path: p,
-            });
+            return Some(ComposeFile { repo_name: repo_name.to_string(), path: p });
         }
     }
     None
@@ -83,18 +76,12 @@ pub fn merge(files: &[ComposeFile], out_path: &Path) -> Result<Vec<String>, Comp
     let mut service_names = Vec::new();
 
     for cf in files {
-        let raw = std::fs::read_to_string(&cf.path).map_err(|source| ComposeError::Read {
-            path: cf.path.clone(),
-            source,
-        })?;
-        let doc: Value = serde_yaml::from_str(&raw).map_err(|source| ComposeError::Parse {
-            path: cf.path.clone(),
-            source,
-        })?;
+        let raw = std::fs::read_to_string(&cf.path)
+            .map_err(|source| ComposeError::Read { path: cf.path.clone(), source })?;
+        let doc: Value = serde_yaml::from_str(&raw)
+            .map_err(|source| ComposeError::Parse { path: cf.path.clone(), source })?;
         let Value::Mapping(map) = doc else {
-            return Err(ComposeError::NotMapping {
-                path: cf.path.clone(),
-            });
+            return Err(ComposeError::NotMapping { path: cf.path.clone() });
         };
         let prefix = sanitise_prefix(&cf.repo_name);
 
@@ -132,15 +119,11 @@ pub fn merge(files: &[ComposeFile], out_path: &Path) -> Result<Vec<String>, Comp
 
     let body = serde_yaml::to_string(&Value::Mapping(merged)).map_err(ComposeError::Emit)?;
     if let Some(parent) = out_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|source| ComposeError::Write {
-            path: parent.to_path_buf(),
-            source,
-        })?;
+        std::fs::create_dir_all(parent)
+            .map_err(|source| ComposeError::Write { path: parent.to_path_buf(), source })?;
     }
-    std::fs::write(out_path, body).map_err(|source| ComposeError::Write {
-        path: out_path.to_path_buf(),
-        source,
-    })?;
+    std::fs::write(out_path, body)
+        .map_err(|source| ComposeError::Write { path: out_path.to_path_buf(), source })?;
     Ok(service_names)
 }
 
@@ -340,14 +323,8 @@ services:
         .unwrap();
 
         let files = vec![
-            ComposeFile {
-                repo_name: "alpha".into(),
-                path: a.join("docker-compose.yml"),
-            },
-            ComposeFile {
-                repo_name: "beta".into(),
-                path: b.join("docker-compose.yml"),
-            },
+            ComposeFile { repo_name: "alpha".into(), path: a.join("docker-compose.yml") },
+            ComposeFile { repo_name: "beta".into(), path: b.join("docker-compose.yml") },
         ];
         let out = tmp.path().join("super.yml");
         let services = merge(&files, &out).expect("merge ok");
@@ -367,10 +344,7 @@ services:
         assert!(svcs.contains_key(Value::String("beta_db".into())));
 
         let alpha_db = svcs.get(Value::String("alpha_db".into())).unwrap();
-        let depends = alpha_db
-            .get("depends_on")
-            .and_then(|v| v.as_sequence())
-            .unwrap();
+        let depends = alpha_db.get("depends_on").and_then(|v| v.as_sequence()).unwrap();
         assert_eq!(depends[0].as_str().unwrap(), "alpha_cache");
 
         let alpha_vols = alpha_db.get("volumes").and_then(|v| v.as_sequence()).unwrap();
@@ -393,10 +367,7 @@ services:
         let tmp = tempdir().unwrap();
         let p = tmp.path().join("bogus.yml");
         std::fs::write(&p, "- a list\n- not a mapping\n").unwrap();
-        let files = vec![ComposeFile {
-            repo_name: "x".into(),
-            path: p,
-        }];
+        let files = vec![ComposeFile { repo_name: "x".into(), path: p }];
         let err = merge(&files, &tmp.path().join("super.yml")).unwrap_err();
         assert!(matches!(err, ComposeError::NotMapping { .. }));
     }

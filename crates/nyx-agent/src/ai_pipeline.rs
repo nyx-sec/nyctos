@@ -22,7 +22,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use nyx_agent_ai::{
@@ -38,14 +37,14 @@ use nyx_agent_core::store::{
     FindingRecord, HarnessSpecRecord, PayloadRecord, Store, TaskKind,
 };
 use nyx_agent_core::{
-    AiConfig, AiRuntime as ConfigAiRuntime, RepoOutcome, RunBundle, RunConfig, SandboxBackend,
-    SandboxConfig, SecretStore, WorkspaceHandle,
+    now_epoch_ms, AiConfig, AiRuntime as ConfigAiRuntime, RepoOutcome, RunBundle, RunConfig,
+    SandboxBackend, SandboxConfig, SecretStore, WorkspaceHandle,
 };
+use nyx_agent_nyx::Diag;
 use nyx_agent_sandbox::payload_runner::{
     HarnessSource, HarnessSpecInput, PayloadRun, PayloadRunner,
 };
 use nyx_agent_sandbox::BackendKind;
-use nyx_agent_nyx::Diag;
 use nyx_agent_types::agent::{AiError, BudgetKind};
 use nyx_agent_types::chain::{
     ChainReasoningEdge, ChainReasoningInput, ChainReasoningNode, CHAIN_REASONING_DEFAULT_MAX,
@@ -135,12 +134,7 @@ impl BudgetTracker for BudgetStoreTracker {
         Ok(row.map(|r| r.cap_usd_micros))
     }
 
-    async fn add_spend(
-        &self,
-        run_id: &str,
-        kind: BudgetKind,
-        micros: i64,
-    ) -> Result<i64, AiError> {
+    async fn add_spend(&self, run_id: &str, kind: BudgetKind, micros: i64) -> Result<i64, AiError> {
         self.ensure_row(run_id, kind).await?;
         self.store
             .budgets()
@@ -184,8 +178,10 @@ pub async fn run_payload_synthesis_pass(
         }
         Err(e) => return Err(anyhow::anyhow!("secret store error: {e}")),
     };
-    let tracker: SharedBudgetTracker =
-        Arc::new(BudgetStoreTracker::new(store.clone(), config.default_run_budget_usd_micros_resolved()));
+    let tracker: SharedBudgetTracker = Arc::new(BudgetStoreTracker::new(
+        store.clone(),
+        config.default_run_budget_usd_micros_resolved(),
+    ));
     let adapter = Arc::new(AnthropicSdkAdapter::new(api_key, tracker.clone()));
 
     let inputs = build_inputs(bundle, workspaces);
@@ -221,15 +217,8 @@ pub async fn run_payload_synthesis_pass(
     for handle in handles {
         match handle.await {
             Ok(Ok((started_at, outcome))) => {
-                apply_outcome(
-                    store,
-                    outcome,
-                    &mut report,
-                    runtime_name,
-                    &runtime_model,
-                    started_at,
-                )
-                .await?
+                apply_outcome(store, outcome, &mut report, runtime_name, &runtime_model, started_at)
+                    .await?
             }
             Ok(Err(err)) => {
                 tracing::warn!(error = %err, "payload synthesis call failed");
@@ -347,12 +336,7 @@ async fn apply_outcome(
             report.spend_usd_micros += spent_usd_micros;
             report.total_attempts += u64::from(attempts);
         }
-        PayloadSynthesisOutcome::Quarantined {
-            finding_id,
-            reason,
-            spent_usd_micros,
-            attempts,
-        } => {
+        PayloadSynthesisOutcome::Quarantined { finding_id, reason, spent_usd_micros, attempts } => {
             let blob = serde_json::json!({
                 "kind": "PayloadSynthesisQuarantined",
                 "task": "PayloadSynthesis",
@@ -399,10 +383,6 @@ pub fn infer_lang(path: &str) -> String {
         _ => "unknown",
     };
     lang.to_string()
-}
-
-fn now_epoch_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
 
 /// Process-local sequence number so two trace rows minted in the same
@@ -498,8 +478,10 @@ pub async fn run_spec_derivation_pass(
         }
         Err(e) => return Err(anyhow::anyhow!("secret store error: {e}")),
     };
-    let tracker: SharedBudgetTracker =
-        Arc::new(BudgetStoreTracker::new(store.clone(), config.default_run_budget_usd_micros_resolved()));
+    let tracker: SharedBudgetTracker = Arc::new(BudgetStoreTracker::new(
+        store.clone(),
+        config.default_run_budget_usd_micros_resolved(),
+    ));
     let adapter = Arc::new(AnthropicSdkAdapter::new(api_key, tracker.clone()));
 
     let inputs = build_spec_inputs(bundle, workspaces);
@@ -589,8 +571,7 @@ pub fn build_spec_inputs(
             );
             let lang = infer_lang(&diag.path);
             let sink_ctx = diag.sink_ctx(workspace.workspace());
-            let excerpts =
-                collect_spec_excerpts(workspace, diag, SPEC_DERIVATION_MAX_EXCERPTS);
+            let excerpts = collect_spec_excerpts(workspace, diag, SPEC_DERIVATION_MAX_EXCERPTS);
             out.push(SpecDerivationInput {
                 finding_id,
                 run_id: bundle.run_id.clone(),
@@ -681,10 +662,7 @@ async fn apply_spec_outcome(
             };
             let spec_id = rec.id.clone();
             store.harness_specs().insert(&rec).await?;
-            store
-                .findings()
-                .set_spec(&finding_id, &spec_id, &provenance, &prompt_version)
-                .await?;
+            store.findings().set_spec(&finding_id, &spec_id, &provenance, &prompt_version).await?;
             let trace = build_trace_row(
                 TaskKind::SpecDerivation,
                 Some(finding_id),
@@ -700,12 +678,7 @@ async fn apply_spec_outcome(
             report.spend_usd_micros += spent_usd_micros;
             report.total_attempts += u64::from(attempts);
         }
-        SpecDerivationOutcome::Quarantined {
-            finding_id,
-            reason,
-            spent_usd_micros,
-            attempts,
-        } => {
+        SpecDerivationOutcome::Quarantined { finding_id, reason, spent_usd_micros, attempts } => {
             let blob = serde_json::json!({
                 "kind": "SpecDerivationQuarantined",
                 "task": "SpecDerivation",
@@ -799,8 +772,10 @@ pub async fn run_chain_reasoning_pass(
         "chain reasoning: dispatching"
     );
 
-    let tracker: SharedBudgetTracker =
-        Arc::new(BudgetStoreTracker::new(store.clone(), config.default_run_budget_usd_micros_resolved()));
+    let tracker: SharedBudgetTracker = Arc::new(BudgetStoreTracker::new(
+        store.clone(),
+        config.default_run_budget_usd_micros_resolved(),
+    ));
     let adapter = AnthropicSdkAdapter::new(api_key, tracker.clone());
     let runtime_name = adapter.name();
     let runtime_model = adapter.default_model().to_string();
@@ -863,10 +838,8 @@ pub fn build_chain_input(bundle: &RunBundle<Diag>) -> Option<ChainReasoningInput
                 &diag.rule,
             );
             let kind = classify_node_kind(diag);
-            by_location.insert(
-                (repo_bundle.repo.clone(), diag.path.clone(), diag.line),
-                id.clone(),
-            );
+            by_location
+                .insert((repo_bundle.repo.clone(), diag.path.clone(), diag.line), id.clone());
             nodes.push(ChainReasoningNode {
                 id,
                 repo: repo_bundle.repo.clone(),
@@ -894,24 +867,17 @@ pub fn build_chain_input(bundle: &RunBundle<Diag>) -> Option<ChainReasoningInput
             continue;
         };
         for diag in diags {
-            let sink_id = match by_location.get(&(
-                repo_bundle.repo.clone(),
-                diag.path.clone(),
-                diag.line,
-            )) {
-                Some(id) => id.clone(),
-                None => continue,
-            };
+            let sink_id =
+                match by_location.get(&(repo_bundle.repo.clone(), diag.path.clone(), diag.line)) {
+                    Some(id) => id.clone(),
+                    None => continue,
+                };
             // Walk every step; match by (repo, path, line) first, then
             // by (any repo, path, line) so a cross-repo step finds the
             // diag whose path matches even when the step itself does
             // not name a repo.
             for step in &diag.flow_steps {
-                let same_repo_key = (
-                    repo_bundle.repo.clone(),
-                    step.path.clone(),
-                    step.line,
-                );
+                let same_repo_key = (repo_bundle.repo.clone(), step.path.clone(), step.line);
                 if let Some(from_id) = by_location.get(&same_repo_key) {
                     push_edge(&mut edges, &mut edge_keys, from_id, &sink_id, false);
                     continue;
@@ -974,18 +940,10 @@ fn classify_node_kind(diag: &Diag) -> &'static str {
     if FRAMEWORK_PATH_FRAGMENTS.iter().any(|frag| lower.contains(frag)) {
         return NODE_KIND_FRAMEWORK;
     }
-    if diag
-        .flow_steps
-        .iter()
-        .any(|s| s.kind.as_deref() == Some("source"))
-    {
+    if diag.flow_steps.iter().any(|s| s.kind.as_deref() == Some("source")) {
         return NODE_KIND_ENTRY;
     }
-    if diag
-        .flow_steps
-        .iter()
-        .any(|s| s.kind.as_deref() == Some("sink"))
-    {
+    if diag.flow_steps.iter().any(|s| s.kind.as_deref() == Some("sink")) {
         return NODE_KIND_SINK;
     }
     // Default: diags surface where the static pass landed, so bare
@@ -1016,11 +974,8 @@ async fn apply_chain_outcome(
             report.spend_usd_micros += spent_usd_micros;
             report.attempts += u64::from(attempts);
             let provenance = AttackProvenance::LlmSynthesised.as_str().to_string();
-            let repo_by_id: HashMap<String, String> = input
-                .nodes
-                .iter()
-                .map(|n| (n.id.clone(), n.repo.clone()))
-                .collect();
+            let repo_by_id: HashMap<String, String> =
+                input.nodes.iter().map(|n| (n.id.clone(), n.repo.clone())).collect();
             let created_at = finished_at;
             let trace = build_trace_row(
                 TaskKind::ChainReasoning,
@@ -1052,9 +1007,7 @@ async fn apply_chain_outcome(
                     "rationale": chain.rationale,
                 })
                 .to_string();
-                let chain_id = format!(
-                    "chain-{run_id}-{rank:02}-{created_at:x}",
-                );
+                let chain_id = format!("chain-{run_id}-{rank:02}-{created_at:x}",);
                 let rec = ChainRecord {
                     id: chain_id.clone(),
                     run_id: run_id.clone(),
@@ -1082,12 +1035,7 @@ async fn apply_chain_outcome(
                 }
             }
         }
-        ChainReasoningOutcome::NoChains {
-            run_id: _,
-            reason,
-            spent_usd_micros,
-            attempts,
-        } => {
+        ChainReasoningOutcome::NoChains { run_id: _, reason, spent_usd_micros, attempts } => {
             tracing::info!(reason = %reason, "chain reasoning: no chains produced");
             let trace = build_trace_row(
                 TaskKind::ChainReasoning,
@@ -1359,15 +1307,12 @@ pub fn build_novel_inputs_for_repo(
     // files it actually contains.
     let mut priors_by_path: HashMap<String, Vec<PriorFinding>> = HashMap::new();
     for diag in diags {
-        priors_by_path
-            .entry(diag.path.clone())
-            .or_default()
-            .push(PriorFinding {
-                path: diag.path.clone(),
-                line: diag.line,
-                cap: diag.cap.clone(),
-                rule: diag.rule.clone(),
-            });
+        priors_by_path.entry(diag.path.clone()).or_default().push(PriorFinding {
+            path: diag.path.clone(),
+            line: diag.line,
+            cap: diag.cap.clone(),
+            rule: diag.rule.clone(),
+        });
     }
 
     let mut out = Vec::new();
@@ -1585,7 +1530,8 @@ fn candidate_id(
     // the Phase 19 verifier promotes it. `run_id` + `rationale` are
     // folded into the `rule` slot so two candidates that differ only
     // in rationale do not collide.
-    let folded_rule = format!("{run_id}\0{rule_hint}\0{rationale}",
+    let folded_rule = format!(
+        "{run_id}\0{rule_hint}\0{rationale}",
         rule_hint = c.rule_hint.as_deref().unwrap_or(""),
         rationale = c.rationale,
     );
@@ -1808,9 +1754,7 @@ fn builtin_harness_for_cap(cap: &str) -> Option<HarnessSpecInput> {
         "SQL_QUERY" | "SQLi" => Some(HarnessSpecInput {
             cap: cap.to_string(),
             lang: "shell".to_string(),
-            setup: vec![
-                "STORED='alice:pw1\\nbob:pw2\\nadmin:TOP_SECRET'".to_string(),
-            ],
+            setup: vec!["STORED='alice:pw1\\nbob:pw2\\nadmin:TOP_SECRET'".to_string()],
             invoke: "printf '%b\\n' \"$STORED\" | grep -E @PAYLOAD || true".to_string(),
             teardown: vec![],
         }),
@@ -1977,10 +1921,7 @@ fn degenerate_oracle_reason(oracle: &Oracle) -> Option<&'static str> {
 fn stamp_verdict_kind(result: &VerifyResult) -> anyhow::Result<String> {
     let mut value = serde_json::to_value(result)?;
     if let Some(obj) = value.as_object_mut() {
-        obj.insert(
-            "kind".to_string(),
-            serde_json::Value::String("VerifyResult".to_string()),
-        );
+        obj.insert("kind".to_string(), serde_json::Value::String("VerifyResult".to_string()));
     }
     Ok(serde_json::to_string(&value)?)
 }
@@ -2022,10 +1963,8 @@ async fn promote_candidate(
     now_ms: i64,
 ) -> anyhow::Result<()> {
     let line = candidate.line.unwrap_or(-1);
-    let rule = candidate
-        .rule_hint
-        .clone()
-        .unwrap_or_else(|| format!("ai-exploration:{}", candidate.cap));
+    let rule =
+        candidate.rule_hint.clone().unwrap_or_else(|| format!("ai-exploration:{}", candidate.cap));
     let id = nyx_agent_core::store::finding_id_hash(
         &candidate.repo,
         &candidate.path,
@@ -2109,12 +2048,7 @@ impl StaticEscapeSuiteGate {
 
     #[allow(dead_code)]
     pub fn red(fixture: impl Into<String>, reason: impl Into<String>) -> Self {
-        Self {
-            verdict: EscapeSuiteVerdict::Red {
-                fixture: fixture.into(),
-                reason: reason.into(),
-            },
-        }
+        Self { verdict: EscapeSuiteVerdict::Red { fixture: fixture.into(), reason: reason.into() } }
     }
 }
 
@@ -2162,9 +2096,7 @@ pub async fn run_ai_exploration_pass(
     let adapter = match ClaudeCodeAdapter::discover(make_exploration_tracker(store)).await {
         Ok(a) => a,
         Err(err) => {
-            tracing::info!(
-                "ai exploration: claude-code unavailable ({err}); skipping pass"
-            );
+            tracing::info!("ai exploration: claude-code unavailable ({err}); skipping pass");
             return Ok(AiExplorationPassReport::default());
         }
     };
@@ -2225,10 +2157,7 @@ pub(crate) async fn drive_ai_exploration_pass<R: AiRuntime + ?Sized>(
 }
 
 fn make_exploration_tracker(store: &Store) -> SharedBudgetTracker {
-    Arc::new(BudgetStoreTracker::new(
-        store.clone(),
-        DEFAULT_EXPLORATION_RUN_CAP_USD_MICROS,
-    ))
+    Arc::new(BudgetStoreTracker::new(store.clone(), DEFAULT_EXPLORATION_RUN_CAP_USD_MICROS))
 }
 
 fn build_exploration_scope(run_id: &str, repo: &str) -> ExplorationScope {
@@ -2266,10 +2195,7 @@ async fn apply_exploration_outcome(
                 );
                 report.halted_escape_suite_red += 1;
             }
-            ExplorationHaltReason::BudgetCapAlreadyReached {
-                cap_usd_micros,
-                spent_usd_micros,
-            } => {
+            ExplorationHaltReason::BudgetCapAlreadyReached { cap_usd_micros, spent_usd_micros } => {
                 tracing::info!(
                     repo = %repo,
                     cap_usd_micros,
@@ -2597,10 +2523,9 @@ mod tests {
         let (tx, _rx) = tokio::sync::broadcast::channel(4);
         let cfg = AiConfig::default();
         assert!(matches!(cfg.runtime, ConfigAiRuntime::None));
-        let report =
-            run_payload_synthesis_pass(&cfg, &store, &secrets, &bundle, &workspaces, tx)
-                .await
-                .unwrap();
+        let report = run_payload_synthesis_pass(&cfg, &store, &secrets, &bundle, &workspaces, tx)
+            .await
+            .unwrap();
         assert_eq!(report, PayloadSynthesisPassReport::default());
     }
 
@@ -2619,12 +2544,10 @@ mod tests {
             callgraph: CrossRepoCallgraphStub::default(),
         };
         let (tx, _rx) = tokio::sync::broadcast::channel(4);
-        let cfg =
-            AiConfig { runtime: ConfigAiRuntime::Anthropic, ..AiConfig::default() };
-        let report =
-            run_payload_synthesis_pass(&cfg, &store, &secrets, &bundle, &workspaces, tx)
-                .await
-                .unwrap();
+        let cfg = AiConfig { runtime: ConfigAiRuntime::Anthropic, ..AiConfig::default() };
+        let report = run_payload_synthesis_pass(&cfg, &store, &secrets, &bundle, &workspaces, tx)
+            .await
+            .unwrap();
         assert_eq!(report, PayloadSynthesisPassReport::default());
     }
 
@@ -2746,10 +2669,9 @@ mod tests {
         };
         let (tx, _rx) = tokio::sync::broadcast::channel(4);
         let cfg = AiConfig::default();
-        let report =
-            run_spec_derivation_pass(&cfg, &store, &secrets, &bundle, &workspaces, tx)
-                .await
-                .unwrap();
+        let report = run_spec_derivation_pass(&cfg, &store, &secrets, &bundle, &workspaces, tx)
+            .await
+            .unwrap();
         assert_eq!(report, SpecDerivationPassReport::default());
     }
 
@@ -2769,10 +2691,9 @@ mod tests {
         };
         let (tx, _rx) = tokio::sync::broadcast::channel(4);
         let cfg = AiConfig { runtime: ConfigAiRuntime::Anthropic, ..AiConfig::default() };
-        let report =
-            run_spec_derivation_pass(&cfg, &store, &secrets, &bundle, &workspaces, tx)
-                .await
-                .unwrap();
+        let report = run_spec_derivation_pass(&cfg, &store, &secrets, &bundle, &workspaces, tx)
+            .await
+            .unwrap();
         assert_eq!(report, SpecDerivationPassReport::default());
     }
 
@@ -3180,10 +3101,9 @@ mod tests {
         let bundle = two_repo_bundle();
         let (tx, _rx) = tokio::sync::broadcast::channel(4);
         let cfg = AiConfig::default();
-        let report =
-            run_chain_reasoning_pass(&cfg, &store, &secrets, &bundle, &workspaces, tx)
-                .await
-                .unwrap();
+        let report = run_chain_reasoning_pass(&cfg, &store, &secrets, &bundle, &workspaces, tx)
+            .await
+            .unwrap();
         assert_eq!(report, ChainReasoningPassReport::default());
     }
 
@@ -3196,10 +3116,9 @@ mod tests {
         let bundle = two_repo_bundle();
         let (tx, _rx) = tokio::sync::broadcast::channel(4);
         let cfg = AiConfig { runtime: ConfigAiRuntime::Anthropic, ..AiConfig::default() };
-        let report =
-            run_chain_reasoning_pass(&cfg, &store, &secrets, &bundle, &workspaces, tx)
-                .await
-                .unwrap();
+        let report = run_chain_reasoning_pass(&cfg, &store, &secrets, &bundle, &workspaces, tx)
+            .await
+            .unwrap();
         assert_eq!(report, ChainReasoningPassReport::default());
     }
 
@@ -3301,19 +3220,12 @@ mod tests {
         .unwrap();
         // A lower-priority untouched model file so the walker has more
         // than one source file to choose from.
-        std::fs::write(
-            tmp.path().join("models/user.py"),
-            "class User:\n    pass\n",
-        )
-        .unwrap();
+        std::fs::write(tmp.path().join("models/user.py"), "class User:\n    pass\n").unwrap();
         // A directory that must be skipped: ensure the walker doesn't
         // descend into node_modules.
         std::fs::create_dir_all(tmp.path().join("node_modules/junk")).unwrap();
-        std::fs::write(
-            tmp.path().join("node_modules/junk/index.js"),
-            "module.exports = {}\n",
-        )
-        .unwrap();
+        std::fs::write(tmp.path().join("node_modules/junk/index.js"), "module.exports = {}\n")
+            .unwrap();
         tmp
     }
 
@@ -3328,8 +3240,7 @@ mod tests {
     fn walk_source_files_skips_node_modules() {
         let tmp = two_python_workspace();
         let files = walk_source_files(tmp.path());
-        let stems: Vec<String> =
-            files.iter().map(|p| p.to_string_lossy().to_string()).collect();
+        let stems: Vec<String> = files.iter().map(|p| p.to_string_lossy().to_string()).collect();
         let any_nm = stems.iter().any(|s| s.contains("node_modules"));
         assert!(!any_nm, "node_modules must be skipped: {stems:?}");
     }
@@ -3446,11 +3357,7 @@ mod tests {
             row.prompt_version.as_deref(),
             Some(nyx_agent_types::novel::NOVEL_FINDING_DISCOVERY_PROMPT_VERSION)
         );
-        assert!(row
-            .rationale
-            .as_deref()
-            .unwrap_or("")
-            .contains("list_admins"));
+        assert!(row.rationale.as_deref().unwrap_or("").contains("list_admins"));
     }
 
     #[tokio::test]
@@ -3467,16 +3374,8 @@ mod tests {
         store.runs().insert(&seed_run("run-Bg")).await.unwrap();
 
         let workspace = tempfile::tempdir().unwrap();
-        std::fs::write(
-            workspace.path().join("controller.py"),
-            "def f():\n    pass\n",
-        )
-        .unwrap();
-        std::fs::write(
-            workspace.path().join("api.py"),
-            "def g():\n    pass\n",
-        )
-        .unwrap();
+        std::fs::write(workspace.path().join("controller.py"), "def f():\n    pass\n").unwrap();
+        std::fs::write(workspace.path().join("api.py"), "def g():\n    pass\n").unwrap();
         let mut workspaces = HashMap::new();
         workspaces.insert(
             "repo-B".to_string(),
@@ -3492,21 +3391,15 @@ mod tests {
         // the second batch must short-circuit on the cap before issuing
         // a one_shot call, otherwise the runtime would panic on an
         // empty response queue.
-        let runtime =
-            ScriptedNovelRuntime::new(vec![Ok(body)], cap, tracker.clone());
+        let runtime = ScriptedNovelRuntime::new(vec![Ok(body)], cap, tracker.clone());
 
         let bundle = make_bundle("run-Bg", "repo-B", Vec::new());
         let (tx, _rx) = tokio::sync::broadcast::channel(4);
 
         // Sanity: with files_per_batch=1 the walker must emit >=2
         // batches so the halt path is exercised.
-        let inputs =
-            build_novel_inputs_for_repo("run-Bg", "repo-B", workspace.path(), &[], 1);
-        assert!(
-            inputs.len() >= 2,
-            "fixture must produce >=2 batches; got {}",
-            inputs.len()
-        );
+        let inputs = build_novel_inputs_for_repo("run-Bg", "repo-B", workspace.path(), &[], 1);
+        assert!(inputs.len() >= 2, "fixture must produce >=2 batches; got {}", inputs.len());
 
         let report = drive_novel_finding_pass(
             &runtime,
@@ -3537,10 +3430,7 @@ mod tests {
             "no scripted errors expected; failure means runtime tried a second call"
         );
         let spent = tracker.spent("run-Bg", BudgetKind::OneShot);
-        assert_eq!(
-            spent, cap,
-            "exactly one call's worth of spend should land in the bucket"
-        );
+        assert_eq!(spent, cap, "exactly one call's worth of spend should land in the bucket");
     }
 
     #[tokio::test]
@@ -3559,11 +3449,10 @@ mod tests {
         };
         let (tx, _rx) = tokio::sync::broadcast::channel(4);
         let cfg = AiConfig::default();
-        let report = run_novel_finding_discovery_pass(
-            &cfg, &store, &secrets, &bundle, &workspaces, tx,
-        )
-        .await
-        .unwrap();
+        let report =
+            run_novel_finding_discovery_pass(&cfg, &store, &secrets, &bundle, &workspaces, tx)
+                .await
+                .unwrap();
         assert_eq!(report, NovelFindingDiscoveryPassReport::default());
     }
 
@@ -3583,11 +3472,10 @@ mod tests {
         };
         let (tx, _rx) = tokio::sync::broadcast::channel(4);
         let cfg = AiConfig { runtime: ConfigAiRuntime::Anthropic, ..AiConfig::default() };
-        let report = run_novel_finding_discovery_pass(
-            &cfg, &store, &secrets, &bundle, &workspaces, tx,
-        )
-        .await
-        .unwrap();
+        let report =
+            run_novel_finding_discovery_pass(&cfg, &store, &secrets, &bundle, &workspaces, tx)
+                .await
+                .unwrap();
         assert_eq!(report, NovelFindingDiscoveryPassReport::default());
     }
 
@@ -3640,8 +3528,7 @@ mod tests {
 
     async fn ws_handle_for(repo: &str) -> (tempfile::TempDir, WorkspaceHandle) {
         let dir = tempfile::tempdir().unwrap();
-        let handle =
-            WorkspaceHandle::for_local_path_test(repo, dir.path().to_path_buf());
+        let handle = WorkspaceHandle::for_local_path_test(repo, dir.path().to_path_buf());
         (dir, handle)
     }
 
@@ -3715,11 +3602,7 @@ mod tests {
         let fid = finding.id.clone();
         store.findings().upsert(&finding).await.unwrap();
         // Both payloads are the benign control — neither trips the oracle.
-        store
-            .payloads()
-            .insert(&seed_payload(&fid, b"^alice$", b"^alice$"))
-            .await
-            .unwrap();
+        store.payloads().insert(&seed_payload(&fid, b"^alice$", b"^alice$")).await.unwrap();
         store.harness_specs().insert(&seed_spec("spec-B")).await.unwrap();
 
         let (tx, _rx) = tokio::sync::broadcast::channel(4);
@@ -3766,8 +3649,7 @@ mod tests {
             suggested_payload_hint: Some(".*".to_string()),
             status: "Pending".to_string(),
             prompt_version: Some(
-                nyx_agent_types::novel::NOVEL_FINDING_DISCOVERY_PROMPT_VERSION
-                    .to_string(),
+                nyx_agent_types::novel::NOVEL_FINDING_DISCOVERY_PROMPT_VERSION.to_string(),
             ),
         };
         store.candidate_findings().insert(&cand).await.unwrap();
@@ -3792,8 +3674,7 @@ mod tests {
         assert_eq!(report.confirmed, 1);
 
         // The candidate flipped to Promoted.
-        let promoted =
-            store.candidate_findings().get(&cand.id).await.unwrap().expect("row");
+        let promoted = store.candidate_findings().get(&cand.id).await.unwrap().expect("row");
         assert_eq!(promoted.status, "Promoted");
 
         // A new findings row appeared with finding_origin = AiExploration
@@ -3916,11 +3797,7 @@ mod tests {
             cost_per_call: i64,
             tracker: Arc<dyn BudgetTracker>,
         ) -> Self {
-            Self {
-                outcomes: StdMutex::new(outcomes),
-                cost_per_call,
-                tracker,
-            }
+            Self { outcomes: StdMutex::new(outcomes), cost_per_call, tracker }
         }
     }
 
@@ -4015,30 +3892,20 @@ mod tests {
             cap: "AUTH_BYPASS".into(),
             rationale: "Admin endpoint accepts unauthenticated GET".into(),
             endpoint: Some("GET /api/admin/orders".into()),
-            suggested_payload_hint: Some(
-                "curl -i http://127.0.0.1:3000/api/admin/orders".into(),
-            ),
+            suggested_payload_hint: Some("curl -i http://127.0.0.1:3000/api/admin/orders".into()),
         });
 
         let tracker = Arc::new(InMemoryBudgetTracker::new());
         tracker.set_cap("run-expl-1", BudgetKind::AgentLoop, 10_000_000);
-        let runtime =
-            ScriptedExplorationRuntime::new(vec![Ok(result)], 250_000, tracker.clone());
+        let runtime = ScriptedExplorationRuntime::new(vec![Ok(result)], 250_000, tracker.clone());
 
         let bundle = make_bundle("run-expl-1", "repo-X", Vec::new());
         let (tx, _rx) = tokio::sync::broadcast::channel(4);
         let gate = StaticEscapeSuiteGate::green();
 
-        let report = drive_ai_exploration_pass(
-            &runtime,
-            &store,
-            &bundle,
-            &workspaces,
-            &gate,
-            tx,
-        )
-        .await
-        .unwrap();
+        let report = drive_ai_exploration_pass(&runtime, &store, &bundle, &workspaces, &gate, tx)
+            .await
+            .unwrap();
 
         assert_eq!(report.explorations_dispatched, 1);
         assert_eq!(report.findings_quarantined, 1);
@@ -4066,10 +3933,7 @@ mod tests {
         assert_eq!(row.cap, "AUTH_BYPASS");
         assert_eq!(row.path, "<api:/api/admin/orders>");
         assert_eq!(row.attack_provenance.as_deref(), Some("AiExploration"));
-        assert_eq!(
-            row.prompt_version.as_deref(),
-            Some(nyx_agent_ai::EXPLORATION_PROMPT_VERSION)
-        );
+        assert_eq!(row.prompt_version.as_deref(), Some(nyx_agent_ai::EXPLORATION_PROMPT_VERSION));
         let blob = row.verdict_blob.as_deref().expect("verdict blob");
         assert!(blob.contains("AiExploration"));
         assert!(blob.contains("unauthenticated"));
@@ -4105,16 +3969,9 @@ mod tests {
             "wrote /tmp/escaped during regression suite",
         );
 
-        let report = drive_ai_exploration_pass(
-            &runtime,
-            &store,
-            &bundle,
-            &workspaces,
-            &gate,
-            tx,
-        )
-        .await
-        .unwrap();
+        let report = drive_ai_exploration_pass(&runtime, &store, &bundle, &workspaces, &gate, tx)
+            .await
+            .unwrap();
         assert_eq!(report.halted_escape_suite_red, 1);
         assert_eq!(report.explorations_dispatched, 0);
         assert_eq!(report.findings_quarantined, 0);

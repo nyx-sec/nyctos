@@ -61,12 +61,8 @@ pub const DEFAULT_EXPLORATION_WALL_CLOCK: Duration = Duration::from_secs(15 * 60
 
 /// Default tool count exposed to the agent. Mirrors the four tool
 /// names this task registers under the agent loop.
-pub const DEFAULT_EXPLORATION_TOOL_NAMES: &[&str] = &[
-    "http.probe",
-    "fs.write_sentinel",
-    "shell.exec",
-    "record_exploration_finding",
-];
+pub const DEFAULT_EXPLORATION_TOOL_NAMES: &[&str] =
+    &["http.probe", "fs.write_sentinel", "shell.exec", "record_exploration_finding"];
 
 /// Configuration for one exploration run.
 #[derive(Debug, Clone)]
@@ -149,10 +145,7 @@ pub enum EscapeSuiteVerdict {
     Green,
     /// One or more fixtures escaped. `fixture` names the failing
     /// test; `reason` carries the short diagnostic for the banner.
-    Red {
-        fixture: String,
-        reason: String,
-    },
+    Red { fixture: String, reason: String },
 }
 
 /// Trait the binary implements to plug a real escape-suite runner
@@ -265,10 +258,7 @@ pub async fn run<R: AiRuntime + ?Sized>(
                 "[escape-suite RED] {fixture}: {reason} — AI exploration driver refused to start"
             );
             let _ = sink.send(AgentEvent::Ai {
-                data: AiEvent::TokenReceived {
-                    task_id: scope.task_id.clone(),
-                    token: banner,
-                },
+                data: AiEvent::TokenReceived { task_id: scope.task_id.clone(), token: banner },
             });
             return Ok(ExplorationOutcome::Halted {
                 reason: ExplorationHaltReason::EscapeSuiteRed { fixture, reason },
@@ -316,10 +306,7 @@ pub async fn run<R: AiRuntime + ?Sized>(
             hard = scope.run_cap_usd_micros,
         );
         let _ = sink.send(AgentEvent::Ai {
-            data: AiEvent::TokenReceived {
-                task_id: scope.task_id.clone(),
-                token: warn,
-            },
+            data: AiEvent::TokenReceived { task_id: scope.task_id.clone(), token: warn },
         });
     }
 
@@ -347,11 +334,7 @@ fn build_agent_task(scope: &ExplorationScope) -> AgentTask {
             .target_endpoints
             .iter()
             .map(|e| {
-                let desc = e
-                    .description
-                    .as_deref()
-                    .map(|d| format!(" — {d}"))
-                    .unwrap_or_default();
+                let desc = e.description.as_deref().map(|d| format!(" — {d}")).unwrap_or_default();
                 format!("- `{m} {u}`{desc}", m = e.method, u = e.url)
             })
             .collect::<Vec<_>>()
@@ -513,11 +496,7 @@ mod tests {
             tracker: Arc<dyn BudgetTracker>,
             cost_per_call: i64,
         ) -> Self {
-            Self {
-                outcomes: Mutex::new(outcomes),
-                tracker,
-                cost_per_call,
-            }
+            Self { outcomes: Mutex::new(outcomes), tracker, cost_per_call }
         }
     }
 
@@ -563,12 +542,8 @@ mod tests {
                     spent_usd_micros: spent,
                 });
             }
-            let mut next = self
-                .outcomes
-                .lock()
-                .unwrap()
-                .pop()
-                .expect("scripted agent loop: no more outcomes");
+            let mut next =
+                self.outcomes.lock().unwrap().pop().expect("scripted agent loop: no more outcomes");
             let cost = self.cost_per_call;
             let after = self.tracker.add_spend(&budget.run_id, budget.kind, cost).await?;
             if after > budget.cap_usd_micros {
@@ -648,17 +623,15 @@ mod tests {
                 cap: "AUTH_BYPASS".into(),
                 rationale: "GET admin endpoint accepts unauthenticated requests".into(),
                 endpoint: Some("GET /api/admin/orders".into()),
-                suggested_payload_hint: Some("curl -i http://127.0.0.1:3000/api/admin/orders".into()),
+                suggested_payload_hint: Some(
+                    "curl -i http://127.0.0.1:3000/api/admin/orders".into(),
+                ),
             },
             ExtractedAgentResult::ExplorationEvent {
                 message: "probed /rest/products for IDOR".into(),
             },
         ];
-        let rt = ScriptedAgentLoop::new(
-            vec![Ok(fake_result(extracted))],
-            tracker.clone(),
-            250_000,
-        );
+        let rt = ScriptedAgentLoop::new(vec![Ok(fake_result(extracted))], tracker.clone(), 250_000);
         let (tx, _rx) = broadcast::channel::<AgentEvent>(16);
         let outcome = run(&rt, &sample_scope(), &GreenGate, tx).await.expect("ok");
         match outcome {
@@ -775,10 +748,7 @@ mod tests {
         match outcome {
             ExplorationOutcome::Halted {
                 reason:
-                    ExplorationHaltReason::BudgetCapAlreadyReached {
-                        cap_usd_micros,
-                        spent_usd_micros,
-                    },
+                    ExplorationHaltReason::BudgetCapAlreadyReached { cap_usd_micros, spent_usd_micros },
             } => {
                 assert_eq!(cap_usd_micros, 1_000_000);
                 assert_eq!(spent_usd_micros, 1_500_000);
@@ -797,9 +767,7 @@ mod tests {
             10_000,
         );
         let (tx, _rx) = broadcast::channel::<AgentEvent>(8);
-        let err = run(&rt, &sample_scope(), &GreenGate, tx)
-            .await
-            .expect_err("upstream");
+        let err = run(&rt, &sample_scope(), &GreenGate, tx).await.expect_err("upstream");
         assert!(matches!(err, AiError::UpstreamRefused(_)));
     }
 

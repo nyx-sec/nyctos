@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::PerformanceConfig;
 use crate::repo::IngestedRepo;
+use crate::time::now_epoch_ms;
 
 mod workspace;
 
@@ -450,10 +451,6 @@ fn resolve_concurrency(override_value: Option<usize>, repo_count: usize) -> usiz
     std::cmp::max(1, std::cmp::min(cores / 2, repo_count))
 }
 
-fn now_epoch_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
-}
-
 static RUN_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Canonical run-id minter. Format: `run-<ms-hex>-<counter-hex>`.
@@ -646,11 +643,8 @@ mod tests {
                 Err(ScanLaneError::Failed("scanner crashed".to_string()))
             });
         let dispatcher = RunDispatcher::with_explicit(1, Duration::from_secs(5), None);
-        let bundle = dispatcher.dispatch::<dyn ScanLane<()>, ()>(
-            Run::with_id("run-fail"),
-            lane,
-            workspaces,
-        );
+        let bundle =
+            dispatcher.dispatch::<dyn ScanLane<()>, ()>(Run::with_id("run-fail"), lane, workspaces);
         let b = bundle.per_repo.into_iter().next().expect("one bundle");
         match b.outcome {
             RepoOutcome::Failed(msg) => assert!(msg.contains("scanner crashed")),
@@ -672,11 +666,8 @@ mod tests {
                 }
             });
         let dispatcher = RunDispatcher::with_explicit(2, Duration::from_secs(1), None);
-        let bundle = dispatcher.dispatch::<dyn ScanLane<u32>, u32>(
-            Run::with_id("run-cg"),
-            lane,
-            workspaces,
-        );
+        let bundle =
+            dispatcher.dispatch::<dyn ScanLane<u32>, u32>(Run::with_id("run-cg"), lane, workspaces);
         assert_eq!(bundle.callgraph.nodes, vec!["ok".to_string()]);
         assert!(bundle.callgraph.edges.is_empty(), "edges deferred to Phase 17");
         assert_eq!(bundle.counts().succeeded, 1);
@@ -722,11 +713,8 @@ mod tests {
             Arc::clone(&lane),
             workspaces.clone(),
         );
-        let bundle_b = dispatcher.dispatch::<dyn ScanLane<_>, _>(
-            Run::with_id("run-second"),
-            lane,
-            workspaces,
-        );
+        let bundle_b =
+            dispatcher.dispatch::<dyn ScanLane<_>, _>(Run::with_id("run-second"), lane, workspaces);
         let ids_a = ids_from("run-first", &bundle_a);
         let ids_b = ids_from("run-second", &bundle_b);
         assert_eq!(ids_a, ids_b, "finding ids must be run-id independent");
