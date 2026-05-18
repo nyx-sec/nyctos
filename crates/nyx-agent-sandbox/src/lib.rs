@@ -21,11 +21,15 @@ use std::time::Duration;
 use thiserror::Error;
 
 pub mod backend;
+pub mod payload_runner;
 pub mod shim;
 pub mod workspace;
 
 pub use backend::birdcage::BirdcageSandbox;
 pub use backend::process::ProcessSandbox;
+pub use payload_runner::{
+    HarnessSource, HarnessSpecInput, PayloadRun, PayloadRunner, PayloadRunnerError,
+};
 
 /// Which backend produced (or is about to produce) a [`SandboxOutcome`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

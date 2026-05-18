@@ -469,7 +469,7 @@ async fn drive_scan(
         &secrets,
         &bundle,
         &workspaces_for_ai,
-        events,
+        events.clone(),
     )
     .await
     {
@@ -492,6 +492,42 @@ async fn drive_scan(
             }
         }
         Err(err) => tracing::warn!(error = %err, "novel finding discovery pass failed"),
+    }
+
+    // Phase 19: drive the deterministic payload runner across every
+    // finding (and AI-discovered candidate) that has a payload+spec
+    // pair ready. Confirms or rejects each row under differential
+    // rule v1; Quarantined candidates flip to Promoted on Confirmed.
+    match ai_pipeline::run_payload_verification_pass(
+        &config.run,
+        &config.sandbox,
+        store,
+        &bundle,
+        &workspaces_for_ai,
+        events,
+    )
+    .await
+    {
+        Ok(report) => {
+            if verbose
+                && (report.confirmed > 0
+                    || report.not_confirmed > 0
+                    || report.errored > 0
+                    || report.candidates_promoted > 0
+                    || report.failed > 0)
+            {
+                println!(
+                    "scan: verifier - {} confirmed, {} not-confirmed, {} errored, {} candidates promoted, {} failed ({} skipped no-payload)",
+                    report.confirmed,
+                    report.not_confirmed,
+                    report.errored,
+                    report.candidates_promoted,
+                    report.failed,
+                    report.skipped_no_payload,
+                );
+            }
+        }
+        Err(err) => tracing::warn!(error = %err, "verifier pass failed"),
     }
 
     let counts = bundle.counts();

@@ -29,6 +29,12 @@ impl FindingStatus {
 pub enum FindingOrigin {
     Static,
     Ai,
+    /// AI-discovered candidate finding that the Phase 19 verifier
+    /// promoted from `candidate_findings.Pending` to a real `findings`
+    /// row. Distinct from the bare `Ai` variant because the originating
+    /// signal is the agent's source-code exploration, not a static-pass
+    /// diag the agent later annotated.
+    AiExploration,
     Manual,
 }
 
@@ -37,6 +43,7 @@ impl FindingOrigin {
         match self {
             FindingOrigin::Static => "Static",
             FindingOrigin::Ai => "AI",
+            FindingOrigin::AiExploration => "AiExploration",
             FindingOrigin::Manual => "Manual",
         }
     }
@@ -407,6 +414,30 @@ impl<'a> FindingStore<'a> {
         .bind(spec_id)
         .bind(attack_provenance)
         .bind(prompt_version)
+        .bind(id)
+        .execute(self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Stamp the Phase 19 verifier outcome on `id`: flips `status`
+    /// (Verified for Confirmed, Closed for NotConfirmed, untouched for
+    /// Errored — the caller passes the row's existing status in that
+    /// case) and overwrites `verdict_blob` + `attack_provenance`.
+    pub async fn set_verify_result(
+        &self,
+        id: &str,
+        status: &str,
+        verdict_blob: &str,
+        attack_provenance: &str,
+    ) -> Result<(), StoreError> {
+        sqlx::query(
+            "UPDATE findings SET status = ?, verdict_blob = ?, attack_provenance = ? \
+             WHERE id = ?",
+        )
+        .bind(status)
+        .bind(verdict_blob)
+        .bind(attack_provenance)
         .bind(id)
         .execute(self.pool)
         .await?;

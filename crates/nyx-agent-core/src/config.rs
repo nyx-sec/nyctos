@@ -37,6 +37,7 @@ pub struct Config {
     pub ui: UiConfig,
     pub triggers: TriggersConfig,
     pub nyx: NyxConfig,
+    pub run: RunConfig,
     #[serde(rename = "repo", default)]
     pub repos: Vec<RepoConfig>,
 }
@@ -221,6 +222,17 @@ pub struct NyxConfig {
     pub min_version: Option<String>,
 }
 
+/// `[run]` section: Phase 19 verifier knobs.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RunConfig {
+    /// When `true`, the deterministic payload runner re-executes each
+    /// (vuln, benign) pair a second time and stamps `replay_stable` on
+    /// the resulting `VerifyResult`. Adds ~2× cost per verify; default
+    /// is `false` so the verifier stays fast on the happy path.
+    pub replay_stable_check: bool,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TriggersConfig {
@@ -336,6 +348,7 @@ mod tests {
                 binary_path: Some(PathBuf::from("/opt/nyx/bin/nyx")),
                 min_version: Some("0.2.0".to_string()),
             },
+            run: RunConfig { replay_stable_check: true },
             repos: vec![
                 RepoConfig {
                     name: "nyx-pro".to_string(),

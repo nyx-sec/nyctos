@@ -15,6 +15,7 @@ nyx-agent-ai = { path = "../nyx-agent-ai" }
 nyx-agent-api = { path = "../nyx-agent-api" }
 nyx-agent-core = { path = "../nyx-agent-core" }
 nyx-agent-nyx = { path = "../nyx-agent-nyx" }
+nyx-agent-sandbox = { path = "../nyx-agent-sandbox" }
 nyx-agent-types = { path = "../nyx-agent-types" }
 nyx-agent-ui = { path = "../nyx-agent-ui" }
 anyhow = { workspace = true }

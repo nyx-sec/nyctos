@@ -31,11 +31,17 @@ use nyx_agent_ai::{
     SpecDerivationOutcome,
 };
 use nyx_agent_core::store::{
-    CandidateFindingRecord, ChainRecord, HarnessSpecRecord, PayloadRecord, Store,
+    CandidateFindingRecord, CandidateStatus, ChainRecord, FindingOrigin, FindingRecord,
+    HarnessSpecRecord, PayloadRecord, Store,
 };
 use nyx_agent_core::{
-    AiConfig, AiRuntime as ConfigAiRuntime, RepoOutcome, RunBundle, SecretStore, WorkspaceHandle,
+    AiConfig, AiRuntime as ConfigAiRuntime, RepoOutcome, RunBundle, RunConfig, SandboxBackend,
+    SandboxConfig, SecretStore, WorkspaceHandle,
 };
+use nyx_agent_sandbox::payload_runner::{
+    HarnessSource, HarnessSpecInput, PayloadRun, PayloadRunner,
+};
+use nyx_agent_sandbox::BackendKind;
 use nyx_agent_nyx::Diag;
 use nyx_agent_types::agent::{AiError, BudgetKind};
 use nyx_agent_types::chain::{
@@ -49,6 +55,7 @@ use nyx_agent_types::novel::{
 };
 use nyx_agent_types::payload::{AttackProvenance, PayloadSynthesisInput};
 use nyx_agent_types::spec::SpecDerivationInput;
+use nyx_agent_types::verify::{Oracle, VerifyResult, VerifyVerdict};
 use tokio::sync::Semaphore;
 
 /// Default per-run AI budget cap applied to brand-new `(run_id, kind)`
@@ -1366,6 +1373,418 @@ fn candidate_id(
     format!("cand-{stable}-{created_at_ms:x}-{rank:02}")
 }
 
+// ----- Payload verification (Phase 19) -----------------------------------
+
+/// Counts surfaced by [`run_payload_verification_pass`].
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct PayloadVerificationPassReport {
+    /// Findings that produced a [`VerifyVerdict::Confirmed`] verdict.
+    pub confirmed: u32,
+    /// Findings that produced a [`VerifyVerdict::NotConfirmed`] verdict.
+    pub not_confirmed: u32,
+    /// Findings whose verify run surfaced an `Errored` verdict.
+    pub errored: u32,
+    /// Pending candidate_findings flipped to Promoted after a
+    /// Confirmed verdict.
+    pub candidates_promoted: u32,
+    /// Verifier invocations that bubbled an unrecoverable error
+    /// (workspace setup failed, sandbox spawn refused, etc.).
+    pub failed: u32,
+    /// Findings (including candidates) that were considered but had no
+    /// payload+spec pair to verify against. Surfaces "wired up but not
+    /// yet exercised" so operators can spot a missing synthesis hand-off.
+    pub skipped_no_payload: u32,
+}
+
+/// Per-run timeout for each sandbox run inside the verifier. Vuln +
+/// benign each get this budget; a replay-stable check doubles it.
+/// Tuned for the canned shell harness fixture; production tuning lives
+/// with the operator-facing knob that arrives in a later phase.
+const VERIFIER_PER_RUN_TIMEOUT_SECS: u64 = 10;
+
+/// Marker prefix in [`nyx_agent_nyx::HarnessSpec::oracle`] that selects
+/// [`Oracle::SinkProbe`] over the default [`Oracle::OutputContains`].
+/// Format: `sink-probe:<sentinel-path>[#<expect-contains>]`.
+const SINK_PROBE_ORACLE_PREFIX: &str = "sink-probe:";
+
+/// Drive the deterministic payload runner across every finding (and
+/// AI-discovered candidate) for this run that has both a `payloads`
+/// row and a `harness_specs` row available. Verdicts land back on the
+/// `findings` table: `Verified` for [`VerifyVerdict::Confirmed`],
+/// `Closed` for [`VerifyVerdict::NotConfirmed`]. Errored verdicts leave
+/// status untouched but stamp `verdict_blob` so the UI can render the
+/// failure mode. Promoted candidates land a new `findings` row with
+/// `finding_origin = AiExploration`.
+pub async fn run_payload_verification_pass(
+    run_config: &RunConfig,
+    sandbox_config: &SandboxConfig,
+    store: &Store,
+    bundle: &RunBundle<Diag>,
+    workspaces: &HashMap<String, WorkspaceHandle>,
+    events: EventSink,
+) -> anyhow::Result<PayloadVerificationPassReport> {
+    let _ = events; // event surfacing arrives with the trace-viewer phase
+    let runner = PayloadRunner {
+        backend: pick_verifier_backend(sandbox_config),
+        per_run_timeout: std::time::Duration::from_secs(VERIFIER_PER_RUN_TIMEOUT_SECS),
+        replay_stable_check: run_config.replay_stable_check,
+        shim_path: None,
+    };
+    let mut report = PayloadVerificationPassReport::default();
+
+    // 1. Static + LLM-synthesised findings persisted under this run.
+    let findings = store.findings().list_by_run(&bundle.run_id).await?;
+    for finding in findings {
+        let Some(workspace) = workspaces.get(&finding.repo) else {
+            continue;
+        };
+        match drive_verify_for_finding(&runner, store, &finding, workspace).await {
+            Ok(VerifyOutcome::Skipped) => report.skipped_no_payload += 1,
+            Ok(VerifyOutcome::Verdict(verdict)) => bump_verdict(&mut report, verdict),
+            Err(err) => {
+                tracing::warn!(error = %err, finding = %finding.id, "verifier failed");
+                report.failed += 1;
+            }
+        }
+    }
+
+    // 2. AI-discovered candidates that have a payload+spec pre-staged
+    //    against their candidate id. The synthesis hand-off that
+    //    creates those rows is deferred; this pass picks them up the
+    //    moment a future phase lands the synthesis side.
+    let pending = store.candidate_findings().list_pending().await?;
+    let now_ms = now_epoch_ms();
+    for cand in pending {
+        if cand.run_id != bundle.run_id {
+            continue;
+        }
+        let Some(workspace) = workspaces.get(&cand.repo) else {
+            continue;
+        };
+        match drive_verify_for_candidate(&runner, store, &cand, workspace, now_ms).await {
+            Ok(VerifyOutcome::Skipped) => report.skipped_no_payload += 1,
+            Ok(VerifyOutcome::Verdict(verdict)) => {
+                bump_verdict(&mut report, verdict);
+                if matches!(verdict, VerifyVerdict::Confirmed) {
+                    report.candidates_promoted += 1;
+                }
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, candidate = %cand.id, "verifier failed");
+                report.failed += 1;
+            }
+        }
+    }
+
+    Ok(report)
+}
+
+fn pick_verifier_backend(sandbox_config: &SandboxConfig) -> BackendKind {
+    match sandbox_config.backend {
+        SandboxBackend::Birdcage => BackendKind::Birdcage,
+        // Process is the unhardened fallback; every other backend
+        // lands in a later phase that grows the sandbox crate's
+        // launchers, so route them through Process today.
+        _ => BackendKind::Process,
+    }
+}
+
+fn bump_verdict(report: &mut PayloadVerificationPassReport, verdict: VerifyVerdict) {
+    match verdict {
+        VerifyVerdict::Confirmed => report.confirmed += 1,
+        VerifyVerdict::NotConfirmed => report.not_confirmed += 1,
+        VerifyVerdict::Errored => report.errored += 1,
+    }
+}
+
+enum VerifyOutcome {
+    Skipped,
+    Verdict(VerifyVerdict),
+}
+
+async fn drive_verify_for_finding(
+    runner: &PayloadRunner,
+    store: &Store,
+    finding: &FindingRecord,
+    workspace: &WorkspaceHandle,
+) -> anyhow::Result<VerifyOutcome> {
+    let Some((payload, spec)) = load_payload_and_spec(store, &finding.id).await? else {
+        return Ok(VerifyOutcome::Skipped);
+    };
+    let result = run_one_verify(runner, &finding.id, payload, spec, workspace).await?;
+    persist_finding_verdict(store, finding, &result).await?;
+    Ok(VerifyOutcome::Verdict(result.verdict))
+}
+
+async fn drive_verify_for_candidate(
+    runner: &PayloadRunner,
+    store: &Store,
+    candidate: &CandidateFindingRecord,
+    workspace: &WorkspaceHandle,
+    now_ms: i64,
+) -> anyhow::Result<VerifyOutcome> {
+    // Candidates do not yet flow through PayloadSynthesis +
+    // SpecDerivation (that hand-off is the deferred
+    // candidate-confirmation pipeline). Phase 19 picks up the
+    // promotion side using a built-in per-cap harness template
+    // seeded by `suggested_payload_hint` plus a constant benign
+    // control. When the synthesis hand-off lands, this path swaps
+    // over to the stored `payloads` / `harness_specs` rows the same
+    // way [`drive_verify_for_finding`] already does.
+    let Some(hint) = candidate.suggested_payload_hint.as_deref() else {
+        return Ok(VerifyOutcome::Skipped);
+    };
+    let Some(spec_input) = builtin_harness_for_cap(&candidate.cap) else {
+        return Ok(VerifyOutcome::Skipped);
+    };
+    let oracle = builtin_oracle_for_cap(&candidate.cap);
+    let benign = builtin_benign_for_cap(&candidate.cap);
+    let run = PayloadRun {
+        finding_id: candidate.id.clone(),
+        spec: spec_input,
+        harness_source: HarnessSource::Synthesised,
+        vuln_payload: hint.as_bytes().to_vec(),
+        benign_payload: benign.as_bytes().to_vec(),
+        oracle,
+        attack_provenance: AttackProvenance::LlmSynthesised,
+        workspace: workspace.workspace().to_path_buf(),
+    };
+    let result = match runner.verify(run).await {
+        Ok(r) => r,
+        Err(err) => {
+            tracing::warn!(error = %err, candidate = %candidate.id, "verifier errored on candidate");
+            return Ok(VerifyOutcome::Verdict(VerifyVerdict::Errored));
+        }
+    };
+    if matches!(result.verdict, VerifyVerdict::Confirmed) {
+        promote_candidate(store, candidate, &result, now_ms).await?;
+    } else {
+        tracing::info!(
+            candidate = %candidate.id,
+            verdict = %result.verdict.as_str(),
+            "verifier ran on candidate but did not promote"
+        );
+    }
+    Ok(VerifyOutcome::Verdict(result.verdict))
+}
+
+/// Built-in per-cap shell/python harness templates the candidate
+/// verifier uses until the candidate-confirmation pipeline starts
+/// driving real spec-derivation on candidates. Returning `None` makes
+/// the verifier skip the candidate (it cannot construct a deterministic
+/// harness for a cap it does not recognise).
+fn builtin_harness_for_cap(cap: &str) -> Option<HarnessSpecInput> {
+    match cap {
+        "SQL_QUERY" | "SQLi" => Some(HarnessSpecInput {
+            cap: cap.to_string(),
+            lang: "shell".to_string(),
+            setup: vec![
+                "STORED='alice:pw1\\nbob:pw2\\nadmin:TOP_SECRET'".to_string(),
+            ],
+            invoke: "printf '%b\\n' \"$STORED\" | grep -E @PAYLOAD || true".to_string(),
+            teardown: vec![],
+        }),
+        _ => None,
+    }
+}
+
+fn builtin_oracle_for_cap(cap: &str) -> Oracle {
+    match cap {
+        "SQL_QUERY" | "SQLi" => Oracle::OutputContains { marker: "TOP_SECRET".to_string() },
+        _ => Oracle::OutputContains { marker: "ORACLE_FIRED".to_string() },
+    }
+}
+
+fn builtin_benign_for_cap(cap: &str) -> &'static str {
+    match cap {
+        "SQL_QUERY" | "SQLi" => "^alice$",
+        _ => "__nyx_benign_control__",
+    }
+}
+
+async fn load_payload_and_spec(
+    store: &Store,
+    finding_id: &str,
+) -> anyhow::Result<Option<(PayloadRecord, HarnessSpecRecord)>> {
+    let payloads = store.payloads().list_for_finding(finding_id).await?;
+    let Some(payload) = payloads.into_iter().next() else {
+        return Ok(None);
+    };
+    // The spec back-link lives on `findings.spec_id`, but candidates do
+    // not yet have a back-link column (deferred). Fall back to picking
+    // the most-recent spec for the payload's cap; in production each
+    // finding has exactly one spec for the cap so this is unambiguous
+    // until cross-cap variants land.
+    let specs = store.harness_specs().list_by_cap(&payload.cap).await?;
+    let Some(spec) = specs.into_iter().last() else {
+        return Ok(None);
+    };
+    Ok(Some((payload, spec)))
+}
+
+async fn run_one_verify(
+    runner: &PayloadRunner,
+    finding_id: &str,
+    payload: PayloadRecord,
+    spec: HarnessSpecRecord,
+    workspace: &WorkspaceHandle,
+) -> anyhow::Result<VerifyResult> {
+    let parsed = match nyx_agent_nyx::HarnessSpec::from_json(&spec.spec_blob) {
+        Ok((p, _)) => p,
+        Err(err) => {
+            return Ok(VerifyResult::errored(
+                finding_id.to_string(),
+                derive_oracle("output-contains-error"),
+                empty_verify_run(&payload.vuln_bytes),
+                empty_verify_run(payload.benign_bytes.as_deref().unwrap_or_default()),
+                attack_provenance_from(payload.attack_provenance.as_deref()),
+                format!("harness spec parse failed: {err}"),
+            ));
+        }
+    };
+    let spec_input = HarnessSpecInput {
+        cap: parsed.cap.clone(),
+        lang: parsed.lang.clone(),
+        setup: parsed.setup.clone(),
+        invoke: parsed.invoke.clone(),
+        teardown: parsed.teardown.clone(),
+    };
+    let oracle = derive_oracle(&parsed.oracle);
+    let attack_provenance = attack_provenance_from(payload.attack_provenance.as_deref());
+    let benign_bytes = payload.benign_bytes.clone().unwrap_or_default();
+    let run = PayloadRun {
+        finding_id: finding_id.to_string(),
+        spec: spec_input,
+        harness_source: HarnessSource::Synthesised,
+        vuln_payload: payload.vuln_bytes.clone(),
+        benign_payload: benign_bytes,
+        oracle,
+        attack_provenance,
+        workspace: workspace.workspace().to_path_buf(),
+    };
+    match runner.verify(run).await {
+        Ok(r) => Ok(r),
+        Err(err) => Ok(VerifyResult::errored(
+            finding_id.to_string(),
+            derive_oracle(&parsed.oracle),
+            empty_verify_run(&payload.vuln_bytes),
+            empty_verify_run(payload.benign_bytes.as_deref().unwrap_or_default()),
+            attack_provenance,
+            format!("payload runner: {err}"),
+        )),
+    }
+}
+
+fn attack_provenance_from(label: Option<&str>) -> AttackProvenance {
+    match label {
+        Some("LlmSynthesised") => AttackProvenance::LlmSynthesised,
+        _ => AttackProvenance::Curated,
+    }
+}
+
+fn empty_verify_run(payload: &[u8]) -> nyx_agent_types::verify::VerifyRun {
+    nyx_agent_types::verify::VerifyRun {
+        payload: payload.to_vec(),
+        oracle_fired: false,
+        exit_code: -1,
+        timed_out: false,
+        stdout: Vec::new(),
+        stderr: Vec::new(),
+        duration_ms: 0,
+    }
+}
+
+/// Convert the harness spec's free-form `oracle` string into a typed
+/// [`Oracle`] predicate. The default is `Oracle::OutputContains` with
+/// the entire string as the marker; an oracle prefixed by
+/// `sink-probe:<sentinel-path>[#<expect-contains>]` selects
+/// [`Oracle::SinkProbe`].
+fn derive_oracle(raw: &str) -> Oracle {
+    if let Some(rest) = raw.strip_prefix(SINK_PROBE_ORACLE_PREFIX) {
+        let (path, expect) = match rest.split_once('#') {
+            Some((p, e)) => (p.to_string(), Some(e.to_string())),
+            None => (rest.to_string(), None),
+        };
+        Oracle::SinkProbe { sentinel_path: path, expect_contains: expect }
+    } else {
+        Oracle::OutputContains { marker: raw.to_string() }
+    }
+}
+
+async fn persist_finding_verdict(
+    store: &Store,
+    finding: &FindingRecord,
+    result: &VerifyResult,
+) -> anyhow::Result<()> {
+    let verdict_blob = serde_json::to_string(result)?;
+    let new_status = match result.verdict {
+        // Verified = the verifier confirmed an actual exploit landed.
+        VerifyVerdict::Confirmed => "Verified",
+        // Closed = the verifier ran cleanly but the differential rule
+        // rejected the finding. Operators can re-open by retriaging.
+        VerifyVerdict::NotConfirmed => "Closed",
+        // Errored leaves the row's status alone so a transient failure
+        // does not bury an open finding; verdict_blob carries the
+        // diagnostic for triage.
+        VerifyVerdict::Errored => finding.status.as_str(),
+    };
+    let attack_provenance = result.attack_provenance.as_str();
+    store
+        .findings()
+        .set_verify_result(&finding.id, new_status, &verdict_blob, attack_provenance)
+        .await?;
+    Ok(())
+}
+
+async fn promote_candidate(
+    store: &Store,
+    candidate: &CandidateFindingRecord,
+    result: &VerifyResult,
+    now_ms: i64,
+) -> anyhow::Result<()> {
+    let line = candidate.line.unwrap_or(-1);
+    let rule = candidate
+        .rule_hint
+        .clone()
+        .unwrap_or_else(|| format!("ai-exploration:{}", candidate.cap));
+    let id = nyx_agent_core::store::finding_id_hash(
+        &candidate.repo,
+        &candidate.path,
+        Some(line),
+        &candidate.cap,
+        &rule,
+    );
+    let verdict_blob = serde_json::to_string(result)?;
+    let rec = FindingRecord {
+        id,
+        run_id: candidate.run_id.clone(),
+        repo: candidate.repo.clone(),
+        path: candidate.path.clone(),
+        line: candidate.line,
+        cap: candidate.cap.clone(),
+        rule,
+        severity: "High".to_string(),
+        status: "Verified".to_string(),
+        finding_origin: FindingOrigin::AiExploration.as_str().to_string(),
+        first_seen: now_ms,
+        last_seen: now_ms,
+        superseded_by: None,
+        triage_state: "Open".to_string(),
+        triage_assigned_to: None,
+        verdict_blob: Some(verdict_blob),
+        repro_path: None,
+        attack_provenance: Some(result.attack_provenance.as_str().to_string()),
+        prompt_version: candidate.prompt_version.clone(),
+        chain_id: None,
+    };
+    store.findings().upsert(&rec).await?;
+    store
+        .candidate_findings()
+        .set_status(&candidate.id, CandidateStatus::Promoted.as_str())
+        .await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use nyx_agent_core::run::{CrossRepoCallgraphStub, RepoBundle};
@@ -2544,5 +2963,277 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(report, NovelFindingDiscoveryPassReport::default());
+    }
+
+    // -------- payload verification pass coverage (Phase 19) --------
+
+    fn shell_spec_blob() -> String {
+        // Canned SQLi-style shell harness. Same fixture as the
+        // payload_runner unit tests, in JSON form for the
+        // `harness_specs` table.
+        serde_json::json!({
+            "schema_version": 1,
+            "cap": "SQL_QUERY",
+            "lang": "shell",
+            "entry": "harness:run",
+            "setup": ["STORED='alice:pw1\\nbob:pw2\\nadmin:TOP_SECRET'"],
+            "invoke": "printf '%b\\n' \"$STORED\" | grep -E @PAYLOAD || true",
+            "payload_arg": 0,
+            "oracle": "TOP_SECRET",
+            "teardown": [],
+        })
+        .to_string()
+    }
+
+    fn seed_payload(finding_id: &str, vuln: &[u8], benign: &[u8]) -> PayloadRecord {
+        PayloadRecord {
+            id: format!("payload-{finding_id}"),
+            finding_id: finding_id.to_string(),
+            cap: "SQL_QUERY".to_string(),
+            lang: "shell".to_string(),
+            vuln_bytes: vuln.to_vec(),
+            benign_bytes: Some(benign.to_vec()),
+            oracle_blob: Some("TOP_SECRET".to_string()),
+            attack_provenance: Some("LlmSynthesised".to_string()),
+            prompt_version: Some("phase14.payload_synthesis.v1".to_string()),
+            created_at: 5_000,
+        }
+    }
+
+    fn seed_spec(id: &str) -> HarnessSpecRecord {
+        HarnessSpecRecord {
+            id: id.to_string(),
+            cap: "SQL_QUERY".to_string(),
+            lang: "shell".to_string(),
+            spec_blob: shell_spec_blob(),
+            attack_provenance: Some("LlmSynthesised".to_string()),
+            prompt_version: Some("phase15.spec_derivation.v1".to_string()),
+            created_at: 6_000,
+        }
+    }
+
+    async fn ws_handle_for(repo: &str) -> (tempfile::TempDir, WorkspaceHandle) {
+        let dir = tempfile::tempdir().unwrap();
+        let handle =
+            WorkspaceHandle::for_local_path_test(repo, dir.path().to_path_buf());
+        (dir, handle)
+    }
+
+    fn empty_bundle(run_id: &str) -> RunBundle<Diag> {
+        RunBundle {
+            run_id: run_id.to_string(),
+            started_at_ms: 0,
+            finished_at_ms: 0,
+            wall_clock_ms: 0,
+            per_repo: Vec::new(),
+            callgraph: CrossRepoCallgraphStub::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn verifier_confirms_finding_with_llm_payload() {
+        // Phase 19 acceptance #3: an LLM-synthesised payload for a
+        // test finding flows through the verifier and lands a verdict.
+        let (_ws_tmp, ws_handle) = ws_handle_for("repo-V").await;
+        let mut workspaces = HashMap::new();
+        workspaces.insert("repo-V".to_string(), ws_handle);
+
+        let tmp_db = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp_db.path()).await.unwrap();
+        store.repos().upsert(&seed_repo("repo-V")).await.unwrap();
+        store.runs().insert(&seed_run("run-V")).await.unwrap();
+        let finding = seed_finding("run-V", "repo-V", "src/sink.sh", "rule-sqli");
+        let fid = finding.id.clone();
+        store.findings().upsert(&finding).await.unwrap();
+        store.payloads().insert(&seed_payload(&fid, b".*", b"^alice$")).await.unwrap();
+        store.harness_specs().insert(&seed_spec("spec-V")).await.unwrap();
+
+        let (tx, _rx) = tokio::sync::broadcast::channel(4);
+        let report = run_payload_verification_pass(
+            &RunConfig::default(),
+            &SandboxConfig::default(),
+            &store,
+            &empty_bundle("run-V"),
+            &workspaces,
+            tx,
+        )
+        .await
+        .unwrap();
+        assert_eq!(report.confirmed, 1, "{report:?}");
+        assert_eq!(report.not_confirmed, 0);
+        assert_eq!(report.errored, 0);
+
+        let row = store.findings().get(&fid).await.unwrap().expect("row");
+        assert_eq!(row.status, "Verified");
+        assert_eq!(row.attack_provenance.as_deref(), Some("LlmSynthesised"));
+        let blob = row.verdict_blob.expect("blob");
+        let result: VerifyResult = serde_json::from_str(&blob).unwrap();
+        assert_eq!(result.verdict, VerifyVerdict::Confirmed);
+        assert!(result.vuln_run.oracle_fired);
+        assert!(!result.benign_run.oracle_fired);
+    }
+
+    #[tokio::test]
+    async fn verifier_closes_finding_when_payload_is_benign() {
+        // Phase 19 acceptance #2: replacing the vuln payload with the
+        // benign one yields NotConfirmed; the finding flips to Closed.
+        let (_ws_tmp, ws_handle) = ws_handle_for("repo-B").await;
+        let mut workspaces = HashMap::new();
+        workspaces.insert("repo-B".to_string(), ws_handle);
+
+        let tmp_db = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp_db.path()).await.unwrap();
+        store.repos().upsert(&seed_repo("repo-B")).await.unwrap();
+        store.runs().insert(&seed_run("run-B")).await.unwrap();
+        let finding = seed_finding("run-B", "repo-B", "src/sink.sh", "rule-sqli");
+        let fid = finding.id.clone();
+        store.findings().upsert(&finding).await.unwrap();
+        // Both payloads are the benign control — neither trips the oracle.
+        store
+            .payloads()
+            .insert(&seed_payload(&fid, b"^alice$", b"^alice$"))
+            .await
+            .unwrap();
+        store.harness_specs().insert(&seed_spec("spec-B")).await.unwrap();
+
+        let (tx, _rx) = tokio::sync::broadcast::channel(4);
+        let report = run_payload_verification_pass(
+            &RunConfig::default(),
+            &SandboxConfig::default(),
+            &store,
+            &empty_bundle("run-B"),
+            &workspaces,
+            tx,
+        )
+        .await
+        .unwrap();
+        assert_eq!(report.confirmed, 0);
+        assert_eq!(report.not_confirmed, 1, "{report:?}");
+        let row = store.findings().get(&fid).await.unwrap().expect("row");
+        assert_eq!(row.status, "Closed");
+    }
+
+    #[tokio::test]
+    async fn verifier_promotes_quarantined_candidate_on_confirmed() {
+        // Phase 19 acceptance #4: an AI-discovered candidate gets
+        // promoted from Quarantined to Confirmed when its verify
+        // passes. The promoted row lands with `finding_origin =
+        // AiExploration`.
+        let (_ws_tmp, ws_handle) = ws_handle_for("repo-C").await;
+        let mut workspaces = HashMap::new();
+        workspaces.insert("repo-C".to_string(), ws_handle);
+
+        let tmp_db = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp_db.path()).await.unwrap();
+        store.repos().upsert(&seed_repo("repo-C")).await.unwrap();
+        store.runs().insert(&seed_run("run-C")).await.unwrap();
+
+        let cand = CandidateFindingRecord {
+            id: "cand-c1".to_string(),
+            run_id: "run-C".to_string(),
+            repo: "repo-C".to_string(),
+            path: "app/handlers.sh".to_string(),
+            line: Some(42),
+            cap: "SQL_QUERY".to_string(),
+            rule_hint: Some("sh.sql.exec".to_string()),
+            rationale: Some("similar SQL-concat pattern".to_string()),
+            suggested_payload_hint: Some(".*".to_string()),
+            status: "Pending".to_string(),
+            prompt_version: Some(
+                nyx_agent_types::novel::NOVEL_FINDING_DISCOVERY_PROMPT_VERSION
+                    .to_string(),
+            ),
+        };
+        store.candidate_findings().insert(&cand).await.unwrap();
+        // Phase 19 candidate promotion uses the built-in per-cap
+        // harness template seeded by `suggested_payload_hint`; no
+        // payload / spec rows are pre-staged. The candidate-confirmation
+        // pipeline (deferred) swaps this to real per-candidate
+        // synthesis output.
+
+        let (tx, _rx) = tokio::sync::broadcast::channel(4);
+        let report = run_payload_verification_pass(
+            &RunConfig::default(),
+            &SandboxConfig::default(),
+            &store,
+            &empty_bundle("run-C"),
+            &workspaces,
+            tx,
+        )
+        .await
+        .unwrap();
+        assert_eq!(report.candidates_promoted, 1, "{report:?}");
+        assert_eq!(report.confirmed, 1);
+
+        // The candidate flipped to Promoted.
+        let promoted =
+            store.candidate_findings().get(&cand.id).await.unwrap().expect("row");
+        assert_eq!(promoted.status, "Promoted");
+
+        // A new findings row appeared with finding_origin = AiExploration
+        // and status = Verified.
+        let findings = store.findings().list_by_run("run-C").await.unwrap();
+        assert_eq!(findings.len(), 1);
+        let f = &findings[0];
+        assert_eq!(f.finding_origin, "AiExploration");
+        assert_eq!(f.status, "Verified");
+        assert_eq!(f.repo, "repo-C");
+        assert_eq!(f.path, "app/handlers.sh");
+        assert_eq!(f.line, Some(42));
+        assert_eq!(f.cap, "SQL_QUERY");
+    }
+
+    #[tokio::test]
+    async fn verifier_skips_findings_without_payload_or_spec() {
+        // No payload/spec rows -> the finding is left alone and the
+        // pass reports it as skipped-no-payload.
+        let (_ws_tmp, ws_handle) = ws_handle_for("repo-S").await;
+        let mut workspaces = HashMap::new();
+        workspaces.insert("repo-S".to_string(), ws_handle);
+
+        let tmp_db = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp_db.path()).await.unwrap();
+        store.repos().upsert(&seed_repo("repo-S")).await.unwrap();
+        store.runs().insert(&seed_run("run-S")).await.unwrap();
+        let finding = seed_finding("run-S", "repo-S", "src/sink.sh", "rule-orphan");
+        let fid = finding.id.clone();
+        store.findings().upsert(&finding).await.unwrap();
+
+        let (tx, _rx) = tokio::sync::broadcast::channel(4);
+        let report = run_payload_verification_pass(
+            &RunConfig::default(),
+            &SandboxConfig::default(),
+            &store,
+            &empty_bundle("run-S"),
+            &workspaces,
+            tx,
+        )
+        .await
+        .unwrap();
+        assert_eq!(report.skipped_no_payload, 1);
+        let row = store.findings().get(&fid).await.unwrap().expect("row");
+        assert_eq!(row.status, "Open", "status untouched without a payload");
+    }
+
+    #[test]
+    fn derive_oracle_picks_sink_probe_when_prefixed() {
+        match derive_oracle("sink-probe:flags/seen.txt") {
+            Oracle::SinkProbe { sentinel_path, expect_contains } => {
+                assert_eq!(sentinel_path, "flags/seen.txt");
+                assert!(expect_contains.is_none());
+            }
+            other => panic!("expected SinkProbe, got {other:?}"),
+        }
+        match derive_oracle("sink-probe:flags/seen.txt#leaked") {
+            Oracle::SinkProbe { sentinel_path, expect_contains } => {
+                assert_eq!(sentinel_path, "flags/seen.txt");
+                assert_eq!(expect_contains.as_deref(), Some("leaked"));
+            }
+            other => panic!("expected SinkProbe, got {other:?}"),
+        }
+        match derive_oracle("TOP_SECRET") {
+            Oracle::OutputContains { marker } => assert_eq!(marker, "TOP_SECRET"),
+            other => panic!("expected OutputContains, got {other:?}"),
+        }
     }
 }

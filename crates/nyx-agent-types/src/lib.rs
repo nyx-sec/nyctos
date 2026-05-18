@@ -18,3 +18,4 @@ pub use event::{
     AgentEvent, AiEvent, BudgetEvent, EventSink, EventStream, FindingEvent, QuarantineEvent,
     RepoOutcomeTag, ReproEvent, RunEvent, SandboxEvent,
 };
+pub use verify::{Oracle, VerifyResult, VerifyRun, VerifyVerdict};
