@@ -170,15 +170,52 @@ fn keyring_entry(service: &str, account: &str) -> Result<keyring::Entry, SecretE
         .map_err(|source| SecretError::Backend { account: account.to_string(), source })
 }
 
-/// Returns true if the given byte sequence looks like an Anthropic-style
-/// API key (`sk-ant-...`, `sk-...`, or any high-entropy `xxx_xxxxxxxx`).
+/// Known vendor-specific token prefixes. Matching is case-sensitive;
+/// upstream issuers all mint these in fixed case, so a case-insensitive
+/// match would only widen false positives.
+///
+/// Sources:
+/// * `sk-`, `sk_`: Anthropic and OpenAI style API keys.
+/// * `ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`: GitHub personal-access,
+///   OAuth, user-server, server, and refresh tokens.
+/// * `glpat-`: GitLab personal access tokens.
+/// * `xoxb-`, `xoxp-`, `xoxa-`, `xoxr-`, `xoxs-`: Slack bot, user,
+///   app, refresh, and signing tokens.
+/// * `AKIA`, `ASIA`: AWS long-lived and short-lived access key IDs.
+///   Paired with a minimum length so the bare four-letter prefix in
+///   normal prose does not trip the filter.
+const SECRET_PREFIXES: &[(&str, usize)] = &[
+    ("sk-", 8),
+    ("sk_", 8),
+    ("ghp_", 16),
+    ("gho_", 16),
+    ("ghu_", 16),
+    ("ghs_", 16),
+    ("ghr_", 16),
+    ("glpat-", 12),
+    ("xoxb-", 16),
+    ("xoxp-", 16),
+    ("xoxa-", 16),
+    ("xoxr-", 16),
+    ("xoxs-", 16),
+    ("AKIA", 20),
+    ("ASIA", 20),
+];
+
+/// Returns true if the given byte sequence looks like an issued credential.
 /// Used by the tracing redaction layer as a cheap pre-filter; callers
 /// that already know a value is a secret should redact it unconditionally.
 pub fn looks_like_secret(s: &str) -> bool {
     let trimmed = s.trim_matches(|c: char| c == '"' || c == '\'');
-    trimmed.starts_with("sk-")
-        || trimmed.starts_with("sk_")
-        || (trimmed.len() >= 32 && trimmed.contains('_'))
+    for (prefix, min_len) in SECRET_PREFIXES {
+        if trimmed.len() >= *min_len && trimmed.starts_with(prefix) {
+            return true;
+        }
+    }
+    // Fallback: 32+ char token containing an underscore. Catches
+    // workspace-scoped Anthropic keys without the `sk-` prefix and
+    // anything that follows the generic `prefix_random` convention.
+    trimmed.len() >= 32 && trimmed.contains('_')
 }
 
 #[cfg(test)]
@@ -192,6 +229,46 @@ mod tests {
         assert!(looks_like_secret("ghp_abcdefghijklmnopqrstuvwxyz0123"));
         assert!(!looks_like_secret("hello"));
         assert!(!looks_like_secret("nyx-agent"));
+    }
+
+    #[test]
+    fn looks_like_secret_recognises_vendor_prefixes() {
+        // GitHub fine-grained / oauth / user-server / server / refresh.
+        assert!(looks_like_secret("ghp_abcdefghijklmnopqrstuvwxyz0123"));
+        assert!(looks_like_secret("gho_abcdefghijklmnopqrstuvwxyz0123"));
+        assert!(looks_like_secret("ghu_abcdefghijklmnopqrstuvwxyz0123"));
+        assert!(looks_like_secret("ghs_abcdefghijklmnopqrstuvwxyz0123"));
+        assert!(looks_like_secret("ghr_abcdefghijklmnopqrstuvwxyz0123"));
+        // GitLab personal access token.
+        assert!(looks_like_secret("glpat-abcdEFGH1234ijkl"));
+        // Slack bot / user / app / refresh / signing tokens.
+        assert!(looks_like_secret("xoxb-1234567890-abcdefghij"));
+        assert!(looks_like_secret("xoxp-1234567890-abcdefghij"));
+        assert!(looks_like_secret("xoxa-1234567890-abcdefghij"));
+        assert!(looks_like_secret("xoxr-1234567890-abcdefghij"));
+        assert!(looks_like_secret("xoxs-1234567890-abcdefghij"));
+        // AWS long-lived and short-lived access key ids.
+        assert!(looks_like_secret("AKIAABCDEFGHIJKLMNOP"));
+        assert!(looks_like_secret("ASIAABCDEFGHIJKLMNOP"));
+    }
+
+    #[test]
+    fn looks_like_secret_skips_short_prose_matches() {
+        // The bare four-letter AWS prefixes appear in legitimate prose
+        // ("ASIA region", "AKIA module") and must not trip the filter
+        // without the full 20-char access-key id length.
+        assert!(!looks_like_secret("ASIA"));
+        assert!(!looks_like_secret("AKIA"));
+        // Same for short `sk-` / `glpat-` strings that are too short to
+        // be real credentials.
+        assert!(!looks_like_secret("sk-"));
+        assert!(!looks_like_secret("glpat-"));
+    }
+
+    #[test]
+    fn looks_like_secret_strips_surrounding_quotes() {
+        assert!(looks_like_secret("\"ghp_abcdefghijklmnopqrstuvwxyz0123\""));
+        assert!(looks_like_secret("'sk-ant-api03-aaaaa'"));
     }
 
     #[test]

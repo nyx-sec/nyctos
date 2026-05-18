@@ -264,6 +264,17 @@ fn validate_chains(
                 ));
             }
         }
+        // Real exploit chains never visit the same node twice in
+        // succession. A model that copies a node id N times produces
+        // a "1-step loop" with no analytic value.
+        for w in c.member_ids.windows(2) {
+            if w[0] == w[1] {
+                return Err(format!(
+                    "chain {i}: member_ids has consecutive duplicate {:?}",
+                    w[0]
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -568,6 +579,21 @@ mod tests {
         let bad = ok_body(&["a-entry"], "single step");
         let good = ok_body(&["a-entry", "b-sink"], "two step");
         let rt = ScriptedRuntime::new(vec![Ok(good), Ok(bad)], tracker.clone(), 800);
+        let (tx, _rx) = broadcast::channel::<AgentEvent>(8);
+        let outcome = run(&rt, &two_repo_input(), tx, 5_000_000).await.expect("ok");
+        assert!(matches!(outcome, ChainReasoningOutcome::Ranked { attempts: 2, .. }));
+    }
+
+    #[tokio::test]
+    async fn consecutive_duplicate_member_ids_are_rejected() {
+        let tracker = Arc::new(InMemoryBudgetTracker::new());
+        tracker.set_cap("run-1", BudgetKind::OneShot, 5_000_000);
+        // A model that copies the entry id N times produces a "1-step
+        // loop"; the validator must reject the chain so the retry path
+        // gets a chance to produce something analytic.
+        let bad = ok_body(&["a-entry", "a-entry", "b-sink"], "stuttered chain");
+        let good = ok_body(&["a-entry", "b-sink"], "clean chain");
+        let rt = ScriptedRuntime::new(vec![Ok(good), Ok(bad)], tracker.clone(), 600);
         let (tx, _rx) = broadcast::channel::<AgentEvent>(8);
         let outcome = run(&rt, &two_repo_input(), tx, 5_000_000).await.expect("ok");
         assert!(matches!(outcome, ChainReasoningOutcome::Ranked { attempts: 2, .. }));
