@@ -1,20 +1,30 @@
 <!-- nyx: verbatim -->
-# Nyx Pro
+# Nyctos
 
-Nyx Pro is a self-hosted security analysis daemon that wraps the `nyx`
+Nyctos is a self-hosted security analysis daemon that wraps the `nyx`
 scanner with an AI-driven exploit-synthesis layer and a full-environment
 sandbox. It runs continuously across your repositories, validates
 findings inside an isolated dev environment, and emits reproducible
 evidence for every exploitable finding.
 
-The shipping binary is `nyx-agent`.
+The shipping binary is `nyx-agent` (the binary will be renamed to `nyctos` in a future phase; see Naming + rename status below).
 <!-- /nyx: verbatim -->
+
+## Naming + rename status
+
+The product brand is **Nyctos** (Greek genitive of `Nyx`, literally "of-the-night"). The supporting cargo workspace, binary, config file, state directory, and service unit currently still use the legacy `nyx-agent` / `nyx-pro` identifiers. Renaming those to `nyctos` is queued as its own dedicated phase. Until that phase lands:
+
+- Public-facing prose, marketing, and design docs use **Nyctos**.
+- CLI invocations, file paths, and crate names in this README and in code still read as `nyx-agent` / `nyx-agent-core` / `nyx-agent.toml` / `~/.local/share/nyx-agent/` because that is what currently ships.
+- The OSS dynamic verification engine (`nyx`, GPL-3.0-or-later) keeps its name. The Nyctos rename only touches the commercial product layer that wraps it.
+
+See `.pitboss/nyctos-spec.md` for the target naming surface in full.
 
 ## Licensing
 
-Nyx Pro is **source-available** software, distributed under the PolyForm
+Nyctos is **source-available** software, distributed under the PolyForm
 Small Business License 1.0.0. The PolyForm license is not OSI-approved,
-so Nyx Pro is not OSS. Do not describe it as such in public
+so Nyctos is not OSS. Do not describe it as such in public
 communication.
 
 - Free for personal use, research, hobby projects, OSS contribution, and
