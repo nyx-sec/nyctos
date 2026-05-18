@@ -21,7 +21,6 @@ repository = "https://github.com/nyx/nyx-pro"
 [workspace.dependencies]
 tokio = { version = "1.42", features = ["full"] }
 axum = { version = "0.7", features = ["ws"] }
-tower = "0.5"
 tower-http = { version = "0.6", features = ["trace"] }
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
 tokio-tungstenite = "0.24"

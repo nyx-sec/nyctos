@@ -8,6 +8,7 @@ use axum::Json;
 use serde_json::json;
 use thiserror::Error;
 
+use nyx_agent_core::store::StoreError;
 use nyx_agent_core::Store;
 use nyx_agent_types::event::EventSink;
 
@@ -61,7 +62,7 @@ pub enum ApiError {
     #[error("bad request: {0}")]
     BadRequest(String),
     #[error("store error: {0}")]
-    Store(#[from] sqlx::Error),
+    Store(#[from] StoreError),
     #[error("scan trigger failed: {0}")]
     Scan(#[from] ScanTriggerError),
     #[error("internal: {0}")]

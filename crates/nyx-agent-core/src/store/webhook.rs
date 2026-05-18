@@ -2,6 +2,8 @@
 
 use sqlx::SqlitePool;
 
+use crate::store::StoreError;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WebhookRecord {
     pub id: String,
@@ -20,7 +22,7 @@ impl<'a> WebhookStore<'a> {
         Self { pool }
     }
 
-    pub async fn insert(&self, w: &WebhookRecord) -> Result<(), sqlx::Error> {
+    pub async fn insert(&self, w: &WebhookRecord) -> Result<(), StoreError> {
         let enabled = i64::from(w.enabled);
         sqlx::query!(
             r#"
@@ -38,7 +40,7 @@ impl<'a> WebhookStore<'a> {
         Ok(())
     }
 
-    pub async fn get(&self, id: &str) -> Result<Option<WebhookRecord>, sqlx::Error> {
+    pub async fn get(&self, id: &str) -> Result<Option<WebhookRecord>, StoreError> {
         let row = sqlx::query!(
             r#"
             SELECT id AS "id!", repo AS "repo!",
@@ -63,7 +65,7 @@ impl<'a> WebhookStore<'a> {
     pub async fn list_enabled_for_repo(
         &self,
         repo: &str,
-    ) -> Result<Vec<WebhookRecord>, sqlx::Error> {
+    ) -> Result<Vec<WebhookRecord>, StoreError> {
         let rows = sqlx::query!(
             r#"
             SELECT id AS "id!", repo AS "repo!",

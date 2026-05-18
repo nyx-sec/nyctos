@@ -305,11 +305,19 @@ mod tests {
     use crate::repo::{ingest, Repo, RepoSource};
 
     fn have_git() -> bool {
-        StdCommand::new("git")
+        let ok = StdCommand::new("git")
             .arg("--version")
             .output()
             .map(|o| o.status.success())
-            .unwrap_or(false)
+            .unwrap_or(false);
+        // CI must catch missing-git regressions rather than silently
+        // skip the suite. The `CI` env var is set by GitHub Actions and
+        // virtually every other hosted runner; local dev keeps the
+        // skip-on-missing behaviour.
+        if !ok && std::env::var("CI").is_ok() {
+            panic!("CI=true but `git --version` did not succeed; install git in the test environment");
+        }
+        ok
     }
 
     fn init_bare(path: &Path) {

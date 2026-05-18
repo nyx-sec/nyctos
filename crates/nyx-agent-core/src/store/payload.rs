@@ -2,6 +2,8 @@
 
 use sqlx::SqlitePool;
 
+use crate::store::StoreError;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PayloadRecord {
     pub id: String,
@@ -25,7 +27,7 @@ impl<'a> PayloadStore<'a> {
         Self { pool }
     }
 
-    pub async fn insert(&self, p: &PayloadRecord) -> Result<(), sqlx::Error> {
+    pub async fn insert(&self, p: &PayloadRecord) -> Result<(), StoreError> {
         sqlx::query!(
             r#"
             INSERT INTO payloads (
@@ -49,7 +51,7 @@ impl<'a> PayloadStore<'a> {
         Ok(())
     }
 
-    pub async fn get(&self, id: &str) -> Result<Option<PayloadRecord>, sqlx::Error> {
+    pub async fn get(&self, id: &str) -> Result<Option<PayloadRecord>, StoreError> {
         let row = sqlx::query_as!(
             PayloadRecord,
             r#"
@@ -71,7 +73,7 @@ impl<'a> PayloadStore<'a> {
     pub async fn list_for_finding(
         &self,
         finding_id: &str,
-    ) -> Result<Vec<PayloadRecord>, sqlx::Error> {
+    ) -> Result<Vec<PayloadRecord>, StoreError> {
         let rows = sqlx::query_as!(
             PayloadRecord,
             r#"

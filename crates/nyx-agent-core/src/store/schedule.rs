@@ -2,6 +2,8 @@
 
 use sqlx::SqlitePool;
 
+use crate::store::StoreError;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScheduleRecord {
     pub id: String,
@@ -20,7 +22,7 @@ impl<'a> ScheduleStore<'a> {
         Self { pool }
     }
 
-    pub async fn insert(&self, s: &ScheduleRecord) -> Result<(), sqlx::Error> {
+    pub async fn insert(&self, s: &ScheduleRecord) -> Result<(), StoreError> {
         let enabled = i64::from(s.enabled);
         sqlx::query!(
             r#"
@@ -38,7 +40,7 @@ impl<'a> ScheduleStore<'a> {
         Ok(())
     }
 
-    pub async fn get(&self, id: &str) -> Result<Option<ScheduleRecord>, sqlx::Error> {
+    pub async fn get(&self, id: &str) -> Result<Option<ScheduleRecord>, StoreError> {
         let row = sqlx::query!(
             r#"
             SELECT id AS "id!", repo, cron_expr AS "cron_expr!",
@@ -58,7 +60,7 @@ impl<'a> ScheduleStore<'a> {
         }))
     }
 
-    pub async fn list_enabled(&self) -> Result<Vec<ScheduleRecord>, sqlx::Error> {
+    pub async fn list_enabled(&self) -> Result<Vec<ScheduleRecord>, StoreError> {
         let rows = sqlx::query!(
             r#"
             SELECT id AS "id!", repo, cron_expr AS "cron_expr!",
@@ -80,14 +82,14 @@ impl<'a> ScheduleStore<'a> {
             .collect())
     }
 
-    pub async fn record_fired(&self, id: &str, fired_at: i64) -> Result<(), sqlx::Error> {
+    pub async fn record_fired(&self, id: &str, fired_at: i64) -> Result<(), StoreError> {
         sqlx::query!("UPDATE schedules SET last_fired_at = ? WHERE id = ?", fired_at, id)
             .execute(self.pool)
             .await?;
         Ok(())
     }
 
-    pub async fn set_enabled(&self, id: &str, enabled: bool) -> Result<(), sqlx::Error> {
+    pub async fn set_enabled(&self, id: &str, enabled: bool) -> Result<(), StoreError> {
         let e = i64::from(enabled);
         sqlx::query!("UPDATE schedules SET enabled = ? WHERE id = ?", e, id)
             .execute(self.pool)

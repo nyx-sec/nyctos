@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 
+use crate::store::StoreError;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BudgetKind {
     OneShot,
@@ -39,7 +41,7 @@ impl<'a> BudgetStore<'a> {
         Self { pool }
     }
 
-    pub async fn upsert(&self, b: &BudgetRecord) -> Result<(), sqlx::Error> {
+    pub async fn upsert(&self, b: &BudgetRecord) -> Result<(), StoreError> {
         let halted = i64::from(b.halted);
         sqlx::query!(
             r#"
@@ -64,7 +66,7 @@ impl<'a> BudgetStore<'a> {
         Ok(())
     }
 
-    pub async fn get(&self, run_id: &str, kind: &str) -> Result<Option<BudgetRecord>, sqlx::Error> {
+    pub async fn get(&self, run_id: &str, kind: &str) -> Result<Option<BudgetRecord>, StoreError> {
         let row = sqlx::query!(
             r#"
             SELECT run_id AS "run_id!", kind AS "kind!",
@@ -89,7 +91,7 @@ impl<'a> BudgetStore<'a> {
         }))
     }
 
-    pub async fn list_for_run(&self, run_id: &str) -> Result<Vec<BudgetRecord>, sqlx::Error> {
+    pub async fn list_for_run(&self, run_id: &str) -> Result<Vec<BudgetRecord>, StoreError> {
         let rows = sqlx::query!(
             r#"
             SELECT run_id AS "run_id!", kind AS "kind!",
@@ -122,7 +124,7 @@ impl<'a> BudgetStore<'a> {
         run_id: &str,
         kind: &str,
         micros: i64,
-    ) -> Result<i64, sqlx::Error> {
+    ) -> Result<i64, StoreError> {
         let row = sqlx::query!(
             r#"
             UPDATE budgets

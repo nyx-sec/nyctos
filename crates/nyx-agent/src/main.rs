@@ -68,13 +68,18 @@ enum Command {
         /// Override the listen address from `[ui]`.
         #[arg(long)]
         listen: Option<String>,
-        /// Do not launch a browser at startup.
+        /// Do not launch a browser at startup. Overrides `[ui].open_browser`.
         #[arg(long)]
         no_open: bool,
         /// Disable the embedded UI surface entirely (no browser launch
         /// and no future auth-protected mutation endpoints).
         #[arg(long)]
         headless: bool,
+        /// Override the browser launcher. The ready URL is appended as the
+        /// last argument. Useful in CI smoke tests that assert the URL
+        /// without launching a real browser (e.g. `--open-cmd /bin/echo`).
+        #[arg(long, value_name = "CMD")]
+        open_cmd: Option<String>,
     },
 }
 
@@ -109,15 +114,20 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
 
     let log_cfg = LogConfig::new(state_dir.logs(), cli.log_level.clone());
 
-    match cli.command.unwrap_or(Command::Serve { listen: None, no_open: false, headless: false }) {
+    match cli.command.unwrap_or(Command::Serve {
+        listen: None,
+        no_open: false,
+        headless: false,
+        open_cmd: None,
+    }) {
         Command::Doctor => doctor(&state_dir, &config_path, &log_cfg, &config).await,
         Command::Scan { repos } => {
             nyx_agent_core::init_logging(&log_cfg)?;
-            scan(&state_dir, &config, &repos, None, "Manual").await
+            scan(&state_dir, &config, &repos, "Manual").await
         }
-        Command::Serve { listen, no_open, headless } => {
+        Command::Serve { listen, no_open, headless, open_cmd } => {
             nyx_agent_core::init_logging(&log_cfg)?;
-            serve(state_dir, config, listen, no_open, headless).await
+            serve(state_dir, config, listen, no_open, headless, open_cmd).await
         }
         Command::Reverify { .. } | Command::Inspect { .. } | Command::Budget => {
             nyx_agent_core::init_logging(&log_cfg)?;
@@ -130,7 +140,6 @@ async fn scan(
     state_dir: &StateDir,
     config: &Config,
     requested: &[String],
-    events: Option<EventSink>,
     triggered_by: &str,
 ) -> anyhow::Result<ExitCode> {
     let selected = select_repos(config, requested)?;
@@ -140,11 +149,62 @@ async fn scan(
     }
 
     let store = Store::open(state_dir.root()).await?;
-    let state_repos = state_dir.repos();
-
     let run = Run::new(selected.iter().map(|r| r.name.clone()).collect());
-    let now_ms = now_epoch_ms();
-    let run_record = RunRecord {
+    let run_record = build_run_record(&run, triggered_by);
+    store.runs().insert(&run_record).await?;
+
+    // CLI scan has no live subscribers; emitting into a dropped sink would
+    // discard events, so build a self-owned bus to keep the event sink shape
+    // identical to the API path. The receiver immediately drops, which makes
+    // every send a no-op short of a clone.
+    let (events_tx, _events_rx) = broadcast::channel::<AgentEvent>(16);
+    let result = drive_scan(state_dir, config, &store, selected, &run, events_tx, true).await;
+
+    match result {
+        Ok(report) => {
+            print_scan_report(&report);
+            store.close().await;
+            Ok(if report.success { ExitCode::SUCCESS } else { ExitCode::from(1) })
+        }
+        Err(err) => {
+            store.close().await;
+            Err(err)
+        }
+    }
+}
+
+struct ScanReport {
+    run_id: String,
+    wall_clock_ms: i64,
+    succeeded: u32,
+    inconclusive: u32,
+    failed: u32,
+    success: bool,
+    per_repo: Vec<RepoReport>,
+}
+
+struct RepoReport {
+    repo: String,
+    outcome: nyx_agent_types::event::RepoOutcomeTag,
+    diags: usize,
+    elapsed_ms: i64,
+}
+
+fn print_scan_report(r: &ScanReport) {
+    println!(
+        "scan: run {} finished in {}ms - {} succeeded, {} inconclusive, {} failed",
+        r.run_id, r.wall_clock_ms, r.succeeded, r.inconclusive, r.failed,
+    );
+    for repo in &r.per_repo {
+        println!(
+            "  - {}: {:?} (diags: {}, {}ms)",
+            repo.repo, repo.outcome, repo.diags, repo.elapsed_ms,
+        );
+    }
+}
+
+fn build_run_record(run: &Run, triggered_by: &str) -> RunRecord {
+    RunRecord {
         id: run.id.clone(),
         started_at: run.started_at_ms,
         finished_at: None,
@@ -154,63 +214,95 @@ async fn scan(
         parent_run_id: None,
         wall_clock_ms: None,
         total_ai_spend_usd_micros: 0,
-    };
-    store.runs().insert(&run_record).await?;
+    }
+}
 
+/// Shared scan body for both the CLI `scan` subcommand and the API
+/// `complete_scan` task. Owns the ingest loop, dispatcher hand-off,
+/// persistence, and run-row finalisation. The `verbose` flag toggles
+/// the per-repo ingest println the CLI prints; the API path stays
+/// quiet because the WebSocket already streams `RepoStarted` /
+/// `RepoFinished` to subscribers.
+async fn drive_scan(
+    state_dir: &StateDir,
+    config: &Config,
+    store: &Store,
+    selected: Vec<Repo>,
+    run: &Run,
+    events: EventSink,
+    verbose: bool,
+) -> anyhow::Result<ScanReport> {
+    let now_ms = now_epoch_ms();
+    let state_repos = state_dir.repos();
     let mut ingest_failures: Vec<(String, IngestError)> = Vec::new();
     let mut workspaces: Vec<WorkspaceHandle> = Vec::new();
     for repo in &selected {
         match ingest(repo, &state_repos, &run.id).await {
             Ok(ingested) => {
-                upsert_repo_record(&store, &ingested, now_ms).await?;
-                println!(
-                    "scan: ingested {} -> {} (backend: {})",
-                    ingested.name,
-                    ingested.workspace.display(),
-                    match ingested.snapshot_backend {
-                        Some(b) => format!("{b:?}"),
-                        None => "git-clone".to_string(),
+                upsert_repo_record(store, &ingested, now_ms).await?;
+                if verbose {
+                    println!(
+                        "scan: ingested {} -> {} (backend: {})",
+                        ingested.name,
+                        ingested.workspace.display(),
+                        match ingested.snapshot_backend {
+                            Some(b) => format!("{b:?}"),
+                            None => "git-clone".to_string(),
+                        }
+                    );
+                    if let Some(remote) = &ingested.on_disk_git_remote {
+                        println!("  on-disk git remote: {remote}");
                     }
-                );
-                if let Some(remote) = &ingested.on_disk_git_remote {
-                    println!("  on-disk git remote: {remote}");
                 }
                 workspaces.push(WorkspaceHandle::new(ingested));
             }
             Err(err) => {
                 report_ingest_error(&repo.name, &err);
-                if let Some(sink) = &events {
-                    let _ = sink.send(AgentEvent::Run {
-                        data: RunEvent::RepoFailed {
-                            run_id: run.id.clone(),
-                            repo: repo.name.clone(),
-                            message: format!("ingest failed: {err}"),
-                            elapsed_ms: 0,
-                        },
-                    });
-                }
+                let _ = events.send(AgentEvent::Run {
+                    data: RunEvent::RepoFailed {
+                        run_id: run.id.clone(),
+                        repo: repo.name.clone(),
+                        message: format!("ingest failed: {err}"),
+                        elapsed_ms: 0,
+                    },
+                });
                 ingest_failures.push((repo.name.clone(), err));
             }
         }
     }
 
     if workspaces.is_empty() {
-        finalise_run(&store, &run.id, run.started_at_ms, 0, "Failed").await?;
-        store.close().await;
-        return Ok(ExitCode::from(1));
+        finalise_run(store, &run.id, run.started_at_ms, 0, "Failed").await?;
+        return Ok(ScanReport {
+            run_id: run.id.clone(),
+            wall_clock_ms: 0,
+            succeeded: 0,
+            inconclusive: 0,
+            failed: 0,
+            success: false,
+            per_repo: Vec::new(),
+        });
     }
 
     let lane = match build_scan_lane(config).await {
         Ok(lane) => Arc::new(lane),
         Err(err) => {
             eprintln!("scan: cannot build nyx lane: {err}");
-            finalise_run(&store, &run.id, run.started_at_ms, 0, "Failed").await?;
-            store.close().await;
-            return Ok(ExitCode::from(1));
+            finalise_run(store, &run.id, run.started_at_ms, 0, "Failed").await?;
+            return Ok(ScanReport {
+                run_id: run.id.clone(),
+                wall_clock_ms: 0,
+                succeeded: 0,
+                inconclusive: 0,
+                failed: 0,
+                success: false,
+                per_repo: Vec::new(),
+            });
         }
     };
 
-    let dispatcher = RunDispatcher::from_config(&config.performance, workspaces.len(), events);
+    let dispatcher =
+        RunDispatcher::from_config(&config.performance, workspaces.len(), Some(events));
     let run_for_dispatch = run.clone();
     let dispatch_handle = tokio::task::spawn_blocking(move || {
         dispatcher.dispatch::<NyxScanLane, Diag>(run_for_dispatch, lane, workspaces)
@@ -222,52 +314,50 @@ async fn scan(
     let bundle: RunBundle<Diag> = match dispatch_handle.await {
         Ok(b) => b,
         Err(join_err) => {
-            let _ = finalise_run(&store, &run.id, run.started_at_ms, 0, "Failed").await;
-            store.close().await;
+            let _ = finalise_run(store, &run.id, run.started_at_ms, 0, "Failed").await;
             return Err(anyhow::anyhow!("dispatch join error: {join_err}"));
         }
     };
 
-    if let Err(err) = persist_run_results(&store, &bundle).await {
+    if let Err(err) = persist_run_results(store, &bundle).await {
         let _ =
-            finalise_run(&store, &run.id, run.started_at_ms, bundle.wall_clock_ms, "Failed").await;
-        store.close().await;
+            finalise_run(store, &run.id, run.started_at_ms, bundle.wall_clock_ms, "Failed").await;
         return Err(err);
     }
 
     let counts = bundle.counts();
+    let success = counts.failed == 0 && ingest_failures.is_empty();
     finalise_run(
-        &store,
+        store,
         &run.id,
         run.started_at_ms,
         bundle.wall_clock_ms,
-        if counts.failed == 0 && ingest_failures.is_empty() { "Succeeded" } else { "Failed" },
+        if success { "Succeeded" } else { "Failed" },
     )
     .await?;
 
-    println!(
-        "scan: run {} finished in {}ms - {} succeeded, {} inconclusive, {} failed",
-        bundle.run_id, bundle.wall_clock_ms, counts.succeeded, counts.inconclusive, counts.failed,
-    );
-    for repo_bundle in &bundle.per_repo {
-        let n = match &repo_bundle.outcome {
-            RepoOutcome::Success(diags) => diags.len(),
-            _ => 0,
-        };
-        println!(
-            "  - {}: {:?} (diags: {}, {}ms)",
-            repo_bundle.repo,
-            repo_bundle.outcome.tag(),
-            n,
-            repo_bundle.elapsed_ms,
-        );
-    }
+    let per_repo = bundle
+        .per_repo
+        .iter()
+        .map(|b| RepoReport {
+            repo: b.repo.clone(),
+            outcome: b.outcome.tag(),
+            diags: match &b.outcome {
+                RepoOutcome::Success(diags) => diags.len(),
+                _ => 0,
+            },
+            elapsed_ms: b.elapsed_ms,
+        })
+        .collect();
 
-    store.close().await;
-    Ok(if counts.failed == 0 && ingest_failures.is_empty() {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::from(1)
+    Ok(ScanReport {
+        run_id: bundle.run_id,
+        wall_clock_ms: bundle.wall_clock_ms,
+        succeeded: counts.succeeded,
+        inconclusive: counts.inconclusive,
+        failed: counts.failed,
+        success,
+        per_repo,
     })
 }
 
@@ -277,6 +367,7 @@ async fn serve(
     listen_override: Option<String>,
     no_open: bool,
     headless: bool,
+    open_cmd: Option<String>,
 ) -> anyhow::Result<ExitCode> {
     let listen_addr = listen_override.unwrap_or_else(|| config.ui.listen_addr.clone());
     let store = Store::open(state_dir.root()).await?;
@@ -310,10 +401,25 @@ async fn serve(
     let url = format!("http://{local_addr}");
     println!("ready on {url}");
 
-    if !headless && !no_open {
-        if let Err(err) = webbrowser::open(&url) {
-            eprintln!("warn: could not open browser at {url}: {err}");
-        }
+    if !headless && !no_open && config.ui.open_browser {
+        let url_for_open = url.clone();
+        // `webbrowser::open` (and any custom `--open-cmd`) shell out
+        // through `xdg-open`/`open.exe` which can block while it talks
+        // to a display server. Run on a blocking thread so the HTTP
+        // accept loop returns to `axum::serve` without waiting.
+        tokio::task::spawn_blocking(move || {
+            if let Some(cmd) = open_cmd {
+                match std::process::Command::new(&cmd).arg(&url_for_open).status() {
+                    Ok(status) if status.success() => {}
+                    Ok(status) => eprintln!(
+                        "warn: open-cmd `{cmd}` exited with status {status}"
+                    ),
+                    Err(err) => eprintln!("warn: open-cmd `{cmd}` failed: {err}"),
+                }
+            } else if let Err(err) = webbrowser::open(&url_for_open) {
+                eprintln!("warn: could not open browser at {url_for_open}: {err}");
+            }
+        });
     }
 
     let shutdown = async {
@@ -380,111 +486,21 @@ async fn run_scan_for_api(
     let store = Store::open(state_dir.root()).await.map_err(internal_string)?;
 
     let run = Run::new(selected.iter().map(|r| r.name.clone()).collect());
-    let run_record = RunRecord {
-        id: run.id.clone(),
-        started_at: run.started_at_ms,
-        finished_at: None,
-        status: "Running".to_string(),
-        triggered_by: "UI".to_string(),
-        git_ref: None,
-        parent_run_id: None,
-        wall_clock_ms: None,
-        total_ai_spend_usd_micros: 0,
-    };
+    let run_record = build_run_record(&run, "UI");
     store.runs().insert(&run_record).await.map_err(internal_string)?;
 
     let run_id_out = run.id.clone();
     let cfg = config.clone();
     let sd = state_dir.clone();
-    let events_clone = events.clone();
     tokio::spawn(async move {
-        if let Err(err) =
-            complete_scan(&sd, &cfg, store, selected, run, events_clone).await
-        {
+        let res = drive_scan(&sd, &cfg, &store, selected, &run, events, false).await;
+        store.close().await;
+        if let Err(err) = res {
             eprintln!("scan (api): {err:#}");
         }
     });
 
     Ok(run_id_out)
-}
-
-async fn complete_scan(
-    state_dir: &StateDir,
-    config: &Config,
-    store: Store,
-    selected: Vec<Repo>,
-    run: Run,
-    events: EventSink,
-) -> anyhow::Result<()> {
-    let now_ms = now_epoch_ms();
-    let state_repos = state_dir.repos();
-    let mut ingest_failures: Vec<(String, IngestError)> = Vec::new();
-    let mut workspaces: Vec<WorkspaceHandle> = Vec::new();
-    for repo in &selected {
-        match ingest(repo, &state_repos, &run.id).await {
-            Ok(ingested) => {
-                upsert_repo_record(&store, &ingested, now_ms).await?;
-                workspaces.push(WorkspaceHandle::new(ingested));
-            }
-            Err(err) => {
-                report_ingest_error(&repo.name, &err);
-                let _ = events.send(AgentEvent::Run {
-                    data: RunEvent::RepoFailed {
-                        run_id: run.id.clone(),
-                        repo: repo.name.clone(),
-                        message: format!("ingest failed: {err}"),
-                        elapsed_ms: 0,
-                    },
-                });
-                ingest_failures.push((repo.name.clone(), err));
-            }
-        }
-    }
-
-    if workspaces.is_empty() {
-        finalise_run(&store, &run.id, run.started_at_ms, 0, "Failed").await?;
-        store.close().await;
-        return Ok(());
-    }
-
-    let lane = match build_scan_lane(config).await {
-        Ok(lane) => Arc::new(lane),
-        Err(err) => {
-            eprintln!("scan: cannot build nyx lane: {err}");
-            finalise_run(&store, &run.id, run.started_at_ms, 0, "Failed").await?;
-            store.close().await;
-            return Ok(());
-        }
-    };
-
-    let dispatcher =
-        RunDispatcher::from_config(&config.performance, workspaces.len(), Some(events.clone()));
-    let run_for_dispatch = run.clone();
-    let dispatch_handle = tokio::task::spawn_blocking(move || {
-        dispatcher.dispatch::<NyxScanLane, Diag>(run_for_dispatch, lane, workspaces)
-    });
-
-    let bundle: RunBundle<Diag> = match dispatch_handle.await {
-        Ok(b) => b,
-        Err(err) => {
-            let _ = finalise_run(&store, &run.id, run.started_at_ms, 0, "Failed").await;
-            store.close().await;
-            return Err(anyhow::anyhow!("dispatch join: {err}"));
-        }
-    };
-
-    persist_run_results(&store, &bundle).await?;
-    let counts = bundle.counts();
-    finalise_run(
-        &store,
-        &run.id,
-        run.started_at_ms,
-        bundle.wall_clock_ms,
-        if counts.failed == 0 && ingest_failures.is_empty() { "Succeeded" } else { "Failed" },
-    )
-    .await?;
-    store.close().await;
-    Ok(())
 }
 
 fn internal_string<E: std::fmt::Display>(e: E) -> ScanTriggerError {

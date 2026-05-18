@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 
+use crate::store::StoreError;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OperatorVerdict {
     Confirmed,
@@ -38,7 +40,7 @@ impl<'a> FeedbackStore<'a> {
         Self { pool }
     }
 
-    pub async fn insert(&self, f: &FeedbackRecord) -> Result<i64, sqlx::Error> {
+    pub async fn insert(&self, f: &FeedbackRecord) -> Result<i64, StoreError> {
         let row = sqlx::query!(
             r#"
             INSERT INTO feedback (finding_id, operator_verdict, notes, created_at)
@@ -58,7 +60,7 @@ impl<'a> FeedbackStore<'a> {
     pub async fn list_for_finding(
         &self,
         finding_id: &str,
-    ) -> Result<Vec<FeedbackRecord>, sqlx::Error> {
+    ) -> Result<Vec<FeedbackRecord>, StoreError> {
         let rows = sqlx::query!(
             r#"
             SELECT id AS "id!: i64", finding_id AS "finding_id!",

@@ -19,6 +19,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::broadcast::error::RecvError;
+use tower_http::trace::TraceLayer;
 
 use nyx_agent_core::store::{ChainRecord, FindingRecord, RepoRecord, RunRecord};
 use nyx_agent_types::event::{AgentEvent, RunEvent};
@@ -38,6 +39,7 @@ pub fn build_router(state: ServerState) -> Router {
         .route("/api/v1/findings/:id", get(get_finding))
         .route("/api/v1/chains/:id", get(get_chain))
         .route("/api/v1/events", get(events_ws))
+        .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
 

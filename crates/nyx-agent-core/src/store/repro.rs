@@ -2,6 +2,8 @@
 
 use sqlx::SqlitePool;
 
+use crate::store::StoreError;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReproBundleRecord {
     pub id: String,
@@ -22,7 +24,7 @@ impl<'a> ReproBundleStore<'a> {
         Self { pool }
     }
 
-    pub async fn insert(&self, b: &ReproBundleRecord) -> Result<(), sqlx::Error> {
+    pub async fn insert(&self, b: &ReproBundleRecord) -> Result<(), StoreError> {
         sqlx::query!(
             r#"
             INSERT INTO repro_bundles (
@@ -43,7 +45,7 @@ impl<'a> ReproBundleStore<'a> {
         Ok(())
     }
 
-    pub async fn get(&self, id: &str) -> Result<Option<ReproBundleRecord>, sqlx::Error> {
+    pub async fn get(&self, id: &str) -> Result<Option<ReproBundleRecord>, StoreError> {
         let row = sqlx::query_as!(
             ReproBundleRecord,
             r#"
@@ -63,7 +65,7 @@ impl<'a> ReproBundleStore<'a> {
     pub async fn list_for_finding(
         &self,
         finding_id: &str,
-    ) -> Result<Vec<ReproBundleRecord>, sqlx::Error> {
+    ) -> Result<Vec<ReproBundleRecord>, StoreError> {
         let rows = sqlx::query_as!(
             ReproBundleRecord,
             r#"
@@ -85,7 +87,7 @@ impl<'a> ReproBundleStore<'a> {
         id: &str,
         replay_at: i64,
         status: &str,
-    ) -> Result<(), sqlx::Error> {
+    ) -> Result<(), StoreError> {
         sqlx::query!(
             r#"
             UPDATE repro_bundles

@@ -4,6 +4,8 @@
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 
+use crate::store::StoreError;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FindingStatus {
     Open,
@@ -120,7 +122,7 @@ impl<'a> FindingStore<'a> {
         Self { pool }
     }
 
-    pub async fn upsert(&self, f: &FindingRecord) -> Result<(), sqlx::Error> {
+    pub async fn upsert(&self, f: &FindingRecord) -> Result<(), StoreError> {
         sqlx::query!(
             r#"
             INSERT INTO findings (
@@ -170,7 +172,7 @@ impl<'a> FindingStore<'a> {
         Ok(())
     }
 
-    pub async fn get(&self, id: &str) -> Result<Option<FindingRecord>, sqlx::Error> {
+    pub async fn get(&self, id: &str) -> Result<Option<FindingRecord>, StoreError> {
         let row = sqlx::query_as!(
             FindingRecord,
             r#"
@@ -197,7 +199,7 @@ impl<'a> FindingStore<'a> {
     pub async fn list_active_for_repo(
         &self,
         repo: &str,
-    ) -> Result<Vec<FindingRecord>, sqlx::Error> {
+    ) -> Result<Vec<FindingRecord>, StoreError> {
         let rows = sqlx::query_as!(
             FindingRecord,
             r#"
@@ -221,7 +223,7 @@ impl<'a> FindingStore<'a> {
         Ok(rows)
     }
 
-    pub async fn list_by_run(&self, run_id: &str) -> Result<Vec<FindingRecord>, sqlx::Error> {
+    pub async fn list_by_run(&self, run_id: &str) -> Result<Vec<FindingRecord>, StoreError> {
         let rows = sqlx::query_as!(
             FindingRecord,
             r#"
@@ -248,7 +250,7 @@ impl<'a> FindingStore<'a> {
         id: &str,
         state: &str,
         assignee: Option<&str>,
-    ) -> Result<(), sqlx::Error> {
+    ) -> Result<(), StoreError> {
         sqlx::query!(
             "UPDATE findings SET triage_state = ?, triage_assigned_to = ? WHERE id = ?",
             state,
@@ -260,21 +262,21 @@ impl<'a> FindingStore<'a> {
         Ok(())
     }
 
-    pub async fn set_chain(&self, id: &str, chain_id: &str) -> Result<(), sqlx::Error> {
+    pub async fn set_chain(&self, id: &str, chain_id: &str) -> Result<(), StoreError> {
         sqlx::query!("UPDATE findings SET chain_id = ? WHERE id = ?", chain_id, id)
             .execute(self.pool)
             .await?;
         Ok(())
     }
 
-    pub async fn supersede(&self, id: &str, by_id: &str) -> Result<(), sqlx::Error> {
+    pub async fn supersede(&self, id: &str, by_id: &str) -> Result<(), StoreError> {
         sqlx::query!("UPDATE findings SET superseded_by = ? WHERE id = ?", by_id, id)
             .execute(self.pool)
             .await?;
         Ok(())
     }
 
-    pub async fn delete(&self, id: &str) -> Result<u64, sqlx::Error> {
+    pub async fn delete(&self, id: &str) -> Result<u64, StoreError> {
         let res = sqlx::query!("DELETE FROM findings WHERE id = ?", id).execute(self.pool).await?;
         Ok(res.rows_affected())
     }

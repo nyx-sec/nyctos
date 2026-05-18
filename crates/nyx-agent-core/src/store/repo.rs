@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 
+use crate::store::StoreError;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SourceKind {
@@ -45,7 +47,7 @@ impl<'a> RepoStore<'a> {
         Self { pool }
     }
 
-    pub async fn upsert(&self, r: &RepoRecord) -> Result<(), sqlx::Error> {
+    pub async fn upsert(&self, r: &RepoRecord) -> Result<(), StoreError> {
         let i_own = i64::from(r.i_own_this);
         sqlx::query!(
             r#"
@@ -77,7 +79,7 @@ impl<'a> RepoStore<'a> {
         Ok(())
     }
 
-    pub async fn get(&self, name: &str) -> Result<Option<RepoRecord>, sqlx::Error> {
+    pub async fn get(&self, name: &str) -> Result<Option<RepoRecord>, StoreError> {
         let row = sqlx::query!(
             r#"
             SELECT name AS "name!", source_kind AS "source_kind!",
@@ -106,7 +108,7 @@ impl<'a> RepoStore<'a> {
         }))
     }
 
-    pub async fn list(&self) -> Result<Vec<RepoRecord>, sqlx::Error> {
+    pub async fn list(&self) -> Result<Vec<RepoRecord>, StoreError> {
         let rows = sqlx::query!(
             r#"
             SELECT name AS "name!", source_kind AS "source_kind!",
@@ -142,7 +144,7 @@ impl<'a> RepoStore<'a> {
         name: &str,
         run_id: &str,
         updated_at: i64,
-    ) -> Result<(), sqlx::Error> {
+    ) -> Result<(), StoreError> {
         sqlx::query!(
             "UPDATE repos SET last_scan_run_id = ?, updated_at = ? WHERE name = ?",
             run_id,
@@ -154,7 +156,7 @@ impl<'a> RepoStore<'a> {
         Ok(())
     }
 
-    pub async fn delete(&self, name: &str) -> Result<u64, sqlx::Error> {
+    pub async fn delete(&self, name: &str) -> Result<u64, StoreError> {
         let res = sqlx::query!("DELETE FROM repos WHERE name = ?", name).execute(self.pool).await?;
         Ok(res.rows_affected())
     }

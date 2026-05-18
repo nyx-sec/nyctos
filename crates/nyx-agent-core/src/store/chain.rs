@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 
+use crate::store::StoreError;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChainRecord {
     pub id: String,
@@ -23,7 +25,7 @@ impl<'a> ChainStore<'a> {
         Self { pool }
     }
 
-    pub async fn insert(&self, c: &ChainRecord) -> Result<(), sqlx::Error> {
+    pub async fn insert(&self, c: &ChainRecord) -> Result<(), StoreError> {
         let cross_repo = i64::from(c.cross_repo);
         sqlx::query!(
             r#"
@@ -45,7 +47,7 @@ impl<'a> ChainStore<'a> {
         Ok(())
     }
 
-    pub async fn get(&self, id: &str) -> Result<Option<ChainRecord>, sqlx::Error> {
+    pub async fn get(&self, id: &str) -> Result<Option<ChainRecord>, StoreError> {
         let row = sqlx::query!(
             r#"
             SELECT id AS "id!", run_id AS "run_id!",
@@ -69,12 +71,12 @@ impl<'a> ChainStore<'a> {
         }))
     }
 
-    pub async fn delete(&self, id: &str) -> Result<u64, sqlx::Error> {
+    pub async fn delete(&self, id: &str) -> Result<u64, StoreError> {
         let res = sqlx::query!("DELETE FROM chains WHERE id = ?", id).execute(self.pool).await?;
         Ok(res.rows_affected())
     }
 
-    pub async fn list_by_run(&self, run_id: &str) -> Result<Vec<ChainRecord>, sqlx::Error> {
+    pub async fn list_by_run(&self, run_id: &str) -> Result<Vec<ChainRecord>, StoreError> {
         let rows = sqlx::query!(
             r#"
             SELECT id AS "id!", run_id AS "run_id!",

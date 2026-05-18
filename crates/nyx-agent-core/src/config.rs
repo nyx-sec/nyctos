@@ -128,7 +128,11 @@ pub struct UiConfig {
 
 impl Default for UiConfig {
     fn default() -> Self {
-        Self { listen_addr: "127.0.0.1:8765".to_string(), open_browser: false }
+        // Plan: serve opens a browser on startup unless --no-open /
+        // --headless. Default this to true so users who never write
+        // `[ui].open_browser` keep the documented behaviour, and those
+        // who set it to false in nyx-agent.toml suppress the launch.
+        Self { listen_addr: "127.0.0.1:8765".to_string(), open_browser: true }
     }
 }
 

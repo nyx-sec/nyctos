@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 
+use crate::store::StoreError;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RunStatus {
     Pending,
@@ -67,7 +69,7 @@ impl<'a> RunStore<'a> {
         Self { pool }
     }
 
-    pub async fn insert(&self, r: &RunRecord) -> Result<(), sqlx::Error> {
+    pub async fn insert(&self, r: &RunRecord) -> Result<(), StoreError> {
         sqlx::query!(
             r#"
             INSERT INTO runs (
@@ -90,7 +92,7 @@ impl<'a> RunStore<'a> {
         Ok(())
     }
 
-    pub async fn get(&self, id: &str) -> Result<Option<RunRecord>, sqlx::Error> {
+    pub async fn get(&self, id: &str) -> Result<Option<RunRecord>, StoreError> {
         let row = sqlx::query_as!(
             RunRecord,
             r#"
@@ -109,7 +111,7 @@ impl<'a> RunStore<'a> {
         Ok(row)
     }
 
-    pub async fn list_by_status(&self, status: &str) -> Result<Vec<RunRecord>, sqlx::Error> {
+    pub async fn list_by_status(&self, status: &str) -> Result<Vec<RunRecord>, StoreError> {
         let rows = sqlx::query_as!(
             RunRecord,
             r#"
@@ -134,7 +136,7 @@ impl<'a> RunStore<'a> {
         finished_at: i64,
         status: &str,
         wall_clock_ms: i64,
-    ) -> Result<(), sqlx::Error> {
+    ) -> Result<(), StoreError> {
         sqlx::query!(
             r#"
             UPDATE runs
@@ -153,7 +155,7 @@ impl<'a> RunStore<'a> {
         Ok(())
     }
 
-    pub async fn add_spend(&self, id: &str, micros: i64) -> Result<(), sqlx::Error> {
+    pub async fn add_spend(&self, id: &str, micros: i64) -> Result<(), StoreError> {
         sqlx::query!(
             "UPDATE runs SET total_ai_spend_usd_micros = total_ai_spend_usd_micros + ? WHERE id = ?",
             micros,
@@ -164,7 +166,7 @@ impl<'a> RunStore<'a> {
         Ok(())
     }
 
-    pub async fn delete(&self, id: &str) -> Result<u64, sqlx::Error> {
+    pub async fn delete(&self, id: &str) -> Result<u64, StoreError> {
         let res = sqlx::query!("DELETE FROM runs WHERE id = ?", id).execute(self.pool).await?;
         Ok(res.rows_affected())
     }

@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 
+use crate::store::StoreError;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CandidateStatus {
     Pending,
@@ -44,7 +46,7 @@ impl<'a> CandidateFindingStore<'a> {
         Self { pool }
     }
 
-    pub async fn insert(&self, c: &CandidateFindingRecord) -> Result<(), sqlx::Error> {
+    pub async fn insert(&self, c: &CandidateFindingRecord) -> Result<(), StoreError> {
         sqlx::query!(
             r#"
             INSERT INTO candidate_findings (
@@ -69,7 +71,7 @@ impl<'a> CandidateFindingStore<'a> {
         Ok(())
     }
 
-    pub async fn get(&self, id: &str) -> Result<Option<CandidateFindingRecord>, sqlx::Error> {
+    pub async fn get(&self, id: &str) -> Result<Option<CandidateFindingRecord>, StoreError> {
         let row = sqlx::query_as!(
             CandidateFindingRecord,
             r#"
@@ -86,7 +88,7 @@ impl<'a> CandidateFindingStore<'a> {
         Ok(row)
     }
 
-    pub async fn list_pending(&self) -> Result<Vec<CandidateFindingRecord>, sqlx::Error> {
+    pub async fn list_pending(&self) -> Result<Vec<CandidateFindingRecord>, StoreError> {
         let rows = sqlx::query_as!(
             CandidateFindingRecord,
             r#"
@@ -102,7 +104,7 @@ impl<'a> CandidateFindingStore<'a> {
         Ok(rows)
     }
 
-    pub async fn set_status(&self, id: &str, status: &str) -> Result<(), sqlx::Error> {
+    pub async fn set_status(&self, id: &str, status: &str) -> Result<(), StoreError> {
         sqlx::query!("UPDATE candidate_findings SET status = ? WHERE id = ?", status, id)
             .execute(self.pool)
             .await?;

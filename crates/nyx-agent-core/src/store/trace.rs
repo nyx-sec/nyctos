@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 
+use crate::store::StoreError;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TaskKind {
     PayloadSynthesis,
@@ -52,7 +54,7 @@ impl<'a> AgentTraceStore<'a> {
         Self { pool }
     }
 
-    pub async fn insert(&self, t: &AgentTraceRecord) -> Result<(), sqlx::Error> {
+    pub async fn insert(&self, t: &AgentTraceRecord) -> Result<(), StoreError> {
         sqlx::query!(
             r#"
             INSERT INTO agent_traces (
@@ -82,7 +84,7 @@ impl<'a> AgentTraceStore<'a> {
         Ok(())
     }
 
-    pub async fn get(&self, id: &str) -> Result<Option<AgentTraceRecord>, sqlx::Error> {
+    pub async fn get(&self, id: &str) -> Result<Option<AgentTraceRecord>, StoreError> {
         let row = sqlx::query_as!(
             AgentTraceRecord,
             r#"
@@ -110,7 +112,7 @@ impl<'a> AgentTraceStore<'a> {
     pub async fn list_for_finding(
         &self,
         finding_id: &str,
-    ) -> Result<Vec<AgentTraceRecord>, sqlx::Error> {
+    ) -> Result<Vec<AgentTraceRecord>, StoreError> {
         let rows = sqlx::query_as!(
             AgentTraceRecord,
             r#"
@@ -138,7 +140,7 @@ impl<'a> AgentTraceStore<'a> {
     pub async fn list_by_task_kind(
         &self,
         kind: &str,
-    ) -> Result<Vec<AgentTraceRecord>, sqlx::Error> {
+    ) -> Result<Vec<AgentTraceRecord>, StoreError> {
         let rows = sqlx::query_as!(
             AgentTraceRecord,
             r#"
