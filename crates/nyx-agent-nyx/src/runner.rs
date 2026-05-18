@@ -50,10 +50,7 @@ impl NyxRunner {
         let binary = resolve_binary(config_override)?;
         let version = read_version(&binary).await?;
         if &version < min_version {
-            return Err(NyxError::VersionTooOld {
-                found: version,
-                required: min_version.clone(),
-            });
+            return Err(NyxError::VersionTooOld { found: version, required: min_version.clone() });
         }
         Ok(Self { binary, version })
     }
@@ -78,17 +75,11 @@ impl NyxRunner {
         let stdout_handle = tmp.reopen()?;
 
         let mut cmd = Command::new(&self.binary);
-        cmd.arg("scan")
-            .arg("--format")
-            .arg("json")
-            .arg("--no-index")
-            .arg(repo_path);
+        cmd.arg("scan").arg("--format").arg("json").arg("--no-index").arg(repo_path);
         if opts.verify {
             cmd.arg("--verify");
         }
-        cmd.stdin(Stdio::null())
-            .stdout(Stdio::from(stdout_handle))
-            .stderr(Stdio::piped());
+        cmd.stdin(Stdio::null()).stdout(Stdio::from(stdout_handle)).stderr(Stdio::piped());
 
         let mut child = cmd.spawn()?;
         let mut stderr_pipe = child.stderr.take().expect("stderr is piped");
@@ -104,9 +95,7 @@ impl NyxRunner {
                 Err(_) => {
                     let _ = child.start_kill();
                     let _ = child.wait().await;
-                    return Err(NyxError::ScanTimeout {
-                        timeout_secs: d.as_secs(),
-                    });
+                    return Err(NyxError::ScanTimeout { timeout_secs: d.as_secs() });
                 }
             },
             None => child.wait().await?,
@@ -122,10 +111,7 @@ impl NyxRunner {
 
         let bytes = tokio::fs::read(tmp.path()).await?;
         let diags = parse_diags(&bytes)?;
-        Ok(ScanOutcome {
-            diags,
-            stderr: stderr_text,
-        })
+        Ok(ScanOutcome { diags, stderr: stderr_text })
     }
 }
 
@@ -135,14 +121,12 @@ fn resolve_binary(config_override: Option<&Path>) -> Result<PathBuf, NyxError> {
             if p.is_file() {
                 Ok(p.to_path_buf())
             } else {
-                Err(NyxError::NyxNotFound {
-                    tried: Some(p.to_path_buf()),
-                })
+                Err(NyxError::NyxNotFound { tried: Some(p.to_path_buf()) })
             }
         }
-        Some(p) => which::which(p).map_err(|_| NyxError::NyxNotFound {
-            tried: Some(p.to_path_buf()),
-        }),
+        Some(p) => {
+            which::which(p).map_err(|_| NyxError::NyxNotFound { tried: Some(p.to_path_buf()) })
+        }
         None => which::which("nyx").map_err(|_| NyxError::NyxNotFound { tried: None }),
     }
 }
@@ -288,9 +272,7 @@ mod tests {
     async fn discover_missing_override_is_typed() {
         let bogus = PathBuf::from("/definitely/not/here/nyx-binary-xyz");
         let min = Version::parse(MINIMUM_NYX_VERSION).unwrap();
-        let err = NyxRunner::discover(Some(&bogus), &min)
-            .await
-            .expect_err("must fail");
+        let err = NyxRunner::discover(Some(&bogus), &min).await.expect_err("must fail");
         assert!(matches!(err, NyxError::NyxNotFound { .. }));
     }
 }

@@ -272,10 +272,7 @@ pub async fn validate_token_scopes(token: &str) -> Result<GhScopeCheck, IngestEr
     // accept a token of unknown power.
     let status = resp.status();
     if !status.is_success() {
-        return Err(IngestError::AuthScopeStatus {
-            url: url.to_string(),
-            status: status.as_u16(),
-        });
+        return Err(IngestError::AuthScopeStatus { url: url.to_string(), status: status.as_u16() });
     }
 
     let header = resp.headers().get("x-oauth-scopes").cloned();

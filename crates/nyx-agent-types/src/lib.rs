@@ -14,5 +14,5 @@ pub mod verify;
 
 pub use event::{
     AgentEvent, AiEvent, BudgetEvent, EventSink, EventStream, FindingEvent, QuarantineEvent,
-    ReproEvent, RunEvent, SandboxEvent,
+    RepoOutcomeTag, ReproEvent, RunEvent, SandboxEvent,
 };

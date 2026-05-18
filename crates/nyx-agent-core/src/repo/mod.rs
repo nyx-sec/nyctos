@@ -185,7 +185,7 @@ pub enum IngestError {
 
 /// Cleanup hook attached to an [`IngestedRepo`]. Local-path ingestions
 /// install one; git clones do not (the checkout is reused across runs).
-enum Cleanup {
+pub(crate) enum Cleanup {
     /// Recursively remove a directory at drop time. Used for the
     /// per-run local-path snapshot.
     RemoveSnapshot(PathBuf),
@@ -200,7 +200,7 @@ pub struct IngestedRepo {
     pub source: RepoSource,
     pub snapshot_backend: Option<SnapshotBackend>,
     pub on_disk_git_remote: Option<String>,
-    cleanup: Option<Cleanup>,
+    pub(crate) cleanup: Option<Cleanup>,
 }
 
 impl std::fmt::Debug for IngestedRepo {

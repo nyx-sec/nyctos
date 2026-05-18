@@ -1,12 +1,14 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
+use nyx_agent_core::store::{finding_id_hash, FindingRecord, RepoRecord, RunRecord};
 use nyx_agent_core::{
-    ingest, Config, IngestError, LogConfig, Repo, RepoSource, StateDir, Store,
+    ingest, Config, IngestError, IngestedRepo, LogConfig, Repo, RepoOutcome, RepoSource, Run,
+    RunBundle, RunDispatcher, StateDir, Store, WorkspaceHandle,
 };
-use nyx_agent_core::store::RepoRecord;
-use nyx_agent_nyx::{NyxError, NyxRunner, MINIMUM_NYX_VERSION};
+use nyx_agent_nyx::{Diag, NyxError, NyxRunner, NyxScanLane, MINIMUM_NYX_VERSION};
 use semver::Version;
 
 #[derive(Debug, Parser)]
@@ -122,27 +124,30 @@ async fn scan(
         return Ok(ExitCode::from(1));
     }
 
-    let state_repos = state_dir.repos();
     let store = Store::open(state_dir.root()).await?;
-    let run_id = run_id_now();
-    let mut had_error = false;
+    let state_repos = state_dir.repos();
 
+    let run = Run::new(selected.iter().map(|r| r.name.clone()).collect());
+    let now_ms = now_epoch_ms();
+    let run_record = RunRecord {
+        id: run.id.clone(),
+        started_at: run.started_at_ms,
+        finished_at: None,
+        status: "Running".to_string(),
+        triggered_by: "Manual".to_string(),
+        git_ref: None,
+        parent_run_id: None,
+        wall_clock_ms: None,
+        total_ai_spend_usd_micros: 0,
+    };
+    store.runs().insert(&run_record).await?;
+
+    let mut ingest_failures: Vec<(String, IngestError)> = Vec::new();
+    let mut workspaces: Vec<WorkspaceHandle> = Vec::new();
     for repo in &selected {
-        match ingest(repo, &state_repos, &run_id).await {
+        match ingest(repo, &state_repos, &run.id).await {
             Ok(ingested) => {
-                let now_ms = now_epoch_ms();
-                let rec = RepoRecord {
-                    name: ingested.name.clone(),
-                    source_kind: source_kind_str(&ingested.source).to_string(),
-                    source_url_or_path: source_url_or_path(&ingested.source),
-                    branch: branch_of(&ingested.source),
-                    auth_ref: auth_descriptor_of(&ingested.source),
-                    i_own_this: true,
-                    last_scan_run_id: None,
-                    created_at: now_ms,
-                    updated_at: now_ms,
-                };
-                store.repos().upsert(&rec).await?;
+                upsert_repo_record(&store, &ingested, now_ms).await?;
                 println!(
                     "scan: ingested {} -> {} (backend: {})",
                     ingested.name,
@@ -155,16 +160,160 @@ async fn scan(
                 if let Some(remote) = &ingested.on_disk_git_remote {
                     println!("  on-disk git remote: {remote}");
                 }
+                workspaces.push(WorkspaceHandle::new(ingested));
             }
             Err(err) => {
-                had_error = true;
                 report_ingest_error(&repo.name, &err);
+                ingest_failures.push((repo.name.clone(), err));
             }
         }
     }
 
+    if workspaces.is_empty() {
+        finalise_run(&store, &run.id, run.started_at_ms, 0, "Failed").await?;
+        store.close().await;
+        return Ok(ExitCode::from(1));
+    }
+
+    let lane = match build_scan_lane(config).await {
+        Ok(lane) => Arc::new(lane),
+        Err(err) => {
+            eprintln!("scan: cannot build nyx lane: {err}");
+            finalise_run(&store, &run.id, run.started_at_ms, 0, "Failed").await?;
+            store.close().await;
+            return Ok(ExitCode::from(1));
+        }
+    };
+
+    let dispatcher = RunDispatcher::from_config(&config.performance, workspaces.len(), None);
+    let run_for_dispatch = run.clone();
+    let bundle: RunBundle<Diag> = tokio::task::spawn_blocking(move || {
+        dispatcher.dispatch::<NyxScanLane, Diag>(run_for_dispatch, lane, workspaces)
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("dispatch join error: {e}"))?;
+
+    let counts = bundle.counts();
+    persist_run_results(&store, &bundle).await?;
+
+    finalise_run(
+        &store,
+        &run.id,
+        run.started_at_ms,
+        bundle.wall_clock_ms,
+        if counts.failed == 0 && ingest_failures.is_empty() { "Succeeded" } else { "Failed" },
+    )
+    .await?;
+
+    println!(
+        "scan: run {} finished in {}ms - {} succeeded, {} inconclusive, {} failed",
+        bundle.run_id, bundle.wall_clock_ms, counts.succeeded, counts.inconclusive, counts.failed,
+    );
+    for repo_bundle in &bundle.per_repo {
+        let n = match &repo_bundle.outcome {
+            RepoOutcome::Success(diags) => diags.len(),
+            _ => 0,
+        };
+        println!(
+            "  - {}: {:?} (diags: {}, {}ms)",
+            repo_bundle.repo,
+            repo_bundle.outcome.tag(),
+            n,
+            repo_bundle.elapsed_ms,
+        );
+    }
+
     store.close().await;
-    Ok(if had_error { ExitCode::from(1) } else { ExitCode::SUCCESS })
+    Ok(if counts.failed == 0 && ingest_failures.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    })
+}
+
+async fn build_scan_lane(config: &Config) -> anyhow::Result<NyxScanLane> {
+    let min = resolve_min_nyx_version(config)?;
+    let runner = NyxRunner::discover(config.nyx.binary_path.as_deref(), &min).await?;
+    Ok(NyxScanLane::new(runner))
+}
+
+async fn upsert_repo_record(
+    store: &Store,
+    ingested: &IngestedRepo,
+    now_ms: i64,
+) -> anyhow::Result<()> {
+    let rec = RepoRecord {
+        name: ingested.name.clone(),
+        source_kind: source_kind_str(&ingested.source).to_string(),
+        source_url_or_path: source_url_or_path(&ingested.source),
+        branch: branch_of(&ingested.source),
+        auth_ref: auth_descriptor_of(&ingested.source),
+        i_own_this: true,
+        last_scan_run_id: None,
+        created_at: now_ms,
+        updated_at: now_ms,
+    };
+    store.repos().upsert(&rec).await?;
+    Ok(())
+}
+
+async fn persist_run_results(store: &Store, bundle: &RunBundle<Diag>) -> anyhow::Result<()> {
+    let now_ms = now_epoch_ms();
+    for repo_bundle in &bundle.per_repo {
+        store.repos().set_last_scan(&repo_bundle.repo, &bundle.run_id, now_ms).await?;
+        if let RepoOutcome::Success(diags) = &repo_bundle.outcome {
+            for diag in diags {
+                let line = i64::from(diag.line);
+                let id = finding_id_hash(
+                    &repo_bundle.repo,
+                    &diag.path,
+                    Some(line),
+                    &diag.cap,
+                    &diag.rule,
+                );
+                let rec = FindingRecord {
+                    id,
+                    run_id: bundle.run_id.clone(),
+                    repo: repo_bundle.repo.clone(),
+                    path: diag.path.clone(),
+                    line: Some(line),
+                    cap: diag.cap.clone(),
+                    rule: diag.rule.clone(),
+                    severity: diag.severity.clone(),
+                    status: "Open".to_string(),
+                    finding_origin: "Static".to_string(),
+                    first_seen: now_ms,
+                    last_seen: now_ms,
+                    superseded_by: None,
+                    triage_state: "Open".to_string(),
+                    triage_assigned_to: None,
+                    verdict_blob: diag
+                        .message
+                        .as_ref()
+                        .map(|m| serde_json::json!({ "message": m }).to_string()),
+                    repro_path: None,
+                    attack_provenance: None,
+                    prompt_version: None,
+                    chain_id: None,
+                };
+                store.findings().upsert(&rec).await?;
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn finalise_run(
+    store: &Store,
+    run_id: &str,
+    started_at_ms: i64,
+    wall_clock_ms: i64,
+    status: &str,
+) -> anyhow::Result<()> {
+    let finished_at = now_epoch_ms();
+    let wall = if wall_clock_ms == 0 { finished_at - started_at_ms } else { wall_clock_ms };
+    store.runs().finish(run_id, finished_at, status, wall).await?;
+    Ok(())
 }
 
 fn select_repos(config: &Config, requested: &[String]) -> anyhow::Result<Vec<Repo>> {
@@ -235,14 +384,6 @@ fn now_epoch_ms() -> i64 {
         .unwrap_or(0)
 }
 
-fn run_id_now() -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    format!("run-{now}")
-}
-
 async fn doctor(
     state_dir: &StateDir,
     config_path: &std::path::Path,
@@ -275,7 +416,9 @@ async fn doctor(
         }
         Err(err @ NyxError::NyxNotFound { .. }) => {
             eprintln!("nyx FAIL: {err}");
-            eprintln!("  install the upstream `nyx` scanner and put it on PATH, or set [nyx].binary_path");
+            eprintln!(
+                "  install the upstream `nyx` scanner and put it on PATH, or set [nyx].binary_path"
+            );
             Ok(ExitCode::from(1))
         }
         Err(err @ NyxError::VersionTooOld { .. }) => {
@@ -290,12 +433,7 @@ async fn doctor(
 }
 
 fn resolve_min_nyx_version(config: &Config) -> anyhow::Result<Version> {
-    let raw = config
-        .nyx
-        .min_version
-        .as_deref()
-        .unwrap_or(MINIMUM_NYX_VERSION);
-    Version::parse(raw).map_err(|e| {
-        anyhow::anyhow!("[nyx].min_version `{raw}` is not a valid semver: {e}")
-    })
+    let raw = config.nyx.min_version.as_deref().unwrap_or(MINIMUM_NYX_VERSION);
+    Version::parse(raw)
+        .map_err(|e| anyhow::anyhow!("[nyx].min_version `{raw}` is not a valid semver: {e}"))
 }

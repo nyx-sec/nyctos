@@ -2,7 +2,6 @@
 //! IDs so re-running a scan over the same code converges on the same row.
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,18 +61,30 @@ impl TriageState {
 
 /// Stable hash for a finding row. Repeating a scan over the same
 /// `(repo, path, line, cap, rule)` tuple converges on the same id.
+///
+/// BLAKE3 over a NUL-delimited tuple, truncated to the first 16 hex
+/// characters (64 bits of state). The truncation is deliberate: UI rows
+/// quote the id and 64 hex characters wrap badly. 16 hex chars gives
+/// 2^32 expected pairs before a collision becomes more likely than not,
+/// which is well above the row counts a single deployment scans.
 pub fn finding_id_hash(repo: &str, path: &str, line: Option<i64>, cap: &str, rule: &str) -> String {
-    let mut h = Sha256::new();
+    let mut h = blake3::Hasher::new();
     h.update(repo.as_bytes());
     h.update(b"\0");
     h.update(path.as_bytes());
     h.update(b"\0");
-    h.update(line.unwrap_or(-1).to_le_bytes());
+    h.update(&line.unwrap_or(-1).to_le_bytes());
     h.update(b"\0");
     h.update(cap.as_bytes());
     h.update(b"\0");
     h.update(rule.as_bytes());
-    hex::encode(h.finalize())
+    let digest = h.finalize();
+    let bytes = digest.as_bytes();
+    let mut out = String::with_capacity(16);
+    for b in &bytes[..8] {
+        out.push_str(&format!("{b:02x}"));
+    }
+    out
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -288,6 +299,27 @@ mod tests {
         assert_eq!(a, b);
         let c = finding_id_hash("r", "p/x.rs", Some(11), "sqli", "rule-1");
         assert_ne!(a, c);
+    }
+
+    #[test]
+    fn stable_hash_is_16_hex_chars() {
+        let h = finding_id_hash("r", "p", Some(1), "c", "rule");
+        assert_eq!(h.len(), 16, "phase 06: hash truncated to 16 hex chars");
+        assert!(
+            h.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            "must be lowercase hex: {h}"
+        );
+    }
+
+    #[test]
+    fn stable_hash_distinguishes_each_field() {
+        let base = finding_id_hash("repo", "path", Some(7), "cap", "rule");
+        assert_ne!(base, finding_id_hash("REPO", "path", Some(7), "cap", "rule"));
+        assert_ne!(base, finding_id_hash("repo", "PATH", Some(7), "cap", "rule"));
+        assert_ne!(base, finding_id_hash("repo", "path", Some(8), "cap", "rule"));
+        assert_ne!(base, finding_id_hash("repo", "path", None, "cap", "rule"));
+        assert_ne!(base, finding_id_hash("repo", "path", Some(7), "CAP", "rule"));
+        assert_ne!(base, finding_id_hash("repo", "path", Some(7), "cap", "RULE"));
     }
 
     #[tokio::test]

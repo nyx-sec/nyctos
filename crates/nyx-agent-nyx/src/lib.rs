@@ -7,8 +7,10 @@
 
 pub mod diag;
 pub mod error;
+pub mod lane;
 pub mod runner;
 
 pub use diag::{Diag, FlowStep};
 pub use error::NyxError;
+pub use lane::NyxScanLane;
 pub use runner::{NyxRunner, ScanOptions, ScanOutcome, MINIMUM_NYX_VERSION};

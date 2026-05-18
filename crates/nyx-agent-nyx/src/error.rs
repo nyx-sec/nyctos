@@ -10,10 +10,7 @@ pub enum NyxError {
     NyxNotFound { tried: Option<PathBuf> },
 
     #[error("nyx version {found} is below the minimum supported version {required}")]
-    VersionTooOld {
-        found: semver::Version,
-        required: semver::Version,
-    },
+    VersionTooOld { found: semver::Version, required: semver::Version },
 
     #[error("could not parse nyx version output: {raw:?}")]
     UnparseableVersion { raw: String },

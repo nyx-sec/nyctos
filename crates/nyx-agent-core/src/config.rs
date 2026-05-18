@@ -59,11 +59,42 @@ impl Default for GeneralConfig {
 pub struct PerformanceConfig {
     pub max_parallel_scans: u32,
     pub scan_timeout_secs: u64,
+    /// Phase 06: explicit override for the per-run static-pass fan-out.
+    /// `None` -> dispatcher computes `min(num_cpus / 2, len(repos))`.
+    /// `Some(n)` -> use exactly `n.max(1)` parallel jobs.
+    #[serde(default)]
+    pub static_concurrency: Option<usize>,
+    /// Phase 06: per-repo budget for the static-pass scan. A scan that
+    /// exceeds the budget is killed and its repo bundle records
+    /// `Inconclusive(StaticPassTimeout)` while the rest of the run
+    /// continues. `None` -> 30 minutes.
+    #[serde(default)]
+    pub per_repo_timeout_secs: Option<u64>,
 }
 
 impl Default for PerformanceConfig {
     fn default() -> Self {
-        Self { max_parallel_scans: 4, scan_timeout_secs: 600 }
+        Self {
+            max_parallel_scans: 4,
+            scan_timeout_secs: 600,
+            static_concurrency: None,
+            per_repo_timeout_secs: None,
+        }
+    }
+}
+
+impl PerformanceConfig {
+    /// Resolved per-repo timeout. Falls back to 30 minutes when the
+    /// operator has not set `[performance] per_repo_timeout_secs`.
+    pub fn per_repo_timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.per_repo_timeout_secs.unwrap_or(30 * 60))
+    }
+
+    /// Resolved static-pass fan-out. Returns `None` when the operator
+    /// has not set `[performance] static_concurrency`; the dispatcher
+    /// then derives the default from CPU count and repo count.
+    pub fn static_concurrency_override(&self) -> Option<usize> {
+        self.static_concurrency.map(|n| n.max(1))
     }
 }
 
@@ -199,7 +230,12 @@ mod tests {
                 log_level: "debug".to_string(),
                 state_dir: Some(PathBuf::from("/tmp/nyx")),
             },
-            performance: PerformanceConfig { max_parallel_scans: 8, scan_timeout_secs: 1200 },
+            performance: PerformanceConfig {
+                max_parallel_scans: 8,
+                scan_timeout_secs: 1200,
+                static_concurrency: Some(2),
+                per_repo_timeout_secs: Some(45),
+            },
             sandbox: SandboxConfig { enabled: false, allow_network: true },
             ai: AiConfig {
                 provider: Some("anthropic".to_string()),
@@ -319,5 +355,36 @@ mod tests {
         let raw = "garbage_field = true\n";
         let err = Config::parse(raw, &PathBuf::from("<test>")).expect_err("must reject");
         assert!(matches!(err, ConfigError::Parse { .. }));
+    }
+
+    #[test]
+    fn performance_static_concurrency_and_per_repo_timeout_round_trip() {
+        let raw = "[performance]\nstatic_concurrency = 3\nper_repo_timeout_secs = 5\n";
+        let cfg = Config::parse(raw, &PathBuf::from("<test>")).expect("parse");
+        assert_eq!(cfg.performance.static_concurrency, Some(3));
+        assert_eq!(cfg.performance.per_repo_timeout_secs, Some(5));
+        assert_eq!(cfg.performance.per_repo_timeout(), std::time::Duration::from_secs(5));
+        assert_eq!(cfg.performance.static_concurrency_override(), Some(3));
+    }
+
+    #[test]
+    fn performance_omitted_overrides_fall_back() {
+        let cfg = Config::parse("", &PathBuf::from("<test>")).expect("parse");
+        assert!(cfg.performance.static_concurrency.is_none());
+        assert!(cfg.performance.per_repo_timeout_secs.is_none());
+        assert_eq!(cfg.performance.per_repo_timeout(), std::time::Duration::from_secs(30 * 60));
+        assert!(cfg.performance.static_concurrency_override().is_none());
+    }
+
+    #[test]
+    fn performance_static_concurrency_zero_floors_to_one() {
+        let cfg = Config {
+            performance: PerformanceConfig {
+                static_concurrency: Some(0),
+                ..PerformanceConfig::default()
+            },
+            ..Config::default()
+        };
+        assert_eq!(cfg.performance.static_concurrency_override(), Some(1));
     }
 }
