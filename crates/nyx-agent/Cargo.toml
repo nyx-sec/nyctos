@@ -18,6 +18,7 @@ nyx-agent-nyx = { path = "../nyx-agent-nyx" }
 nyx-agent-types = { path = "../nyx-agent-types" }
 nyx-agent-ui = { path = "../nyx-agent-ui" }
 anyhow = { workspace = true }
+async-trait = "0.1"
 axum = { workspace = true }
 clap = { workspace = true }
 semver = { workspace = true }

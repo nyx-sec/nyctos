@@ -12,6 +12,9 @@
 //! `evidence.flow_steps` after deserialization so callers can read it
 //! directly on `Diag` regardless of where upstream nests it.
 
+use std::path::Path;
+
+use nyx_agent_types::payload::SinkCtx;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -43,6 +46,55 @@ pub struct Diag {
 }
 
 impl Diag {
+    /// True when the static scanner flagged this diag with the
+    /// `Unsupported(NoPayloadsForCap)` marker. Phase 14's
+    /// PayloadSynthesis fan-out fires exactly on these rows.
+    ///
+    /// The marker is tolerated under two evidence-shape conventions:
+    /// `evidence.unsupported == "NoPayloadsForCap"` (current `nyx` shape)
+    /// and the fallback `evidence.reason == "NoPayloadsForCap"`.
+    pub fn is_unsupported_no_payloads(&self) -> bool {
+        self.evidence_string("unsupported").as_deref() == Some("NoPayloadsForCap")
+            || self.evidence_string("reason").as_deref() == Some("NoPayloadsForCap")
+    }
+
+    /// Best-effort sink context (callee + arg expressions + a code
+    /// excerpt around the sink line) built from `evidence.sink` and a
+    /// short read of the workspace source. Returns `None` only when
+    /// the source file cannot be read; callers can fall back to the
+    /// evidence-derived `callee` / `args` alone in that case.
+    pub fn sink_ctx(&self, workspace_root: &Path) -> SinkCtx {
+        let callee = self
+            .evidence_object("sink")
+            .and_then(|s| s.get("callee").or_else(|| s.get("name")))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| "unknown".to_string());
+        let args = self
+            .evidence_object("sink")
+            .and_then(|s| s.get("args").or_else(|| s.get("arguments")))
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+            .unwrap_or_default();
+        let excerpt = read_excerpt(workspace_root, &self.path, self.line)
+            .unwrap_or_else(|| "<source unavailable>".to_string());
+        SinkCtx { callee, args, excerpt }
+    }
+
+    fn evidence_string(&self, key: &str) -> Option<String> {
+        match &self.evidence {
+            Value::Object(map) => map.get(key).and_then(|v| v.as_str()).map(str::to_string),
+            _ => None,
+        }
+    }
+
+    fn evidence_object(&self, key: &str) -> Option<&Value> {
+        match &self.evidence {
+            Value::Object(map) => map.get(key),
+            _ => None,
+        }
+    }
+
     /// Walk `evidence.flow_steps` (if any) and materialise the typed
     /// `FlowStep` vector. Idempotent; safe to call more than once.
     pub fn lift_flow_steps(&mut self) {
@@ -60,6 +112,26 @@ impl Diag {
             self.flow_steps = parsed;
         }
     }
+}
+
+/// Read `±EXCERPT_RADIUS` lines around `line` from `workspace_root/path`.
+/// Returns `None` on any I/O error; callers fall back to a placeholder.
+fn read_excerpt(workspace_root: &Path, path: &str, line: u32) -> Option<String> {
+    const EXCERPT_RADIUS: u32 = 3;
+    let resolved = workspace_root.join(path);
+    let raw = std::fs::read_to_string(&resolved).ok()?;
+    let lines: Vec<&str> = raw.lines().collect();
+    if lines.is_empty() || line == 0 {
+        return None;
+    }
+    let idx = (line as usize).saturating_sub(1).min(lines.len().saturating_sub(1));
+    let lo = idx.saturating_sub(EXCERPT_RADIUS as usize);
+    let hi = (idx + EXCERPT_RADIUS as usize + 1).min(lines.len());
+    let mut out = String::new();
+    for (i, l) in lines[lo..hi].iter().enumerate() {
+        out.push_str(&format!("{:>4}: {l}\n", lo + i + 1));
+    }
+    Some(out)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -141,6 +213,74 @@ mod tests {
 
         d.lift_flow_steps(); // idempotency
         assert_eq!(d.flow_steps.len(), 2);
+    }
+
+    #[test]
+    fn unsupported_marker_detected_under_either_convention() {
+        let primary: Diag = serde_json::from_str(
+            r#"{"path":"a.py","line":1,"severity":"Low","id":"X","category":"Y",
+                "evidence":{"unsupported":"NoPayloadsForCap"}}"#,
+        )
+        .unwrap();
+        assert!(primary.is_unsupported_no_payloads());
+
+        let fallback: Diag = serde_json::from_str(
+            r#"{"path":"a.py","line":1,"severity":"Low","id":"X","category":"Y",
+                "evidence":{"reason":"NoPayloadsForCap"}}"#,
+        )
+        .unwrap();
+        assert!(fallback.is_unsupported_no_payloads());
+
+        let neither: Diag = serde_json::from_str(
+            r#"{"path":"a.py","line":1,"severity":"Low","id":"X","category":"Y",
+                "evidence":{"reason":"OtherThing"}}"#,
+        )
+        .unwrap();
+        assert!(!neither.is_unsupported_no_payloads());
+    }
+
+    #[test]
+    fn sink_ctx_lifts_callee_args_and_reads_excerpt() {
+        use std::io::Write;
+        let tmp = tempfile::tempdir().unwrap();
+        let file_path = tmp.path().join("vuln.py");
+        let mut f = std::fs::File::create(&file_path).unwrap();
+        writeln!(
+            f,
+            "def handler(q):\n    log.info(\"in\")\n    cursor.execute(\"SELECT * FROM users WHERE n='\" + q + \"'\")\n    log.info(\"out\")\n"
+        )
+        .unwrap();
+
+        let diag: Diag = serde_json::from_str(
+            r#"{
+                "path":"vuln.py","line":3,"severity":"High","id":"py.sql","category":"SQL_QUERY",
+                "evidence":{
+                    "unsupported":"NoPayloadsForCap",
+                    "sink":{"callee":"cursor.execute","args":["query"]}
+                }
+            }"#,
+        )
+        .unwrap();
+        assert!(diag.is_unsupported_no_payloads());
+        let ctx = diag.sink_ctx(tmp.path());
+        assert_eq!(ctx.callee, "cursor.execute");
+        assert_eq!(ctx.args, vec!["query".to_string()]);
+        // Excerpt should span lines 1..=4 (line 3 +/-3, clamped to file).
+        assert!(ctx.excerpt.contains("cursor.execute"), "got: {}", ctx.excerpt);
+        assert!(ctx.excerpt.contains("   3:"));
+    }
+
+    #[test]
+    fn sink_ctx_falls_back_when_source_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let diag: Diag = serde_json::from_str(
+            r#"{"path":"missing.py","line":3,"severity":"High","id":"x","category":"SQL_QUERY"}"#,
+        )
+        .unwrap();
+        let ctx = diag.sink_ctx(tmp.path());
+        assert_eq!(ctx.callee, "unknown");
+        assert!(ctx.args.is_empty());
+        assert!(ctx.excerpt.contains("<source unavailable>"));
     }
 
     #[test]

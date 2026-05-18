@@ -9,6 +9,7 @@
 
 pub mod adapter;
 pub mod runtime;
+pub mod tasks;
 
 pub use adapter::anthropic::{
     AnthropicSdkAdapter, ANTHROPIC_VERSION, DEFAULT_BASE_URL, DEFAULT_RANKING_MODEL,
@@ -19,4 +20,7 @@ pub use adapter::claude_code::{
 };
 pub use runtime::{
     deterministic_seed, AiRuntime, BudgetTracker, InMemoryBudgetTracker, SharedBudgetTracker,
+};
+pub use tasks::payload_synthesis::{
+    run as run_payload_synthesis, PayloadSynthesisOutcome,
 };

@@ -144,6 +144,12 @@ pub struct AiConfig {
     /// The API key itself is stored in the OS keychain, not in TOML.
     #[serde(default)]
     pub runtime: AiRuntime,
+    /// Phase 14: maximum number of in-flight `one_shot` AI calls per
+    /// run. PayloadSynthesis / SpecDerivation / ChainReasoning all
+    /// share this cap. `0` is floored to `1` by
+    /// [`AiConfig::max_concurrent_one_shot_resolved`].
+    #[serde(default = "default_max_concurrent_one_shot")]
+    pub max_concurrent_one_shot: u32,
 }
 
 impl Default for AiConfig {
@@ -153,7 +159,20 @@ impl Default for AiConfig {
             model: None,
             api_base: None,
             runtime: AiRuntime::default(),
+            max_concurrent_one_shot: default_max_concurrent_one_shot(),
         }
+    }
+}
+
+fn default_max_concurrent_one_shot() -> u32 {
+    4
+}
+
+impl AiConfig {
+    /// Floored fan-out used by run-time dispatchers. A configured `0`
+    /// would deadlock a semaphore acquire so we floor to `1`.
+    pub fn max_concurrent_one_shot_resolved(&self) -> usize {
+        self.max_concurrent_one_shot.max(1) as usize
     }
 }
 
@@ -305,6 +324,7 @@ mod tests {
                 model: Some("claude-opus-4-7".to_string()),
                 api_base: None,
                 runtime: AiRuntime::Anthropic,
+                max_concurrent_one_shot: 2,
             },
             ui: UiConfig { listen_addr: "0.0.0.0:9999".to_string(), open_browser: true },
             triggers: TriggersConfig {
@@ -438,6 +458,31 @@ mod tests {
         assert!(cfg.performance.per_repo_timeout_secs.is_none());
         assert_eq!(cfg.performance.per_repo_timeout(), std::time::Duration::from_secs(30 * 60));
         assert!(cfg.performance.static_concurrency_override().is_none());
+    }
+
+    #[test]
+    fn ai_max_concurrent_one_shot_default_is_four() {
+        let cfg = Config::parse("", &PathBuf::from("<test>")).expect("parse");
+        assert_eq!(cfg.ai.max_concurrent_one_shot, 4);
+        assert_eq!(cfg.ai.max_concurrent_one_shot_resolved(), 4);
+    }
+
+    #[test]
+    fn ai_max_concurrent_one_shot_zero_floors_to_one() {
+        let raw = "[ai]\nmax_concurrent_one_shot = 0\n";
+        let cfg = Config::parse(raw, &PathBuf::from("<test>")).expect("parse");
+        assert_eq!(cfg.ai.max_concurrent_one_shot, 0);
+        assert_eq!(cfg.ai.max_concurrent_one_shot_resolved(), 1);
+    }
+
+    #[test]
+    fn ai_max_concurrent_one_shot_roundtrips_through_toml() {
+        let raw = "[ai]\nmax_concurrent_one_shot = 8\n";
+        let cfg = Config::parse(raw, &PathBuf::from("<test>")).expect("parse");
+        assert_eq!(cfg.ai.max_concurrent_one_shot, 8);
+        let rendered = cfg.to_toml_string().expect("ser");
+        let back = Config::parse(&rendered, &PathBuf::from("<test>")).expect("roundtrip");
+        assert_eq!(back.ai.max_concurrent_one_shot, 8);
     }
 
     #[test]

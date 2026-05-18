@@ -28,6 +28,24 @@ impl WorkspaceHandle {
         Self { inner: Arc::new(ingested) }
     }
 
+    /// Build a synthetic handle pointing at `path`, with no cleanup
+    /// hook attached. Intended for binary / integration tests that
+    /// need to fan out per-repo work without going through `ingest`.
+    /// Production code paths always go through [`ingest`] +
+    /// [`WorkspaceHandle::new`].
+    pub fn for_local_path_test(name: impl Into<String>, path: impl Into<std::path::PathBuf>) -> Self {
+        let path: std::path::PathBuf = path.into();
+        let ingested = IngestedRepo {
+            name: name.into(),
+            workspace: path.clone(),
+            source: RepoSource::LocalPath { path },
+            snapshot_backend: None,
+            on_disk_git_remote: None,
+            cleanup: None,
+        };
+        Self::new(ingested)
+    }
+
     pub fn name(&self) -> &str {
         &self.inner.name
     }

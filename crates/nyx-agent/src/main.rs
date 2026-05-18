@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::future::Future;
 use std::io::IsTerminal;
 use std::path::PathBuf;
@@ -18,6 +19,8 @@ use nyx_agent_nyx::{Diag, NyxError, NyxRunner, NyxScanLane, MINIMUM_NYX_VERSION}
 use nyx_agent_types::event::{AgentEvent, EventSink, RunEvent};
 use semver::Version;
 use tokio::sync::{broadcast, mpsc, oneshot};
+
+mod ai_pipeline;
 
 const ANSI_RESET: &str = "\x1b[0m";
 const ANSI_NYX_GREEN: &str = "\x1b[38;2;46;160;103m";
@@ -283,7 +286,8 @@ async fn drive_scan(
                         println!("  on-disk git remote: {remote}");
                     }
                 }
-                workspaces.push(WorkspaceHandle::new(ingested));
+                let handle = WorkspaceHandle::new(ingested);
+                workspaces.push(handle);
             }
             Err(err) => {
                 report_ingest_error(&repo.name, &err);
@@ -330,8 +334,14 @@ async fn drive_scan(
         }
     };
 
+    // Clone every handle into a name-keyed map so the Phase-14
+    // payload-synthesis pass can read source after the dispatcher
+    // consumes the original `workspaces` Vec.
+    let workspaces_for_ai: HashMap<String, WorkspaceHandle> =
+        workspaces.iter().map(|w| (w.name().to_string(), w.clone())).collect();
+
     let dispatcher =
-        RunDispatcher::from_config(&config.performance, workspaces.len(), Some(events));
+        RunDispatcher::from_config(&config.performance, workspaces.len(), Some(events.clone()));
     let run_for_dispatch = run.clone();
     let dispatch_handle = tokio::task::spawn_blocking(move || {
         dispatcher.dispatch::<NyxScanLane, Diag>(run_for_dispatch, lane, workspaces)
@@ -352,6 +362,37 @@ async fn drive_scan(
         let _ =
             finalise_run(store, &run.id, run.started_at_ms, bundle.wall_clock_ms, "Failed").await;
         return Err(err);
+    }
+
+    // Phase 14: fan out PayloadSynthesis tasks against every diag the
+    // static pass flagged with `Unsupported(NoPayloadsForCap)`. No-op
+    // when the AI runtime is disabled or no key is configured.
+    let secrets = SecretStore::from_env();
+    match ai_pipeline::run_payload_synthesis_pass(
+        &config.ai,
+        store,
+        &secrets,
+        &bundle,
+        &workspaces_for_ai,
+        events,
+    )
+    .await
+    {
+        Ok(report) => {
+            if verbose
+                && (report.synthesised > 0 || report.quarantined > 0 || report.failed > 0)
+            {
+                println!(
+                    "scan: payload synthesis - {} synthesised, {} quarantined, {} failed ({} attempts, ${:.6})",
+                    report.synthesised,
+                    report.quarantined,
+                    report.failed,
+                    report.total_attempts,
+                    report.spend_usd_micros as f64 / 1_000_000.0,
+                );
+            }
+        }
+        Err(err) => tracing::warn!(error = %err, "payload synthesis pass failed"),
     }
 
     let counts = bundle.counts();

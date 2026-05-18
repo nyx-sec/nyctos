@@ -398,6 +398,25 @@ impl<'a> FindingStore<'a> {
         let res = sqlx::query!("DELETE FROM findings WHERE id = ?", id).execute(self.pool).await?;
         Ok(res.rows_affected())
     }
+
+    /// Flip `id` to `status = 'Quarantine'`, stamping `verdict_blob`
+    /// with the supplied JSON reason. Phase 14's PayloadSynthesis
+    /// fallback calls this when both synthesis attempts fail to parse;
+    /// later phases (SpecDerivation, NovelFindingsDiscovery) reuse the
+    /// same shape so the quarantine page can surface a uniform reason
+    /// field. Runtime-checked SQL to avoid bloating the `.sqlx/` cache
+    /// with a one-off operator-facing helper; the parameter is bound,
+    /// so injection is not a concern.
+    pub async fn quarantine(&self, id: &str, reason_json: &str) -> Result<u64, StoreError> {
+        let res = sqlx::query(
+            "UPDATE findings SET status = 'Quarantine', verdict_blob = ? WHERE id = ?",
+        )
+        .bind(reason_json)
+        .bind(id)
+        .execute(self.pool)
+        .await?;
+        Ok(res.rows_affected())
+    }
 }
 
 #[cfg(test)]
@@ -636,6 +655,27 @@ mod tests {
             .await
             .expect("everything");
         assert_eq!(everything.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn quarantine_flips_status_and_records_reason() {
+        let (_tmp, s) = fresh_store().await;
+        seed(&s).await;
+        let f = sample_finding("run-1", "repo-1", "src/a.rs", "rule-1");
+        s.findings().upsert(&f).await.expect("insert");
+        let n = s
+            .findings()
+            .quarantine(&f.id, "{\"reason\":\"payload synthesis failed twice\"}")
+            .await
+            .expect("quarantine");
+        assert_eq!(n, 1);
+        let got = s.findings().get(&f.id).await.expect("get").expect("row");
+        assert_eq!(got.status, "Quarantine");
+        assert!(got
+            .verdict_blob
+            .as_deref()
+            .unwrap_or_default()
+            .contains("payload synthesis failed twice"));
     }
 
     #[tokio::test]

@@ -41,6 +41,33 @@ impl<'a> BudgetStore<'a> {
         Self { pool }
     }
 
+    /// Atomically insert a default `(run_id, kind)` row with the given
+    /// cap and `spent_usd_micros = 0` *only if no row exists yet*.
+    /// `INSERT OR IGNORE` is a single SQL statement so concurrent
+    /// callers do not race; this is the lazy-init path used by
+    /// `BudgetStoreTracker::ensure_row` where unconditional `upsert`
+    /// would clobber any spend a peer task already recorded.
+    /// Runtime-checked SQL to avoid expanding the `.sqlx/` cache for
+    /// a one-call internal helper.
+    pub async fn ensure_default(
+        &self,
+        run_id: &str,
+        kind: &str,
+        cap_usd_micros: i64,
+    ) -> Result<(), StoreError> {
+        sqlx::query(
+            "INSERT OR IGNORE INTO budgets \
+             (run_id, kind, cap_usd_micros, spent_usd_micros, halted, halted_at) \
+             VALUES (?, ?, ?, 0, 0, NULL)",
+        )
+        .bind(run_id)
+        .bind(kind)
+        .bind(cap_usd_micros)
+        .execute(self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn upsert(&self, b: &BudgetRecord) -> Result<(), StoreError> {
         let halted = i64::from(b.halted);
         sqlx::query!(
