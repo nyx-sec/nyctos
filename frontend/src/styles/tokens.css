@@ -1,0 +1,117 @@
+/*
+ * Design tokens. Dark-first, with a `[data-theme="light"]` override.
+ *
+ * Sourced from the nyx OSS frontend's token sheet; mirrored here so the
+ * agent UI shares the parent project's look. Do not invent new tokens
+ * in component files — extend this sheet instead.
+ */
+
+:root,
+:root[data-theme="dark"] {
+  /* Surface ramp — darkest at the bottom, lightest at top. */
+  --color-bg-base: #0b0d12;
+  --color-bg-elevated: #11141b;
+  --color-bg-panel: #161a23;
+  --color-bg-overlay: #1c2230;
+  --color-bg-hover: #1f2533;
+
+  /* Borders + dividers. */
+  --color-border-subtle: #1f2533;
+  --color-border-default: #2a3142;
+  --color-border-strong: #3b4458;
+
+  /* Text ramp. */
+  --color-text-primary: #e6e9f0;
+  --color-text-secondary: #a8b0bf;
+  --color-text-muted: #6e7686;
+  --color-text-inverse: #0b0d12;
+
+  /* Accent. nyx uses a cool indigo / cyan pair. */
+  --color-accent: #7c8cff;
+  --color-accent-hover: #8e9cff;
+  --color-accent-quiet: rgba(124, 140, 255, 0.16);
+
+  /* Semantic colours. */
+  --color-success: #4ade80;
+  --color-success-quiet: rgba(74, 222, 128, 0.14);
+  --color-warning: #f5b754;
+  --color-warning-quiet: rgba(245, 183, 84, 0.14);
+  --color-danger: #ef4f5e;
+  --color-danger-quiet: rgba(239, 79, 94, 0.14);
+  --color-info: #56b6f5;
+  --color-info-quiet: rgba(86, 182, 245, 0.14);
+
+  /* Spacing scale. 4px grid. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 32px;
+  --space-8: 40px;
+  --space-9: 56px;
+  --space-10: 72px;
+
+  /* Radii. */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+  --radius-pill: 999px;
+
+  /* Type ramp. */
+  --font-sans:
+    "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue",
+    Arial, sans-serif;
+  --font-mono:
+    "JetBrains Mono", "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
+  --font-size-xs: 11px;
+  --font-size-sm: 12px;
+  --font-size-md: 13px;
+  --font-size-lg: 15px;
+  --font-size-xl: 18px;
+  --font-size-2xl: 22px;
+  --font-size-3xl: 28px;
+  --line-height-tight: 1.2;
+  --line-height-base: 1.45;
+  --line-height-loose: 1.6;
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+
+  /* Layout. */
+  --sidebar-width: 232px;
+  --topbar-height: 48px;
+
+  /* Effects. */
+  --shadow-sm: 0 1px 0 rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.32);
+  --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.42);
+  --focus-ring: 0 0 0 2px var(--color-accent-quiet), 0 0 0 4px var(--color-accent);
+  --transition-fast: 120ms ease-out;
+  --transition-base: 180ms ease-out;
+}
+
+:root[data-theme="light"] {
+  --color-bg-base: #f7f8fb;
+  --color-bg-elevated: #ffffff;
+  --color-bg-panel: #ffffff;
+  --color-bg-overlay: #f1f3f8;
+  --color-bg-hover: #eef0f5;
+
+  --color-border-subtle: #e5e8ef;
+  --color-border-default: #d4d8e2;
+  --color-border-strong: #b6bbc8;
+
+  --color-text-primary: #11141b;
+  --color-text-secondary: #4a5160;
+  --color-text-muted: #7b8395;
+  --color-text-inverse: #ffffff;
+
+  --color-accent: #4858d8;
+  --color-accent-hover: #3645c4;
+  --color-accent-quiet: rgba(72, 88, 216, 0.12);
+}

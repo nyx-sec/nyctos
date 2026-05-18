@@ -1,0 +1,5 @@
+# Vite build output is produced by ../build.rs at compile time.
+# Keep .gitkeep so the empty directory survives git, drop everything else.
+*
+!.gitkeep
+!.gitignore

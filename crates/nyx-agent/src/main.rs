@@ -392,7 +392,7 @@ async fn serve(
     });
 
     let server_state = ServerState::new(store.clone(), events_tx.clone(), trigger);
-    let app = build_router(server_state);
+    let app = build_router(server_state).fallback(nyx_agent_ui::spa_handler);
 
     let listener = tokio::net::TcpListener::bind(&listen_addr)
         .await
