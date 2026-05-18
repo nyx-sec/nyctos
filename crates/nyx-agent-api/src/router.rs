@@ -33,7 +33,8 @@ use nyx_agent_core::report::{
 };
 use nyx_agent_core::store::{
     AgentTraceRecord, CandidateFindingRecord, CandidateStatus, ChainRecord, FindingFilter,
-    FindingRecord, PatchOption, RepoPatch, RepoRecord, RunRecord, DEFAULT_PROJECT_ID,
+    FindingRecord, PatchOption, ProjectPatch, ProjectPatchOption, ProjectRecord, RepoPatch,
+    RepoRecord, RunRecord,
 };
 use nyx_agent_core::{
     now_epoch_ms, AiRuntime, SandboxBackend, ACCOUNT_AI_ANTHROPIC, ACCOUNT_AI_LOCAL_LLM,
@@ -49,10 +50,21 @@ pub fn build_router(state: ServerState) -> Router {
         .route("/api/v1/setup/status", get(setup_status))
         .route("/api/v1/setup", post(submit_setup))
         .route("/api/v1/setup/doctor", post(setup_doctor))
-        .route("/api/v1/repos", get(list_repos).post(create_repo))
-        .route("/api/v1/repos/test", post(test_repo_connectivity))
-        .route("/api/v1/repos/:name", get(get_repo).patch(patch_repo).delete(delete_repo))
-        .route("/api/v1/scan", post(trigger_scan))
+        .route("/api/v1/projects", get(list_projects).post(create_project))
+        .route(
+            "/api/v1/projects/:project_id",
+            get(get_project).patch(patch_project).delete(delete_project),
+        )
+        .route(
+            "/api/v1/projects/:project_id/repos",
+            get(list_project_repos).post(create_project_repo),
+        )
+        .route("/api/v1/projects/:project_id/repos/test", post(test_repo_connectivity))
+        .route(
+            "/api/v1/projects/:project_id/repos/:name",
+            get(get_project_repo).patch(patch_project_repo).delete(delete_project_repo),
+        )
+        .route("/api/v1/projects/:project_id/scan", post(scan_project))
         .route("/api/v1/runs", get(list_runs))
         .route("/api/v1/runs/:id", get(get_run))
         .route("/api/v1/runs/:id/findings", get(findings_for_run))
@@ -516,10 +528,196 @@ fn sandbox_backend_probe(b: SandboxBackend) -> (bool, String) {
     }
 }
 
-// ---- /repos -----------------------------------------------------------------
+// ---- /projects --------------------------------------------------------------
 
-async fn list_repos(State(s): State<ServerState>) -> Result<Json<Vec<RepoRecord>>, ApiError> {
-    let rows = s.store.repos().list().await?;
+async fn list_projects(
+    State(s): State<ServerState>,
+) -> Result<Json<Vec<ProjectRecord>>, ApiError> {
+    let rows = s.store.projects().list().await?;
+    Ok(Json(rows))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateProjectRequest {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub target_base_url: Option<String>,
+    #[serde(default)]
+    pub env_config: Option<serde_json::Value>,
+}
+
+async fn create_project(
+    State(s): State<ServerState>,
+    Json(req): Json<CreateProjectRequest>,
+) -> Result<Json<ProjectRecord>, ApiError> {
+    let name = req.name.trim();
+    if name.is_empty() {
+        return Err(ApiError::BadRequest("name is required".to_string()));
+    }
+    if s.store.projects().get_by_name(name).await?.is_some() {
+        return Err(ApiError::BadRequest(format!("project `{name}` already exists")));
+    }
+    let id = format!("proj-{}", uuid_like(name, now_epoch_ms()));
+    let env_config_json = match req.env_config.as_ref() {
+        Some(v) => Some(serde_json::to_string(v).map_err(|e| {
+            ApiError::BadRequest(format!("env_config must serialize to JSON: {e}"))
+        })?),
+        None => None,
+    };
+    let rec = s
+        .store
+        .projects()
+        .create(
+            &id,
+            name,
+            req.description.as_deref(),
+            req.target_base_url.as_deref(),
+            env_config_json.as_deref(),
+            now_epoch_ms(),
+        )
+        .await?;
+    Ok(Json(rec))
+}
+
+async fn get_project(
+    State(s): State<ServerState>,
+    Path(id): Path<String>,
+) -> Result<Json<ProjectRecord>, ApiError> {
+    s.store
+        .projects()
+        .get(&id)
+        .await?
+        .map(Json)
+        .ok_or_else(|| ApiError::NotFound(format!("project `{id}` not found")))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PatchProjectRequest {
+    #[serde(default, deserialize_with = "deserialize_tri_state_string")]
+    pub description: TriStateString,
+    #[serde(default, deserialize_with = "deserialize_tri_state_string")]
+    pub target_base_url: TriStateString,
+    /// Tri-state JSON value: omitted = no change, `null` = clear, value =
+    /// set. The body is re-serialized verbatim into `env_config_json`.
+    #[serde(default, deserialize_with = "deserialize_tri_state_json")]
+    pub env_config: TriStateJson,
+}
+
+async fn patch_project(
+    State(s): State<ServerState>,
+    Path(id): Path<String>,
+    Json(req): Json<PatchProjectRequest>,
+) -> Result<Json<ProjectRecord>, ApiError> {
+    // Serialise the optional env_config value once so the patch borrow
+    // can reference an owned String that outlives the call.
+    let owned_env_json: Option<String> = match &req.env_config {
+        TriStateJson::Value(v) => Some(serde_json::to_string(v).map_err(|e| {
+            ApiError::BadRequest(format!("env_config must serialize to JSON: {e}"))
+        })?),
+        _ => None,
+    };
+    let env_config_patch: ProjectPatchOption<Option<&str>> = match &req.env_config {
+        TriStateJson::Unset => ProjectPatchOption::Unset,
+        TriStateJson::Null => ProjectPatchOption::Set(None),
+        TriStateJson::Value(_) => ProjectPatchOption::Set(Some(
+            owned_env_json.as_deref().expect("Value branch sets owned_env_json"),
+        )),
+    };
+    let now = now_epoch_ms();
+    let patch = ProjectPatch {
+        description: project_patch_for(&req.description),
+        target_base_url: project_patch_for(&req.target_base_url),
+        env_config_json: env_config_patch,
+        updated_at: now,
+    };
+    if !s.store.projects().update(&id, &patch).await? {
+        return Err(ApiError::NotFound(format!("project `{id}` not found")));
+    }
+    let row = s
+        .store
+        .projects()
+        .get(&id)
+        .await?
+        .ok_or_else(|| ApiError::Internal("project vanished after update".to_string()))?;
+    Ok(Json(row))
+}
+
+fn project_patch_for(tri: &TriStateString) -> ProjectPatchOption<Option<&str>> {
+    match tri {
+        TriStateString::Unset => ProjectPatchOption::Unset,
+        TriStateString::Null => ProjectPatchOption::Set(None),
+        TriStateString::Some(v) => ProjectPatchOption::Set(Some(v.as_str())),
+    }
+}
+
+#[derive(Debug, Default)]
+pub enum TriStateJson {
+    #[default]
+    Unset,
+    Null,
+    Value(serde_json::Value),
+}
+
+fn deserialize_tri_state_json<'de, D>(d: D) -> Result<TriStateJson, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(d)?;
+    Ok(match value {
+        None => TriStateJson::Null,
+        Some(serde_json::Value::Null) => TriStateJson::Null,
+        Some(v) => TriStateJson::Value(v),
+    })
+}
+
+async fn delete_project(
+    State(s): State<ServerState>,
+    Path(id): Path<String>,
+) -> Result<StatusBody, ApiError> {
+    let affected = s.store.projects().delete(&id).await?;
+    if affected == 0 {
+        return Err(ApiError::NotFound(format!("project `{id}` not found")));
+    }
+    Ok(StatusBody::ok(format!("deleted {affected} project row(s); repos cascaded")))
+}
+
+/// Lightweight stable id helper. Concatenates a slug of `name` with the
+/// supplied epoch ms so collisions across rapid creates are vanishingly
+/// rare without pulling in a UUID crate dependency.
+fn uuid_like(name: &str, now_ms: i64) -> String {
+    let slug: String = name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .collect();
+    let trimmed: String = slug
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
+        .chars()
+        .take(32)
+        .collect();
+    format!("{trimmed}-{now_ms:x}")
+}
+
+async fn require_project(s: &ServerState, project_id: &str) -> Result<ProjectRecord, ApiError> {
+    s.store
+        .projects()
+        .get(project_id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("project `{project_id}` not found")))
+}
+
+// ---- /projects/:project_id/repos --------------------------------------------
+
+async fn list_project_repos(
+    State(s): State<ServerState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Vec<RepoRecord>>, ApiError> {
+    require_project(&s, &project_id).await?;
+    let rows = s.store.repos().list_by_project(&project_id).await?;
     Ok(Json(rows))
 }
 
@@ -536,10 +734,12 @@ pub struct CreateRepoRequest {
     pub i_own_this: bool,
 }
 
-async fn create_repo(
+async fn create_project_repo(
     State(s): State<ServerState>,
+    Path(project_id): Path<String>,
     Json(req): Json<CreateRepoRequest>,
 ) -> Result<Json<RepoRecord>, ApiError> {
+    require_project(&s, &project_id).await?;
     if req.name.trim().is_empty() {
         return Err(ApiError::BadRequest("name is required".to_string()));
     }
@@ -552,22 +752,20 @@ async fn create_repo(
         ));
     }
     let now = now_epoch_ms();
-    // Preserve scan pointer + creation time across re-POSTs; the
-    // underlying upsert blindly takes `excluded.*` and would otherwise
-    // wipe `last_scan_run_id` and reset `created_at` when an operator
-    // edits an existing repo by POSTing the same name.
     let existing = s.store.repos().get(&req.name).await?;
+    // Refuse re-POST against a different project so an operator cannot
+    // silently re-home an existing repo via a same-name create call.
+    if let Some(row) = &existing {
+        if row.project_id != project_id {
+            return Err(ApiError::BadRequest(format!(
+                "repo `{}` already belongs to project `{}`",
+                row.name, row.project_id
+            )));
+        }
+    }
     let rec = RepoRecord {
         name: req.name,
-        // Phase-2 transitional: the flat `/api/v1/repos` route has no
-        // project context yet. Phase 5 lands nested routes that derive
-        // project_id from `/projects/:project_id/repos`. Until then,
-        // preserve the existing row's project if present, else attach to
-        // the seeded default project.
-        project_id: existing
-            .as_ref()
-            .map(|r| r.project_id.clone())
-            .unwrap_or_else(|| DEFAULT_PROJECT_ID.to_string()),
+        project_id: project_id.clone(),
         source_kind: req.source_kind,
         source_url_or_path: req.source_url_or_path,
         branch: req.branch,
@@ -581,16 +779,23 @@ async fn create_repo(
     Ok(Json(rec))
 }
 
-async fn get_repo(
+async fn get_project_repo(
     State(s): State<ServerState>,
-    Path(name): Path<String>,
+    Path((project_id, name)): Path<(String, String)>,
 ) -> Result<Json<RepoRecord>, ApiError> {
-    s.store
+    require_project(&s, &project_id).await?;
+    let row = s
+        .store
         .repos()
         .get(&name)
         .await?
-        .map(Json)
-        .ok_or_else(|| ApiError::NotFound(format!("repo `{name}` not found")))
+        .ok_or_else(|| ApiError::NotFound(format!("repo `{name}` not found")))?;
+    if row.project_id != project_id {
+        return Err(ApiError::NotFound(format!(
+            "repo `{name}` not found in project `{project_id}`"
+        )));
+    }
+    Ok(Json(row))
 }
 
 #[derive(Debug, Deserialize)]
@@ -608,11 +813,23 @@ pub struct PatchRepoRequest {
     pub i_own_this: Option<bool>,
 }
 
-async fn patch_repo(
+async fn patch_project_repo(
     State(s): State<ServerState>,
-    Path(name): Path<String>,
+    Path((project_id, name)): Path<(String, String)>,
     Json(req): Json<PatchRepoRequest>,
 ) -> Result<Json<RepoRecord>, ApiError> {
+    require_project(&s, &project_id).await?;
+    let existing = s
+        .store
+        .repos()
+        .get(&name)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("repo `{name}` not found")))?;
+    if existing.project_id != project_id {
+        return Err(ApiError::NotFound(format!(
+            "repo `{name}` not found in project `{project_id}`"
+        )));
+    }
     if let Some(kind) = req.source_kind.as_deref() {
         if !matches!(kind, "git" | "local-path" | "github" | "gitlab" | "local") {
             return Err(ApiError::BadRequest(format!("unknown source_kind `{kind}`")));
@@ -675,10 +892,22 @@ where
     })
 }
 
-async fn delete_repo(
+async fn delete_project_repo(
     State(s): State<ServerState>,
-    Path(name): Path<String>,
+    Path((project_id, name)): Path<(String, String)>,
 ) -> Result<StatusBody, ApiError> {
+    require_project(&s, &project_id).await?;
+    let existing = s
+        .store
+        .repos()
+        .get(&name)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("repo `{name}` not found")))?;
+    if existing.project_id != project_id {
+        return Err(ApiError::NotFound(format!(
+            "repo `{name}` not found in project `{project_id}`"
+        )));
+    }
     let affected = s.store.repos().delete(&name).await?;
     if affected == 0 {
         return Err(ApiError::NotFound(format!("repo `{name}` not found")));
@@ -730,10 +959,15 @@ pub struct TestRepoResponse {
 
 /// Lightweight probe wired to the wizard's "test connectivity" button.
 /// Performs only a read-only side effect (`git ls-remote` for git
-/// sources, `stat` + read of `.git/config` for local-path sources).
+/// sources, `stat` + read of `.git/config` for local-path sources). The
+/// `project_id` from the route is validated to exist but otherwise does
+/// not affect the probe (the call is stateless).
 async fn test_repo_connectivity(
+    State(s): State<ServerState>,
+    Path(project_id): Path<String>,
     Json(req): Json<TestRepoRequest>,
 ) -> Result<Json<TestRepoResponse>, ApiError> {
+    require_project(&s, &project_id).await?;
     match req.source_kind.as_str() {
         "git" | "github" | "gitlab" => {
             let url = req.source_url_or_path.trim();
@@ -871,7 +1105,7 @@ fn parse_git_config_remote(raw: &str) -> Option<String> {
     None
 }
 
-// ---- /scan ------------------------------------------------------------------
+// ---- /projects/:project_id/scan --------------------------------------------
 
 #[derive(Debug, Deserialize)]
 pub struct ScanQuery {
@@ -884,11 +1118,16 @@ struct ScanResponse {
     run_id: String,
 }
 
-async fn trigger_scan(
+async fn scan_project(
     State(s): State<ServerState>,
+    Path(project_id): Path<String>,
     Query(q): Query<ScanQuery>,
 ) -> Result<Json<ScanResponse>, ApiError> {
-    let run_id = s.scan.trigger(q.repo).await?;
+    require_project(&s, &project_id).await?;
+    // A `?repo=...` filter scopes the trigger to a single repo; the
+    // dispatcher / config-resolver downstream is responsible for
+    // rejecting unknown names so this handler stays a thin pass-through.
+    let run_id = s.scan.trigger(Some(project_id), q.repo).await?;
     Ok(Json(ScanResponse { run_id }))
 }
 

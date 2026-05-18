@@ -24,9 +24,15 @@ pub type ScanFuture<'a> =
 /// that owns the run dispatcher. The daemon wires the production impl;
 /// tests substitute a stub.
 pub trait ScanTrigger: Send + Sync + 'static {
-    /// Kick off a scan. Returns the freshly minted run id. The repo
-    /// filter, when set, restricts the run to a single configured repo.
-    fn trigger<'a>(&'a self, repo: Option<String>) -> ScanFuture<'a>;
+    /// Kick off a scan. Returns the freshly minted run id. The
+    /// `project_id` filter, when set, restricts the run to repos
+    /// belonging to that project; the `repo` filter further narrows
+    /// to a single repo. Passing both unset scans every enabled repo.
+    fn trigger<'a>(
+        &'a self,
+        project_id: Option<String>,
+        repo: Option<String>,
+    ) -> ScanFuture<'a>;
 }
 
 #[derive(Debug, Error)]

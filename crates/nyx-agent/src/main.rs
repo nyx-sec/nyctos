@@ -845,8 +845,14 @@ async fn serve(
             let config = scan_config.clone();
             let events = scan_events.clone();
             tokio::spawn(async move {
-                let outcome =
-                    run_scan_for_api(&state_dir, &config, req.repo.as_deref(), events).await;
+                let outcome = run_scan_for_api(
+                    &state_dir,
+                    &config,
+                    req.project_id.as_deref(),
+                    req.repo.as_deref(),
+                    events,
+                )
+                .await;
                 let _ = req.reply.send(outcome);
             });
         }
@@ -978,6 +984,7 @@ async fn serve(
 }
 
 struct ScanRequest {
+    project_id: Option<String>,
     repo: Option<String>,
     reply: oneshot::Sender<Result<String, ScanTriggerError>>,
 }
@@ -989,6 +996,7 @@ struct MpscScanTrigger {
 impl ScanTrigger for MpscScanTrigger {
     fn trigger<'a>(
         &'a self,
+        project_id: Option<String>,
         repo: Option<String>,
     ) -> Pin<Box<dyn Future<Output = Result<String, ScanTriggerError>> + Send + 'a>> {
         Box::pin(async move {
@@ -998,7 +1006,7 @@ impl ScanTrigger for MpscScanTrigger {
             // on `send().await` when the dispatcher is saturated. The
             // bound is set in `serve()`; raise it there if a real load
             // profile demands a deeper queue.
-            self.tx.try_send(ScanRequest { repo, reply }).map_err(|err| match err {
+            self.tx.try_send(ScanRequest { project_id, repo, reply }).map_err(|err| match err {
                 mpsc::error::TrySendError::Full(_) => ScanTriggerError::Backpressure(
                     "scan request queue is full; retry after the current run completes".to_string(),
                 ),
@@ -1012,9 +1020,14 @@ impl ScanTrigger for MpscScanTrigger {
 async fn run_scan_for_api(
     state_dir: &StateDir,
     config: &Config,
+    _project_id: Option<&str>,
     repo: Option<&str>,
     events: EventSink,
 ) -> Result<String, ScanTriggerError> {
+    // Phase 5: project_id arrives from the route but the daemon's
+    // repo-selection path still flattens across projects. Phase 6 wires
+    // a project-scoped selector into the CLI; reusing it here closes the
+    // gap so an API-initiated scan honours the project boundary.
     let requested: Vec<String> = match repo {
         Some(name) => vec![name.to_string()],
         None => Vec::new(),

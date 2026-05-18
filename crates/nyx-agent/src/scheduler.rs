@@ -159,7 +159,7 @@ impl Scheduler {
                 continue;
             }
             entry.last_fired_minute = Some(minute);
-            match self.trigger.trigger(entry.repo.clone()).await {
+            match self.trigger.trigger(None, entry.repo.clone()).await {
                 Ok(run_id) => {
                     debug!(
                         schedule = %entry.label,
@@ -341,6 +341,7 @@ mod tests {
     impl ScanTrigger for StubTrigger {
         fn trigger<'a>(
             &'a self,
+            _project_id: Option<String>,
             repo: Option<String>,
         ) -> Pin<Box<dyn Future<Output = Result<String, ScanTriggerError>> + Send + 'a>> {
             Box::pin(async move {
@@ -535,6 +536,7 @@ mod tests {
         impl ScanTrigger for FullTrigger {
             fn trigger<'a>(
                 &'a self,
+                _project_id: Option<String>,
                 _repo: Option<String>,
             ) -> Pin<Box<dyn Future<Output = Result<String, ScanTriggerError>> + Send + 'a>>
             {

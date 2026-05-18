@@ -209,7 +209,10 @@ pub async fn webhook_git(
     }
 
     let trigger: Arc<dyn ScanTrigger> = Arc::clone(&state.scan);
-    let run_id = trigger.trigger(cfg.repo.clone()).await?;
+    // Webhook config does not yet plumb a project filter; scope-all is
+    // preserved by passing `None` for project_id. Phase 6+ may add an
+    // optional `project = "..."` field to the trigger config block.
+    let run_id = trigger.trigger(None, cfg.repo.clone()).await?;
     Ok((
         StatusCode::ACCEPTED,
         Json(WebhookResponse { triggered: true, run_id: Some(run_id), message: String::new() }),
