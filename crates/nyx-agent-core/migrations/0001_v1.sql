@@ -12,8 +12,21 @@ CREATE TABLE meta (
     agent_version   TEXT    NOT NULL
 );
 
+CREATE TABLE projects (
+    id                TEXT    PRIMARY KEY,
+    name              TEXT    NOT NULL UNIQUE,
+    description       TEXT,
+    target_base_url   TEXT,
+    env_config_json   TEXT,
+    created_at        INTEGER NOT NULL,
+    updated_at        INTEGER NOT NULL
+);
+
+CREATE INDEX idx_projects_name ON projects(name);
+
 CREATE TABLE repos (
     name                 TEXT    PRIMARY KEY,
+    project_id           TEXT    NOT NULL,
     source_kind          TEXT    NOT NULL,
     source_url_or_path   TEXT    NOT NULL,
     branch               TEXT,
@@ -21,7 +34,8 @@ CREATE TABLE repos (
     i_own_this           INTEGER NOT NULL DEFAULT 0,
     last_scan_run_id     TEXT,
     created_at           INTEGER NOT NULL,
-    updated_at           INTEGER NOT NULL
+    updated_at           INTEGER NOT NULL,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
 );
 
 CREATE TABLE runs (
@@ -173,6 +187,7 @@ CREATE TABLE feedback (
 
 -- FK indexes + UI-filter indexes.
 CREATE INDEX idx_repos_last_scan_run_id        ON repos(last_scan_run_id);
+CREATE INDEX idx_repos_project                 ON repos(project_id);
 
 CREATE INDEX idx_runs_parent_run_id            ON runs(parent_run_id);
 CREATE INDEX idx_runs_status_started_at        ON runs(status, started_at);

@@ -16,6 +16,8 @@ Both names appear in these pages for the reasons explained in
   `nyx-agent doctor` line-by-line.
 - [quickstart.md](quickstart.md): start the daemon, walk the
   first-launch wizard, register a repo, kick a scan, read findings.
+- [cli.md](cli.md): every subcommand `nyx-agent` ships, the flags
+  it accepts, and the exit codes it returns.
 
 ## Triggers
 

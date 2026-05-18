@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::future::Future;
-use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::process::ExitCode;
@@ -24,23 +23,11 @@ use semver::Version;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 mod ai_pipeline;
+mod banner;
 mod cmd;
 mod scheduler;
 
-const ANSI_RESET: &str = "\x1b[0m";
-const ANSI_NYX_GREEN: &str = "\x1b[38;2;46;160;103m";
-const ANSI_NYX_GOLD: &str = "\x1b[38;2;199;154;43m";
-const ANSI_NYX_MUTED: &str = "\x1b[38;2;159;163;173m";
-const NYX_AGENT_TAGLINE: &str = "                       automated pentesting, refined";
-
-const NYX_AGENT_BANNER: [(&str, &str); 6] = [
-    ("███╗   ██╗██╗   ██╗██╗  ██╗", "     █████╗  ██████╗ ███████╗███╗   ██╗████████╗"),
-    ("████╗  ██║╚██╗ ██╔╝╚██╗██╔╝", "    ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝"),
-    ("██╔██╗ ██║ ╚████╔╝  ╚███╔╝", "     ███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║"),
-    ("██║╚██╗██║  ╚██╔╝   ██╔██╗", "     ██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║"),
-    ("██║ ╚████║   ██║   ██╔╝ ██╗", "    ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║"),
-    ("╚═╝  ╚═══╝   ╚═╝   ╚═╝  ╚═╝", "    ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝"),
-];
+use banner::print_startup_banner;
 
 #[derive(Debug, Parser)]
 #[command(name = "nyx-agent", version, about = "Nyx repository agent", propagate_version = true)]
@@ -975,53 +962,6 @@ async fn serve(
     Ok(ExitCode::SUCCESS)
 }
 
-fn print_startup_banner() {
-    if !std::io::stdout().is_terminal() {
-        return;
-    }
-    print!("{}", startup_banner(should_colorize_stdout()));
-}
-
-fn should_colorize_stdout() -> bool {
-    if !std::io::stdout().is_terminal() {
-        return false;
-    }
-    if std::env::var_os("NO_COLOR").is_some() {
-        return false;
-    }
-    if std::env::var("CLICOLOR").is_ok_and(|value| value == "0") {
-        return false;
-    }
-    !std::env::var("TERM").is_ok_and(|value| value == "dumb")
-}
-
-fn startup_banner(color: bool) -> String {
-    let mut out = String::new();
-    out.push('\n');
-    for (nyx, agent) in NYX_AGENT_BANNER {
-        if color {
-            out.push_str(ANSI_NYX_GREEN);
-            out.push_str(nyx);
-            out.push_str(ANSI_NYX_GOLD);
-            out.push_str(agent);
-            out.push_str(ANSI_RESET);
-        } else {
-            out.push_str(nyx);
-            out.push_str(agent);
-        }
-        out.push('\n');
-    }
-    if color {
-        out.push_str(ANSI_NYX_MUTED);
-        out.push_str(NYX_AGENT_TAGLINE);
-        out.push_str(ANSI_RESET);
-    } else {
-        out.push_str(NYX_AGENT_TAGLINE);
-    }
-    out.push_str("\n\n");
-    out
-}
-
 struct ScanRequest {
     repo: Option<String>,
     reply: oneshot::Sender<Result<String, ScanTriggerError>>,
@@ -1458,28 +1398,4 @@ fn resolve_min_nyx_version(config: &Config) -> anyhow::Result<Version> {
     let raw = config.nyx.min_version.as_deref().unwrap_or(MINIMUM_NYX_VERSION);
     Version::parse(raw)
         .map_err(|e| anyhow::anyhow!("[nyx].min_version `{raw}` is not a valid semver: {e}"))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn startup_banner_renders_plain_solid_tagline() {
-        let banner = startup_banner(false);
-
-        assert!(banner.contains("███╗   ██╗"));
-        assert!(banner.contains("automated pentesting, refined"));
-        assert!(!banner.contains("\x1b["));
-    }
-
-    #[test]
-    fn startup_banner_can_render_with_brand_colors() {
-        let banner = startup_banner(true);
-
-        assert!(banner.contains(ANSI_NYX_GREEN));
-        assert!(banner.contains(ANSI_NYX_GOLD));
-        assert!(banner.contains(ANSI_NYX_MUTED));
-        assert!(banner.contains("automated pentesting, refined"));
-    }
 }
