@@ -71,41 +71,43 @@ export function QuarantineList() {
   }
 
   const selected = rows.find((r) => r.id === selectedId) ?? null;
+  const countLabel = query.isPending
+    ? "Loading quarantine..."
+    : `${counts.findings + counts.candidates} awaiting review`;
 
   return (
     <div className="quarantine-page">
-      <div className="quarantine-page__list">
-        <Card
-          title="Quarantine"
-          subtitle={`AI-discovered findings awaiting dynamic confirmation — ${counts.findings} finding(s), ${counts.candidates} candidate(s).`}
-          actions={
-            <Button onClick={() => query.refetch()} disabled={query.isPending}>
-              Refresh
-            </Button>
-          }
-        >
-          {banner && (
-            <p className="quarantine-page__banner" role="status">
-              {banner}
-            </p>
-          )}
-          {query.isPending && (
-            <div className="quarantine-page__pending">
-              <Spinner /> Loading quarantine…
-            </div>
-          )}
-          {query.error && (
-            <p role="alert" className="quarantine-page__error">
-              Failed to load quarantine: {String(query.error)}
-            </p>
-          )}
-          {!query.isPending && rows.length === 0 && (
-            <EmptyState
-              title="Quarantine empty"
-              body="AI passes have not produced any unconfirmed findings yet. They appear here when the static + AI passes discover a row the dynamic verifier has not promoted."
-            />
-          )}
-          {rows.length > 0 && (
+      <div className="page-toolbar">
+        <p className="page-toolbar__meta">{countLabel}</p>
+        <Button onClick={() => query.refetch()} disabled={query.isPending}>
+          Refresh
+        </Button>
+      </div>
+
+      <Card className="quarantine-page__list">
+        {banner && (
+          <p className="quarantine-page__banner" role="status">
+            {banner}
+          </p>
+        )}
+        {query.isPending && (
+          <div className="quarantine-page__pending">
+            <Spinner /> Loading quarantine...
+          </div>
+        )}
+        {query.error && (
+          <p role="alert" className="quarantine-page__error">
+            Failed to load quarantine: {String(query.error)}
+          </p>
+        )}
+        {!query.isPending && rows.length === 0 && (
+          <EmptyState
+            title="Nothing in quarantine"
+            body="Unconfirmed findings will appear here when a scan needs manual review."
+          />
+        )}
+        {rows.length > 0 && (
+          <div className="table-scroll">
             <table className="quarantine-page__table">
               <thead>
                 <tr>
@@ -165,9 +167,9 @@ export function QuarantineList() {
                 })}
               </tbody>
             </table>
-          )}
-        </Card>
-      </div>
+          </div>
+        )}
+      </Card>
 
       <aside className="quarantine-page__side">
         {selected ? (
@@ -175,7 +177,7 @@ export function QuarantineList() {
         ) : (
           <Card title="Trace viewer">
             <p className="quarantine-page__hint">
-              Select a row above to inspect the AI conversation that produced it.
+              Select a row above to inspect the scan trace.
             </p>
           </Card>
         )}

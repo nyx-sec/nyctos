@@ -13,19 +13,15 @@ export function Settings() {
 
   return (
     <div className="settings-page">
-      <Card
-        title="Settings"
-        subtitle="Operator-facing preferences. Reset on a fresh install."
-      >
+      <Card>
         <section className="settings-page__section">
           <header className="settings-page__row">
             <div>
               <h3 className="settings-page__row-title">Show advanced</h3>
               <p className="settings-page__row-help">
-                Reveals the Quarantine page (and other advanced surfaces) in
-                the sidebar. AI-discovered findings that have not been
-                dynamic-confirmed live there; promoting one moves it into the
-                main Findings table.
+                Reveals Quarantine and other advanced surfaces in the sidebar.
+                Quarantine holds findings that need manual confirmation before
+                they move into Findings.
               </p>
             </div>
             <label className="settings-page__toggle">

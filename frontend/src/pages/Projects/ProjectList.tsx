@@ -14,66 +14,65 @@ export function ProjectList() {
 
   const rows = useMemo(() => projects.data ?? [], [projects.data]);
   const noneConfigured = !projects.isPending && rows.length === 0;
+  const projectCount = projects.isPending
+    ? "Loading projects..."
+    : `${rows.length} ${rows.length === 1 ? "project" : "projects"}`;
 
   return (
     <>
-      <Card
-        title="Projects"
-        subtitle="A project groups the repos that compose one product (backend + frontend + infra)."
-        actions={
+      <div className="page-stack">
+        <div className="page-toolbar">
+          <p className="page-toolbar__meta">{projectCount}</p>
           <Button variant="primary" onClick={() => setShowAdd(true)}>
             New project
           </Button>
-        }
-      >
-        {banner && (
-          <div className="repo-list__banner" role="status" aria-live="polite">
-            {banner}
-          </div>
-        )}
+        </div>
 
-        {projects.isPending && (
-          <div className="repo-list__pending">
-            <Spinner /> Loading projects…
-          </div>
-        )}
+        <Card className="table-card">
+          {banner && (
+            <div className="repo-list__banner" role="status" aria-live="polite">
+              {banner}
+            </div>
+          )}
 
-        {projects.error && (
-          <p className="repo-list__error" role="alert">
-            Failed to load projects: {String(projects.error)}
-          </p>
-        )}
+          {projects.isPending && (
+            <div className="repo-list__pending">
+              <Spinner /> Loading projects...
+            </div>
+          )}
 
-        {noneConfigured && (
-          <EmptyState
-            title="No projects yet"
-            body="Create the first one to group repos under it."
-            actions={
-              <Button variant="primary" onClick={() => setShowAdd(true)}>
-                New project
-              </Button>
-            }
-          />
-        )}
+          {projects.error && (
+            <p className="repo-list__error" role="alert">
+              Failed to load projects: {String(projects.error)}
+            </p>
+          )}
 
-        {rows.length > 0 && (
-          <table className="repo-list__table" aria-label="Configured projects">
-            <thead>
-              <tr>
-                <th scope="col">Name</th>
-                <th scope="col">Description</th>
-                <th scope="col">Target base URL</th>
-                <th scope="col">Updated</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((p) => (
-                <ProjectRow key={p.id} project={p} />
-              ))}
-            </tbody>
-          </table>
-        )}
-      </Card>
+          {noneConfigured && (
+            <EmptyState
+              title="No projects yet"
+              body="Create one project to group related repos."
+            />
+          )}
+
+          {rows.length > 0 && (
+            <table className="repo-list__table" aria-label="Configured projects">
+              <thead>
+                <tr>
+                  <th scope="col">Name</th>
+                  <th scope="col">Description</th>
+                  <th scope="col">Target base URL</th>
+                  <th scope="col">Updated</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((p) => (
+                  <ProjectRow key={p.id} project={p} />
+                ))}
+              </tbody>
+            </table>
+          )}
+        </Card>
+      </div>
 
       {showAdd && (
         <ProjectAddModal

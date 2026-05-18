@@ -97,47 +97,47 @@ export function FindingList() {
 
   const grouped = useMemo(() => groupRowsByChain(rows, groupByChain), [rows, groupByChain]);
   const priorRunId = runId ? runQuery.data?.prior_run_id ?? null : null;
+  const resultSummary = isLoading
+    ? "Loading findings..."
+    : runId
+      ? priorRunId
+        ? `Run ${runId} compared with ${priorRunId}`
+        : `Run ${runId}`
+      : `${rows.length} active ${rows.length === 1 ? "finding" : "findings"}`;
 
   return (
     <div className="findings-page">
-      <Card
-        title="Findings"
-        subtitle={
-          runId
-            ? priorRunId
-              ? `Run ${runId} — diff vs ${priorRunId}`
-              : `Run ${runId} — first run, every finding marked new`
-            : "All active findings across configured repositories. Quarantined rows are hidden by default."
-        }
-        actions={
-          <div className="findings-page__actions">
-            <label className="findings-page__toggle">
-              <input
-                type="checkbox"
-                checked={groupByChain}
-                onChange={(e) => setGroupByChain(e.target.checked)}
-              />
-              Group by chain
-            </label>
-            <label className="findings-page__toggle">
-              <input
-                type="checkbox"
-                checked={params.get("include_quarantine") === "true"}
-                onChange={(e) => {
-                  const next = new URLSearchParams(params);
-                  if (e.target.checked) next.set("include_quarantine", "true");
-                  else next.delete("include_quarantine");
-                  setParams(next, { replace: true });
-                }}
-              />
-              Show quarantined
-            </label>
-            <Button variant="ghost" size="sm" onClick={clearAll}>
-              Reset filters
-            </Button>
-          </div>
-        }
-      >
+      <div className="page-toolbar">
+        <p className="page-toolbar__meta">{resultSummary}</p>
+        <div className="findings-page__actions">
+          <label className="findings-page__toggle">
+            <input
+              type="checkbox"
+              checked={groupByChain}
+              onChange={(e) => setGroupByChain(e.target.checked)}
+            />
+            Group by chain
+          </label>
+          <label className="findings-page__toggle">
+            <input
+              type="checkbox"
+              checked={params.get("include_quarantine") === "true"}
+              onChange={(e) => {
+                const next = new URLSearchParams(params);
+                if (e.target.checked) next.set("include_quarantine", "true");
+                else next.delete("include_quarantine");
+                setParams(next, { replace: true });
+              }}
+            />
+            Show quarantined
+          </label>
+          <Button variant="ghost" size="sm" onClick={clearAll}>
+            Reset filters
+          </Button>
+        </div>
+      </div>
+
+      <Card className="table-card">
         <div className="findings-filters">
           <FilterSelect
             label="Repo"
@@ -173,7 +173,7 @@ export function FindingList() {
 
         {isLoading && (
           <div className="findings-page__pending">
-            <Spinner /> Loading findings…
+            <Spinner /> Loading findings...
           </div>
         )}
 

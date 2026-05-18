@@ -44,7 +44,7 @@ export function App() {
   }
 
   return (
-    <AppLayout>
+    <AppLayout setupComplete={complete}>
       <Routes>
         <Route path="/" element={<Navigate to="/projects" replace />} />
         <Route path="/setup" element={<SetupWizard />} />

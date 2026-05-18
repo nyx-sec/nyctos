@@ -137,108 +137,108 @@ export function ProjectDetail() {
 
   return (
     <>
-      <Card
-        title={p.name}
-        subtitle={p.description ?? "No description."}
-        actions={
-          <div className="repo-list__actions">
-            <Button variant="ghost" onClick={onDeleteProject} disabled={deleteProject.isPending}>
-              Delete project
-            </Button>
-          </div>
-        }
-      >
-        <dl className="project-meta">
-          <div>
-            <dt>Project id</dt>
-            <dd>
-              <code>{p.id}</code>
-            </dd>
-          </div>
-          <div>
-            <dt>Target base URL</dt>
-            <dd>{p.target_base_url ? <code>{p.target_base_url}</code> : "—"}</dd>
-          </div>
-        </dl>
-      </Card>
+      <div className="page-stack">
+        <Card
+          className="project-summary"
+          title={p.name}
+          subtitle={p.description || undefined}
+          actions={
+            <div className="repo-list__actions">
+              <Button variant="ghost" onClick={onDeleteProject} disabled={deleteProject.isPending}>
+                Delete project
+              </Button>
+            </div>
+          }
+        >
+          <dl className="project-meta">
+            <div>
+              <dt>Project id</dt>
+              <dd>
+                <code>{p.id}</code>
+              </dd>
+            </div>
+            <div>
+              <dt>Target base URL</dt>
+              <dd>{p.target_base_url ? <code>{p.target_base_url}</code> : "—"}</dd>
+            </div>
+          </dl>
+        </Card>
 
-      <Card
-        title="Repositories"
-        subtitle="Sources the agent scans under this project."
-        actions={
-          <div className="repo-list__actions">
-            <Button
-              variant="ghost"
-              onClick={onScanAll}
-              disabled={triggerScan.isPending || rows.length === 0}
-            >
-              Scan all
-            </Button>
-            <Button variant="primary" onClick={() => setShowAdd(true)}>
-              Add repo
-            </Button>
-          </div>
-        }
-      >
-        {banner && (
-          <div className="repo-list__banner" role="status" aria-live="polite">
-            {banner}
-          </div>
-        )}
-
-        {repos.isPending && (
-          <div className="repo-list__pending">
-            <Spinner /> Loading repositories…
-          </div>
-        )}
-
-        {repos.error && (
-          <p className="repo-list__error" role="alert">
-            Failed to load repositories: {String(repos.error)}
-          </p>
-        )}
-
-        {noneConfigured && (
-          <EmptyState
-            title="No repositories yet"
-            body="Add the first one to give the agent something to scan."
-            actions={
+        <Card
+          title="Repositories"
+          subtitle={`${rows.length} ${rows.length === 1 ? "repository" : "repositories"}`}
+          actions={
+            <div className="repo-list__actions">
+              <Button
+                variant="ghost"
+                onClick={onScanAll}
+                disabled={triggerScan.isPending || rows.length === 0}
+              >
+                Scan all
+              </Button>
               <Button variant="primary" onClick={() => setShowAdd(true)}>
                 Add repo
               </Button>
-            }
-          />
-        )}
+            </div>
+          }
+        >
+          {banner && (
+            <div className="repo-list__banner" role="status" aria-live="polite">
+              {banner}
+            </div>
+          )}
 
-        {rows.length > 0 && (
-          <table className="repo-list__table" aria-label="Configured repositories">
-            <thead>
-              <tr>
-                <th scope="col">Repo</th>
-                <th scope="col">Kind</th>
-                <th scope="col">Source</th>
-                <th scope="col">Status</th>
-                <th scope="col">Last scan</th>
-                <th scope="col" className="repo-list__col--actions">
-                  Actions
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((repo) => (
-                <RepoRow
-                  key={repo.name}
-                  repo={repo}
-                  live={live[repo.name] ?? { status: "Idle", runId: null }}
-                  onScan={() => onScanOne(repo.name)}
-                  onDelete={() => onDeleteRepo(repo.name)}
-                  busy={triggerScan.isPending || deleteRepo.isPending}
-                />
-              ))}
-            </tbody>
-          </table>
-        )}
-      </Card>
+          {repos.isPending && (
+            <div className="repo-list__pending">
+              <Spinner /> Loading repositories...
+            </div>
+          )}
+
+          {repos.error && (
+            <p className="repo-list__error" role="alert">
+              Failed to load repositories: {String(repos.error)}
+            </p>
+          )}
+
+          {noneConfigured && (
+            <EmptyState
+              title="No repositories yet"
+              body="Add a repo when this project is ready to scan."
+            />
+          )}
+
+          {rows.length > 0 && (
+            <div className="table-scroll">
+              <table className="repo-list__table" aria-label="Configured repositories">
+                <thead>
+                  <tr>
+                    <th scope="col">Repo</th>
+                    <th scope="col">Kind</th>
+                    <th scope="col">Source</th>
+                    <th scope="col">Status</th>
+                    <th scope="col">Last scan</th>
+                    <th scope="col" className="repo-list__col--actions">
+                      Actions
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((repo) => (
+                    <RepoRow
+                      key={repo.name}
+                      repo={repo}
+                      live={live[repo.name] ?? { status: "Idle", runId: null }}
+                      onScan={() => onScanOne(repo.name)}
+                      onDelete={() => onDeleteRepo(repo.name)}
+                      busy={triggerScan.isPending || deleteRepo.isPending}
+                    />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Card>
+      </div>
 
       {showAdd && (
         <RepoAddModal

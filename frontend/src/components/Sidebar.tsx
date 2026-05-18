@@ -41,9 +41,16 @@ function navLinkClass({ isActive }: { isActive: boolean }) {
   return `sidebar__link${isActive ? " active" : ""}`;
 }
 
-export function Sidebar() {
+interface SidebarProps {
+  setupComplete: boolean;
+}
+
+export function Sidebar({ setupComplete }: SidebarProps) {
   const [advanced] = useAdvancedMode();
-  const visible = NAV.filter((item) => !item.advanced || advanced);
+  const visible = NAV.filter((item) => {
+    if (setupComplete && item.to === "/setup") return false;
+    return !item.advanced || advanced;
+  });
   const primary = visible.filter((item) => item.group === "primary");
   const secondary = visible.filter((item) => item.group === "secondary");
   const footer = visible.filter((item) => item.group === "footer");
@@ -62,7 +69,7 @@ export function Sidebar() {
             <span>{item.label}</span>
           </NavLink>
         ))}
-        <span className="sidebar__nav-section">Triage</span>
+        {secondary.length > 0 && <span className="sidebar__nav-section">Triage</span>}
         {secondary.map((item) => (
           <NavLink key={item.to} to={item.to} className={navLinkClass}>
             <span className="sidebar__link-glyph" aria-hidden="true">

@@ -16,7 +16,7 @@ describe("AppLayout", () => {
     setAdvancedPref("off");
   });
 
-  it("renders the brand, the default nav links, and child content", () => {
+  it("renders the brand, the post-setup nav links, and child content", () => {
     render(
       <MemoryRouter initialEntries={["/projects"]}>
         <AppLayout>
@@ -26,13 +26,26 @@ describe("AppLayout", () => {
     );
 
     expect(screen.getByRole("img", { name: "Nyx" })).toBeInTheDocument();
-    for (const label of ["Setup", "Projects", "Runs", "Findings", "Chains", "Settings"]) {
+    for (const label of ["Projects", "Runs", "Findings", "Chains", "Settings"]) {
       expect(screen.getByRole("link", { name: new RegExp(label) })).toBeInTheDocument();
     }
+    expect(screen.queryByRole("link", { name: /Setup/ })).toBeNull();
     // Phase 24: Quarantine is hidden until Settings → Show advanced is on.
     expect(screen.queryByRole("link", { name: /Quarantine/ })).toBeNull();
     expect(screen.getByTestId("child")).toHaveTextContent("child content");
     expect(screen.getByText("Daemon ready")).toBeInTheDocument();
+  });
+
+  it("keeps setup in navigation until first-launch setup is complete", () => {
+    render(
+      <MemoryRouter initialEntries={["/setup"]}>
+        <AppLayout setupComplete={false}>
+          <span />
+        </AppLayout>
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole("link", { name: /Setup/ })).toBeInTheDocument();
   });
 
   it("reveals Quarantine when advanced mode is enabled", () => {
