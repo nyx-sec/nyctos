@@ -193,19 +193,23 @@ pub fn build_comment_body(
     out.push_str("### By file\n\n");
     let groups = group_by_file(&filtered.findings);
     for ((repo, path), rows) in groups {
-        out.push_str(&format!("- **`{repo}` / `{path}`**\n"));
+        out.push_str(&format!(
+            "- **{repo} / {path}**\n",
+            repo = code_safe(&repo),
+            path = code_safe(&path),
+        ));
         for row in rows {
             let line = row.line.map(|l| format!(":{l}")).unwrap_or_default();
             let severity_badge = severity_badge(&row.severity);
             let origin_badge = origin_badge(&row.finding_origin);
-            let id = short_id(&row.id);
+            let id = code_safe(&short_id(&row.id));
             let chain = match &row.chain_id {
-                Some(cid) => format!(" (chain `{}`)", short_id(cid)),
+                Some(cid) => format!(" (chain {})", code_safe(&short_id(cid))),
                 None => String::new(),
             };
             out.push_str(&format!(
-                "  - {severity_badge} {origin_badge} `{rule}`{line}{chain} - id `{id}`\n",
-                rule = row.rule
+                "  - {severity_badge} {origin_badge} {rule}{line}{chain} - id {id}\n",
+                rule = code_safe(&row.rule),
             ));
         }
     }
@@ -216,12 +220,12 @@ pub fn build_comment_body(
             let members = chain
                 .member_ids
                 .iter()
-                .map(|m| format!("`{}`", short_id(m)))
+                .map(|m| code_safe(&short_id(m)))
                 .collect::<Vec<_>>()
                 .join(" - ");
             out.push_str(&format!(
-                "- `{}` ({} members): {}\n",
-                short_id(&chain.id),
+                "- {} ({} members): {}\n",
+                code_safe(&short_id(&chain.id)),
                 chain.member_ids.len(),
                 members
             ));
@@ -289,6 +293,34 @@ fn short_id(id: &str) -> String {
     id.chars().take(12).collect()
 }
 
+/// Wrap `s` in a Markdown inline-code span using a backtick fence
+/// longer than any backtick run inside `s`, so a literal backtick in
+/// the attacker-influenced field cannot break out of the span. Per
+/// CommonMark, an inline-code span opened with N backticks closes on
+/// the first run of exactly N backticks; picking `max_run + 1` (with
+/// a space-padding rule when `s` itself starts or ends with a
+/// backtick) keeps the whole field inside the span.
+fn code_safe(s: &str) -> String {
+    let mut max_run: usize = 0;
+    let mut cur: usize = 0;
+    for ch in s.chars() {
+        if ch == '`' {
+            cur += 1;
+            if cur > max_run {
+                max_run = cur;
+            }
+        } else {
+            cur = 0;
+        }
+    }
+    let fence_len = max_run + 1;
+    let fence: String = std::iter::repeat('`').take(fence_len).collect();
+    let needs_pad =
+        s.starts_with('`') || s.ends_with('`') || s.chars().all(|c| c.is_whitespace());
+    let pad = if needs_pad && !s.is_empty() { " " } else { "" };
+    format!("{fence}{pad}{s}{pad}{fence}")
+}
+
 fn trim_url(url: &str) -> &str {
     url.trim_end_matches('/')
 }
@@ -330,6 +362,48 @@ fn build_client(token: &str) -> Result<reqwest::Client, PrCommentError> {
 struct CommentEnvelope {
     id: u64,
     body: Option<String>,
+    #[serde(default)]
+    user: Option<CommentUser>,
+    #[serde(default)]
+    performed_via_github_app: Option<GitHubAppRef>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CommentUser {
+    #[serde(default)]
+    login: String,
+    #[serde(default, rename = "type")]
+    user_type: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitHubAppRef {
+    #[serde(default)]
+    slug: String,
+}
+
+/// True when the comment was authored by a recognised bot identity
+/// (a GitHub App via `performed_via_github_app`, the default Actions
+/// bot, or any other `user.type == "Bot"` account). Used to filter
+/// out human-posted marker-shadowing comments before we PATCH them
+/// — a non-bot author cannot have written the agent's marker
+/// legitimately, so picking up its id would trigger a 403 on update
+/// and silence the agent on that PR.
+fn comment_owned_by_known_bot(c: &CommentEnvelope) -> bool {
+    if c.performed_via_github_app
+        .as_ref()
+        .is_some_and(|a| !a.slug.is_empty())
+    {
+        return true;
+    }
+    match &c.user {
+        Some(u) => {
+            u.user_type.eq_ignore_ascii_case("Bot")
+                || u.login == "github-actions[bot]"
+                || u.login.ends_with("[bot]")
+        }
+        None => false,
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -366,7 +440,12 @@ async fn find_existing_comment(
             return Ok(None);
         }
         for c in &comments {
-            if c.body.as_deref().map(|b| b.contains(COMMENT_MARKER)).unwrap_or(false) {
+            let has_marker = c
+                .body
+                .as_deref()
+                .map(|b| b.contains(COMMENT_MARKER))
+                .unwrap_or(false);
+            if has_marker && comment_owned_by_known_bot(c) {
                 return Ok(Some(c.id));
             }
         }
@@ -556,5 +635,103 @@ mod tests {
         assert!(severity_badge("Low").contains("LOW"));
         assert!(severity_badge("Info").contains("INFO"));
         assert!(severity_badge("unknown").contains("INFO"));
+    }
+
+    #[test]
+    fn code_safe_escapes_embedded_backticks() {
+        // No backticks: single-fence span.
+        let plain = code_safe("alpha");
+        assert_eq!(plain, "`alpha`");
+
+        // One backtick inside: fence must grow to two.
+        let single = code_safe("evil`<a href=x>y</a>`.py");
+        assert!(single.starts_with("``"));
+        assert!(single.ends_with("``"));
+        // Strip outer fences; the payload survives unchanged inside.
+        let stripped = &single[2..single.len() - 2];
+        assert_eq!(stripped, "evil`<a href=x>y</a>`.py");
+
+        // A double-backtick run forces a triple fence.
+        let double = code_safe("a``b");
+        assert!(double.starts_with("```"));
+        assert!(double.ends_with("```"));
+
+        // Field that starts with a backtick: pad with one space inside
+        // the fence so the renderer does not chew the leading tick.
+        let leading = code_safe("`leading");
+        assert!(leading.starts_with("`` "));
+        assert!(leading.ends_with(" ``"));
+    }
+
+    #[test]
+    fn marker_auth_rejects_human_authored_marker_comment() {
+        let attacker = CommentEnvelope {
+            id: 42,
+            body: Some(format!("{COMMENT_MARKER}\nharmless preview")),
+            user: Some(CommentUser {
+                login: "drive-by-attacker".into(),
+                user_type: "User".into(),
+            }),
+            performed_via_github_app: None,
+        };
+        assert!(!comment_owned_by_known_bot(&attacker));
+
+        let actions_bot = CommentEnvelope {
+            id: 7,
+            body: Some(COMMENT_MARKER.into()),
+            user: Some(CommentUser {
+                login: "github-actions[bot]".into(),
+                user_type: "Bot".into(),
+            }),
+            performed_via_github_app: None,
+        };
+        assert!(comment_owned_by_known_bot(&actions_bot));
+
+        let app = CommentEnvelope {
+            id: 9,
+            body: Some(COMMENT_MARKER.into()),
+            user: Some(CommentUser {
+                login: "nyx-agent[bot]".into(),
+                user_type: "Bot".into(),
+            }),
+            performed_via_github_app: Some(GitHubAppRef {
+                slug: "nyx-agent".into(),
+            }),
+        };
+        assert!(comment_owned_by_known_bot(&app));
+
+        let no_user = CommentEnvelope {
+            id: 11,
+            body: Some(COMMENT_MARKER.into()),
+            user: None,
+            performed_via_github_app: None,
+        };
+        assert!(!comment_owned_by_known_bot(&no_user));
+    }
+
+    #[test]
+    fn comment_body_neutralises_attacker_backticks_in_path() {
+        let mut report = empty_report();
+        report.findings = vec![finding(
+            "abcd",
+            "alpha",
+            "src/evil`<img src=x>`.py",
+            "High",
+            "Verified",
+            None,
+        )];
+        let filtered = filter_for_pr(&report);
+        let body = build_comment_body(&filtered, &report, None);
+        // Attacker payload must not leak as raw HTML/markdown — every
+        // appearance of `<img` should sit inside a code span (i.e. the
+        // bytes immediately before it are backticks, not whitespace).
+        assert!(body.contains("<img"));
+        for (idx, _) in body.match_indices("<img") {
+            let lead = &body[..idx];
+            assert!(
+                lead.ends_with('`'),
+                "`<img` must stay inside a code span: {body}"
+            );
+        }
     }
 }

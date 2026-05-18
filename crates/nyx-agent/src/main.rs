@@ -1302,13 +1302,26 @@ async fn pr_comment_cmd(
 }
 
 /// Best-effort PR number recovery from the GitHub Actions environment.
-/// Honours `$GITHUB_REF` of the shape `refs/pull/<N>/{merge,head}` -
-/// the standard `pull_request` trigger sets it.
+/// Honours `$GITHUB_REF` of the shape `refs/pull/<N>/{merge,head}` —
+/// the standard `pull_request` trigger sets it — and falls back to
+/// parsing `pull_request.number` from the JSON payload at
+/// `$GITHUB_EVENT_PATH` (the `workflow_dispatch` /
+/// `pull_request_review` triggers only expose the PR number there).
 fn detect_pr_from_env() -> Option<u32> {
-    let r = std::env::var("GITHUB_REF").ok()?;
-    let rest = r.strip_prefix("refs/pull/")?;
-    let (num, _) = rest.split_once('/')?;
-    num.parse().ok()
+    if let Ok(r) = std::env::var("GITHUB_REF") {
+        if let Some(rest) = r.strip_prefix("refs/pull/") {
+            if let Some((num, _)) = rest.split_once('/') {
+                if let Ok(n) = num.parse() {
+                    return Some(n);
+                }
+            }
+        }
+    }
+    let event_path = std::env::var("GITHUB_EVENT_PATH").ok()?;
+    let bytes = std::fs::read(&event_path).ok()?;
+    let v: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let n = v.get("pull_request")?.get("number")?.as_u64()?;
+    u32::try_from(n).ok()
 }
 
 fn report_ingest_error(name: &str, err: &IngestError) {
