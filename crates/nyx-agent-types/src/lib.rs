@@ -10,6 +10,7 @@ pub mod finding;
 pub mod payload;
 pub mod repo;
 pub mod run;
+pub mod spec;
 pub mod verify;
 
 pub use event::{

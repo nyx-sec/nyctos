@@ -1819,6 +1819,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "blake3",
+ "nyx-agent-nyx",
  "nyx-agent-types",
  "reqwest",
  "serde",

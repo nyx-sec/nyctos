@@ -58,6 +58,37 @@ impl Diag {
             || self.evidence_string("reason").as_deref() == Some("NoPayloadsForCap")
     }
 
+    /// True when the static scanner flagged this diag with the
+    /// `Inconclusive(SpecDerivationFailed)` marker. Phase 15's
+    /// SpecDerivation fan-out fires exactly on these rows.
+    ///
+    /// Marker is tolerated under the same two evidence-shape conventions
+    /// as the payload marker: `evidence.inconclusive == "SpecDerivationFailed"`
+    /// (primary) and the fallback `evidence.reason == "SpecDerivationFailed"`.
+    pub fn is_spec_derivation_failed(&self) -> bool {
+        self.evidence_string("inconclusive").as_deref() == Some("SpecDerivationFailed")
+            || self.evidence_string("reason").as_deref() == Some("SpecDerivationFailed")
+    }
+
+    /// Collect every flow-step file reference distinct from the diag's
+    /// own `path`. The list is de-duplicated while preserving the order
+    /// the steps appeared in the trace; the agent uses this to pull a
+    /// short excerpt from each upstream file for the SpecDerivation
+    /// prompt.
+    pub fn flow_step_files(&self) -> Vec<&str> {
+        let mut out: Vec<&str> = Vec::new();
+        for step in &self.flow_steps {
+            let p = step.path.as_str();
+            if p == self.path {
+                continue;
+            }
+            if !out.contains(&p) {
+                out.push(p);
+            }
+        }
+        out
+    }
+
     /// Best-effort sink context (callee + arg expressions + a code
     /// excerpt around the sink line) built from `evidence.sink` and a
     /// short read of the workspace source. Returns `None` only when
@@ -281,6 +312,50 @@ mod tests {
         assert_eq!(ctx.callee, "unknown");
         assert!(ctx.args.is_empty());
         assert!(ctx.excerpt.contains("<source unavailable>"));
+    }
+
+    #[test]
+    fn spec_derivation_marker_detected_under_either_convention() {
+        let primary: Diag = serde_json::from_str(
+            r#"{"path":"a.py","line":1,"severity":"Low","id":"X","category":"Y",
+                "evidence":{"inconclusive":"SpecDerivationFailed"}}"#,
+        )
+        .unwrap();
+        assert!(primary.is_spec_derivation_failed());
+
+        let fallback: Diag = serde_json::from_str(
+            r#"{"path":"a.py","line":1,"severity":"Low","id":"X","category":"Y",
+                "evidence":{"reason":"SpecDerivationFailed"}}"#,
+        )
+        .unwrap();
+        assert!(fallback.is_spec_derivation_failed());
+
+        let neither: Diag = serde_json::from_str(
+            r#"{"path":"a.py","line":1,"severity":"Low","id":"X","category":"Y",
+                "evidence":{"reason":"OtherThing"}}"#,
+        )
+        .unwrap();
+        assert!(!neither.is_spec_derivation_failed());
+    }
+
+    #[test]
+    fn flow_step_files_dedupes_and_skips_self() {
+        let raw = r#"{
+            "path": "sink.py", "line": 19, "severity": "Medium",
+            "id": "taint-unsanitised-flow", "category": "SQL_QUERY",
+            "evidence": {
+                "flow_steps": [
+                    {"step": 1, "kind": "source", "file": "router.py", "line": 5},
+                    {"step": 2, "kind": "call",   "file": "router.py", "line": 7},
+                    {"step": 3, "kind": "call",   "file": "framework/orm.py", "line": 88},
+                    {"step": 4, "kind": "sink",   "file": "sink.py", "line": 19}
+                ]
+            }
+        }"#;
+        let mut d: Diag = serde_json::from_str(raw).expect("parse");
+        d.lift_flow_steps();
+        let files = d.flow_step_files();
+        assert_eq!(files, vec!["router.py", "framework/orm.py"]);
     }
 
     #[test]

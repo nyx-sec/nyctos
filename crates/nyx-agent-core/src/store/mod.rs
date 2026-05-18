@@ -28,6 +28,7 @@ pub mod repro;
 pub mod run;
 pub mod schedule;
 pub mod schema;
+pub mod spec;
 pub mod trace;
 pub mod webhook;
 
@@ -48,6 +49,7 @@ pub use repro::{ReproBundleRecord, ReproBundleStore};
 pub use run::{RunRecord, RunStatus, RunStore, TriggeredBy};
 pub use schedule::{ScheduleRecord, ScheduleStore};
 pub use schema::{schema_version, CURRENT_SCHEMA_VERSION, MIGRATOR};
+pub use spec::{HarnessSpecRecord, HarnessSpecStore};
 pub use trace::{AgentTraceRecord, AgentTraceStore, TaskKind};
 pub use webhook::{WebhookRecord, WebhookStore};
 
@@ -206,6 +208,9 @@ impl Store {
     }
     pub fn feedback(&self) -> FeedbackStore<'_> {
         FeedbackStore::new(&self.pool)
+    }
+    pub fn harness_specs(&self) -> HarnessSpecStore<'_> {
+        HarnessSpecStore::new(&self.pool)
     }
 }
 

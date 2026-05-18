@@ -374,7 +374,7 @@ async fn drive_scan(
         &secrets,
         &bundle,
         &workspaces_for_ai,
-        events,
+        events.clone(),
     )
     .await
     {
@@ -393,6 +393,37 @@ async fn drive_scan(
             }
         }
         Err(err) => tracing::warn!(error = %err, "payload synthesis pass failed"),
+    }
+
+    // Phase 15: fan out SpecDerivation tasks against every diag the
+    // static pass flagged with `Inconclusive(SpecDerivationFailed)`.
+    // Same no-op gating as the payload pass; shares the run's budget
+    // bucket so per-call caps stack on top of payload spend.
+    match ai_pipeline::run_spec_derivation_pass(
+        &config.ai,
+        store,
+        &secrets,
+        &bundle,
+        &workspaces_for_ai,
+        events,
+    )
+    .await
+    {
+        Ok(report) => {
+            if verbose
+                && (report.synthesised > 0 || report.quarantined > 0 || report.failed > 0)
+            {
+                println!(
+                    "scan: spec derivation - {} synthesised, {} quarantined, {} failed ({} attempts, ${:.6})",
+                    report.synthesised,
+                    report.quarantined,
+                    report.failed,
+                    report.total_attempts,
+                    report.spend_usd_micros as f64 / 1_000_000.0,
+                );
+            }
+        }
+        Err(err) => tracing::warn!(error = %err, "spec derivation pass failed"),
     }
 
     let counts = bundle.counts();

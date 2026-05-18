@@ -387,6 +387,32 @@ impl<'a> FindingStore<'a> {
         Ok(())
     }
 
+    /// Stamp `id` with the SpecDerivation result. Sets the `spec_id`
+    /// back-link plus the `attack_provenance` / `prompt_version`
+    /// columns so the findings detail view can render "AI synthesised
+    /// the harness spec for this row" without an extra join. Runtime-
+    /// checked SQL to keep the `.sqlx/` cache from growing for a
+    /// helper that only runs once per finding per scan.
+    pub async fn set_spec(
+        &self,
+        id: &str,
+        spec_id: &str,
+        attack_provenance: &str,
+        prompt_version: &str,
+    ) -> Result<(), StoreError> {
+        sqlx::query(
+            "UPDATE findings SET spec_id = ?, attack_provenance = ?, prompt_version = ? \
+             WHERE id = ?",
+        )
+        .bind(spec_id)
+        .bind(attack_provenance)
+        .bind(prompt_version)
+        .bind(id)
+        .execute(self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn supersede(&self, id: &str, by_id: &str) -> Result<(), StoreError> {
         sqlx::query!("UPDATE findings SET superseded_by = ? WHERE id = ?", by_id, id)
             .execute(self.pool)

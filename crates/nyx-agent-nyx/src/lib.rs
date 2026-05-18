@@ -7,10 +7,12 @@
 
 pub mod diag;
 pub mod error;
+pub mod harness_spec;
 pub mod lane;
 pub mod runner;
 
 pub use diag::{Diag, FlowStep};
 pub use error::NyxError;
+pub use harness_spec::{HarnessSpec, HarnessSpecValidationError};
 pub use lane::NyxScanLane;
 pub use runner::{NyxRunner, ScanOptions, ScanOutcome, MINIMUM_NYX_VERSION};

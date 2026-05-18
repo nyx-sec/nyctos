@@ -24,3 +24,6 @@ pub use runtime::{
 pub use tasks::payload_synthesis::{
     run as run_payload_synthesis, PayloadSynthesisOutcome,
 };
+pub use tasks::spec_derivation::{
+    read_excerpt as read_spec_excerpt, run as run_spec_derivation, SpecDerivationOutcome,
+};
