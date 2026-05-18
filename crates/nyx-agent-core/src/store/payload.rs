@@ -51,6 +51,47 @@ impl<'a> PayloadStore<'a> {
         Ok(())
     }
 
+    /// Atomic dual-write: insert the payload row AND stamp the parent
+    /// finding's `attack_provenance` / `prompt_version` columns in a
+    /// single transaction. PayloadSynthesis uses this so a partial
+    /// failure of the second write does not leave an orphaned payload
+    /// behind without the matching badge on the finding.
+    pub async fn insert_with_finding_provenance(
+        &self,
+        p: &PayloadRecord,
+        finding_id: &str,
+        attack_provenance: &str,
+        prompt_version: &str,
+    ) -> Result<(), StoreError> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "INSERT INTO payloads \
+             (id, finding_id, cap, lang, vuln_bytes, benign_bytes, \
+              oracle_blob, attack_provenance, prompt_version, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&p.id)
+        .bind(&p.finding_id)
+        .bind(&p.cap)
+        .bind(&p.lang)
+        .bind(&p.vuln_bytes)
+        .bind(p.benign_bytes.as_deref())
+        .bind(p.oracle_blob.as_deref())
+        .bind(p.attack_provenance.as_deref())
+        .bind(p.prompt_version.as_deref())
+        .bind(p.created_at)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("UPDATE findings SET attack_provenance = ?, prompt_version = ? WHERE id = ?")
+            .bind(attack_provenance)
+            .bind(prompt_version)
+            .bind(finding_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     pub async fn get(&self, id: &str) -> Result<Option<PayloadRecord>, StoreError> {
         let row = sqlx::query_as!(
             PayloadRecord,
@@ -150,5 +191,54 @@ mod tests {
         s.payloads().insert(&p).await.expect("insert");
         let got = s.payloads().get("p-1").await.expect("get").expect("row");
         assert_eq!(got.prompt_version.as_deref(), Some("payload/v9"));
+    }
+
+    #[tokio::test]
+    async fn insert_with_finding_provenance_writes_both_sides() {
+        let (_tmp, s) = fresh_store().await;
+        let fid = seed(&s).await;
+        let p = sample_payload("p-tx", &fid);
+        s.payloads()
+            .insert_with_finding_provenance(
+                &p,
+                &fid,
+                "LlmSynthesised",
+                "phase14.payload_synthesis.v1",
+            )
+            .await
+            .expect("dual write");
+        let pay = s.payloads().get("p-tx").await.expect("get").expect("payload");
+        assert_eq!(pay.id, "p-tx");
+        let f = s.findings().get(&fid).await.expect("get").expect("finding");
+        assert_eq!(f.attack_provenance.as_deref(), Some("LlmSynthesised"));
+        assert_eq!(f.prompt_version.as_deref(), Some("phase14.payload_synthesis.v1"));
+    }
+
+    #[tokio::test]
+    async fn insert_with_finding_provenance_rolls_back_on_duplicate_id() {
+        let (_tmp, s) = fresh_store().await;
+        let fid = seed(&s).await;
+        let p = sample_payload("p-dup", &fid);
+        s.payloads()
+            .insert_with_finding_provenance(&p, &fid, "LlmSynthesised", "v1")
+            .await
+            .expect("first");
+        // Mutate the would-be-stamped fields so a partial second write
+        // would be visible.
+        let second =
+            s.payloads().insert_with_finding_provenance(&p, &fid, "ManualPromote", "v9").await;
+        assert!(second.is_err(), "duplicate payload id must fail at INSERT");
+        // Finding stamp must reflect ONLY the first call.
+        let f = s.findings().get(&fid).await.expect("get").expect("finding");
+        assert_eq!(
+            f.attack_provenance.as_deref(),
+            Some("LlmSynthesised"),
+            "rollback must not leak the second call's provenance"
+        );
+        assert_eq!(
+            f.prompt_version.as_deref(),
+            Some("v1"),
+            "rollback must not leak the second call's prompt_version"
+        );
     }
 }

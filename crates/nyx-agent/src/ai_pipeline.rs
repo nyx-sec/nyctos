@@ -313,21 +313,12 @@ async fn apply_outcome(
                 prompt_version: Some(prompt_version.clone()),
                 created_at: finished_at,
             };
-            store.payloads().insert(&rec).await?;
-            // Stamp the parent finding so the detail view can render
-            // "AI synthesised the payload for this row" without a join
-            // through the payloads table.
-            if let Err(err) = store
-                .findings()
-                .set_attack_provenance(&finding_id, &provenance, &prompt_version)
-                .await
-            {
-                tracing::warn!(
-                    error = %err,
-                    finding = %finding_id,
-                    "payload synthesis: failed to stamp finding provenance"
-                );
-            }
+            // Atomic dual-write so a partial failure of the finding
+            // stamp does not leave an orphaned payload row behind.
+            store
+                .payloads()
+                .insert_with_finding_provenance(&rec, &finding_id, &provenance, &prompt_version)
+                .await?;
             let trace = build_trace_row(
                 TaskKind::PayloadSynthesis,
                 Some(finding_id),
@@ -667,9 +658,12 @@ async fn apply_spec_outcome(
                 prompt_version: Some(prompt_version.clone()),
                 created_at: finished_at,
             };
-            let spec_id = rec.id.clone();
-            store.harness_specs().insert(&rec).await?;
-            store.findings().set_spec(&finding_id, &spec_id, &provenance, &prompt_version).await?;
+            // Atomic dual-write so a partial failure of the finding
+            // back-link does not orphan the harness_specs row.
+            store
+                .harness_specs()
+                .insert_with_finding_spec_link(&rec, &finding_id, &provenance, &prompt_version)
+                .await?;
             let trace = build_trace_row(
                 TaskKind::SpecDerivation,
                 Some(finding_id),
