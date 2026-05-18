@@ -428,7 +428,7 @@ async fn serve(
         config_path.clone(),
         config.clone(),
         config_present,
-        SecretStore::default(),
+        SecretStore::from_env(),
     );
     // Headless mode skips auth entirely (deferred plan #31). When auth
     // is on, mint or load a per-install token and surface it both to

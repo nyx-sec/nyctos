@@ -21,6 +21,7 @@ pub use run::{
 };
 pub use secrets::{
     SecretError, SecretStore, ACCOUNT_AI_ANTHROPIC, ACCOUNT_AI_LOCAL_LLM, DEFAULT_SERVICE,
+    ENV_BACKEND as SECRETS_ENV_BACKEND,
 };
 pub use state::{mint_token, StateDir, StateError};
 pub use store::{Store, StoreError, CURRENT_SCHEMA_VERSION};

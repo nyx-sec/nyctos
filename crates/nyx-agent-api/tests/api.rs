@@ -70,13 +70,7 @@ impl TestServer {
             config_path,
             Config::default(),
             setup_complete,
-            SecretStore::with_service(format!(
-                "nyx-agent-test-{}",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_nanos())
-                    .unwrap_or_default()
-            )),
+            SecretStore::memory(),
         );
         let auth = if with_auth {
             AuthConfig::new(Some(nyx_agent_core::mint_token()))
@@ -552,6 +546,36 @@ async fn setup_submit_writes_toml_and_marks_complete() {
 }
 
 #[tokio::test]
+async fn setup_submit_persists_anthropic_api_key_through_memory_backend() {
+    // CI does not have a keychain agent, so `SecretStore::default()` would
+    // fail at `set_password` time. The memory backend exercises the
+    // full submit_setup path including the `secrets.set(...)` call.
+    let trigger: Arc<dyn ScanTrigger> =
+        Arc::new(StubScanTrigger { run_id: "irrelevant".to_string() });
+    let srv = TestServer::start_with_options(trigger, false, false).await;
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/v1/setup", srv.base()))
+        .json(&serde_json::json!({
+            "ai_runtime": "anthropic",
+            "anthropic_api_key": "sk-ant-test-12345",
+            "sandbox_backend": "process",
+            "i_own_this": true,
+        }))
+        .send()
+        .await
+        .expect("post");
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    let after: Value = reqwest::get(format!("{}/api/v1/setup/status", srv.base()))
+        .await
+        .expect("get")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(after["complete"], true);
+    assert_eq!(after["ai_runtime"], "anthropic");
+}
+
+#[tokio::test]
 async fn setup_submit_rejects_without_ownership_attestation() {
     let trigger: Arc<dyn ScanTrigger> =
         Arc::new(StubScanTrigger { run_id: "irrelevant".to_string() });
@@ -675,7 +699,7 @@ async fn delete_repo_removes_workspace_dir_when_configured() {
     let store = Store::open(tmp.path()).await.expect("open store");
     let (events, _rx) = broadcast::channel::<AgentEvent>(8);
     let config_path = tmp.path().join("nyx-agent.toml");
-    let setup = SetupContext::new(config_path, Config::default(), true, SecretStore::default());
+    let setup = SetupContext::new(config_path, Config::default(), true, SecretStore::memory());
     let state_repos = tmp.path().join("repos");
     let billing_dir = state_repos.join("billing");
     std::fs::create_dir_all(&billing_dir).expect("mkdir");
@@ -797,7 +821,7 @@ async fn websocket_with_run_filter_replays_buffered_frames() {
     let store = Store::open(tmp.path()).await.expect("open store");
     let (events, _rx) = broadcast::channel::<AgentEvent>(16);
     let config_path = tmp.path().join("nyx-agent.toml");
-    let setup = SetupContext::new(config_path, Config::default(), true, SecretStore::default());
+    let setup = SetupContext::new(config_path, Config::default(), true, SecretStore::memory());
     let trigger: Arc<dyn ScanTrigger> =
         Arc::new(StubScanTrigger { run_id: "r-1".to_string() });
     let state =
