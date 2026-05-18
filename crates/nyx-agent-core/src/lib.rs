@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod log_init;
+pub mod project;
 pub mod repo;
 pub mod report;
 pub mod run;
@@ -16,6 +17,7 @@ pub use config::{
     TriggersConfig, UiConfig,
 };
 pub use log_init::{init as init_logging, json_log_path, LogConfig, LogInitError};
+pub use project::{Project, ProjectId};
 pub use repo::{ingest, GitAuth, IngestError, IngestedRepo, Repo, RepoSource, SnapshotBackend};
 pub use run::{
     mint_run_id, CrossRepoCallgraphStub, CrossRepoEdge, InconclusiveReason, RepoBundle,

@@ -313,7 +313,12 @@ mod tests {
     use std::process::Command as StdCommand;
 
     use super::*;
+    use crate::project::ProjectId;
     use crate::repo::{ingest, Repo, RepoSource};
+
+    fn test_project_id() -> ProjectId {
+        ProjectId::new("test-project")
+    }
 
     fn have_git() -> bool {
         let ok = StdCommand::new("git")
@@ -405,6 +410,7 @@ mod tests {
                 auth: None,
             },
             i_own_this: true,
+            project_id: test_project_id(),
         };
 
         let first = ingest(&repo, state.path(), "run-1").await.expect("first ingest");
@@ -443,6 +449,7 @@ mod tests {
             name: "demo".to_string(),
             source: RepoSource::Git { url: true_url.clone(), branch: None, auth: None },
             i_own_this: true,
+            project_id: test_project_id(),
         };
         ingest(&prime, state.path(), "seed").await.expect("seed");
 
@@ -454,6 +461,7 @@ mod tests {
                 auth: None,
             },
             i_own_this: true,
+            project_id: test_project_id(),
         };
         let err = ingest(&lying, state.path(), "run-bad").await.expect_err("must fail");
         assert!(matches!(err, IngestError::Git { .. } | IngestError::RemoteMismatch { .. }));

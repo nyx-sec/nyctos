@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 use crate::config::{RepoConfig, RepoSourceConfig};
+use crate::project::ProjectId;
 
 pub mod git;
 pub mod local;
@@ -33,6 +34,7 @@ pub struct Repo {
     pub name: String,
     pub source: RepoSource,
     pub i_own_this: bool,
+    pub project_id: ProjectId,
 }
 
 /// Source kind for a [`Repo`]. Mirrors the config shape but decodes the
@@ -98,9 +100,10 @@ impl GitAuth {
 }
 
 impl Repo {
-    /// Build a [`Repo`] from a [`RepoConfig`] entry. Does not perform any
-    /// IO; ownership is checked at ingestion time via [`ingest`].
-    pub fn from_config(cfg: &RepoConfig) -> Result<Self, IngestError> {
+    /// Build a [`Repo`] from a [`RepoConfig`] entry under a project.
+    /// Does not perform any IO; ownership is checked at ingestion time
+    /// via [`ingest`].
+    pub fn from_config(cfg: &RepoConfig, project_id: ProjectId) -> Result<Self, IngestError> {
         let source = match &cfg.source {
             RepoSourceConfig::Git { url, branch, auth } => {
                 let auth = match auth.as_deref() {
@@ -111,7 +114,7 @@ impl Repo {
             }
             RepoSourceConfig::LocalPath { path } => RepoSource::LocalPath { path: path.clone() },
         };
-        Ok(Repo { name: cfg.name.clone(), source, i_own_this: cfg.i_own_this })
+        Ok(Repo { name: cfg.name.clone(), source, i_own_this: cfg.i_own_this, project_id })
     }
 }
 
@@ -272,6 +275,11 @@ pub(crate) fn install_snapshot_cleanup(repo: &mut IngestedRepo, snapshot_dir: Pa
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::project::ProjectId;
+
+    fn test_project_id() -> ProjectId {
+        ProjectId::new("test-project")
+    }
 
     #[test]
     fn auth_parse_ssh_key() {
@@ -335,7 +343,7 @@ mod tests {
             },
             enabled: true,
         };
-        let r = Repo::from_config(&cfg).expect("from_config");
+        let r = Repo::from_config(&cfg, test_project_id()).expect("from_config");
         match r.source {
             RepoSource::Git { url, branch, auth } => {
                 assert_eq!(url, "git@github.com:org/billing.git");
@@ -398,11 +406,13 @@ mod tests {
                 auth: None,
             },
             i_own_this: true,
+            project_id: test_project_id(),
         };
         let local_repo = Repo {
             name: "monolith".to_string(),
             source: RepoSource::LocalPath { path: local_src.path().to_path_buf() },
             i_own_this: true,
+            project_id: test_project_id(),
         };
         let g = ingest(&git_repo, &state_repos, "run-1").await.expect("git ingest");
         let l = ingest(&local_repo, &state_repos, "run-1").await.expect("local ingest");
@@ -420,6 +430,7 @@ mod tests {
             name: "unattested".to_string(),
             source: RepoSource::LocalPath { path: tmp.path().to_path_buf() },
             i_own_this: false,
+            project_id: test_project_id(),
         };
         let err = ingest(&repo, tmp.path(), "run-1").await.expect_err("unattested must be refused");
         match err {

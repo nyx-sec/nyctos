@@ -382,7 +382,12 @@ fn read_local_git_remote(workspace: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::project::ProjectId;
     use crate::repo::{ingest, Repo, RepoSource};
+
+    fn test_project_id() -> ProjectId {
+        ProjectId::new("test-project")
+    }
 
     #[tokio::test]
     async fn local_path_snapshot_copies_tree_readonly() {
@@ -396,6 +401,7 @@ mod tests {
             name: "demo".to_string(),
             source: RepoSource::LocalPath { path: src.path().to_path_buf() },
             i_own_this: true,
+            project_id: test_project_id(),
         };
 
         let ingested = ingest(&repo, state.path(), "run-1").await.expect("ingest");
@@ -427,6 +433,7 @@ mod tests {
             name: "demo".to_string(),
             source: RepoSource::LocalPath { path: src.path().to_path_buf() },
             i_own_this: true,
+            project_id: test_project_id(),
         };
         let workspace_path = {
             let ingested = ingest(&repo, state.path(), "run-1").await.expect("ingest");
@@ -446,6 +453,7 @@ mod tests {
             name: "ghost".to_string(),
             source: RepoSource::LocalPath { path: PathBuf::from("/definitely/missing/path") },
             i_own_this: true,
+            project_id: test_project_id(),
         };
         let err = ingest(&repo, state.path(), "run").await.expect_err("must fail");
         assert!(matches!(err, IngestError::LocalPathMissing { .. }));
@@ -460,6 +468,7 @@ mod tests {
             name: "wrong".to_string(),
             source: RepoSource::LocalPath { path: f.clone() },
             i_own_this: true,
+            project_id: test_project_id(),
         };
         let err = ingest(&repo, state.path(), "run").await.expect_err("must fail");
         assert!(matches!(err, IngestError::LocalPathNotDir { .. }));
@@ -482,6 +491,7 @@ mod tests {
             name: "with-remote".to_string(),
             source: RepoSource::LocalPath { path: src.path().to_path_buf() },
             i_own_this: true,
+            project_id: test_project_id(),
         };
         let ingested = ingest(&repo, state.path(), "run-1").await.expect("ingest");
         assert_eq!(
