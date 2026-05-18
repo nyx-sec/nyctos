@@ -45,9 +45,9 @@ export function ReposIcon({ className, size = 18 }: IconProps) {
 export function RunsIcon({ className, size = 18 }: IconProps) {
   return (
     <svg {...svgProps({ className, size })} viewBox="0 0 18 18">
-      <path d="M14.5 9A5.5 5.5 0 1 1 9 3.5" />
-      <path d="M14.5 4v4h-4" />
-      <path d="M9 6v3l2.5 1.5" />
+      <path d="M14.2 8.6A5.4 5.4 0 1 1 12.6 5L14.2 6.6" />
+      <path d="M14.2 3.4v3.2H11" />
+      <path d="M9 6.2V9l2.1 1.3" />
     </svg>
   );
 }
@@ -88,7 +88,7 @@ export function SettingsIcon({ className, size = 18 }: IconProps) {
   return (
     <svg {...svgProps({ className, size })} viewBox="0 0 18 18">
       <circle cx="9" cy="9" r="2.2" />
-      <path d="M14.2 10.8c.1-.6.1-1.2 0-1.8l1.5-1.1-1.5-2.6-1.8.8c-.5-.4-1-.7-1.6-.9L10.6 3H7.4l-.2 2.2c-.6.2-1.1.5-1.6.9l-1.8-.8-1.5 2.6L3.8 9c-.1.6-.1 1.2 0 1.8l-1.5 1.1 1.5 2.6 1.8-.8c.5.4 1 .7 1.6.9l.2 2.2h3.2l.2-2.2c.6-.2 1.1-.5 1.6-.9l1.8.8 1.5-2.6-1.5-1.1z" />
+      <path d="M10.4 2.8H7.6l-.3 2a5.2 5.2 0 0 0-1.3.7l-1.9-.8-1.4 2.4 1.6 1.2a5.2 5.2 0 0 0 0 1.4l-1.6 1.2 1.4 2.4 1.9-.8c.4.3.8.5 1.3.7l.3 2h2.8l.3-2c.5-.2.9-.4 1.3-.7l1.9.8 1.4-2.4-1.6-1.2a5.2 5.2 0 0 0 0-1.4l1.6-1.2-1.4-2.4-1.9.8a5.2 5.2 0 0 0-1.3-.7l-.3-2z" />
     </svg>
   );
 }
