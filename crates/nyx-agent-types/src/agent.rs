@@ -171,6 +171,54 @@ pub enum ExtractedAgentResult {
     ExplorationEvent { message: String },
 }
 
+/// Classify a tool-use block emitted by an agent-loop adapter into a
+/// typed `ExtractedAgentResult`. Recognised names (`record_payload`,
+/// `record_spec`, `record_chains`) lift their inputs into the typed
+/// variant; any other tool name folds into `ExplorationEvent`. Adapters
+/// that surface tool calls (Claude Code today, Anthropic agent-loop if
+/// it ever ships) share this mapping so the trace store sees a single
+/// stable shape.
+pub fn classify_tool_use(
+    name: &str,
+    input: &serde_json::Value,
+) -> Option<ExtractedAgentResult> {
+    match name {
+        "record_payload" => {
+            let rule_id = input.get("rule_id")?.as_str()?.to_string();
+            let body = input.get("body")?.as_str()?.to_string();
+            Some(ExtractedAgentResult::PayloadFound { rule_id, body })
+        }
+        "record_spec" => {
+            let capability = input.get("capability")?.as_str()?.to_string();
+            let spec = match input.get("spec") {
+                Some(v) => match v.as_str() {
+                    Some(s) => s.to_string(),
+                    None => v.to_string(),
+                },
+                None => return None,
+            };
+            Some(ExtractedAgentResult::SpecFound { capability, spec })
+        }
+        "record_chains" => {
+            let chain_ids = input
+                .get("chain_ids")?
+                .as_array()?
+                .iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect::<Vec<_>>();
+            let rationale = input
+                .get("rationale")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            Some(ExtractedAgentResult::ChainsRanked { chain_ids, rationale })
+        }
+        _ => Some(ExtractedAgentResult::ExplorationEvent {
+            message: format!("tool {name} input={input}"),
+        }),
+    }
+}
+
 /// Reason the adapter halted a task. Surfaced both on the event bus
 /// (`AiEvent::TaskHalted`) and as part of the typed error.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]

@@ -58,21 +58,18 @@ use nyx_agent_types::spec::SpecDerivationInput;
 use nyx_agent_types::verify::{Oracle, VerifyResult, VerifyVerdict};
 use tokio::sync::Semaphore;
 
-/// Default per-run AI budget cap applied to brand-new `(run_id, kind)`
-/// rows the tracker auto-creates. Until the settings page lands a
-/// runtime knob, this constant is the runaway-limit fallback.
-const DEFAULT_RUN_BUDGET_USD_MICROS: i64 = 5_000_000; // $5.00
-
 /// Per-call cap forwarded into `Budget.cap_usd_micros` for every
-/// PayloadSynthesis call. The tracker-side cap (above) is the
-/// authoritative bucket the adapter checks against; this per-call
-/// value is informational on the wire.
-const PAYLOAD_SYNTHESIS_PER_CALL_CAP_USD_MICROS: i64 = DEFAULT_RUN_BUDGET_USD_MICROS;
+/// PayloadSynthesis call. The tracker-side cap (resolved per-run from
+/// `[ai] default_run_budget_usd_micros`, falling back to
+/// [`AiConfig::DEFAULT_RUN_BUDGET_USD_MICROS`]) is the authoritative
+/// bucket the adapter checks against; this per-call value is
+/// informational on the wire.
+const PAYLOAD_SYNTHESIS_PER_CALL_CAP_USD_MICROS: i64 = AiConfig::DEFAULT_RUN_BUDGET_USD_MICROS;
 
 /// Per-call cap for every SpecDerivation call. SpecDerivation reads
 /// three small excerpts and asks for a JSON spec - sizing matches
 /// PayloadSynthesis until per-task tuning shows otherwise.
-const SPEC_DERIVATION_PER_CALL_CAP_USD_MICROS: i64 = DEFAULT_RUN_BUDGET_USD_MICROS;
+const SPEC_DERIVATION_PER_CALL_CAP_USD_MICROS: i64 = AiConfig::DEFAULT_RUN_BUDGET_USD_MICROS;
 
 /// Radius (in lines) of each excerpt the SpecDerivation prompt
 /// receives. The vendored `HarnessSpec` only needs a few lines around
@@ -183,7 +180,7 @@ pub async fn run_payload_synthesis_pass(
         Err(e) => return Err(anyhow::anyhow!("secret store error: {e}")),
     };
     let tracker: SharedBudgetTracker =
-        Arc::new(BudgetStoreTracker::new(store.clone(), DEFAULT_RUN_BUDGET_USD_MICROS));
+        Arc::new(BudgetStoreTracker::new(store.clone(), config.default_run_budget_usd_micros_resolved()));
     let adapter = Arc::new(AnthropicSdkAdapter::new(api_key, tracker.clone()));
 
     let inputs = build_inputs(bundle, workspaces);
@@ -384,7 +381,7 @@ pub async fn run_spec_derivation_pass(
         Err(e) => return Err(anyhow::anyhow!("secret store error: {e}")),
     };
     let tracker: SharedBudgetTracker =
-        Arc::new(BudgetStoreTracker::new(store.clone(), DEFAULT_RUN_BUDGET_USD_MICROS));
+        Arc::new(BudgetStoreTracker::new(store.clone(), config.default_run_budget_usd_micros_resolved()));
     let adapter = Arc::new(AnthropicSdkAdapter::new(api_key, tracker.clone()));
 
     let inputs = build_spec_inputs(bundle, workspaces);
@@ -581,7 +578,7 @@ async fn apply_spec_outcome(
 /// Per-call cap for the ChainReasoning fan-out. Chain reasoning fires
 /// at most once per run; sizing matches the per-run default so the
 /// task can use the full budget when no other tasks have spent yet.
-const CHAIN_REASONING_PER_CALL_CAP_USD_MICROS: i64 = DEFAULT_RUN_BUDGET_USD_MICROS;
+const CHAIN_REASONING_PER_CALL_CAP_USD_MICROS: i64 = AiConfig::DEFAULT_RUN_BUDGET_USD_MICROS;
 
 /// Heuristic path fragments that mark a file as a vendored framework
 /// binding. The ChainReasoning prompt tags nodes whose source path
@@ -646,7 +643,7 @@ pub async fn run_chain_reasoning_pass(
     );
 
     let tracker: SharedBudgetTracker =
-        Arc::new(BudgetStoreTracker::new(store.clone(), DEFAULT_RUN_BUDGET_USD_MICROS));
+        Arc::new(BudgetStoreTracker::new(store.clone(), config.default_run_budget_usd_micros_resolved()));
     let adapter = AnthropicSdkAdapter::new(api_key, tracker.clone());
 
     let outcome = match run_chain_reasoning(

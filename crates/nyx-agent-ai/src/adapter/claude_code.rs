@@ -26,8 +26,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use nyx_agent_types::agent::{
-    AgentResult, AgentTask, AiError, Budget, CostEstimate, ExtractedAgentResult, HaltReason,
-    Prompt, Response, TokenUsage,
+    classify_tool_use, AgentResult, AgentTask, AiError, Budget, CostEstimate,
+    ExtractedAgentResult, HaltReason, Prompt, Response, TokenUsage,
 };
 use nyx_agent_types::event::{AgentEvent, AiEvent, EventSink};
 use serde::Deserialize;
@@ -211,6 +211,11 @@ impl AiRuntime for ClaudeCodeAdapter {
             // stderr would block the child on write and deadlock the
             // agent loop.
             .stderr(Stdio::null())
+            // Ensure SIGKILL fires and the child is reaped if a future error
+            // path drops `child` before `wait().await` runs. The timeout arm
+            // below calls `kill().await` (which reaps), but `kill_on_drop`
+            // covers panic/early-return paths too.
+            .kill_on_drop(true)
             .spawn()
             .map_err(|e| AiError::Transport(format!("spawn claude: {e}")))?;
 
@@ -267,7 +272,7 @@ impl AiRuntime for ClaudeCodeAdapter {
                                             name: name.clone(),
                                         },
                                     });
-                                    if let Some(result) = extract_from_tool_use(&name, &input) {
+                                    if let Some(result) = classify_tool_use(&name, &input) {
                                         extracted.push(result);
                                     }
                                     let _ = sink.send(AgentEvent::Ai {
@@ -404,41 +409,6 @@ fn render_task_markdown(task: &AgentTask) -> String {
         objective = task.objective,
         tools = tools_block,
     )
-}
-
-fn extract_from_tool_use(name: &str, input: &serde_json::Value) -> Option<ExtractedAgentResult> {
-    match name {
-        "record_payload" => {
-            let rule_id = input.get("rule_id")?.as_str()?.to_string();
-            let body = input.get("body")?.as_str()?.to_string();
-            Some(ExtractedAgentResult::PayloadFound { rule_id, body })
-        }
-        "record_spec" => {
-            let capability = input.get("capability")?.as_str()?.to_string();
-            let spec = match input.get("spec") {
-                Some(v) => match v.as_str() {
-                    Some(s) => s.to_string(),
-                    None => v.to_string(),
-                },
-                None => return None,
-            };
-            Some(ExtractedAgentResult::SpecFound { capability, spec })
-        }
-        "record_chains" => {
-            let chain_ids = input
-                .get("chain_ids")?
-                .as_array()?
-                .iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                .collect::<Vec<_>>();
-            let rationale =
-                input.get("rationale").and_then(|v| v.as_str()).unwrap_or_default().to_string();
-            Some(ExtractedAgentResult::ChainsRanked { chain_ids, rationale })
-        }
-        _ => Some(ExtractedAgentResult::ExplorationEvent {
-            message: format!("tool {name} input={input}"),
-        }),
-    }
 }
 
 /// Parse one NDJSON line from `claude --output-format stream-json` into
@@ -636,7 +606,7 @@ mod tests {
         let block = a.content.into_iter().next().expect("one block");
         let ContentBlock::ToolUse { name, input, .. } = block else { panic!("expected ToolUse") };
         assert_eq!(name, "record_payload");
-        let extracted = extract_from_tool_use(&name, &input).expect("extract");
+        let extracted = classify_tool_use(&name, &input).expect("extract");
         assert!(matches!(
             extracted,
             ExtractedAgentResult::PayloadFound { ref rule_id, ref body }
@@ -662,9 +632,9 @@ mod tests {
     }
 
     #[test]
-    fn extract_from_tool_use_falls_back_to_exploration_event() {
+    fn classify_tool_use_falls_back_to_exploration_event() {
         let input = serde_json::json!({ "path": "src/main.rs" });
-        let ev = extract_from_tool_use("fs.read", &input).expect("extracted");
+        let ev = classify_tool_use("fs.read", &input).expect("extracted");
         match ev {
             ExtractedAgentResult::ExplorationEvent { message } => {
                 assert!(message.starts_with("tool fs.read"));
@@ -674,12 +644,12 @@ mod tests {
     }
 
     #[test]
-    fn extract_from_tool_use_records_spec_and_chains() {
+    fn classify_tool_use_records_spec_and_chains() {
         let spec_input = serde_json::json!({
             "capability": "fs.write",
             "spec": "writes to /tmp"
         });
-        let ev = extract_from_tool_use("record_spec", &spec_input).expect("extracted");
+        let ev = classify_tool_use("record_spec", &spec_input).expect("extracted");
         assert!(matches!(
             ev,
             ExtractedAgentResult::SpecFound { ref capability, ref spec }
@@ -690,7 +660,7 @@ mod tests {
             "chain_ids": ["c1", "c2"],
             "rationale": "shorter sink reachability"
         });
-        let ev = extract_from_tool_use("record_chains", &chain_input).expect("extracted");
+        let ev = classify_tool_use("record_chains", &chain_input).expect("extracted");
         assert!(matches!(
             ev,
             ExtractedAgentResult::ChainsRanked { ref chain_ids, .. }

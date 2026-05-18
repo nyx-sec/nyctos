@@ -151,6 +151,14 @@ pub struct AiConfig {
     /// [`AiConfig::max_concurrent_one_shot_resolved`].
     #[serde(default = "default_max_concurrent_one_shot")]
     pub max_concurrent_one_shot: u32,
+    /// Per-run AI budget cap (in USD micros) stamped on brand-new
+    /// `(run_id, kind)` rows the `BudgetStoreTracker` auto-creates.
+    /// `None` falls back to the built-in
+    /// [`AiConfig::DEFAULT_RUN_BUDGET_USD_MICROS`]. Operators raise or
+    /// lower this via `[ai] default_run_budget_usd_micros` in
+    /// `nyx-agent.toml`.
+    #[serde(default)]
+    pub default_run_budget_usd_micros: Option<i64>,
 }
 
 impl Default for AiConfig {
@@ -161,6 +169,7 @@ impl Default for AiConfig {
             api_base: None,
             runtime: AiRuntime::default(),
             max_concurrent_one_shot: default_max_concurrent_one_shot(),
+            default_run_budget_usd_micros: None,
         }
     }
 }
@@ -170,10 +179,25 @@ fn default_max_concurrent_one_shot() -> u32 {
 }
 
 impl AiConfig {
+    /// Built-in fallback per-run AI budget cap ($5.00 in USD micros).
+    /// Used when the operator did not set
+    /// `[ai] default_run_budget_usd_micros`.
+    pub const DEFAULT_RUN_BUDGET_USD_MICROS: i64 = 5_000_000;
+
     /// Floored fan-out used by run-time dispatchers. A configured `0`
     /// would deadlock a semaphore acquire so we floor to `1`.
     pub fn max_concurrent_one_shot_resolved(&self) -> usize {
         self.max_concurrent_one_shot.max(1) as usize
+    }
+
+    /// Resolved per-run AI budget cap, honouring the operator override
+    /// when set. Negative or zero overrides fall back to the built-in
+    /// default rather than disabling the cap.
+    pub fn default_run_budget_usd_micros_resolved(&self) -> i64 {
+        match self.default_run_budget_usd_micros {
+            Some(v) if v > 0 => v,
+            _ => Self::DEFAULT_RUN_BUDGET_USD_MICROS,
+        }
     }
 }
 
@@ -337,6 +361,7 @@ mod tests {
                 api_base: None,
                 runtime: AiRuntime::Anthropic,
                 max_concurrent_one_shot: 2,
+                default_run_budget_usd_micros: None,
             },
             ui: UiConfig { listen_addr: "0.0.0.0:9999".to_string(), open_browser: true },
             triggers: TriggersConfig {
