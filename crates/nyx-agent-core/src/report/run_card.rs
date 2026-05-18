@@ -333,11 +333,16 @@ fn escape_html(input: &str) -> String {
 
 /// Render a run card as Markdown. Mirrors the HTML structure so the
 /// two outputs stay in sync.
+///
+/// AI-controlled identifiers (run id, status, triggered_by, by-split
+/// keys, phase names) get wrapped in a CommonMark code span via
+/// [`markdown_code`] so a renderer with raw HTML enabled cannot lift an
+/// `<img onerror=...>` straight into the operator's DOM.
 pub fn render_markdown(card: &RunCard) -> String {
     let mut out = String::new();
-    out.push_str(&format!("# Run {}\n\n", card.run_id));
-    out.push_str(&format!("- **Status**: {}\n", card.status));
-    out.push_str(&format!("- **Triggered by**: {}\n", card.triggered_by));
+    out.push_str(&format!("# Run {}\n\n", markdown_code(&card.run_id)));
+    out.push_str(&format!("- **Status**: {}\n", markdown_code(&card.status)));
+    out.push_str(&format!("- **Triggered by**: {}\n", markdown_code(&card.triggered_by)));
     out.push_str(&format!("- **Started**: {}\n", card.started_at));
     out.push_str(&format!(
         "- **Finished**: {}\n",
@@ -360,7 +365,11 @@ pub fn render_markdown(card: &RunCard) -> String {
         usd_from_micros(card.spend.total_usd_micros()),
     ));
     for split in &card.spend.by_task_kind {
-        out.push_str(&format!("- {}: ${:.6}\n", split.key, usd_from_micros(split.count)));
+        out.push_str(&format!(
+            "- {}: ${:.6}\n",
+            markdown_code(&split.key),
+            usd_from_micros(split.count)
+        ));
     }
     out.push('\n');
 
@@ -368,7 +377,7 @@ pub fn render_markdown(card: &RunCard) -> String {
     for phase in &card.phase_durations {
         out.push_str(&format!(
             "- {}: {} ms ({} call{})\n",
-            phase.phase,
+            markdown_code(&phase.phase),
             phase.wall_clock_ms,
             phase.call_count,
             if phase.call_count == 1 { "" } else { "s" },
@@ -384,9 +393,35 @@ fn push_markdown_split(out: &mut String, title: &str, splits: &[BySplit]) {
         return;
     }
     for s in splits {
-        out.push_str(&format!("- {}: {}\n", s.key, s.count));
+        out.push_str(&format!("- {}: {}\n", markdown_code(&s.key), s.count));
     }
     out.push('\n');
+}
+
+/// Wrap `s` in a CommonMark code span using a backtick fence one longer
+/// than the longest run of backticks in the input, padding with a
+/// space when the content begins or ends with a backtick. Renders the
+/// content as inline code so a downstream renderer with raw HTML
+/// enabled treats `<img onerror=...>` as text rather than markup.
+fn markdown_code(s: &str) -> String {
+    let mut longest_run = 0usize;
+    let mut current_run = 0usize;
+    for ch in s.chars() {
+        if ch == '`' {
+            current_run += 1;
+            longest_run = longest_run.max(current_run);
+        } else {
+            current_run = 0;
+        }
+    }
+    let fence_len = longest_run + 1;
+    let fence: String = "`".repeat(fence_len);
+    let needs_pad = s.starts_with('`') || s.ends_with('`');
+    if needs_pad {
+        format!("{fence} {s} {fence}")
+    } else {
+        format!("{fence}{s}{fence}")
+    }
 }
 
 fn usd_from_micros(micros: i64) -> f64 {
@@ -557,11 +592,57 @@ mod tests {
         let run_id = seed_two_repo_run(&s).await;
         let card = build_run_card(s.pool(), &run_id).await.expect("card");
         let md = render_markdown(&card);
-        assert!(md.contains("Run run-card-1"));
+        assert!(md.contains("Run `run-card-1`"));
         assert!(md.contains("Total findings"));
         assert!(md.contains("One-shot"));
         assert!(md.contains("Agent loop"));
         assert!(md.contains("Phase wall clock"));
+    }
+
+    #[test]
+    fn markdown_code_wraps_simple_input() {
+        assert_eq!(markdown_code("sqli"), "`sqli`");
+    }
+
+    #[test]
+    fn markdown_code_lengthens_fence_to_dodge_inner_backticks() {
+        // `<-- one backtick inside; wrapper uses two.
+        assert_eq!(markdown_code("a`b"), "``a`b``");
+    }
+
+    #[test]
+    fn markdown_code_pads_when_content_borders_with_backtick() {
+        assert_eq!(markdown_code("`foo"), "`` `foo ``");
+        assert_eq!(markdown_code("foo`"), "`` foo` ``");
+    }
+
+    #[test]
+    fn render_markdown_neutralises_injected_html_in_by_split_keys() {
+        // BySplit key the AI controls (e.g. `payloads.lang` or
+        // `findings.cap`) cannot break out of the code span.
+        let card = RunCard {
+            run_id: "run-1".to_string(),
+            started_at: 0,
+            finished_at: Some(1),
+            status: "Succeeded".to_string(),
+            triggered_by: "UI".to_string(),
+            wall_clock_ms: Some(1),
+            total_findings: 1,
+            by_status: vec![BySplit { key: "Open".to_string(), count: 1 }],
+            by_cap: vec![BySplit { key: "<img src=x onerror=alert(1)>".to_string(), count: 1 }],
+            by_origin: Vec::new(),
+            by_lang: Vec::new(),
+            by_repo: Vec::new(),
+            spend: SpendSplit::default(),
+            phase_durations: Vec::new(),
+        };
+        let md = render_markdown(&card);
+        // The dangerous chars are inside a code span; the literal `<`
+        // is not interpreted as a tag opener by any conforming
+        // CommonMark renderer.
+        assert!(md.contains("`<img src=x onerror=alert(1)>`"));
+        // And nowhere does the bare tag appear outside backticks.
+        assert!(!md.split('`').enumerate().any(|(i, seg)| i % 2 == 0 && seg.contains("<img")));
     }
 
     #[tokio::test]

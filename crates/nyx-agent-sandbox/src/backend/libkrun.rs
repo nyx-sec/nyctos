@@ -187,12 +187,14 @@ impl Sandbox for LibkrunSandbox {
             started_at: Instant::now(),
             timeout: opts.timeout,
             max_output_bytes: opts.max_output_bytes,
+            killed_by_operator: false,
         });
         Ok(())
     }
 
     async fn kill(&mut self) -> Result<(), SandboxError> {
         if let Some(state) = self.inner.as_mut() {
+            state.killed_by_operator = true;
             let _ = state.child.start_kill();
         }
         Ok(())

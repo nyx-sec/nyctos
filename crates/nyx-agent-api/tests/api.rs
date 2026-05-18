@@ -953,7 +953,7 @@ async fn run_summary_endpoint_returns_card() {
     let ct = md_resp.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("");
     assert!(ct.contains("text/markdown"), "expected markdown content-type, got {ct}");
     let md_body = md_resp.text().await.expect("md text");
-    assert!(md_body.contains("# Run run-summary"));
+    assert!(md_body.contains("# Run `run-summary`"));
 
     let html_resp = reqwest::get(format!("{}/api/v1/runs/run-summary/summary.html", srv.base()))
         .await
