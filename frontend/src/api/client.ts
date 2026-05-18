@@ -29,6 +29,24 @@ export class ApiError extends Error {
   }
 }
 
+interface NyxBootstrap {
+  authToken?: string;
+}
+
+declare global {
+  interface Window {
+    __NYX_BOOTSTRAP__?: NyxBootstrap;
+  }
+}
+
+/** Bearer token injected by `nyx-agent-ui::spa_handler_with` into
+ *  `index.html`. `undefined` when the daemon was started with
+ *  `--headless` (auth disabled). */
+export function getAuthToken(): string | undefined {
+  if (typeof window === "undefined") return undefined;
+  return window.__NYX_BOOTSTRAP__?.authToken;
+}
+
 async function request<T>(
   path: string,
   init: RequestInit = {},
@@ -36,6 +54,10 @@ async function request<T>(
   const headers = new Headers(init.headers ?? {});
   if (init.body !== undefined && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
+  }
+  const token = getAuthToken();
+  if (token && !headers.has("Authorization")) {
+    headers.set("Authorization", `Bearer ${token}`);
   }
   const res = await fetch(`${API_BASE}${path}`, { ...init, headers });
   if (!res.ok) {
@@ -122,10 +144,48 @@ export interface HealthResponse {
   version: string;
 }
 
+// ---- setup wizard ----------------------------------------------------------
+
+export type AiRuntimeChoice = "none" | "anthropic" | "local-llm" | "claude-code";
+export type SandboxBackendChoice =
+  | "auto"
+  | "process"
+  | "birdcage"
+  | "libkrun"
+  | "firecracker"
+  | "docker";
+
+export interface SetupStatusResponse {
+  complete: boolean;
+  config_path: string;
+  ai_runtime: AiRuntimeChoice;
+  sandbox_backend: SandboxBackendChoice;
+}
+
+export interface SetupRequest {
+  ai_runtime: AiRuntimeChoice;
+  anthropic_api_key?: string;
+  local_llm_url?: string;
+  local_llm_token?: string;
+  sandbox_backend: SandboxBackendChoice;
+  i_own_this: boolean;
+}
+
+export interface DoctorCheck {
+  name: string;
+  passed: boolean;
+  message: string;
+}
+
+export interface DoctorResponse {
+  checks: DoctorCheck[];
+}
+
 // ---- query keys ------------------------------------------------------------
 
 export const qk = {
   health: () => ["health"] as const,
+  setupStatus: () => ["setup", "status"] as const,
   repos: () => ["repos"] as const,
   runs: (status?: string) => ["runs", status ?? "Running"] as const,
   run: (id: string) => ["runs", id] as const,
@@ -142,6 +202,38 @@ export function useHealth() {
     queryKey: qk.health(),
     queryFn: () => request<HealthResponse>("/health"),
     staleTime: 5_000,
+  });
+}
+
+export function useSetupStatus() {
+  return useQuery({
+    queryKey: qk.setupStatus(),
+    queryFn: () => request<SetupStatusResponse>("/setup/status"),
+    staleTime: 0,
+  });
+}
+
+export function useSubmitSetup() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: SetupRequest) =>
+      request<{ ok: boolean; config_path: string }>("/setup", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.setupStatus() });
+    },
+  });
+}
+
+export function useDoctor() {
+  return useMutation({
+    mutationFn: (body: { ai_runtime: AiRuntimeChoice; sandbox_backend: SandboxBackendChoice }) =>
+      request<DoctorResponse>("/setup/doctor", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
   });
 }
 
@@ -260,8 +352,12 @@ export function useAgentEvents(options: UseAgentEventsOptions = {}) {
 
   useEffect(() => {
     const proto = window.location.protocol === "https:" ? "wss" : "ws";
-    const search = runId ? `?run_id=${encodeURIComponent(runId)}` : "";
-    const url = `${proto}://${window.location.host}${API_BASE}/events${search}`;
+    const params = new URLSearchParams();
+    if (runId) params.set("run_id", runId);
+    const token = getAuthToken();
+    if (token) params.set("token", token);
+    const qs = params.toString();
+    const url = `${proto}://${window.location.host}${API_BASE}/events${qs ? `?${qs}` : ""}`;
     const ws = new WebSocket(url);
     setStatus("connecting");
 

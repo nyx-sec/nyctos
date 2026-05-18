@@ -16,4 +16,6 @@ pub mod router;
 pub mod state;
 
 pub use router::build_router;
-pub use state::{ApiError, ScanTrigger, ScanTriggerError, ServerState};
+pub use state::{
+    ApiError, AuthConfig, ScanTrigger, ScanTriggerError, ServerState, SetupContext,
+};

@@ -6,11 +6,13 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
-use nyx_agent_api::{build_router, ScanTrigger, ScanTriggerError, ServerState};
+use nyx_agent_api::{
+    build_router, AuthConfig, ScanTrigger, ScanTriggerError, ServerState, SetupContext,
+};
 use nyx_agent_core::store::{finding_id_hash, FindingRecord, RepoRecord, RunRecord};
 use nyx_agent_core::{
     ingest, Config, IngestError, IngestedRepo, LogConfig, Repo, RepoOutcome, RepoSource, Run,
-    RunBundle, RunDispatcher, StateDir, Store, WorkspaceHandle,
+    RunBundle, RunDispatcher, SecretStore, StateDir, Store, WorkspaceHandle,
 };
 use nyx_agent_nyx::{Diag, NyxError, NyxRunner, NyxScanLane, MINIMUM_NYX_VERSION};
 use nyx_agent_types::event::{AgentEvent, EventSink, RunEvent};
@@ -119,6 +121,7 @@ fn main() -> ExitCode {
 
 async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     let config_path = cli.config.clone().unwrap_or_else(|| PathBuf::from("nyx-agent.toml"));
+    let config_present = config_path.exists();
     let config = Config::load_or_default(&config_path)?;
 
     let state_root = match cli.state_dir.clone().or_else(|| config.general.state_dir.clone()) {
@@ -143,7 +146,17 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         }
         Command::Serve { listen, no_open, headless, open_cmd } => {
             nyx_agent_core::init_logging(&log_cfg)?;
-            serve(state_dir, config, listen, no_open, headless, open_cmd).await
+            serve(
+                state_dir,
+                config,
+                config_path,
+                config_present,
+                listen,
+                no_open,
+                headless,
+                open_cmd,
+            )
+            .await
         }
         Command::Reverify { .. } | Command::Inspect { .. } | Command::Budget => {
             nyx_agent_core::init_logging(&log_cfg)?;
@@ -377,9 +390,12 @@ async fn drive_scan(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn serve(
     state_dir: StateDir,
     config: Config,
+    config_path: PathBuf,
+    config_present: bool,
     listen_override: Option<String>,
     no_open: bool,
     headless: bool,
@@ -408,16 +424,51 @@ async fn serve(
         }
     });
 
-    let server_state = ServerState::new(store.clone(), events_tx.clone(), trigger);
-    let app = build_router(server_state).fallback(nyx_agent_ui::spa_handler);
+    let setup = SetupContext::new(
+        config_path.clone(),
+        config.clone(),
+        config_present,
+        SecretStore::default(),
+    );
+    // Headless mode skips auth entirely (deferred plan #31). When auth
+    // is on, mint or load a per-install token and surface it both to
+    // the API middleware and the SPA bootstrap.
+    let auth_token = if headless { None } else { Some(state_dir.load_or_mint_auth_token()?) };
+    let auth_config = AuthConfig::new(auth_token.clone());
+
+    let ui_bootstrap = Arc::new(nyx_agent_ui::UiBootstrap { auth_token: auth_token.clone() });
+    let server_state = ServerState::new(
+        store.clone(),
+        events_tx.clone(),
+        trigger,
+        setup,
+        auth_config,
+    );
+    let ui_fallback = {
+        let bootstrap = Arc::clone(&ui_bootstrap);
+        move |uri: axum::http::Uri| {
+            let bootstrap = Arc::clone(&bootstrap);
+            async move { nyx_agent_ui::spa_handler_with(uri, &bootstrap).await }
+        }
+    };
+    let app = build_router(server_state).fallback(ui_fallback);
 
     let listener = tokio::net::TcpListener::bind(&listen_addr)
         .await
         .map_err(|e| anyhow::anyhow!("bind {listen_addr}: {e}"))?;
     let local_addr = listener.local_addr()?;
-    let url = format!("http://{local_addr}");
+    let startup_url = if config_present {
+        format!("http://{local_addr}/")
+    } else {
+        format!("http://{local_addr}/setup")
+    };
     print_startup_banner();
-    println!("ready on {url}");
+    println!("ready on http://{local_addr}");
+    if !config_present {
+        println!("first launch detected — wizard at {startup_url}");
+    }
+
+    let url = startup_url.clone();
 
     if !headless && !no_open && config.ui.open_browser {
         let url_for_open = url.clone();

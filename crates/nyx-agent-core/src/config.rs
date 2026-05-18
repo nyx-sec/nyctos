@@ -103,20 +103,75 @@ impl PerformanceConfig {
 pub struct SandboxConfig {
     pub enabled: bool,
     pub allow_network: bool,
+    /// Phase 09: the wizard records the operator's preferred sandbox
+    /// backend here. Later phases (Phase 18+) read it to pick a launcher.
+    #[serde(default)]
+    pub backend: SandboxBackend,
 }
 
 impl Default for SandboxConfig {
     fn default() -> Self {
-        Self { enabled: true, allow_network: false }
+        Self { enabled: true, allow_network: false, backend: SandboxBackend::default() }
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SandboxBackend {
+    /// Pick the strongest available backend at runtime.
+    #[default]
+    Auto,
+    /// No kernel isolation. Static-pass only. Always works.
+    Process,
+    /// macOS Seatbelt profile shipped with the agent.
+    Birdcage,
+    /// Lightweight microVM on Linux via libkrun.
+    Libkrun,
+    /// Lightweight microVM on Linux via Firecracker.
+    Firecracker,
+    /// Docker container fallback. Slowest, requires the docker daemon.
+    Docker,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AiConfig {
     pub provider: Option<String>,
     pub model: Option<String>,
     pub api_base: Option<String>,
+    /// Phase 09: operator-selected AI runtime. The wizard writes this;
+    /// later phases read it to decide which provider client to build.
+    /// The API key itself is stored in the OS keychain, not in TOML.
+    #[serde(default)]
+    pub runtime: AiRuntime,
+}
+
+impl Default for AiConfig {
+    fn default() -> Self {
+        Self {
+            provider: None,
+            model: None,
+            api_base: None,
+            runtime: AiRuntime::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AiRuntime {
+    /// AI features off. Static-pass only.
+    #[default]
+    None,
+    /// Hosted Anthropic API. The wizard prompts for an API key and
+    /// stashes it in the OS keychain under `secrets::ACCOUNT_AI_ANTHROPIC`.
+    Anthropic,
+    /// Local OpenAI-compatible runtime (LM Studio, Ollama, vLLM, ...).
+    /// The endpoint URL goes in `api_base`; any embedded bearer goes
+    /// in the keychain under `secrets::ACCOUNT_AI_LOCAL_LLM`.
+    LocalLlm,
+    /// Drive an already-installed `claude` CLI on `$PATH`.
+    ClaudeCode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -240,11 +295,16 @@ mod tests {
                 static_concurrency: Some(2),
                 per_repo_timeout_secs: Some(45),
             },
-            sandbox: SandboxConfig { enabled: false, allow_network: true },
+            sandbox: SandboxConfig {
+                enabled: false,
+                allow_network: true,
+                backend: SandboxBackend::Birdcage,
+            },
             ai: AiConfig {
                 provider: Some("anthropic".to_string()),
                 model: Some("claude-opus-4-7".to_string()),
                 api_base: None,
+                runtime: AiRuntime::Anthropic,
             },
             ui: UiConfig { listen_addr: "0.0.0.0:9999".to_string(), open_browser: true },
             triggers: TriggersConfig {

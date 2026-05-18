@@ -45,6 +45,9 @@ utoipa = "5"
 semver = "1"
 tempfile = "3"
 which = "6"
+keyring = { version = "3.6", default-features = false, features = ["apple-native", "linux-native-sync-persistent", "windows-native", "crypto-rust"] }
+rand = "0.8"
+hex = "0.4"
 
 [profile.release]
 lto = "thin"

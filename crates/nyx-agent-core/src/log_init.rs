@@ -12,6 +12,7 @@
 //! on the current span; nothing here forces them.
 
 use std::fs::OpenOptions;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -20,6 +21,8 @@ use tracing_subscriber::fmt::writer::BoxMakeWriter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
+
+use crate::secrets::looks_like_secret;
 
 #[derive(Debug, Error)]
 pub enum LogInitError {
@@ -72,8 +75,8 @@ where
         .open(&log_path)
         .map_err(|source| LogInitError::OpenLog { path: log_path.clone(), source })?;
     let file = Arc::new(file);
-    let json_writer = BoxMakeWriter::new(move || -> Box<dyn std::io::Write + Send> {
-        Box::new(FileHandle(Arc::clone(&file)))
+    let json_writer = BoxMakeWriter::new(move || -> Box<dyn io::Write + Send> {
+        Box::new(RedactingWriter::new(FileHandle(Arc::clone(&file))))
     });
 
     let json_layer = tracing_subscriber::fmt::layer()
@@ -83,6 +86,11 @@ where
         .with_target(true)
         .with_writer(json_writer);
 
+    // Wrap the human-readable layer's writer in the same redactor so a
+    // stray `tracing::info!(token = %secret)` does not leak via stderr
+    // either. `MakeWriter` is hand-implemented because the std closure
+    // signature does not satisfy the `Sync` bound on its own.
+    let human_writer = RedactingMakeWriter::new(human_writer);
     let human_layer = tracing_subscriber::fmt::layer().with_target(false).with_writer(human_writer);
 
     tracing_subscriber::registry()
@@ -101,13 +109,116 @@ pub fn json_log_path(log_dir: &Path) -> PathBuf {
 
 struct FileHandle(Arc<std::fs::File>);
 
-impl std::io::Write for FileHandle {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+impl io::Write for FileHandle {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         (&*self.0).write(buf)
     }
 
-    fn flush(&mut self) -> std::io::Result<()> {
+    fn flush(&mut self) -> io::Result<()> {
         (&*self.0).flush()
+    }
+}
+
+/// Replacement bytes substituted in place of anything matching a known
+/// secret pattern.
+const REDACTED: &[u8] = b"<redacted>";
+
+/// `Write` wrapper that scans every line for token-shaped substrings and
+/// rewrites them to `<redacted>` before forwarding. Cheap by design:
+/// the inner buffer is bounded to one log line, and the matching is a
+/// linear pass through ASCII-shaped runs of `[A-Za-z0-9_\-]`.
+pub(crate) struct RedactingWriter<W: io::Write> {
+    inner: W,
+    buf: Vec<u8>,
+}
+
+impl<W: io::Write> RedactingWriter<W> {
+    pub(crate) fn new(inner: W) -> Self {
+        Self { inner, buf: Vec::with_capacity(512) }
+    }
+}
+
+impl<W: io::Write> io::Write for RedactingWriter<W> {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        self.buf.extend_from_slice(data);
+        while let Some(idx) = self.buf.iter().position(|b| *b == b'\n') {
+            let line: Vec<u8> = self.buf.drain(..=idx).collect();
+            let scrubbed = redact_line(&line);
+            self.inner.write_all(&scrubbed)?;
+        }
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        if !self.buf.is_empty() {
+            let scrubbed = redact_line(&self.buf);
+            self.inner.write_all(&scrubbed)?;
+            self.buf.clear();
+        }
+        self.inner.flush()
+    }
+}
+
+impl<W: io::Write> Drop for RedactingWriter<W> {
+    fn drop(&mut self) {
+        let _ = self.flush();
+    }
+}
+
+fn redact_line(line: &[u8]) -> Vec<u8> {
+    let Ok(s) = std::str::from_utf8(line) else {
+        // Non-UTF8 log lines are unexpected; pass them through verbatim
+        // because the redactor can only reason about ASCII tokens.
+        return line.to_vec();
+    };
+    let mut out = String::with_capacity(s.len());
+    let mut start = 0;
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if is_token_char(c) {
+            let mut end = i + 1;
+            while end < bytes.len() && is_token_char(bytes[end]) {
+                end += 1;
+            }
+            let candidate = &s[i..end];
+            if looks_like_secret(candidate) {
+                out.push_str(&s[start..i]);
+                out.push_str(std::str::from_utf8(REDACTED).unwrap());
+                start = end;
+            }
+            i = end;
+        } else {
+            i += 1;
+        }
+    }
+    out.push_str(&s[start..]);
+    out.into_bytes()
+}
+
+fn is_token_char(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'-' || b == b'_'
+}
+
+#[derive(Clone)]
+struct RedactingMakeWriter<W> {
+    inner: W,
+}
+
+impl<W> RedactingMakeWriter<W> {
+    fn new(inner: W) -> Self {
+        Self { inner }
+    }
+}
+
+impl<'a, W> tracing_subscriber::fmt::MakeWriter<'a> for RedactingMakeWriter<W>
+where
+    W: tracing_subscriber::fmt::MakeWriter<'a> + 'static,
+{
+    type Writer = RedactingWriter<W::Writer>;
+    fn make_writer(&'a self) -> Self::Writer {
+        RedactingWriter::new(self.inner.make_writer())
     }
 }
 
@@ -121,6 +232,21 @@ mod tests {
             json_log_path(Path::new("/var/state/logs")),
             PathBuf::from("/var/state/logs/agent.jsonl")
         );
+    }
+
+    #[test]
+    fn redact_line_replaces_anthropic_key_shape() {
+        let scrubbed = redact_line(b"calling api with token=sk-ant-api03-aaaaabbbbbcccccddddd\n");
+        let out = String::from_utf8(scrubbed).unwrap();
+        assert!(!out.contains("sk-ant"), "redacted output still contains secret: {out:?}");
+        assert!(out.contains("<redacted>"));
+    }
+
+    #[test]
+    fn redact_line_leaves_non_secret_text_intact() {
+        let input = b"GET /api/v1/health status=200\n";
+        let scrubbed = redact_line(input);
+        assert_eq!(scrubbed, input);
     }
 
     #[test]

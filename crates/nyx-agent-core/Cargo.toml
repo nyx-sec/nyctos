@@ -21,6 +21,9 @@ sqlx = { workspace = true, features = ["macros", "migrate", "chrono"] }
 blake3 = { workspace = true }
 rayon = { workspace = true }
 reqwest = { workspace = true }
+keyring = { workspace = true }
+rand = { workspace = true }
+hex = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

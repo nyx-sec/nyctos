@@ -1,13 +1,46 @@
-import { Navigate, Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { AppLayout } from "@/components/AppLayout";
+import { Card } from "@/components/Card";
+import { Spinner } from "@/components/Spinner";
 import { Placeholder } from "@/pages/Placeholder";
+import { SetupWizard } from "@/pages/Setup";
+import { useSetupStatus } from "@/api/client";
 
 export function App() {
+  const status = useSetupStatus();
+  const location = useLocation();
+
+  if (status.isPending) {
+    return (
+      <AppLayout>
+        <Card>
+          <div style={{ padding: 40, textAlign: "center" }}>
+            <Spinner size="lg" />
+          </div>
+        </Card>
+      </AppLayout>
+    );
+  }
+
+  const complete = status.data?.complete ?? false;
+  const onSetup = location.pathname === "/setup";
+
+  // Fresh-install gate: every route bounces to /setup until the
+  // wizard writes nyx-agent.toml. After completion, /setup itself
+  // bounces back to /repos so the operator does not accidentally
+  // re-run the wizard.
+  if (!complete && !onSetup) {
+    return <Navigate to="/setup" replace />;
+  }
+  if (complete && onSetup) {
+    return <Navigate to="/repos" replace />;
+  }
+
   return (
     <AppLayout>
       <Routes>
         <Route path="/" element={<Navigate to="/repos" replace />} />
-        <Route path="/setup" element={<Placeholder />} />
+        <Route path="/setup" element={<SetupWizard />} />
         <Route path="/repos" element={<Placeholder />} />
         <Route path="/runs" element={<Placeholder />} />
         <Route path="/findings" element={<Placeholder />} />

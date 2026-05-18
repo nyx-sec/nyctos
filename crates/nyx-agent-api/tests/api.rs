@@ -14,9 +14,11 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
 use tokio::sync::broadcast;
 
-use nyx_agent_api::{build_router, ScanTrigger, ScanTriggerError, ServerState};
+use nyx_agent_api::{
+    build_router, AuthConfig, ScanTrigger, ScanTriggerError, ServerState, SetupContext,
+};
 use nyx_agent_core::store::{ChainRecord, FindingRecord, RepoRecord, RunRecord};
-use nyx_agent_core::Store;
+use nyx_agent_core::{Config, SecretStore, Store};
 use nyx_agent_types::event::{AgentEvent, EventSink, RepoOutcomeTag, RunEvent};
 
 struct StubScanTrigger {
@@ -39,6 +41,7 @@ struct TestServer {
     store: Store,
     _tmp: tempfile::TempDir,
     handle: tokio::task::JoinHandle<()>,
+    token: Option<String>,
 }
 
 impl TestServer {
@@ -47,10 +50,41 @@ impl TestServer {
     }
 
     async fn start_with_trigger(trigger: Arc<dyn ScanTrigger>) -> Self {
+        Self::start_with_options(trigger, false, true).await
+    }
+
+    /// `with_auth = true` mints a bearer token and turns on the auth
+    /// middleware; tests that exercise unauthenticated handlers pass
+    /// `false`. `setup_complete = false` puts the server in
+    /// fresh-install mode so `/setup` is reachable.
+    async fn start_with_options(
+        trigger: Arc<dyn ScanTrigger>,
+        with_auth: bool,
+        setup_complete: bool,
+    ) -> Self {
         let tmp = tempfile::tempdir().expect("tempdir");
         let store = Store::open(tmp.path()).await.expect("open store");
         let (events, _rx) = broadcast::channel::<AgentEvent>(64);
-        let state = ServerState::new(store.clone(), events.clone(), trigger);
+        let config_path = tmp.path().join("nyx-agent.toml");
+        let setup = SetupContext::new(
+            config_path,
+            Config::default(),
+            setup_complete,
+            SecretStore::with_service(format!(
+                "nyx-agent-test-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or_default()
+            )),
+        );
+        let auth = if with_auth {
+            AuthConfig::new(Some(nyx_agent_core::mint_token()))
+        } else {
+            AuthConfig::default()
+        };
+        let token = auth.token.clone();
+        let state = ServerState::new(store.clone(), events.clone(), trigger, setup, auth);
         let app = build_router(state);
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
@@ -58,7 +92,7 @@ impl TestServer {
         let handle = tokio::spawn(async move {
             let _ = axum::serve(listener, app).await;
         });
-        TestServer { addr, events, store, _tmp: tmp, handle }
+        TestServer { addr, events, store, _tmp: tmp, handle, token }
     }
 
     fn base(&self) -> String {
@@ -405,6 +439,108 @@ async fn websocket_receives_repo_started_and_finished() {
     assert!(saw_started, "WS must receive RepoStarted frame");
     assert!(saw_finished, "WS must receive RepoFinished frame");
     assert!(!saw_unrelated, "run_id filter must drop unrelated runs");
+}
+
+#[tokio::test]
+async fn setup_status_reports_incomplete_for_fresh_install() {
+    let trigger: Arc<dyn ScanTrigger> =
+        Arc::new(StubScanTrigger { run_id: "irrelevant".to_string() });
+    let srv = TestServer::start_with_options(trigger, false, false).await;
+    let body: Value = reqwest::get(format!("{}/api/v1/setup/status", srv.base()))
+        .await
+        .expect("get")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(body["complete"], false);
+    assert_eq!(body["ai_runtime"], "none");
+    assert_eq!(body["sandbox_backend"], "auto");
+}
+
+#[tokio::test]
+async fn setup_submit_writes_toml_and_marks_complete() {
+    let trigger: Arc<dyn ScanTrigger> =
+        Arc::new(StubScanTrigger { run_id: "irrelevant".to_string() });
+    let srv = TestServer::start_with_options(trigger, false, false).await;
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{}/api/v1/setup", srv.base()))
+        .json(&serde_json::json!({
+            "ai_runtime": "none",
+            "sandbox_backend": "process",
+            "i_own_this": true,
+        }))
+        .send()
+        .await
+        .expect("post");
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    let after: Value = reqwest::get(format!("{}/api/v1/setup/status", srv.base()))
+        .await
+        .expect("get")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(after["complete"], true);
+    assert_eq!(after["sandbox_backend"], "process");
+}
+
+#[tokio::test]
+async fn setup_submit_rejects_without_ownership_attestation() {
+    let trigger: Arc<dyn ScanTrigger> =
+        Arc::new(StubScanTrigger { run_id: "irrelevant".to_string() });
+    let srv = TestServer::start_with_options(trigger, false, false).await;
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/v1/setup", srv.base()))
+        .json(&serde_json::json!({
+            "ai_runtime": "none",
+            "sandbox_backend": "process",
+        }))
+        .send()
+        .await
+        .expect("post");
+    assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn auth_middleware_rejects_missing_bearer_token() {
+    let trigger: Arc<dyn ScanTrigger> =
+        Arc::new(StubScanTrigger { run_id: "irrelevant".to_string() });
+    let srv = TestServer::start_with_options(trigger, true, true).await;
+    let resp = reqwest::get(format!("{}/api/v1/repos", srv.base())).await.expect("get");
+    assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn auth_middleware_allows_valid_bearer_token() {
+    let trigger: Arc<dyn ScanTrigger> =
+        Arc::new(StubScanTrigger { run_id: "irrelevant".to_string() });
+    let srv = TestServer::start_with_options(trigger, true, true).await;
+    let token = srv.token.clone().expect("auth on");
+    let resp = reqwest::Client::new()
+        .get(format!("{}/api/v1/repos", srv.base()))
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .expect("get");
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+}
+
+#[tokio::test]
+async fn auth_middleware_lets_setup_endpoints_through_without_token() {
+    let trigger: Arc<dyn ScanTrigger> =
+        Arc::new(StubScanTrigger { run_id: "irrelevant".to_string() });
+    let srv = TestServer::start_with_options(trigger, true, false).await;
+    let resp = reqwest::get(format!("{}/api/v1/setup/status", srv.base())).await.expect("get");
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+}
+
+#[tokio::test]
+async fn auth_middleware_requires_token_for_setup_after_completion() {
+    let trigger: Arc<dyn ScanTrigger> =
+        Arc::new(StubScanTrigger { run_id: "irrelevant".to_string() });
+    let srv = TestServer::start_with_options(trigger, true, true).await;
+    let resp = reqwest::get(format!("{}/api/v1/setup/status", srv.base())).await.expect("get");
+    assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]

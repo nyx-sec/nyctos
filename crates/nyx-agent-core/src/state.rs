@@ -71,6 +71,13 @@ impl StateDir {
         self.root.join("cache")
     }
 
+    /// Bearer-token file consumed by the API auth middleware. Stored
+    /// at `<state>/auth_token` with mode `0600`. Absent before the
+    /// daemon's first launch.
+    pub fn auth_token_path(&self) -> PathBuf {
+        self.root.join("auth_token")
+    }
+
     /// Create the root and every subdirectory if missing; idempotent. On
     /// Unix every directory created or already present is forced to mode
     /// `0700`.
@@ -81,6 +88,63 @@ impl StateDir {
         }
         Ok(())
     }
+
+    /// Load the bearer token from `auth_token`, generating + persisting
+    /// a fresh one if absent. The minted file is `0o600` so a second
+    /// user on the box cannot read it. Callers that have already
+    /// invoked [`Self::ensure`] do not need to repeat it.
+    pub fn load_or_mint_auth_token(&self) -> Result<String, StateError> {
+        let path = self.auth_token_path();
+        if path.exists() {
+            let raw = std::fs::read_to_string(&path)
+                .map_err(|source| StateError::Create { path: path.clone(), source })?;
+            let trimmed = raw.trim().to_string();
+            if !trimmed.is_empty() {
+                return Ok(trimmed);
+            }
+        }
+        let token = mint_token();
+        write_secure_file(&path, token.as_bytes())?;
+        Ok(token)
+    }
+}
+
+/// Mint a 256-bit URL-safe token. Surfaced for tests; the daemon
+/// always goes through [`StateDir::load_or_mint_auth_token`].
+pub fn mint_token() -> String {
+    use rand::RngCore;
+    let mut buf = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut buf);
+    hex::encode(buf)
+}
+
+fn write_secure_file(path: &Path, bytes: &[u8]) -> Result<(), StateError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|source| StateError::Create { path: parent.to_path_buf(), source })?;
+    }
+    write_with_mode(path, bytes)
+        .map_err(|source| StateError::Create { path: path.to_path_buf(), source })?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn write_with_mode(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(bytes)?;
+    file.flush()
+}
+
+#[cfg(not(unix))]
+fn write_with_mode(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    std::fs::write(path, bytes)
 }
 
 fn create_secure_dir(path: &Path) -> Result<(), StateError> {
@@ -153,5 +217,31 @@ mod tests {
         assert_eq!(sd.findings(), Path::new("/var/state/findings"));
         assert_eq!(sd.logs(), Path::new("/var/state/logs"));
         assert_eq!(sd.cache(), Path::new("/var/state/cache"));
+        assert_eq!(sd.auth_token_path(), Path::new("/var/state/auth_token"));
+    }
+
+    #[test]
+    fn load_or_mint_auth_token_persists_idempotently() {
+        let tmp = tmp_root();
+        let sd = StateDir::at(tmp.path().join("nyx-agent"));
+        sd.ensure().expect("ensure");
+        let first = sd.load_or_mint_auth_token().expect("mint first");
+        assert_eq!(first.len(), 64, "32 random bytes -> 64 hex chars");
+        let second = sd.load_or_mint_auth_token().expect("mint second");
+        assert_eq!(first, second, "second call must return the persisted token");
+        let raw = std::fs::read_to_string(sd.auth_token_path()).expect("read file");
+        assert_eq!(raw.trim(), first);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn auth_token_file_is_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tmp_root();
+        let sd = StateDir::at(tmp.path().join("nyx-agent"));
+        sd.ensure().expect("ensure");
+        sd.load_or_mint_auth_token().expect("mint");
+        let mode = std::fs::metadata(sd.auth_token_path()).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "token file mode {mode:o}");
     }
 }
