@@ -230,10 +230,7 @@ mod tests {
         let sd = StateDir::at("/var/state");
         assert_eq!(sd.runs(), Path::new("/var/state/runs"));
         assert_eq!(sd.repos(), Path::new("/var/state/repos"));
-        assert_eq!(
-            sd.project_repos("acme"),
-            Path::new("/var/state/projects/acme/repos")
-        );
+        assert_eq!(sd.project_repos("acme"), Path::new("/var/state/projects/acme/repos"));
         assert_eq!(sd.findings(), Path::new("/var/state/findings"));
         assert_eq!(sd.logs(), Path::new("/var/state/logs"));
         assert_eq!(sd.cache(), Path::new("/var/state/cache"));

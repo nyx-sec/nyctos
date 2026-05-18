@@ -127,14 +127,7 @@ impl ChainRun {
                 });
             }
         }
-        Ok(Self {
-            chain_id,
-            project_id,
-            members,
-            terminal_oracle,
-            workspace,
-            attack_provenance,
-        })
+        Ok(Self { chain_id, project_id, members, terminal_oracle, workspace, attack_provenance })
     }
 }
 

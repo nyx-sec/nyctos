@@ -7,7 +7,7 @@ use super::{
     chain::ChainRecord,
     finding::{finding_id_hash, FindingRecord},
     payload::PayloadRecord,
-    project::{ProjectRecord, DEFAULT_PROJECT_ID},
+    project::DEFAULT_PROJECT_ID,
     repo::RepoRecord,
     run::RunRecord,
     Store,
@@ -17,17 +17,6 @@ pub async fn fresh_store() -> (TempDir, Store) {
     let tmp = tempfile::tempdir().expect("tempdir");
     let store = Store::open(tmp.path()).await.expect("open store");
     (tmp, store)
-}
-
-/// Fetch the transitional default project row that `Store::open` seeds.
-/// Phase-2 callers attach test repos to it via [`sample_repo`].
-pub async fn seed_default_project(store: &Store) -> ProjectRecord {
-    store
-        .projects()
-        .get(DEFAULT_PROJECT_ID)
-        .await
-        .expect("default project get")
-        .expect("default project must be seeded by Store::open")
 }
 
 pub fn sample_repo(name: &str) -> RepoRecord {

@@ -138,10 +138,8 @@ pub fn merge(
         merged.insert(Value::String("networks".into()), Value::Mapping(networks));
     }
     if let Some(url) = overrides.target_base_url {
-        merged.insert(
-            Value::String("x-nyx-target-base-url".into()),
-            Value::String(url.to_string()),
-        );
+        merged
+            .insert(Value::String("x-nyx-target-base-url".into()), Value::String(url.to_string()));
     }
     if let Some(env_cfg) = overrides.env_config {
         let yaml = serde_yaml::to_value(env_cfg).map_err(ComposeError::Emit)?;
@@ -399,8 +397,8 @@ services:
         let p = tmp.path().join("bogus.yml");
         std::fs::write(&p, "- a list\n- not a mapping\n").unwrap();
         let files = vec![ComposeFile { repo_name: "x".into(), path: p }];
-        let err = merge(&files, &tmp.path().join("super.yml"), &ProjectOverrides::default())
-            .unwrap_err();
+        let err =
+            merge(&files, &tmp.path().join("super.yml"), &ProjectOverrides::default()).unwrap_err();
         assert!(matches!(err, ComposeError::NotMapping { .. }));
     }
 
@@ -411,10 +409,8 @@ services:
         std::fs::create_dir_all(&a).unwrap();
         std::fs::write(a.join("docker-compose.yml"), "services:\n  api:\n    image: alpine\n")
             .unwrap();
-        let files = vec![ComposeFile {
-            repo_name: "alpha".into(),
-            path: a.join("docker-compose.yml"),
-        }];
+        let files =
+            vec![ComposeFile { repo_name: "alpha".into(), path: a.join("docker-compose.yml") }];
         let out = tmp.path().join("super.yml");
         let env_config = serde_json::json!({ "feature_x": true, "max": 7 });
         let overrides = ProjectOverrides {
@@ -441,10 +437,8 @@ services:
         std::fs::create_dir_all(&a).unwrap();
         std::fs::write(a.join("docker-compose.yml"), "services:\n  api:\n    image: alpine\n")
             .unwrap();
-        let files = vec![ComposeFile {
-            repo_name: "alpha".into(),
-            path: a.join("docker-compose.yml"),
-        }];
+        let files =
+            vec![ComposeFile { repo_name: "alpha".into(), path: a.join("docker-compose.yml") }];
         let out = tmp.path().join("super.yml");
         merge(&files, &out, &ProjectOverrides::default()).expect("merge ok");
         let raw = std::fs::read_to_string(&out).unwrap();

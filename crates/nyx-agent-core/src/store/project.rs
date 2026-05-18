@@ -99,9 +99,7 @@ impl<'a> ProjectStore<'a> {
         if let Some(existing) = self.get(DEFAULT_PROJECT_ID).await? {
             return Ok(existing);
         }
-        match self
-            .create(DEFAULT_PROJECT_ID, DEFAULT_PROJECT_NAME, None, None, None, now_ms)
-            .await
+        match self.create(DEFAULT_PROJECT_ID, DEFAULT_PROJECT_NAME, None, None, None, now_ms).await
         {
             Ok(rec) => Ok(rec),
             // Race: another connection inserted it first. Re-fetch.
@@ -229,9 +227,7 @@ impl<'a> ProjectStore<'a> {
     }
 
     pub async fn delete(&self, id: &str) -> Result<u64, StoreError> {
-        let res = sqlx::query!("DELETE FROM projects WHERE id = ?", id)
-            .execute(self.pool)
-            .await?;
+        let res = sqlx::query!("DELETE FROM projects WHERE id = ?", id).execute(self.pool).await?;
         Ok(res.rows_affected())
     }
 }
@@ -319,6 +315,9 @@ mod tests {
         s.repos().upsert(&r).await.expect("upsert");
         let affected = s.projects().delete("p-doomed").await.expect("delete");
         assert_eq!(affected, 1);
-        assert!(s.repos().get("attached").await.expect("get").is_none(), "FK cascade must drop repo");
+        assert!(
+            s.repos().get("attached").await.expect("get").is_none(),
+            "FK cascade must drop repo"
+        );
     }
 }

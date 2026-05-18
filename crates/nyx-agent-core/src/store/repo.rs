@@ -170,10 +170,7 @@ impl<'a> RepoStore<'a> {
     }
 
     /// Repos attached to a specific project, alphabetical by name.
-    pub async fn list_by_project(
-        &self,
-        project_id: &str,
-    ) -> Result<Vec<RepoRecord>, StoreError> {
+    pub async fn list_by_project(&self, project_id: &str) -> Result<Vec<RepoRecord>, StoreError> {
         let rows = sqlx::query!(
             r#"
             SELECT name AS "name!", project_id AS "project_id!",
@@ -293,14 +290,8 @@ mod tests {
     async fn list_by_project_filters_by_project_id() {
         use crate::store::testutil::sample_repo_for_project;
         let (_tmp, s) = fresh_store().await;
-        s.projects()
-            .create("p-a", "alpha", None, None, None, 1_000)
-            .await
-            .expect("project alpha");
-        s.projects()
-            .create("p-b", "beta", None, None, None, 1_000)
-            .await
-            .expect("project beta");
+        s.projects().create("p-a", "alpha", None, None, None, 1_000).await.expect("project alpha");
+        s.projects().create("p-b", "beta", None, None, None, 1_000).await.expect("project beta");
         s.repos().upsert(&sample_repo_for_project("repo-a1", "p-a")).await.expect("a1");
         s.repos().upsert(&sample_repo_for_project("repo-a2", "p-a")).await.expect("a2");
         s.repos().upsert(&sample_repo_for_project("repo-b1", "p-b")).await.expect("b1");

@@ -169,9 +169,12 @@ impl AiRuntime for AnthropicSdkAdapter {
         let pricing = pricing_for(&model);
 
         // Pre-call budget check: refuse outright if we already past cap.
+        // Boundary is `>` (cap is the spendable ceiling); a call that lands
+        // exactly at cap proceeds, the one after does not. The post-call
+        // check uses the same `>` so both halves agree.
         let spent_before = self.tracker.spent_snapshot(&budget).await?;
         if let Some(cap) = self.tracker.cap(&budget.run_id, budget.kind).await? {
-            if spent_before >= cap {
+            if spent_before > cap {
                 let _ = sink.send(AgentEvent::Ai {
                     data: AiEvent::TaskHalted {
                         task_id: prompt.task_id.clone(),
@@ -581,8 +584,10 @@ mod tests {
         // a failure if the adapter still tries to dial out.
         let tracker = Arc::new(InMemoryBudgetTracker::new());
         tracker.set_cap("run-1", BudgetKind::OneShot, 100);
-        // Pre-load existing spend at the cap.
-        tracker.add_spend("run-1", BudgetKind::OneShot, 100).await.unwrap();
+        // Pre-load existing spend strictly above the cap. The boundary is
+        // `>` on both pre- and post-call checks so landing exactly at the
+        // cap is the spendable ceiling, not a refuse condition.
+        tracker.add_spend("run-1", BudgetKind::OneShot, 101).await.unwrap();
         let adapter = AnthropicSdkAdapter::new("k".to_string(), tracker.clone())
             .with_base_url("http://127.0.0.1:1");
 

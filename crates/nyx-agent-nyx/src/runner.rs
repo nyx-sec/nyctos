@@ -20,7 +20,9 @@ use crate::diag::Diag;
 use crate::error::NyxError;
 
 /// Built-in floor. `Config::nyx.min_version` may raise this for tests; it
-/// is never lowered in production.
+/// is never lowered. `resolve_min_nyx_version` takes
+/// `max(MINIMUM_NYX_VERSION, configured)` so a configured value below the
+/// floor is silently clamped up.
 pub const MINIMUM_NYX_VERSION: &str = "0.1.0";
 
 #[derive(Debug, Clone)]

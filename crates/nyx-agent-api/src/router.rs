@@ -530,9 +530,7 @@ fn sandbox_backend_probe(b: SandboxBackend) -> (bool, String) {
 
 // ---- /projects --------------------------------------------------------------
 
-async fn list_projects(
-    State(s): State<ServerState>,
-) -> Result<Json<Vec<ProjectRecord>>, ApiError> {
+async fn list_projects(State(s): State<ServerState>) -> Result<Json<Vec<ProjectRecord>>, ApiError> {
     let rows = s.store.projects().list().await?;
     Ok(Json(rows))
 }

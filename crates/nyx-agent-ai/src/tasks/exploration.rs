@@ -534,9 +534,11 @@ mod tests {
             _sink: EventSink,
         ) -> Result<AgentResult, AiError> {
             // Mirror the real adapter's pre-call cap check so a
-            // pre-exhausted run halts at the BudgetExceeded boundary.
+            // pre-exhausted run halts at the BudgetExceeded boundary. Cap
+            // is the spendable ceiling, so the boundary is `>` (matching
+            // the post-call check directly below).
             let spent = self.tracker.add_spend(&budget.run_id, budget.kind, 0).await?;
-            if spent >= budget.cap_usd_micros {
+            if spent > budget.cap_usd_micros {
                 return Err(AiError::BudgetExceeded {
                     cap_usd_micros: budget.cap_usd_micros,
                     spent_usd_micros: spent,

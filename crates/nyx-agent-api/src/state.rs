@@ -28,11 +28,7 @@ pub trait ScanTrigger: Send + Sync + 'static {
     /// `project_id` filter, when set, restricts the run to repos
     /// belonging to that project; the `repo` filter further narrows
     /// to a single repo. Passing both unset scans every enabled repo.
-    fn trigger<'a>(
-        &'a self,
-        project_id: Option<String>,
-        repo: Option<String>,
-    ) -> ScanFuture<'a>;
+    fn trigger<'a>(&'a self, project_id: Option<String>, repo: Option<String>) -> ScanFuture<'a>;
 }
 
 #[derive(Debug, Error)]

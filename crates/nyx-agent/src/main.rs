@@ -8,7 +8,7 @@ use std::sync::Arc;
 use clap::{Parser, Subcommand};
 use nyx_agent_api::{
     build_router, AuthConfig, EnvSecretResolver, ScanTrigger, ScanTriggerError, ServerState,
-    SetupContext, WebhookConfig,
+    SetupContext, WebhookConfig, WebhookSecretResolver,
 };
 use nyx_agent_core::store::{finding_id_hash, FindingRecord, ProjectRecord, RepoRecord, RunRecord};
 use nyx_agent_core::{
@@ -1764,8 +1764,60 @@ async fn doctor(
     }
 
     report_sandbox_backends(config);
+    report_scheduler(config);
+    report_webhook(config);
 
     Ok(nyx_code)
+}
+
+fn report_scheduler(config: &Config) {
+    if config.schedules.is_empty() {
+        println!("scheduler: no [[schedule]] entries configured");
+        return;
+    }
+    // The trigger is irrelevant for a parse-only probe; build a sink
+    // that refuses any actual call so a doctor run cannot fire a scan
+    // by accident if the scheduler's parse path ever starts touching
+    // the trigger eagerly.
+    let probe_trigger: Arc<dyn ScanTrigger> = Arc::new(DoctorScanTrigger);
+    match scheduler::Scheduler::from_config(&config.schedules, probe_trigger) {
+        Ok(_) => println!(
+            "scheduler: {} entr{} parsed cleanly (in-process; runs only under `serve`)",
+            config.schedules.len(),
+            if config.schedules.len() == 1 { "y" } else { "ies" }
+        ),
+        Err(err) => println!("scheduler FAIL: {err}"),
+    }
+}
+
+fn report_webhook(config: &Config) {
+    let Some(spec) = config.triggers.webhook_secret_ref.as_deref() else {
+        println!("webhook: disabled (set [triggers].webhook_secret_ref to enable)");
+        return;
+    };
+    let resolver = EnvSecretResolver { spec: Some(spec.to_string()) };
+    match WebhookSecretResolver::resolve(&resolver) {
+        Some(secret) => {
+            println!("webhook: secret resolved from `{spec}` ({} bytes)", secret.len());
+        }
+        None => println!(
+            "webhook FAIL: `{spec}` did not resolve to a non-empty secret (check env var or literal)"
+        ),
+    }
+}
+
+struct DoctorScanTrigger;
+
+impl ScanTrigger for DoctorScanTrigger {
+    fn trigger<'a>(
+        &'a self,
+        _project_id: Option<String>,
+        _repo: Option<String>,
+    ) -> Pin<Box<dyn Future<Output = Result<String, ScanTriggerError>> + Send + 'a>> {
+        Box::pin(async move {
+            Err(ScanTriggerError::Internal("doctor probe must not fire a scan".to_string()))
+        })
+    }
 }
 
 fn report_sandbox_backends(config: &Config) {
@@ -1795,7 +1847,14 @@ fn report_sandbox_backends(config: &Config) {
 }
 
 fn resolve_min_nyx_version(config: &Config) -> anyhow::Result<Version> {
-    let raw = config.nyx.min_version.as_deref().unwrap_or(MINIMUM_NYX_VERSION);
-    Version::parse(raw)
-        .map_err(|e| anyhow::anyhow!("[nyx].min_version `{raw}` is not a valid semver: {e}"))
+    // The built-in `MINIMUM_NYX_VERSION` is a true floor, not a default: an
+    // operator may raise the requirement via `[nyx].min_version` but cannot
+    // lower it below what the agent's schema-tolerance contract guarantees.
+    let floor = Version::parse(MINIMUM_NYX_VERSION).expect("built-in floor parses");
+    let Some(raw) = config.nyx.min_version.as_deref() else {
+        return Ok(floor);
+    };
+    let configured = Version::parse(raw)
+        .map_err(|e| anyhow::anyhow!("[nyx].min_version `{raw}` is not a valid semver: {e}"))?;
+    Ok(configured.max(floor))
 }

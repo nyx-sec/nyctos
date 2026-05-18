@@ -207,18 +207,10 @@ async fn repos_crud_roundtrip() {
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].name, "alpha");
 
-    let del = client
-        .delete(format!("{repos_url}/alpha"))
-        .send()
-        .await
-        .expect("delete");
+    let del = client.delete(format!("{repos_url}/alpha")).send().await.expect("delete");
     assert_eq!(del.status(), reqwest::StatusCode::OK);
 
-    let del_again = client
-        .delete(format!("{repos_url}/alpha"))
-        .send()
-        .await
-        .expect("delete");
+    let del_again = client.delete(format!("{repos_url}/alpha")).send().await.expect("delete");
     assert_eq!(del_again.status(), reqwest::StatusCode::NOT_FOUND);
 }
 
@@ -395,11 +387,7 @@ async fn scan_endpoint_calls_trigger() {
         Arc::new(StubScanTrigger { run_id: "run-from-scan".to_string() });
     let srv = TestServer::start_with_trigger(trigger).await;
     let resp = reqwest::Client::new()
-        .post(format!(
-            "{}/api/v1/projects/{}/scan?repo=foo",
-            srv.base(),
-            DEFAULT_PROJECT_ID
-        ))
+        .post(format!("{}/api/v1/projects/{}/scan?repo=foo", srv.base(), DEFAULT_PROJECT_ID))
         .send()
         .await
         .expect("post");
@@ -601,13 +589,9 @@ async fn auth_middleware_rejects_missing_bearer_token() {
     let trigger: Arc<dyn ScanTrigger> =
         Arc::new(StubScanTrigger { run_id: "irrelevant".to_string() });
     let srv = TestServer::start_with_options(trigger, true, true).await;
-    let resp = reqwest::get(format!(
-        "{}/api/v1/projects/{}/repos",
-        srv.base(),
-        DEFAULT_PROJECT_ID
-    ))
-    .await
-    .expect("get");
+    let resp = reqwest::get(format!("{}/api/v1/projects/{}/repos", srv.base(), DEFAULT_PROJECT_ID))
+        .await
+        .expect("get");
     assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
 }
 
@@ -682,11 +666,7 @@ async fn patch_repo_updates_subset_and_returns_row() {
 async fn patch_repo_returns_404_when_missing() {
     let srv = TestServer::start().await;
     let resp = reqwest::Client::new()
-        .patch(format!(
-            "{}/api/v1/projects/{}/repos/ghost",
-            srv.base(),
-            DEFAULT_PROJECT_ID
-        ))
+        .patch(format!("{}/api/v1/projects/{}/repos/ghost", srv.base(), DEFAULT_PROJECT_ID))
         .json(&serde_json::json!({ "source_kind": "git" }))
         .send()
         .await
@@ -764,11 +744,7 @@ async fn delete_repo_removes_workspace_dir_when_configured() {
 async fn test_repo_endpoint_rejects_unknown_source_kind() {
     let srv = TestServer::start().await;
     let resp = reqwest::Client::new()
-        .post(format!(
-            "{}/api/v1/projects/{}/repos/test",
-            srv.base(),
-            DEFAULT_PROJECT_ID
-        ))
+        .post(format!("{}/api/v1/projects/{}/repos/test", srv.base(), DEFAULT_PROJECT_ID))
         .json(&serde_json::json!({
             "source_kind": "smb",
             "source_url_or_path": "//share/x",
@@ -792,11 +768,7 @@ async fn test_repo_endpoint_stats_local_path() {
     .expect("write");
 
     let resp = reqwest::Client::new()
-        .post(format!(
-            "{}/api/v1/projects/{}/repos/test",
-            srv.base(),
-            DEFAULT_PROJECT_ID
-        ))
+        .post(format!("{}/api/v1/projects/{}/repos/test", srv.base(), DEFAULT_PROJECT_ID))
         .json(&serde_json::json!({
             "source_kind": "local-path",
             "source_url_or_path": repo_dir.to_string_lossy(),
@@ -1217,18 +1189,12 @@ async fn projects_crud_roundtrip() {
         .expect("json");
     assert_eq!(patched["description"], "rev2");
 
-    let del = client
-        .delete(format!("{}/api/v1/projects/{id}", srv.base()))
-        .send()
-        .await
-        .expect("del");
+    let del =
+        client.delete(format!("{}/api/v1/projects/{id}", srv.base())).send().await.expect("del");
     assert_eq!(del.status(), reqwest::StatusCode::OK);
 
-    let missing = client
-        .get(format!("{}/api/v1/projects/{id}", srv.base()))
-        .send()
-        .await
-        .expect("get");
+    let missing =
+        client.get(format!("{}/api/v1/projects/{id}", srv.base())).send().await.expect("get");
     assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
 }
 
@@ -1270,11 +1236,7 @@ async fn list_project_repos_filters_by_project_id() {
     let id_b = proj_b["id"].as_str().expect("id").to_string();
 
     client
-        .post(format!(
-            "{}/api/v1/projects/{}/repos",
-            srv.base(),
-            DEFAULT_PROJECT_ID
-        ))
+        .post(format!("{}/api/v1/projects/{}/repos", srv.base(), DEFAULT_PROJECT_ID))
         .json(&serde_json::json!({
             "name": "repo-default",
             "source_kind": "local-path",
@@ -1297,11 +1259,7 @@ async fn list_project_repos_filters_by_project_id() {
         .expect("beta post");
 
     let default_repos: Vec<RepoRecord> = client
-        .get(format!(
-            "{}/api/v1/projects/{}/repos",
-            srv.base(),
-            DEFAULT_PROJECT_ID
-        ))
+        .get(format!("{}/api/v1/projects/{}/repos", srv.base(), DEFAULT_PROJECT_ID))
         .send()
         .await
         .expect("list default")
@@ -1368,11 +1326,7 @@ async fn get_repo_404s_when_repo_belongs_to_other_project() {
         .expect("create");
 
     let cross = client
-        .get(format!(
-            "{}/api/v1/projects/{}/repos/elsewhere",
-            srv.base(),
-            DEFAULT_PROJECT_ID
-        ))
+        .get(format!("{}/api/v1/projects/{}/repos/elsewhere", srv.base(), DEFAULT_PROJECT_ID))
         .send()
         .await
         .expect("cross-project get");

@@ -170,9 +170,11 @@ impl AiRuntime for ClaudeCodeAdapter {
         budget: Budget,
         sink: EventSink,
     ) -> Result<AgentResult, AiError> {
+        // Pre-call budget check uses `>` to match the post-call check
+        // below; cap is the spendable ceiling, not a hard refuse-when-equal.
         let spent_before = read_spent(&self.tracker, &budget).await?;
         if let Some(cap) = self.tracker.cap(&budget.run_id, budget.kind).await? {
-            if spent_before >= cap {
+            if spent_before > cap {
                 let _ = sink.send(AgentEvent::Ai {
                     data: AiEvent::TaskHalted {
                         task_id: task.task_id.clone(),
