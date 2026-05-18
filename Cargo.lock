@@ -1928,6 +1928,7 @@ dependencies = [
  "hex",
  "hmac",
  "nyx-agent-core",
+ "nyx-agent-sandbox",
  "nyx-agent-types",
  "reqwest",
  "serde",

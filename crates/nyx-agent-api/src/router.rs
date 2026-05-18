@@ -491,40 +491,25 @@ fn which_on_path(bin: &str) -> Option<String> {
 }
 
 fn sandbox_backend_probe(b: SandboxBackend) -> (bool, String) {
-    match b {
-        SandboxBackend::Auto => (true, "Backend will be chosen at scan time".to_string()),
-        SandboxBackend::Process => {
-            (true, "Process-only sandbox — no kernel isolation. Static pass only.".to_string())
-        }
-        SandboxBackend::Birdcage => (
-            cfg!(target_os = "macos"),
-            if cfg!(target_os = "macos") {
-                "Birdcage requires macOS Seatbelt; verified at scan time".to_string()
-            } else {
-                "Birdcage is macOS-only; pick another backend".to_string()
-            },
-        ),
-        SandboxBackend::Libkrun | SandboxBackend::Firecracker => (
-            cfg!(target_os = "linux"),
-            if cfg!(target_os = "linux") {
-                format!(
-                    "{} is a Linux microVM backend; binary presence verified at scan time",
-                    match b {
-                        SandboxBackend::Libkrun => "libkrun",
-                        _ => "Firecracker",
-                    }
-                )
-            } else {
-                "Linux-only backend; pick `process` or `docker` on this host".to_string()
-            },
-        ),
-        SandboxBackend::Docker => (
-            which_on_path("docker").is_some(),
-            match which_on_path("docker") {
-                Some(p) => format!("docker CLI at {p}"),
-                None => "docker not on PATH; install Docker first".to_string(),
-            },
-        ),
+    // Auto stays advisory because the chosen backend depends on the lane
+    // (chain vs fast) and is resolved at scan dispatch time. Every other
+    // variant routes through `nyx_agent_sandbox::probe` so the wizard's
+    // readiness tile shares its source of truth with the doctor and the
+    // run-time auto-selector.
+    if matches!(b, SandboxBackend::Auto) {
+        return (true, "Backend will be chosen at scan time".to_string());
+    }
+    let kind = match b {
+        SandboxBackend::Process => nyx_agent_sandbox::BackendKind::Process,
+        SandboxBackend::Birdcage => nyx_agent_sandbox::BackendKind::Birdcage,
+        SandboxBackend::Libkrun => nyx_agent_sandbox::BackendKind::Libkrun,
+        SandboxBackend::Firecracker => nyx_agent_sandbox::BackendKind::Firecracker,
+        SandboxBackend::Docker => nyx_agent_sandbox::BackendKind::Docker,
+        SandboxBackend::Auto => unreachable!("Auto handled above"),
+    };
+    match nyx_agent_sandbox::probe(kind) {
+        Ok(()) => (true, format!("{} ready on this host", kind.as_str())),
+        Err(err) => (false, err.to_string()),
     }
 }
 

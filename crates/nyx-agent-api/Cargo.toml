@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 nyx-agent-core = { path = "../nyx-agent-core" }
+nyx-agent-sandbox = { path = "../nyx-agent-sandbox" }
 nyx-agent-types = { path = "../nyx-agent-types" }
 anyhow = { workspace = true }
 async-stream = "0.3"

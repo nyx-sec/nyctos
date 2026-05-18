@@ -1263,10 +1263,7 @@ async fn persist_run_results(store: &Store, bundle: &RunBundle<Diag>) -> anyhow:
                     superseded_by: None,
                     triage_state: "Open".to_string(),
                     triage_assigned_to: None,
-                    verdict_blob: diag
-                        .message
-                        .as_ref()
-                        .map(|m| serde_json::json!({ "message": m }).to_string()),
+                    verdict_blob: Some(render_static_verdict_blob(diag)),
                     repro_path: None,
                     attack_provenance: None,
                     prompt_version: None,
@@ -1277,6 +1274,34 @@ async fn persist_run_results(store: &Store, bundle: &RunBundle<Diag>) -> anyhow:
         }
     }
     Ok(())
+}
+
+/// Serialise the static-pass `Diag.evidence` payload into the
+/// `findings.verdict_blob` column, stamping a typed `kind` discriminator
+/// so the API/UI can distinguish it from Phase-19 verifier output and
+/// the Phase-24 candidate/exploration blobs without sniffing fields.
+/// The frontend's `Evidence` parser already reads `source`/`sink`/
+/// `flow_steps`/`notes`/`source_excerpt`/`symbolic` directly off the
+/// top-level object, which mirrors the upstream `nyx scan` evidence
+/// shape, so we surface the full payload here rather than dropping
+/// everything except `message`.
+fn render_static_verdict_blob(diag: &Diag) -> String {
+    let mut value = match diag.evidence.clone() {
+        serde_json::Value::Object(map) => serde_json::Value::Object(map),
+        serde_json::Value::Null => serde_json::Value::Object(serde_json::Map::new()),
+        other => {
+            let mut map = serde_json::Map::new();
+            map.insert("evidence".to_string(), other);
+            serde_json::Value::Object(map)
+        }
+    };
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert("kind".to_string(), serde_json::Value::String("StaticDiag".to_string()));
+        if let Some(msg) = &diag.message {
+            obj.entry("message").or_insert_with(|| serde_json::Value::String(msg.clone()));
+        }
+    }
+    serde_json::to_string(&value).expect("serialize verdict blob")
 }
 
 async fn finalise_run(
@@ -1764,6 +1789,7 @@ async fn doctor(
     }
 
     report_sandbox_backends(config);
+    report_sandbox_shim();
     report_scheduler(config);
     report_webhook(config);
 
@@ -1846,6 +1872,18 @@ fn report_sandbox_backends(config: &Config) {
     );
 }
 
+/// Report whether the `nyx-sandbox-shim` helper binary resolves. Birdcage
+/// only runs when this binary is reachable (via `$NYX_SANDBOX_SHIM` or as
+/// a sibling of the running `nyx-agent`); a missing shim silently
+/// downgrades the chain + fast lane selectors to `Process`, so the
+/// doctor surface should call out the gap explicitly.
+fn report_sandbox_shim() {
+    match nyx_agent_sandbox::probe(BackendKind::Birdcage) {
+        Ok(()) => println!("sandbox shim: nyx-sandbox-shim reachable"),
+        Err(err) => println!("sandbox shim: unavailable ({err})"),
+    }
+}
+
 fn resolve_min_nyx_version(config: &Config) -> anyhow::Result<Version> {
     // The built-in `MINIMUM_NYX_VERSION` is a true floor, not a default: an
     // operator may raise the requirement via `[nyx].min_version` but cannot
@@ -1857,4 +1895,90 @@ fn resolve_min_nyx_version(config: &Config) -> anyhow::Result<Version> {
     let configured = Version::parse(raw)
         .map_err(|e| anyhow::anyhow!("[nyx].min_version `{raw}` is not a valid semver: {e}"))?;
     Ok(configured.max(floor))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn static_verdict_blob_lifts_full_evidence_with_kind_discriminator() {
+        let mut diag = Diag {
+            path: "src/vuln.py".into(),
+            line: 19,
+            col: Some(5),
+            severity: "Medium".into(),
+            rule: "taint-unsanitised-flow".into(),
+            cap: "Security".into(),
+            message: Some("os.system reachable from sys.argv".into()),
+            confidence: None,
+            evidence: serde_json::json!({
+                "source": {"path": "src/vuln.py", "line": 18, "kind": "source"},
+                "sink": {"path": "src/vuln.py", "line": 19, "kind": "sink"},
+                "flow_steps": [
+                    {"file": "src/vuln.py", "line": 18, "kind": "call"},
+                    {"file": "src/vuln.py", "line": 19, "kind": "sink"}
+                ],
+                "notes": ["sanitiser bypassed via shell substitution"]
+            }),
+            flow_steps: Vec::new(),
+        };
+        diag.lift_flow_steps();
+
+        let rendered = render_static_verdict_blob(&diag);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&rendered).expect("blob is valid JSON");
+
+        assert_eq!(parsed.get("kind").and_then(|v| v.as_str()), Some("StaticDiag"));
+        assert_eq!(
+            parsed.get("message").and_then(|v| v.as_str()),
+            Some("os.system reachable from sys.argv"),
+        );
+        assert_eq!(parsed.get("flow_steps").and_then(|v| v.as_array()).map(|a| a.len()), Some(2),);
+        assert!(parsed.get("source").is_some(), "source field preserved");
+        assert!(parsed.get("sink").is_some(), "sink field preserved");
+        assert!(parsed.get("notes").is_some(), "notes preserved");
+    }
+
+    #[test]
+    fn static_verdict_blob_handles_missing_evidence() {
+        let diag = Diag {
+            path: "a.rs".into(),
+            line: 1,
+            col: None,
+            severity: "Low".into(),
+            rule: "X".into(),
+            cap: "Y".into(),
+            message: Some("short note".into()),
+            confidence: None,
+            evidence: serde_json::Value::Null,
+            flow_steps: Vec::new(),
+        };
+        let rendered = render_static_verdict_blob(&diag);
+        let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(parsed.get("kind").and_then(|v| v.as_str()), Some("StaticDiag"));
+        assert_eq!(parsed.get("message").and_then(|v| v.as_str()), Some("short note"));
+        assert!(parsed.get("flow_steps").is_none());
+    }
+
+    #[test]
+    fn static_verdict_blob_preserves_existing_message_in_evidence() {
+        let diag = Diag {
+            path: "a.rs".into(),
+            line: 1,
+            col: None,
+            severity: "Low".into(),
+            rule: "X".into(),
+            cap: "Y".into(),
+            message: Some("outer".into()),
+            confidence: None,
+            evidence: serde_json::json!({"message": "inner"}),
+            flow_steps: Vec::new(),
+        };
+        let rendered = render_static_verdict_blob(&diag);
+        let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        // Existing evidence.message wins over Diag.message so the upstream
+        // payload remains authoritative.
+        assert_eq!(parsed.get("message").and_then(|v| v.as_str()), Some("inner"));
+    }
 }

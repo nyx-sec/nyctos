@@ -409,7 +409,12 @@ pub fn probe(backend: BackendKind) -> Result<(), SandboxError> {
         BackendKind::Birdcage => {
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             {
-                Ok(())
+                // The kernel surface exists; the shim binary is the
+                // second gate. Surfacing its absence here makes the
+                // doctor's `select_backend` ladder downgrade to
+                // `Process` instead of silently choosing Birdcage and
+                // tripping at the first `run()`.
+                backend::birdcage::BirdcageSandbox::new().map(|_| ())
             }
             #[cfg(not(any(target_os = "linux", target_os = "macos")))]
             {
