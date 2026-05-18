@@ -4,6 +4,8 @@
 *::before,
 *::after {
   box-sizing: border-box;
+  margin: 0;
+  padding: 0;
 }
 
 html,
@@ -14,11 +16,16 @@ body,
   padding: 0;
 }
 
+html {
+  color-scheme: light;
+  font-size: 16px;
+}
+
 body {
-  background: var(--color-bg-base);
-  color: var(--color-text-primary);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-md);
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: var(--text-sm);
   line-height: var(--line-height-base);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -26,12 +33,12 @@ body {
 }
 
 a {
-  color: var(--color-accent);
+  color: var(--accent);
   text-decoration: none;
 }
 
 a:hover {
-  color: var(--color-accent-hover);
+  color: var(--accent-hover);
   text-decoration: underline;
 }
 
@@ -62,10 +69,10 @@ kbd {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--color-border-default);
+  background: var(--line-strong);
   border-radius: var(--radius-pill);
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--color-border-strong);
+  background: var(--text-tertiary);
 }

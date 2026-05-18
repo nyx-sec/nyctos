@@ -12,10 +12,15 @@ const TITLE_BY_PATH: Record<string, string> = {
 
 export function TopBar() {
   const { pathname } = useLocation();
-  const title = TITLE_BY_PATH[pathname] ?? "nyx-agent";
+  const title = TITLE_BY_PATH[pathname] ?? "Nyx";
+
   return (
     <header className="app-layout__topbar">
-      <div className="topbar__title">{title}</div>
+      <nav className="breadcrumbs" aria-label="Breadcrumb">
+        <span className="breadcrumb-current" aria-current="page">
+          {title}
+        </span>
+      </nav>
       <div className="topbar__spacer" />
       <div className="topbar__status">
         <span className="topbar__status-dot" aria-hidden="true" />

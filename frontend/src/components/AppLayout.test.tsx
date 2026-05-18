@@ -13,7 +13,7 @@ describe("AppLayout", () => {
       </MemoryRouter>,
     );
 
-    expect(screen.getByText("nyx-agent")).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "Nyx" })).toBeInTheDocument();
     for (const label of [
       "Setup",
       "Repos",

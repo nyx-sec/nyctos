@@ -1,47 +1,60 @@
-/*
- * Design tokens. Dark-first, with a `[data-theme="light"]` override.
- *
- * Sourced from the nyx OSS frontend's token sheet; mirrored here so the
- * agent UI shares the parent project's look. Do not invent new tokens
- * in component files — extend this sheet instead.
- */
+:root {
+  --bg: #f9f8f4;
+  --bg-secondary: #f2f0ea;
+  --bg-tertiary: #ebe7dc;
+  --surface: #ffffff;
+  --bg-hover: #f2f0ea;
+  --text: #0d0c0a;
+  --text-secondary: #3c3830;
+  --text-tertiary: #6c6660;
+  --muted: #6c6660;
+  --subtle: #9c9690;
+  --border: #e5e1d7;
+  --border-light: #ede9df;
+  --line: #e5e1d7;
+  --line-strong: #cac5b8;
+  --accent: #0b3d2a;
+  --accent-hover: #0f4e35;
+  --accent-light: #ecf3ee;
+  --accent-contrast: #ffffff;
+  --sev-high: #9d2f25;
+  --sev-high-bg: #f8ece9;
+  --sev-medium: #8c6310;
+  --sev-medium-bg: #f6eedb;
+  --sev-low: #1c5c38;
+  --sev-low-bg: #ecf3ee;
+  --success: #1c5c38;
+  --success-bg: #ecf3ee;
+  --terminal-bg: #0d0e12;
+  --terminal-bar: #181a21;
+  --terminal-line: #2a2d37;
+  --terminal-text: #f4f2eb;
+  --terminal-muted: #9fa3ad;
 
-:root,
-:root[data-theme="dark"] {
-  /* Surface ramp — darkest at the bottom, lightest at top. */
-  --color-bg-base: #0b0d12;
-  --color-bg-elevated: #11141b;
-  --color-bg-panel: #161a23;
-  --color-bg-overlay: #1c2230;
-  --color-bg-hover: #1f2533;
+  --color-bg-base: var(--bg);
+  --color-bg-elevated: var(--bg);
+  --color-bg-panel: var(--surface);
+  --color-bg-overlay: var(--bg-secondary);
+  --color-bg-hover: var(--bg-secondary);
+  --color-border-subtle: var(--border);
+  --color-border-default: var(--line-strong);
+  --color-border-strong: var(--text-tertiary);
+  --color-text-primary: var(--text);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-muted: var(--text-tertiary);
+  --color-text-inverse: var(--accent-contrast);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-quiet: var(--accent-light);
+  --color-success: var(--success);
+  --color-success-quiet: var(--success-bg);
+  --color-warning: var(--sev-medium);
+  --color-warning-quiet: var(--sev-medium-bg);
+  --color-danger: var(--sev-high);
+  --color-danger-quiet: var(--sev-high-bg);
+  --color-info: #285f86;
+  --color-info-quiet: #eaf1f5;
 
-  /* Borders + dividers. */
-  --color-border-subtle: #1f2533;
-  --color-border-default: #2a3142;
-  --color-border-strong: #3b4458;
-
-  /* Text ramp. */
-  --color-text-primary: #e6e9f0;
-  --color-text-secondary: #a8b0bf;
-  --color-text-muted: #6e7686;
-  --color-text-inverse: #0b0d12;
-
-  /* Accent. nyx uses a cool indigo / cyan pair. */
-  --color-accent: #7c8cff;
-  --color-accent-hover: #8e9cff;
-  --color-accent-quiet: rgba(124, 140, 255, 0.16);
-
-  /* Semantic colours. */
-  --color-success: #4ade80;
-  --color-success-quiet: rgba(74, 222, 128, 0.14);
-  --color-warning: #f5b754;
-  --color-warning-quiet: rgba(245, 183, 84, 0.14);
-  --color-danger: #ef4f5e;
-  --color-danger-quiet: rgba(239, 79, 94, 0.14);
-  --color-info: #56b6f5;
-  --color-info-quiet: rgba(86, 182, 245, 0.14);
-
-  /* Spacing scale. 4px grid. */
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
@@ -49,24 +62,23 @@
   --space-5: 20px;
   --space-6: 24px;
   --space-7: 32px;
-  --space-8: 40px;
+  --space-8: 48px;
   --space-9: 56px;
   --space-10: 72px;
 
-  /* Radii. */
   --radius-sm: 4px;
   --radius-md: 6px;
-  --radius-lg: 10px;
-  --radius-xl: 14px;
+  --radius-lg: 8px;
+  --radius-xl: 8px;
   --radius-pill: 999px;
+  --radius: 8px;
 
-  /* Type ramp. */
+  --font-display: "Playfair Display", Georgia, serif;
   --font-sans:
-    "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue",
-    Arial, sans-serif;
-  --font-mono:
-    "JetBrains Mono", "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono",
-    "Courier New", monospace;
+    ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+  --font: var(--font-sans);
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --font-size-xs: 11px;
   --font-size-sm: 12px;
   --font-size-md: 13px;
@@ -74,44 +86,33 @@
   --font-size-xl: 18px;
   --font-size-2xl: 22px;
   --font-size-3xl: 28px;
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-lg: 1.0625rem;
+  --text-xl: 1.375rem;
+  --text-2xl: 2rem;
   --line-height-tight: 1.2;
-  --line-height-base: 1.45;
-  --line-height-loose: 1.6;
+  --line-height-base: 1.65;
+  --line-height-loose: 1.75;
   --font-weight-regular: 400;
   --font-weight-medium: 500;
   --font-weight-semibold: 600;
   --font-weight-bold: 700;
+  --weight-normal: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
 
-  /* Layout. */
-  --sidebar-width: 232px;
-  --topbar-height: 48px;
+  --sidebar-width: 200px;
+  --topbar-height: 47px;
+  --header-height: 47px;
+  --header-bg: rgba(249, 248, 244, 0.84);
 
-  /* Effects. */
-  --shadow-sm: 0 1px 0 rgba(0, 0, 0, 0.4);
-  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.32);
-  --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.42);
-  --focus-ring: 0 0 0 2px var(--color-accent-quiet), 0 0 0 4px var(--color-accent);
-  --transition-fast: 120ms ease-out;
-  --transition-base: 180ms ease-out;
-}
-
-:root[data-theme="light"] {
-  --color-bg-base: #f7f8fb;
-  --color-bg-elevated: #ffffff;
-  --color-bg-panel: #ffffff;
-  --color-bg-overlay: #f1f3f8;
-  --color-bg-hover: #eef0f5;
-
-  --color-border-subtle: #e5e8ef;
-  --color-border-default: #d4d8e2;
-  --color-border-strong: #b6bbc8;
-
-  --color-text-primary: #11141b;
-  --color-text-secondary: #4a5160;
-  --color-text-muted: #7b8395;
-  --color-text-inverse: #ffffff;
-
-  --color-accent: #4858d8;
-  --color-accent-hover: #3645c4;
-  --color-accent-quiet: rgba(72, 88, 216, 0.12);
+  --shadow-sm: 0 1px 3px rgba(13, 12, 10, 0.07);
+  --shadow-md: 0 4px 14px rgba(13, 12, 10, 0.09);
+  --shadow-lg: 0 20px 56px rgba(13, 12, 10, 0.13);
+  --focus-ring: 0 0 0 2px var(--accent-light), 0 0 0 4px rgba(11, 61, 42, 0.25);
+  --transition-fast: 100ms ease;
+  --transition-base: 150ms ease;
 }

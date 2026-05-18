@@ -1,4 +1,5 @@
 use std::future::Future;
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::process::ExitCode;
@@ -15,6 +16,21 @@ use nyx_agent_nyx::{Diag, NyxError, NyxRunner, NyxScanLane, MINIMUM_NYX_VERSION}
 use nyx_agent_types::event::{AgentEvent, EventSink, RunEvent};
 use semver::Version;
 use tokio::sync::{broadcast, mpsc, oneshot};
+
+const ANSI_RESET: &str = "\x1b[0m";
+const ANSI_NYX_GREEN: &str = "\x1b[38;2;46;160;103m";
+const ANSI_NYX_GOLD: &str = "\x1b[38;2;199;154;43m";
+const ANSI_NYX_MUTED: &str = "\x1b[38;2;159;163;173m";
+const NYX_AGENT_TAGLINE: &str = "                       automated pentesting, refined";
+
+const NYX_AGENT_BANNER: [(&str, &str); 6] = [
+    ("███╗   ██╗██╗   ██╗██╗  ██╗", "     █████╗  ██████╗ ███████╗███╗   ██╗████████╗"),
+    ("████╗  ██║╚██╗ ██╔╝╚██╗██╔╝", "    ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝"),
+    ("██╔██╗ ██║ ╚████╔╝  ╚███╔╝", "     ███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║"),
+    ("██║╚██╗██║  ╚██╔╝   ██╔██╗", "     ██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║"),
+    ("██║ ╚████║   ██║   ██╔╝ ██╗", "    ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║"),
+    ("╚═╝  ╚═══╝   ╚═╝   ╚═╝  ╚═╝", "    ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝"),
+];
 
 #[derive(Debug, Parser)]
 #[command(name = "nyx-agent", version, about = "Nyx repository agent", propagate_version = true)]
@@ -385,7 +401,8 @@ async fn serve(
             let config = scan_config.clone();
             let events = scan_events.clone();
             tokio::spawn(async move {
-                let outcome = run_scan_for_api(&state_dir, &config, req.repo.as_deref(), events).await;
+                let outcome =
+                    run_scan_for_api(&state_dir, &config, req.repo.as_deref(), events).await;
                 let _ = req.reply.send(outcome);
             });
         }
@@ -399,6 +416,7 @@ async fn serve(
         .map_err(|e| anyhow::anyhow!("bind {listen_addr}: {e}"))?;
     let local_addr = listener.local_addr()?;
     let url = format!("http://{local_addr}");
+    print_startup_banner();
     println!("ready on {url}");
 
     if !headless && !no_open && config.ui.open_browser {
@@ -411,9 +429,7 @@ async fn serve(
             if let Some(cmd) = open_cmd {
                 match std::process::Command::new(&cmd).arg(&url_for_open).status() {
                     Ok(status) if status.success() => {}
-                    Ok(status) => eprintln!(
-                        "warn: open-cmd `{cmd}` exited with status {status}"
-                    ),
+                    Ok(status) => eprintln!("warn: open-cmd `{cmd}` exited with status {status}"),
                     Err(err) => eprintln!("warn: open-cmd `{cmd}` failed: {err}"),
                 }
             } else if let Err(err) = webbrowser::open(&url_for_open) {
@@ -426,12 +442,58 @@ async fn serve(
         let _ = tokio::signal::ctrl_c().await;
     };
 
-    let serve_result =
-        axum::serve(listener, app).with_graceful_shutdown(shutdown).await;
+    let serve_result = axum::serve(listener, app).with_graceful_shutdown(shutdown).await;
     scan_worker.abort();
     store.close().await;
     serve_result.map_err(|e| anyhow::anyhow!("http server: {e}"))?;
     Ok(ExitCode::SUCCESS)
+}
+
+fn print_startup_banner() {
+    if !std::io::stdout().is_terminal() {
+        return;
+    }
+    print!("{}", startup_banner(should_colorize_stdout()));
+}
+
+fn should_colorize_stdout() -> bool {
+    if !std::io::stdout().is_terminal() {
+        return false;
+    }
+    if std::env::var_os("NO_COLOR").is_some() {
+        return false;
+    }
+    if std::env::var("CLICOLOR").is_ok_and(|value| value == "0") {
+        return false;
+    }
+    !std::env::var("TERM").is_ok_and(|value| value == "dumb")
+}
+
+fn startup_banner(color: bool) -> String {
+    let mut out = String::new();
+    out.push('\n');
+    for (nyx, agent) in NYX_AGENT_BANNER {
+        if color {
+            out.push_str(ANSI_NYX_GREEN);
+            out.push_str(nyx);
+            out.push_str(ANSI_NYX_GOLD);
+            out.push_str(agent);
+            out.push_str(ANSI_RESET);
+        } else {
+            out.push_str(nyx);
+            out.push_str(agent);
+        }
+        out.push('\n');
+    }
+    if color {
+        out.push_str(ANSI_NYX_MUTED);
+        out.push_str(NYX_AGENT_TAGLINE);
+        out.push_str(ANSI_RESET);
+    } else {
+        out.push_str(NYX_AGENT_TAGLINE);
+    }
+    out.push_str("\n\n");
+    out
 }
 
 struct ScanRequest {
@@ -714,3 +776,26 @@ fn resolve_min_nyx_version(config: &Config) -> anyhow::Result<Version> {
         .map_err(|e| anyhow::anyhow!("[nyx].min_version `{raw}` is not a valid semver: {e}"))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn startup_banner_renders_plain_solid_tagline() {
+        let banner = startup_banner(false);
+
+        assert!(banner.contains("███╗   ██╗"));
+        assert!(banner.contains("automated pentesting, refined"));
+        assert!(!banner.contains("\x1b["));
+    }
+
+    #[test]
+    fn startup_banner_can_render_with_brand_colors() {
+        let banner = startup_banner(true);
+
+        assert!(banner.contains(ANSI_NYX_GREEN));
+        assert!(banner.contains(ANSI_NYX_GOLD));
+        assert!(banner.contains(ANSI_NYX_MUTED));
+        assert!(banner.contains("automated pentesting, refined"));
+    }
+}
