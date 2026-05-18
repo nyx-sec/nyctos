@@ -23,6 +23,7 @@ pub mod chain;
 pub mod feedback;
 pub mod finding;
 pub mod payload;
+pub mod project;
 pub mod repo;
 pub mod repro;
 pub mod run;
@@ -44,6 +45,10 @@ pub use finding::{
     TriageState,
 };
 pub use payload::{PayloadRecord, PayloadStore};
+pub use project::{
+    ProjectPatch, ProjectPatchOption, ProjectRecord, ProjectStore, DEFAULT_PROJECT_ID,
+    DEFAULT_PROJECT_NAME,
+};
 pub use repo::{PatchOption, RepoPatch, RepoRecord, RepoStore, SourceKind};
 pub use repro::{ReproBundleRecord, ReproBundleStore};
 pub use run::{RunRecord, RunStatus, RunStore, TriggeredBy};
@@ -113,6 +118,7 @@ impl Store {
 
         MIGRATOR.run(&pool).await?;
         Self::populate_meta(&pool).await?;
+        Self::ensure_default_project(&pool).await?;
 
         Ok(Self { pool, path: path.to_path_buf() })
     }
@@ -139,6 +145,16 @@ impl Store {
         .bind(agent_version)
         .execute(pool)
         .await?;
+        Ok(())
+    }
+
+    /// Transitional bootstrap: seed the `DEFAULT_PROJECT_ID` row so
+    /// pre-Phase-3 callers (flat config) and pre-Phase-5 callers (flat
+    /// `/repos` API) can attach repos to it without a Project entity yet.
+    /// Removed once those phases land.
+    async fn ensure_default_project(pool: &SqlitePool) -> Result<(), StoreError> {
+        let now_ms = crate::time::now_epoch_ms();
+        ProjectStore::new(pool).ensure_default(now_ms).await?;
         Ok(())
     }
 
@@ -170,6 +186,9 @@ impl Store {
         Ok(meta_v)
     }
 
+    pub fn projects(&self) -> ProjectStore<'_> {
+        ProjectStore::new(&self.pool)
+    }
     pub fn repos(&self) -> RepoStore<'_> {
         RepoStore::new(&self.pool)
     }

@@ -2714,6 +2714,7 @@ mod tests {
     fn seed_repo(name: &str) -> nyx_agent_core::store::RepoRecord {
         nyx_agent_core::store::RepoRecord {
             name: name.to_string(),
+            project_id: nyx_agent_core::store::DEFAULT_PROJECT_ID.to_string(),
             source_kind: "local".to_string(),
             source_url_or_path: format!("/tmp/{name}"),
             branch: Some("main".to_string()),

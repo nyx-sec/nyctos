@@ -17,7 +17,9 @@ use tokio::sync::broadcast;
 use nyx_agent_api::{
     build_router, AuthConfig, ScanTrigger, ScanTriggerError, ServerState, SetupContext,
 };
-use nyx_agent_core::store::{ChainRecord, FindingRecord, RepoRecord, RunRecord};
+use nyx_agent_core::store::{
+    ChainRecord, FindingRecord, RepoRecord, RunRecord, DEFAULT_PROJECT_ID,
+};
 use nyx_agent_core::{Config, SecretStore, Store};
 use nyx_agent_types::event::{AgentEvent, EventSink, RepoOutcomeTag, RunEvent};
 
@@ -107,6 +109,7 @@ impl Drop for TestServer {
 fn sample_repo(name: &str) -> RepoRecord {
     RepoRecord {
         name: name.to_string(),
+        project_id: DEFAULT_PROJECT_ID.to_string(),
         source_kind: "local-path".to_string(),
         source_url_or_path: format!("/tmp/{name}"),
         branch: None,

@@ -33,7 +33,7 @@ use nyx_agent_core::report::{
 };
 use nyx_agent_core::store::{
     AgentTraceRecord, CandidateFindingRecord, CandidateStatus, ChainRecord, FindingFilter,
-    FindingRecord, PatchOption, RepoPatch, RepoRecord, RunRecord,
+    FindingRecord, PatchOption, RepoPatch, RepoRecord, RunRecord, DEFAULT_PROJECT_ID,
 };
 use nyx_agent_core::{
     now_epoch_ms, AiRuntime, SandboxBackend, ACCOUNT_AI_ANTHROPIC, ACCOUNT_AI_LOCAL_LLM,
@@ -559,6 +559,15 @@ async fn create_repo(
     let existing = s.store.repos().get(&req.name).await?;
     let rec = RepoRecord {
         name: req.name,
+        // Phase-2 transitional: the flat `/api/v1/repos` route has no
+        // project context yet. Phase 5 lands nested routes that derive
+        // project_id from `/projects/:project_id/repos`. Until then,
+        // preserve the existing row's project if present, else attach to
+        // the seeded default project.
+        project_id: existing
+            .as_ref()
+            .map(|r| r.project_id.clone())
+            .unwrap_or_else(|| DEFAULT_PROJECT_ID.to_string()),
         source_kind: req.source_kind,
         source_url_or_path: req.source_url_or_path,
         branch: req.branch,

@@ -28,6 +28,7 @@ impl SourceKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RepoRecord {
     pub name: String,
+    pub project_id: String,
     pub source_kind: String,
     pub source_url_or_path: String,
     pub branch: Option<String>,
@@ -75,10 +76,11 @@ impl<'a> RepoStore<'a> {
         sqlx::query!(
             r#"
             INSERT INTO repos (
-                name, source_kind, source_url_or_path, branch, auth_ref,
+                name, project_id, source_kind, source_url_or_path, branch, auth_ref,
                 i_own_this, last_scan_run_id, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(name) DO UPDATE SET
+                project_id         = excluded.project_id,
                 source_kind        = excluded.source_kind,
                 source_url_or_path = excluded.source_url_or_path,
                 branch             = excluded.branch,
@@ -88,6 +90,7 @@ impl<'a> RepoStore<'a> {
                 updated_at         = excluded.updated_at
             "#,
             r.name,
+            r.project_id,
             r.source_kind,
             r.source_url_or_path,
             r.branch,
@@ -105,7 +108,8 @@ impl<'a> RepoStore<'a> {
     pub async fn get(&self, name: &str) -> Result<Option<RepoRecord>, StoreError> {
         let row = sqlx::query!(
             r#"
-            SELECT name AS "name!", source_kind AS "source_kind!",
+            SELECT name AS "name!", project_id AS "project_id!",
+                   source_kind AS "source_kind!",
                    source_url_or_path AS "source_url_or_path!",
                    branch, auth_ref,
                    i_own_this AS "i_own_this!: i64",
@@ -120,6 +124,7 @@ impl<'a> RepoStore<'a> {
         .await?;
         Ok(row.map(|r| RepoRecord {
             name: r.name,
+            project_id: r.project_id,
             source_kind: r.source_kind,
             source_url_or_path: r.source_url_or_path,
             branch: r.branch,
@@ -134,7 +139,8 @@ impl<'a> RepoStore<'a> {
     pub async fn list(&self) -> Result<Vec<RepoRecord>, StoreError> {
         let rows = sqlx::query!(
             r#"
-            SELECT name AS "name!", source_kind AS "source_kind!",
+            SELECT name AS "name!", project_id AS "project_id!",
+                   source_kind AS "source_kind!",
                    source_url_or_path AS "source_url_or_path!",
                    branch, auth_ref,
                    i_own_this AS "i_own_this!: i64",
@@ -150,6 +156,45 @@ impl<'a> RepoStore<'a> {
             .into_iter()
             .map(|r| RepoRecord {
                 name: r.name,
+                project_id: r.project_id,
+                source_kind: r.source_kind,
+                source_url_or_path: r.source_url_or_path,
+                branch: r.branch,
+                auth_ref: r.auth_ref,
+                i_own_this: r.i_own_this != 0,
+                last_scan_run_id: r.last_scan_run_id,
+                created_at: r.created_at,
+                updated_at: r.updated_at,
+            })
+            .collect())
+    }
+
+    /// Repos attached to a specific project, alphabetical by name.
+    pub async fn list_by_project(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<RepoRecord>, StoreError> {
+        let rows = sqlx::query!(
+            r#"
+            SELECT name AS "name!", project_id AS "project_id!",
+                   source_kind AS "source_kind!",
+                   source_url_or_path AS "source_url_or_path!",
+                   branch, auth_ref,
+                   i_own_this AS "i_own_this!: i64",
+                   last_scan_run_id,
+                   created_at AS "created_at!: i64",
+                   updated_at AS "updated_at!: i64"
+            FROM repos WHERE project_id = ? ORDER BY name
+            "#,
+            project_id
+        )
+        .fetch_all(self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| RepoRecord {
+                name: r.name,
+                project_id: r.project_id,
                 source_kind: r.source_kind,
                 source_url_or_path: r.source_url_or_path,
                 branch: r.branch,
@@ -172,6 +217,7 @@ impl<'a> RepoStore<'a> {
         };
         let merged = RepoRecord {
             name: existing.name,
+            project_id: existing.project_id,
             source_kind: patch.source_kind.map(str::to_string).unwrap_or(existing.source_kind),
             source_url_or_path: patch
                 .source_url_or_path
@@ -241,6 +287,53 @@ mod tests {
         let got = s.repos().get("nyx-pro").await.expect("get").expect("row");
         assert_eq!(got.branch.as_deref(), Some("dev"));
         assert_eq!(got.updated_at, 9_999);
+    }
+
+    #[tokio::test]
+    async fn list_by_project_filters_by_project_id() {
+        use crate::store::testutil::sample_repo_for_project;
+        let (_tmp, s) = fresh_store().await;
+        s.projects()
+            .create("p-a", "alpha", None, None, None, 1_000)
+            .await
+            .expect("project alpha");
+        s.projects()
+            .create("p-b", "beta", None, None, None, 1_000)
+            .await
+            .expect("project beta");
+        s.repos().upsert(&sample_repo_for_project("repo-a1", "p-a")).await.expect("a1");
+        s.repos().upsert(&sample_repo_for_project("repo-a2", "p-a")).await.expect("a2");
+        s.repos().upsert(&sample_repo_for_project("repo-b1", "p-b")).await.expect("b1");
+
+        let a_names: Vec<_> = s
+            .repos()
+            .list_by_project("p-a")
+            .await
+            .expect("list a")
+            .into_iter()
+            .map(|r| r.name)
+            .collect();
+        assert_eq!(a_names, vec!["repo-a1", "repo-a2"]);
+
+        let b_names: Vec<_> = s
+            .repos()
+            .list_by_project("p-b")
+            .await
+            .expect("list b")
+            .into_iter()
+            .map(|r| r.name)
+            .collect();
+        assert_eq!(b_names, vec!["repo-b1"]);
+    }
+
+    #[tokio::test]
+    async fn upsert_rejects_unknown_project_id() {
+        let (_tmp, s) = fresh_store().await;
+        let mut r = sample_repo("orphan");
+        r.project_id = "does-not-exist".to_string();
+        let err = s.repos().upsert(&r).await.expect_err("must fail FK");
+        let msg = format!("{err}");
+        assert!(msg.to_lowercase().contains("foreign key"), "expected FK violation, got: {msg}");
     }
 
     #[tokio::test]

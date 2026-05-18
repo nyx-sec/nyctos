@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "\n            SELECT name AS \"name!\", source_kind AS \"source_kind!\",\n                   source_url_or_path AS \"source_url_or_path!\",\n                   branch, auth_ref,\n                   i_own_this AS \"i_own_this!: i64\",\n                   last_scan_run_id,\n                   created_at AS \"created_at!: i64\",\n                   updated_at AS \"updated_at!: i64\"\n            FROM repos WHERE name = ?\n            ",
+  "query": "\n            SELECT name AS \"name!\", project_id AS \"project_id!\",\n                   source_kind AS \"source_kind!\",\n                   source_url_or_path AS \"source_url_or_path!\",\n                   branch, auth_ref,\n                   i_own_this AS \"i_own_this!: i64\",\n                   last_scan_run_id,\n                   created_at AS \"created_at!: i64\",\n                   updated_at AS \"updated_at!: i64\"\n            FROM repos WHERE name = ?\n            ",
   "describe": {
     "columns": [
       {
@@ -9,43 +9,48 @@
         "type_info": "Text"
       },
       {
-        "name": "source_kind!",
+        "name": "project_id!",
         "ordinal": 1,
         "type_info": "Text"
       },
       {
-        "name": "source_url_or_path!",
+        "name": "source_kind!",
         "ordinal": 2,
         "type_info": "Text"
       },
       {
-        "name": "branch",
+        "name": "source_url_or_path!",
         "ordinal": 3,
         "type_info": "Text"
       },
       {
-        "name": "auth_ref",
+        "name": "branch",
         "ordinal": 4,
         "type_info": "Text"
       },
       {
-        "name": "i_own_this!: i64",
+        "name": "auth_ref",
         "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "i_own_this!: i64",
+        "ordinal": 6,
         "type_info": "Integer"
       },
       {
         "name": "last_scan_run_id",
-        "ordinal": 6,
+        "ordinal": 7,
         "type_info": "Text"
       },
       {
         "name": "created_at!: i64",
-        "ordinal": 7,
+        "ordinal": 8,
         "type_info": "Integer"
       },
       {
         "name": "updated_at!: i64",
-        "ordinal": 8,
+        "ordinal": 9,
         "type_info": "Integer"
       }
     ],
@@ -56,6 +61,7 @@
       true,
       false,
       false,
+      false,
       true,
       true,
       false,
@@ -64,5 +70,5 @@
       false
     ]
   },
-  "hash": "21ebdd91101c13a2d658fa5dcb658a16a80ea5405f9ed4bdc1349333cca347f6"
+  "hash": "06b1e1701ba080dafcf0c6ca46d3d6e653085b256f9a90f2364da853591706ce"
 }

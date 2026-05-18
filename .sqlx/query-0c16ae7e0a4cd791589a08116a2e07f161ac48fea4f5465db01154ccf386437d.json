@@ -1,0 +1,56 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT id AS \"id!\", name AS \"name!\",\n                   description, target_base_url, env_config_json,\n                   created_at AS \"created_at!: i64\",\n                   updated_at AS \"updated_at!: i64\"\n            FROM projects ORDER BY name\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "name!",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "description",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "target_base_url",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "env_config_json",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at!: i64",
+        "ordinal": 5,
+        "type_info": "Integer"
+      },
+      {
+        "name": "updated_at!: i64",
+        "ordinal": 6,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      true,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "0c16ae7e0a4cd791589a08116a2e07f161ac48fea4f5465db01154ccf386437d"
+}

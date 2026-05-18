@@ -10,7 +10,9 @@ use nyx_agent_api::{
     build_router, AuthConfig, EnvSecretResolver, ScanTrigger, ScanTriggerError, ServerState,
     SetupContext, WebhookConfig,
 };
-use nyx_agent_core::store::{finding_id_hash, FindingRecord, RepoRecord, RunRecord};
+use nyx_agent_core::store::{
+    finding_id_hash, FindingRecord, RepoRecord, RunRecord, DEFAULT_PROJECT_ID,
+};
 use nyx_agent_core::{
     ingest, now_epoch_ms, Config, IngestError, IngestedRepo, LogConfig, Repo, RepoOutcome,
     RepoSource, Run, RunBundle, RunDispatcher, SandboxBackend, SecretStore, StateDir, Store,
@@ -1055,6 +1057,9 @@ async fn upsert_repo_record(
 ) -> anyhow::Result<()> {
     let rec = RepoRecord {
         name: ingested.name.clone(),
+        // Phase-2 transitional: pre-config-grouping callers attach to the
+        // seeded default project. Phase 3 wires real project_id through.
+        project_id: DEFAULT_PROJECT_ID.to_string(),
         source_kind: source_kind_str(&ingested.source).to_string(),
         source_url_or_path: source_url_or_path(&ingested.source),
         branch: branch_of(&ingested.source),
@@ -1128,11 +1133,16 @@ async fn finalise_run(
 }
 
 fn select_repos(config: &Config, requested: &[String]) -> anyhow::Result<Vec<Repo>> {
+    // Phase-2 transitional: flat config still lists repos at top level;
+    // Phase 3 reshapes the TOML to `[[project]]` blocks and wires real
+    // ProjectIds through. Until then, attach every selected repo to the
+    // seeded default project.
+    let project_id = nyx_agent_core::ProjectId::new(DEFAULT_PROJECT_ID);
     let mut out = Vec::new();
     if requested.is_empty() {
         for c in &config.repos {
             if c.enabled {
-                out.push(Repo::from_config(c)?);
+                out.push(Repo::from_config(c, project_id.clone())?);
             }
         }
         return Ok(out);
@@ -1146,7 +1156,7 @@ fn select_repos(config: &Config, requested: &[String]) -> anyhow::Result<Vec<Rep
         if !cfg.enabled {
             anyhow::bail!("repo `{name}` is declared but `enabled = false`");
         }
-        out.push(Repo::from_config(cfg)?);
+        out.push(Repo::from_config(cfg, project_id.clone())?);
     }
     Ok(out)
 }

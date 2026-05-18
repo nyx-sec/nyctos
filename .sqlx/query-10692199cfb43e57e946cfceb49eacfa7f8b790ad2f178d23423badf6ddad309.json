@@ -1,0 +1,74 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT name AS \"name!\", project_id AS \"project_id!\",\n                   source_kind AS \"source_kind!\",\n                   source_url_or_path AS \"source_url_or_path!\",\n                   branch, auth_ref,\n                   i_own_this AS \"i_own_this!: i64\",\n                   last_scan_run_id,\n                   created_at AS \"created_at!: i64\",\n                   updated_at AS \"updated_at!: i64\"\n            FROM repos WHERE project_id = ? ORDER BY name\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "name!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "project_id!",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "source_kind!",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "source_url_or_path!",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "branch",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "auth_ref",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "i_own_this!: i64",
+        "ordinal": 6,
+        "type_info": "Integer"
+      },
+      {
+        "name": "last_scan_run_id",
+        "ordinal": 7,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at!: i64",
+        "ordinal": 8,
+        "type_info": "Integer"
+      },
+      {
+        "name": "updated_at!: i64",
+        "ordinal": 9,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "10692199cfb43e57e946cfceb49eacfa7f8b790ad2f178d23423badf6ddad309"
+}
