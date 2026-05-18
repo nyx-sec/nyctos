@@ -114,18 +114,29 @@ async fn tcp_connect_is_contained() {
     let workspace = scratch.path().join("ws");
     std::fs::create_dir(&workspace).unwrap();
 
-    // 240.0.0.0/4 is reserved future-use space, guaranteed not to be
-    // routed. Connect either fails immediately via seccomp/Seatbelt or
-    // times out at the connect_timeout the probe sets.
+    // Stand up a real loopback listener so a successful connect inside
+    // the sandbox would actually be observable. If birdcage blocks the
+    // syscall, the probe exits non-zero AND the listener never accepts.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
     let opts = base_opts(
         &workspace,
-        vec!["connect-tcp".into(), "240.0.0.1:80".into()],
+        vec!["connect-tcp".into(), addr.to_string()],
     );
     let outcome = run(opts).await;
     assert!(
         outcome.status.contained(),
         "tcp_connect escaped: {:?}",
         outcome.status
+    );
+    // Sandbox has exited; any successful handshake would already be
+    // accept-ready on the host listener.
+    let accepted = tokio::time::timeout(Duration::from_millis(100), listener.accept()).await;
+    assert!(
+        accepted.is_err(),
+        "loopback connect from sandboxed probe was accepted: {:?}",
+        accepted
     );
 }
 
@@ -136,15 +147,28 @@ async fn udp_send_is_contained() {
     let workspace = scratch.path().join("ws");
     std::fs::create_dir(&workspace).unwrap();
 
+    // Bind a loopback UDP socket inside the test process so a datagram
+    // that escapes the sandbox would actually land somewhere we can
+    // observe.
+    let listener = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
     let opts = base_opts(
         &workspace,
-        vec!["udp-send".into(), "240.0.0.1:53".into()],
+        vec!["udp-send".into(), addr.to_string()],
     );
     let outcome = run(opts).await;
     assert!(
         outcome.status.contained(),
         "udp_send escaped: {:?}",
         outcome.status
+    );
+    let mut buf = [0u8; 16];
+    let recvd = tokio::time::timeout(Duration::from_millis(100), listener.recv_from(&mut buf)).await;
+    assert!(
+        recvd.is_err(),
+        "loopback datagram from sandboxed probe was received: {:?}",
+        recvd
     );
 }
 
