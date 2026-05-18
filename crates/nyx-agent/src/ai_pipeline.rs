@@ -20,6 +20,7 @@
 //! the parent finding's `spec_id` back-link is stamped.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -33,8 +34,8 @@ use nyx_agent_ai::{
     SpecDerivationOutcome, DEFAULT_EXPLORATION_RUN_CAP_USD_MICROS,
 };
 use nyx_agent_core::store::{
-    CandidateFindingRecord, CandidateStatus, ChainRecord, FindingOrigin, FindingRecord,
-    HarnessSpecRecord, PayloadRecord, Store,
+    AgentTraceRecord, CandidateFindingRecord, CandidateStatus, ChainRecord, FindingOrigin,
+    FindingRecord, HarnessSpecRecord, PayloadRecord, Store, TaskKind,
 };
 use nyx_agent_core::{
     AiConfig, AiRuntime as ConfigAiRuntime, RepoOutcome, RunBundle, RunConfig, SandboxBackend,
@@ -48,15 +49,17 @@ use nyx_agent_nyx::Diag;
 use nyx_agent_types::agent::{AiError, BudgetKind};
 use nyx_agent_types::chain::{
     ChainReasoningEdge, ChainReasoningInput, ChainReasoningNode, CHAIN_REASONING_DEFAULT_MAX,
-    NODE_KIND_ENTRY, NODE_KIND_FRAMEWORK, NODE_KIND_SINK,
+    CHAIN_REASONING_PROMPT_VERSION, NODE_KIND_ENTRY, NODE_KIND_FRAMEWORK, NODE_KIND_SINK,
 };
 use nyx_agent_types::event::EventSink;
 use nyx_agent_types::novel::{
     FileForReview, NovelFindingDiscoveryInput, PriorFinding, DEFAULT_FILES_PER_BATCH,
-    DEFAULT_NOVEL_DISCOVERY_RUN_CAP_USD_MICROS,
+    DEFAULT_NOVEL_DISCOVERY_RUN_CAP_USD_MICROS, NOVEL_FINDING_DISCOVERY_PROMPT_VERSION,
 };
-use nyx_agent_types::payload::{AttackProvenance, PayloadSynthesisInput};
-use nyx_agent_types::spec::SpecDerivationInput;
+use nyx_agent_types::payload::{
+    AttackProvenance, PayloadSynthesisInput, PAYLOAD_SYNTHESIS_PROMPT_VERSION,
+};
+use nyx_agent_types::spec::{SpecDerivationInput, SPEC_DERIVATION_PROMPT_VERSION};
 use nyx_agent_types::verify::{Oracle, VerifyResult, VerifyVerdict};
 use tokio::sync::Semaphore;
 
@@ -192,6 +195,8 @@ pub async fn run_payload_synthesis_pass(
     tracing::info!(count = inputs.len(), "payload synthesis: fanning out");
 
     let semaphore = Arc::new(Semaphore::new(config.max_concurrent_one_shot_resolved()));
+    let runtime_name = adapter.name();
+    let runtime_model = adapter.default_model().to_string();
     let mut handles = Vec::with_capacity(inputs.len());
     for input in inputs {
         let rt = Arc::clone(&adapter);
@@ -199,6 +204,7 @@ pub async fn run_payload_synthesis_pass(
         let sink = events.clone();
         handles.push(tokio::spawn(async move {
             let permit = sem.acquire_owned().await.expect("semaphore closed");
+            let started_at = now_epoch_ms();
             let outcome = run_payload_synthesis(
                 rt.as_ref(),
                 &input,
@@ -207,14 +213,24 @@ pub async fn run_payload_synthesis_pass(
             )
             .await;
             drop(permit);
-            outcome
+            outcome.map(|o| (started_at, o))
         }));
     }
 
     let mut report = PayloadSynthesisPassReport::default();
     for handle in handles {
         match handle.await {
-            Ok(Ok(outcome)) => apply_outcome(store, outcome, &mut report).await?,
+            Ok(Ok((started_at, outcome))) => {
+                apply_outcome(
+                    store,
+                    outcome,
+                    &mut report,
+                    runtime_name,
+                    &runtime_model,
+                    started_at,
+                )
+                .await?
+            }
             Ok(Err(err)) => {
                 tracing::warn!(error = %err, "payload synthesis call failed");
                 report.failed += 1;
@@ -273,7 +289,11 @@ async fn apply_outcome(
     store: &Store,
     outcome: PayloadSynthesisOutcome,
     report: &mut PayloadSynthesisPassReport,
+    runtime_name: &str,
+    runtime_model: &str,
+    started_at_ms: i64,
 ) -> anyhow::Result<()> {
+    let finished_at = now_epoch_ms();
     match outcome {
         PayloadSynthesisOutcome::Synthesised {
             finding_id,
@@ -284,20 +304,45 @@ async fn apply_outcome(
             spent_usd_micros,
             attempts,
         } => {
-            let created_at = now_epoch_ms();
+            let provenance = AttackProvenance::LlmSynthesised.as_str().to_string();
             let rec = PayloadRecord {
-                id: format!("payload-{finding_id}-{created_at:x}"),
-                finding_id,
+                id: format!("payload-{finding_id}-{finished_at:x}"),
+                finding_id: finding_id.clone(),
                 cap,
                 lang,
                 vuln_bytes: output.vuln_payload.into_bytes(),
                 benign_bytes: Some(output.benign_payload.into_bytes()),
                 oracle_blob: Some(output.vuln_oracle),
-                attack_provenance: Some(AttackProvenance::LlmSynthesised.as_str().to_string()),
-                prompt_version: Some(prompt_version),
-                created_at,
+                attack_provenance: Some(provenance.clone()),
+                prompt_version: Some(prompt_version.clone()),
+                created_at: finished_at,
             };
             store.payloads().insert(&rec).await?;
+            // Stamp the parent finding so the detail view can render
+            // "AI synthesised the payload for this row" without a join
+            // through the payloads table.
+            if let Err(err) = store
+                .findings()
+                .set_attack_provenance(&finding_id, &provenance, &prompt_version)
+                .await
+            {
+                tracing::warn!(
+                    error = %err,
+                    finding = %finding_id,
+                    "payload synthesis: failed to stamp finding provenance"
+                );
+            }
+            let trace = build_trace_row(
+                TaskKind::PayloadSynthesis,
+                Some(finding_id),
+                runtime_name,
+                runtime_model,
+                &prompt_version,
+                spent_usd_micros,
+                started_at_ms,
+                finished_at,
+            );
+            persist_trace_row(store, trace).await;
             report.synthesised += 1;
             report.spend_usd_micros += spent_usd_micros;
             report.total_attempts += u64::from(attempts);
@@ -309,11 +354,23 @@ async fn apply_outcome(
             attempts,
         } => {
             let blob = serde_json::json!({
+                "kind": "PayloadSynthesisQuarantined",
                 "task": "PayloadSynthesis",
                 "reason": reason,
             })
             .to_string();
             store.findings().quarantine(&finding_id, &blob).await?;
+            let trace = build_trace_row(
+                TaskKind::PayloadSynthesis,
+                Some(finding_id),
+                runtime_name,
+                runtime_model,
+                PAYLOAD_SYNTHESIS_PROMPT_VERSION,
+                spent_usd_micros,
+                started_at_ms,
+                finished_at,
+            );
+            persist_trace_row(store, trace).await;
             report.quarantined += 1;
             report.spend_usd_micros += spent_usd_micros;
             report.total_attempts += u64::from(attempts);
@@ -346,6 +403,65 @@ pub fn infer_lang(path: &str) -> String {
 
 fn now_epoch_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+}
+
+/// Process-local sequence number so two trace rows minted in the same
+/// millisecond produce distinct ids. Reset per process; the resulting
+/// id is `trace-<task_kind>-<finished_ms hex>-<seq hex>`.
+static TRACE_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Build a fresh `AgentTraceRecord` describing one AI task call.
+///
+/// `tokens_in` / `tokens_out` / `cache_*` default to `0` because the
+/// per-pass `*Outcome` envelopes do not surface them yet; widening the
+/// envelopes to carry per-call `TokenUsage` is tracked in the same
+/// deferred items that asked for this row in the first place. The
+/// trace row is still useful: the trace viewer surfaces task kind,
+/// prompt version, runtime, cost, and timing per finding.
+#[allow(clippy::too_many_arguments)]
+fn build_trace_row(
+    task_kind: TaskKind,
+    finding_id: Option<String>,
+    runtime_name: &str,
+    model: &str,
+    prompt_version: &str,
+    spent_usd_micros: i64,
+    started_at_ms: i64,
+    finished_at_ms: i64,
+) -> AgentTraceRecord {
+    let seq = TRACE_SEQ.fetch_add(1, Ordering::Relaxed);
+    let id = format!("trace-{}-{:x}-{:08x}", task_kind.as_str(), finished_at_ms, seq);
+    let duration = (finished_at_ms - started_at_ms).max(0);
+    AgentTraceRecord {
+        id,
+        finding_id,
+        task_kind: task_kind.as_str().to_string(),
+        runtime_name: runtime_name.to_string(),
+        model: model.to_string(),
+        prompt_version: Some(prompt_version.to_string()),
+        conversation_jsonl_path: None,
+        tokens_in: 0,
+        tokens_out: 0,
+        cost_usd_micros: spent_usd_micros,
+        cache_hits: 0,
+        cache_misses: 0,
+        duration_ms: Some(duration),
+        started_at: started_at_ms,
+        finished_at: Some(finished_at_ms),
+    }
+}
+
+async fn persist_trace_row(store: &Store, row: AgentTraceRecord) {
+    let task_kind = row.task_kind.clone();
+    let finding_id = row.finding_id.clone();
+    if let Err(err) = store.agent_traces().insert(&row).await {
+        tracing::warn!(
+            error = %err,
+            task_kind = %task_kind,
+            finding_id = ?finding_id,
+            "failed to persist agent trace row"
+        );
+    }
 }
 
 /// Counts surfaced by [`run_spec_derivation_pass`].
@@ -393,6 +509,8 @@ pub async fn run_spec_derivation_pass(
     tracing::info!(count = inputs.len(), "spec derivation: fanning out");
 
     let semaphore = Arc::new(Semaphore::new(config.max_concurrent_one_shot_resolved()));
+    let runtime_name = adapter.name();
+    let runtime_model = adapter.default_model().to_string();
     let mut handles = Vec::with_capacity(inputs.len());
     for input in inputs {
         let rt = Arc::clone(&adapter);
@@ -400,6 +518,7 @@ pub async fn run_spec_derivation_pass(
         let sink = events.clone();
         handles.push(tokio::spawn(async move {
             let permit = sem.acquire_owned().await.expect("semaphore closed");
+            let started_at = now_epoch_ms();
             let outcome = run_spec_derivation(
                 rt.as_ref(),
                 &input,
@@ -408,14 +527,24 @@ pub async fn run_spec_derivation_pass(
             )
             .await;
             drop(permit);
-            outcome
+            outcome.map(|o| (started_at, o))
         }));
     }
 
     let mut report = SpecDerivationPassReport::default();
     for handle in handles {
         match handle.await {
-            Ok(Ok(outcome)) => apply_spec_outcome(store, outcome, &mut report).await?,
+            Ok(Ok((started_at, outcome))) => {
+                apply_spec_outcome(
+                    store,
+                    outcome,
+                    &mut report,
+                    runtime_name,
+                    &runtime_model,
+                    started_at,
+                )
+                .await?
+            }
             Ok(Err(err)) => {
                 tracing::warn!(error = %err, "spec derivation call failed");
                 report.failed += 1;
@@ -524,7 +653,11 @@ async fn apply_spec_outcome(
     store: &Store,
     outcome: SpecDerivationOutcome,
     report: &mut SpecDerivationPassReport,
+    runtime_name: &str,
+    runtime_model: &str,
+    started_at_ms: i64,
 ) -> anyhow::Result<()> {
+    let finished_at = now_epoch_ms();
     match outcome {
         SpecDerivationOutcome::Synthesised {
             finding_id,
@@ -536,16 +669,15 @@ async fn apply_spec_outcome(
             spent_usd_micros,
             attempts,
         } => {
-            let created_at = now_epoch_ms();
             let provenance = AttackProvenance::LlmSynthesised.as_str().to_string();
             let rec = HarnessSpecRecord {
-                id: format!("spec-{finding_id}-{created_at:x}"),
+                id: format!("spec-{finding_id}-{finished_at:x}"),
                 cap,
                 lang,
                 spec_blob,
                 attack_provenance: Some(provenance.clone()),
                 prompt_version: Some(prompt_version.clone()),
-                created_at,
+                created_at: finished_at,
             };
             let spec_id = rec.id.clone();
             store.harness_specs().insert(&rec).await?;
@@ -553,6 +685,17 @@ async fn apply_spec_outcome(
                 .findings()
                 .set_spec(&finding_id, &spec_id, &provenance, &prompt_version)
                 .await?;
+            let trace = build_trace_row(
+                TaskKind::SpecDerivation,
+                Some(finding_id),
+                runtime_name,
+                runtime_model,
+                &prompt_version,
+                spent_usd_micros,
+                started_at_ms,
+                finished_at,
+            );
+            persist_trace_row(store, trace).await;
             report.synthesised += 1;
             report.spend_usd_micros += spent_usd_micros;
             report.total_attempts += u64::from(attempts);
@@ -564,11 +707,23 @@ async fn apply_spec_outcome(
             attempts,
         } => {
             let blob = serde_json::json!({
+                "kind": "SpecDerivationQuarantined",
                 "task": "SpecDerivation",
                 "reason": reason,
             })
             .to_string();
             store.findings().quarantine(&finding_id, &blob).await?;
+            let trace = build_trace_row(
+                TaskKind::SpecDerivation,
+                Some(finding_id),
+                runtime_name,
+                runtime_model,
+                SPEC_DERIVATION_PROMPT_VERSION,
+                spent_usd_micros,
+                started_at_ms,
+                finished_at,
+            );
+            persist_trace_row(store, trace).await;
             report.quarantined += 1;
             report.spend_usd_micros += spent_usd_micros;
             report.total_attempts += u64::from(attempts);
@@ -647,7 +802,10 @@ pub async fn run_chain_reasoning_pass(
     let tracker: SharedBudgetTracker =
         Arc::new(BudgetStoreTracker::new(store.clone(), config.default_run_budget_usd_micros_resolved()));
     let adapter = AnthropicSdkAdapter::new(api_key, tracker.clone());
+    let runtime_name = adapter.name();
+    let runtime_model = adapter.default_model().to_string();
 
+    let started_at = now_epoch_ms();
     let outcome = match run_chain_reasoning(
         &adapter,
         &input,
@@ -664,7 +822,16 @@ pub async fn run_chain_reasoning_pass(
     };
 
     let mut report = ChainReasoningPassReport::default();
-    apply_chain_outcome(store, &input, outcome, &mut report).await?;
+    apply_chain_outcome(
+        store,
+        &input,
+        outcome,
+        &mut report,
+        runtime_name,
+        &runtime_model,
+        started_at,
+    )
+    .await?;
     Ok(report)
 }
 
@@ -833,7 +1000,11 @@ async fn apply_chain_outcome(
     input: &ChainReasoningInput,
     outcome: ChainReasoningOutcome,
     report: &mut ChainReasoningPassReport,
+    runtime_name: &str,
+    runtime_model: &str,
+    started_at_ms: i64,
 ) -> anyhow::Result<()> {
+    let finished_at = now_epoch_ms();
     match outcome {
         ChainReasoningOutcome::Ranked {
             run_id,
@@ -850,7 +1021,18 @@ async fn apply_chain_outcome(
                 .iter()
                 .map(|n| (n.id.clone(), n.repo.clone()))
                 .collect();
-            let created_at = now_epoch_ms();
+            let created_at = finished_at;
+            let trace = build_trace_row(
+                TaskKind::ChainReasoning,
+                None,
+                runtime_name,
+                runtime_model,
+                &prompt_version,
+                spent_usd_micros,
+                started_at_ms,
+                finished_at,
+            );
+            persist_trace_row(store, trace).await;
             for (rank, chain) in output.chains.iter().enumerate() {
                 let cross_repo = chain
                     .member_ids
@@ -907,6 +1089,17 @@ async fn apply_chain_outcome(
             attempts,
         } => {
             tracing::info!(reason = %reason, "chain reasoning: no chains produced");
+            let trace = build_trace_row(
+                TaskKind::ChainReasoning,
+                None,
+                runtime_name,
+                runtime_model,
+                CHAIN_REASONING_PROMPT_VERSION,
+                spent_usd_micros,
+                started_at_ms,
+                finished_at,
+            );
+            persist_trace_row(store, trace).await;
             report.spend_usd_micros += spent_usd_micros;
             report.attempts += u64::from(attempts);
         }
@@ -1073,6 +1266,8 @@ pub(crate) async fn drive_novel_finding_pass<R: AiRuntime + ?Sized>(
             batches = inputs.len(),
             "novel finding discovery: dispatching repo batches"
         );
+        let runtime_name = runtime.name();
+        let runtime_model = runtime.default_model().to_string();
         for input in inputs {
             // Pre-call cap check. `add_spend(_, _, 0)` is the BudgetTracker
             // trait's only read path today; the zero delta is the
@@ -1093,6 +1288,7 @@ pub(crate) async fn drive_novel_finding_pass<R: AiRuntime + ?Sized>(
                 continue;
             }
             report.batches_dispatched += 1;
+            let started_at = now_epoch_ms();
             let outcome = match run_novel_findings(
                 runtime,
                 &input,
@@ -1108,7 +1304,15 @@ pub(crate) async fn drive_novel_finding_pass<R: AiRuntime + ?Sized>(
                     continue;
                 }
             };
-            apply_novel_outcome(store, outcome, &mut report).await?;
+            apply_novel_outcome(
+                store,
+                outcome,
+                &mut report,
+                runtime_name,
+                &runtime_model,
+                started_at,
+            )
+            .await?;
         }
         if halted {
             // Once the run-wide cap has tripped no further repo's
@@ -1279,7 +1483,11 @@ async fn apply_novel_outcome(
     store: &Store,
     outcome: NovelFindingDiscoveryOutcome,
     report: &mut NovelFindingDiscoveryPassReport,
+    runtime_name: &str,
+    runtime_model: &str,
+    started_at_ms: i64,
 ) -> anyhow::Result<()> {
+    let finished_at = now_epoch_ms();
     match outcome {
         NovelFindingDiscoveryOutcome::Discovered {
             run_id,
@@ -1292,7 +1500,18 @@ async fn apply_novel_outcome(
         } => {
             report.spend_usd_micros += spent_usd_micros;
             report.attempts += u64::from(attempts);
-            let created_at = now_epoch_ms();
+            let trace = build_trace_row(
+                TaskKind::NovelFindings,
+                None,
+                runtime_name,
+                runtime_model,
+                &prompt_version,
+                spent_usd_micros,
+                started_at_ms,
+                finished_at,
+            );
+            persist_trace_row(store, trace).await;
+            let created_at = finished_at;
             for (idx, c) in output.candidates.iter().enumerate() {
                 let id = candidate_id(&run_id, &repo, c, created_at, idx);
                 let rec = CandidateFindingRecord {
@@ -1335,6 +1554,17 @@ async fn apply_novel_outcome(
                 reason = %reason,
                 "novel finding discovery: no candidates produced"
             );
+            let trace = build_trace_row(
+                TaskKind::NovelFindings,
+                None,
+                runtime_name,
+                runtime_model,
+                NOVEL_FINDING_DISCOVERY_PROMPT_VERSION,
+                spent_usd_micros,
+                started_at_ms,
+                finished_at,
+            );
+            persist_trace_row(store, trace).await;
             report.spend_usd_micros += spent_usd_micros;
             report.attempts += u64::from(attempts);
         }
@@ -1737,12 +1967,34 @@ fn degenerate_oracle_reason(oracle: &Oracle) -> Option<&'static str> {
     }
 }
 
+/// Serialise a `VerifyResult` and stamp `kind = "VerifyResult"` at the
+/// top level so the UI can distinguish verifier output from the
+/// Phase-04 free-form `{"message": ...}` blob without sniffing field
+/// names. The original `VerifyResult` fields remain at the top level
+/// so legacy parsers that read `serde_json::from_str::<VerifyResult>`
+/// keep working.
+fn stamp_verdict_kind(result: &VerifyResult) -> anyhow::Result<String> {
+    let mut value = serde_json::to_value(result)?;
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert(
+            "kind".to_string(),
+            serde_json::Value::String("VerifyResult".to_string()),
+        );
+    }
+    Ok(serde_json::to_string(&value)?)
+}
+
 async fn persist_finding_verdict(
     store: &Store,
     finding: &FindingRecord,
     result: &VerifyResult,
 ) -> anyhow::Result<()> {
-    let verdict_blob = serde_json::to_string(result)?;
+    // Stamp the `VerifyResult` JSON with a typed `kind` discriminator so
+    // the API and UI can distinguish Phase-19 verifier output from the
+    // Phase-04 free-form `{"message": ...}` blob without sniffing
+    // field names. The fields remain at the top level so direct
+    // `serde_json::from_str::<VerifyResult>` consumers still parse.
+    let verdict_blob = stamp_verdict_kind(result)?;
     let new_status = match result.verdict {
         // Verified = the verifier confirmed an actual exploit landed.
         VerifyVerdict::Confirmed => "Verified",
@@ -1780,7 +2032,7 @@ async fn promote_candidate(
         &candidate.cap,
         &rule,
     );
-    let verdict_blob = serde_json::to_string(result)?;
+    let verdict_blob = stamp_verdict_kind(result)?;
     let rec = FindingRecord {
         id,
         run_id: candidate.run_id.clone(),
@@ -1931,6 +2183,8 @@ pub(crate) async fn drive_ai_exploration_pass<R: AiRuntime + ?Sized>(
     events: EventSink,
 ) -> anyhow::Result<AiExplorationPassReport> {
     let mut report = AiExplorationPassReport::default();
+    let runtime_name = runtime.name();
+    let runtime_model = runtime.default_model().to_string();
     for repo_bundle in &bundle.per_repo {
         let RepoOutcome::Success(_) = &repo_bundle.outcome else {
             continue;
@@ -1940,6 +2194,7 @@ pub(crate) async fn drive_ai_exploration_pass<R: AiRuntime + ?Sized>(
         }
         let scope = build_exploration_scope(&bundle.run_id, &repo_bundle.repo);
 
+        let started_at = now_epoch_ms();
         let outcome = match run_exploration(runtime, &scope, escape_gate, events.clone()).await {
             Ok(o) => o,
             Err(err) => {
@@ -1958,6 +2213,9 @@ pub(crate) async fn drive_ai_exploration_pass<R: AiRuntime + ?Sized>(
             &repo_bundle.repo,
             outcome,
             &mut report,
+            runtime_name,
+            &runtime_model,
+            started_at,
         )
         .await?;
     }
@@ -1983,13 +2241,18 @@ fn build_exploration_scope(run_id: &str, repo: &str) -> ExplorationScope {
     scope
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn apply_exploration_outcome(
     store: &Store,
     run_id: &str,
     repo: &str,
     outcome: ExplorationOutcome,
     report: &mut AiExplorationPassReport,
+    runtime_name: &str,
+    runtime_model: &str,
+    started_at_ms: i64,
 ) -> anyhow::Result<()> {
+    let finished_at = now_epoch_ms();
     match outcome {
         ExplorationOutcome::Halted { reason } => match reason {
             ExplorationHaltReason::EscapeSuiteRed { fixture, reason } => {
@@ -2032,7 +2295,23 @@ async fn apply_exploration_outcome(
                     "ai exploration: soft cap exceeded — operator warned, run continues"
                 );
             }
-            let now_ms = now_epoch_ms();
+            let now_ms = finished_at;
+            // Persist a parent agent_traces row keyed to no finding so
+            // operators can audit the call even when it surfaced zero
+            // findings; per-finding rows below link back via
+            // `finding_id` so the trace viewer can group calls under a
+            // single finding.
+            let parent_trace = build_trace_row(
+                TaskKind::Exploration,
+                None,
+                runtime_name,
+                runtime_model,
+                &prompt_version,
+                spent_usd_micros,
+                started_at_ms,
+                finished_at,
+            );
+            persist_trace_row(store, parent_trace).await;
             for finding in findings {
                 match persist_exploration_finding(
                     store,
@@ -2044,7 +2323,24 @@ async fn apply_exploration_outcome(
                 )
                 .await
                 {
-                    Ok(()) => report.findings_quarantined += 1,
+                    Ok(finding_id) => {
+                        report.findings_quarantined += 1;
+                        // Per-finding trace pointer so the trace viewer
+                        // can render "this finding was produced by an
+                        // Exploration call" without scanning the global
+                        // trace list.
+                        let per_trace = build_trace_row(
+                            TaskKind::Exploration,
+                            Some(finding_id),
+                            runtime_name,
+                            runtime_model,
+                            &prompt_version,
+                            0,
+                            started_at_ms,
+                            finished_at,
+                        );
+                        persist_trace_row(store, per_trace).await;
+                    }
                     Err(err) => {
                         tracing::warn!(
                             repo = %repo,
@@ -2066,7 +2362,7 @@ async fn persist_exploration_finding(
     finding: &ExplorationFinding,
     prompt_version: &str,
     now_ms: i64,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<String> {
     let line = finding.line.map(i64::from);
     let rule = format!("ai-exploration:{}", finding.cap);
     let id = nyx_agent_core::store::finding_id_hash(repo, &finding.path, line, &finding.cap, &rule);
@@ -2078,7 +2374,7 @@ async fn persist_exploration_finding(
         "prompt_version": prompt_version,
     }))?;
     let rec = FindingRecord {
-        id,
+        id: id.clone(),
         run_id: run_id.to_string(),
         repo: repo.to_string(),
         path: finding.path.clone(),
@@ -2102,7 +2398,7 @@ async fn persist_exploration_finding(
         chain_id: None,
     };
     store.findings().upsert(&rec).await?;
-    Ok(())
+    Ok(id)
 }
 
 #[cfg(test)]
@@ -2572,7 +2868,9 @@ mod tests {
             attempts: 1,
         };
         let mut report = SpecDerivationPassReport::default();
-        apply_spec_outcome(&store, outcome, &mut report).await.unwrap();
+        apply_spec_outcome(&store, outcome, &mut report, "test-runtime", "test-model", 0)
+            .await
+            .unwrap();
         assert_eq!(report.synthesised, 1);
         assert_eq!(report.spend_usd_micros, 3_500);
 
@@ -2604,7 +2902,9 @@ mod tests {
             attempts: 2,
         };
         let mut report = SpecDerivationPassReport::default();
-        apply_spec_outcome(&store, outcome, &mut report).await.unwrap();
+        apply_spec_outcome(&store, outcome, &mut report, "test-runtime", "test-model", 0)
+            .await
+            .unwrap();
         assert_eq!(report.quarantined, 1);
         let row = store.findings().get(&fid).await.unwrap().expect("finding");
         assert_eq!(row.status, "Quarantine");
@@ -2809,7 +3109,9 @@ mod tests {
             attempts: 1,
         };
         let mut report = ChainReasoningPassReport::default();
-        apply_chain_outcome(&store, &input, outcome, &mut report).await.unwrap();
+        apply_chain_outcome(&store, &input, outcome, &mut report, "test-runtime", "test-model", 0)
+            .await
+            .unwrap();
         assert_eq!(report.chains_persisted, 1);
         assert_eq!(report.cross_repo_chains, 1);
         assert_eq!(report.members_stamped, 2);
@@ -2856,7 +3158,9 @@ mod tests {
             attempts: 2,
         };
         let mut report = ChainReasoningPassReport::default();
-        apply_chain_outcome(&store, &input, outcome, &mut report).await.unwrap();
+        apply_chain_outcome(&store, &input, outcome, &mut report, "test-runtime", "test-model", 0)
+            .await
+            .unwrap();
         assert_eq!(report.chains_persisted, 0);
         assert_eq!(report.cross_repo_chains, 0);
         assert_eq!(report.members_stamped, 0);

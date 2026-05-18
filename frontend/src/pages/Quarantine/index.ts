@@ -1,0 +1,1 @@
+export { QuarantineList } from "./QuarantineList";

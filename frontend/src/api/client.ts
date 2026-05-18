@@ -150,6 +150,50 @@ export interface ChainRecord {
   prompt_version: string | null;
 }
 
+export type QuarantineKind = "finding" | "candidate";
+
+/**
+ * Row shape returned by `GET /api/v1/quarantine`. Combines two
+ * sources: `findings` rows with `status = 'Quarantine'` (the
+ * `finding` kind) and `candidate_findings` rows with
+ * `status = 'Pending'` (the `candidate` kind).
+ */
+export interface QuarantineItem {
+  kind: QuarantineKind;
+  id: string;
+  run_id: string;
+  repo: string;
+  path: string;
+  line: number | null;
+  cap: string;
+  rule: string | null;
+  severity: string | null;
+  finding_origin: string | null;
+  prompt_version: string | null;
+  attack_provenance: string | null;
+  rationale: string | null;
+  verdict_blob: string | null;
+  last_seen: number | null;
+}
+
+export interface AgentTraceRow {
+  id: string;
+  finding_id: string | null;
+  task_kind: string;
+  runtime_name: string;
+  model: string;
+  prompt_version: string | null;
+  conversation_jsonl_path: string | null;
+  tokens_in: number;
+  tokens_out: number;
+  cost_usd_micros: number;
+  cache_hits: number;
+  cache_misses: number;
+  duration_ms: number | null;
+  started_at: number;
+  finished_at: number | null;
+}
+
 export type RepoSourceKind = "git" | "local-path" | "github" | "gitlab" | "local";
 
 export interface CreateRepoRequest {
@@ -266,6 +310,8 @@ export const qk = {
   finding: (id: string) => ["findings", id] as const,
   runFindings: (run_id: string) => ["runs", run_id, "findings"] as const,
   chain: (id: string) => ["chains", id] as const,
+  quarantine: () => ["quarantine"] as const,
+  findingTraces: (id: string) => ["findings", id, "traces"] as const,
 };
 
 // ---- hooks -----------------------------------------------------------------
@@ -440,6 +486,52 @@ export function useChain(id: string | undefined) {
 
 function invalidateRepoLists(qc: QueryClient) {
   qc.invalidateQueries({ queryKey: qk.repos() });
+}
+
+// ---- quarantine + traces ---------------------------------------------------
+
+export function useQuarantine() {
+  return useQuery({
+    queryKey: qk.quarantine(),
+    queryFn: () => request<QuarantineItem[]>("/quarantine"),
+  });
+}
+
+export function usePromoteQuarantine() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      request<QuarantineItem>(`/quarantine/${encodeURIComponent(id)}/promote`, {
+        method: "POST",
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.quarantine() });
+      qc.invalidateQueries({ queryKey: ["findings"] });
+    },
+  });
+}
+
+export function useDismissQuarantine() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      request<QuarantineItem>(`/quarantine/${encodeURIComponent(id)}/dismiss`, {
+        method: "POST",
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.quarantine() });
+      qc.invalidateQueries({ queryKey: ["findings"] });
+    },
+  });
+}
+
+export function useFindingTraces(id: string | undefined) {
+  return useQuery({
+    queryKey: id ? qk.findingTraces(id) : ["findings", "_disabled", "traces"],
+    queryFn: () =>
+      request<AgentTraceRow[]>(`/findings/${encodeURIComponent(id!)}/traces`),
+    enabled: Boolean(id),
+  });
 }
 
 // ---- WebSocket event subscription -----------------------------------------

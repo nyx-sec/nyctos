@@ -25,7 +25,8 @@ use tokio::sync::broadcast::error::RecvError;
 use tower_http::trace::TraceLayer;
 
 use nyx_agent_core::store::{
-    ChainRecord, FindingFilter, FindingRecord, PatchOption, RepoPatch, RepoRecord, RunRecord,
+    AgentTraceRecord, CandidateFindingRecord, CandidateStatus, ChainRecord, FindingFilter,
+    FindingRecord, PatchOption, RepoPatch, RepoRecord, RunRecord,
 };
 use nyx_agent_core::{AiRuntime, SandboxBackend, ACCOUNT_AI_ANTHROPIC, ACCOUNT_AI_LOCAL_LLM};
 use nyx_agent_types::event::{AgentEvent, RunEvent};
@@ -52,6 +53,11 @@ pub fn build_router(state: ServerState) -> Router {
         .route("/api/v1/findings", get(list_findings))
         .route("/api/v1/findings/:id", get(get_finding))
         .route("/api/v1/chains/:id", get(get_chain))
+        .route("/api/v1/findings/:id/traces", get(traces_for_finding))
+        .route("/api/v1/traces/:id", get(get_trace))
+        .route("/api/v1/quarantine", get(list_quarantine))
+        .route("/api/v1/quarantine/:id/promote", post(promote_quarantine))
+        .route("/api/v1/quarantine/:id/dismiss", post(dismiss_quarantine))
         .route("/api/v1/events", get(events_ws))
         .layer(middleware::from_fn_with_state(state.clone(), auth_layer))
         .layer(TraceLayer::new_for_http())
@@ -1061,6 +1067,351 @@ async fn get_chain(
         .await?
         .map(Json)
         .ok_or_else(|| ApiError::NotFound(format!("chain `{id}` not found")))
+}
+
+// ---- /quarantine ------------------------------------------------------------
+
+/// Discriminator for [`QuarantineItem`] so the SPA can pick the right
+/// promote / dismiss path. `Finding` rows live in the `findings`
+/// table with `status = 'Quarantine'`; `Candidate` rows live in
+/// `candidate_findings` with `status = 'Pending'`.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum QuarantineKind {
+    Finding,
+    Candidate,
+}
+
+/// Unified row the Quarantine page renders. Combines both sources of
+/// "AI-proposed, not yet dynamic-confirmed" rows so the operator sees
+/// one list. The Phase-23 deferred "converge on a single quarantine
+/// path" item asks for the eventual fold; the API joins them today.
+#[derive(Debug, Clone, Serialize)]
+pub struct QuarantineItem {
+    pub kind: QuarantineKind,
+    pub id: String,
+    pub run_id: String,
+    pub repo: String,
+    pub path: String,
+    pub line: Option<i64>,
+    pub cap: String,
+    pub rule: Option<String>,
+    pub severity: Option<String>,
+    pub finding_origin: Option<String>,
+    pub prompt_version: Option<String>,
+    pub attack_provenance: Option<String>,
+    pub rationale: Option<String>,
+    pub verdict_blob: Option<String>,
+    pub last_seen: Option<i64>,
+}
+
+async fn list_quarantine(
+    State(s): State<ServerState>,
+) -> Result<Json<Vec<QuarantineItem>>, ApiError> {
+    let mut out: Vec<QuarantineItem> = Vec::new();
+    let filter = FindingFilter {
+        status: Some("Quarantine"),
+        include_quarantine: true,
+        ..Default::default()
+    };
+    let findings = s.store.findings().list_filtered(&filter).await?;
+    for f in findings {
+        out.push(QuarantineItem {
+            kind: QuarantineKind::Finding,
+            id: f.id,
+            run_id: f.run_id,
+            repo: f.repo,
+            path: f.path,
+            line: f.line,
+            cap: f.cap,
+            rule: Some(f.rule),
+            severity: Some(f.severity),
+            finding_origin: Some(f.finding_origin),
+            prompt_version: f.prompt_version,
+            attack_provenance: f.attack_provenance,
+            rationale: None,
+            verdict_blob: f.verdict_blob,
+            last_seen: Some(f.last_seen),
+        });
+    }
+    let pending = s.store.candidate_findings().list_pending().await?;
+    for c in pending {
+        out.push(QuarantineItem {
+            kind: QuarantineKind::Candidate,
+            id: c.id,
+            run_id: c.run_id,
+            repo: c.repo,
+            path: c.path,
+            line: c.line,
+            cap: c.cap,
+            rule: c.rule_hint,
+            severity: None,
+            finding_origin: Some("AiExploration".to_string()),
+            prompt_version: c.prompt_version,
+            attack_provenance: None,
+            rationale: c.rationale,
+            verdict_blob: None,
+            last_seen: None,
+        });
+    }
+    // Most-recently-stamped findings first; candidates fall in after
+    // (no `last_seen`).
+    out.sort_by(|a, b| b.last_seen.unwrap_or(0).cmp(&a.last_seen.unwrap_or(0)));
+    Ok(Json(out))
+}
+
+async fn promote_quarantine(
+    State(s): State<ServerState>,
+    Path(id): Path<String>,
+) -> Result<Json<QuarantineItem>, ApiError> {
+    if id.starts_with("cand-") {
+        let cand = s
+            .store
+            .candidate_findings()
+            .get(&id)
+            .await?
+            .ok_or_else(|| ApiError::NotFound(format!("candidate `{id}` not found")))?;
+        if cand.status != CandidateStatus::Pending.as_str() {
+            return Err(ApiError::BadRequest(format!(
+                "candidate `{id}` is not pending (status = `{}`)",
+                cand.status
+            )));
+        }
+        promote_candidate_to_finding(&s, &cand).await?;
+        Ok(Json(candidate_to_quarantine_item(&cand)))
+    } else {
+        // Findings-table quarantine: flip status to 'Open' so the row
+        // reappears in the Findings browser. The operator's manual
+        // promote skips the dynamic-confirm gate by design (acceptance:
+        // "Manually promoting it moves it to Findings.").
+        let row = promote_finding_row(&s, &id, "Open").await?;
+        Ok(Json(finding_to_quarantine_item(&row)))
+    }
+}
+
+async fn dismiss_quarantine(
+    State(s): State<ServerState>,
+    Path(id): Path<String>,
+) -> Result<Json<QuarantineItem>, ApiError> {
+    if id.starts_with("cand-") {
+        let cand = s
+            .store
+            .candidate_findings()
+            .get(&id)
+            .await?
+            .ok_or_else(|| ApiError::NotFound(format!("candidate `{id}` not found")))?;
+        if cand.status != CandidateStatus::Pending.as_str() {
+            return Err(ApiError::BadRequest(format!(
+                "candidate `{id}` is not pending (status = `{}`)",
+                cand.status
+            )));
+        }
+        s.store
+            .candidate_findings()
+            .set_status(&id, CandidateStatus::Dismissed.as_str())
+            .await?;
+        Ok(Json(candidate_to_quarantine_item(&cand)))
+    } else {
+        let row = promote_finding_row(&s, &id, "Closed").await?;
+        Ok(Json(finding_to_quarantine_item(&row)))
+    }
+}
+
+async fn promote_finding_row(
+    s: &ServerState,
+    id: &str,
+    new_status: &str,
+) -> Result<FindingRecord, ApiError> {
+    let existing = s
+        .store
+        .findings()
+        .get(id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("finding `{id}` not found")))?;
+    if existing.status != "Quarantine" {
+        return Err(ApiError::BadRequest(format!(
+            "finding `{id}` is not in Quarantine (status = `{}`)",
+            existing.status
+        )));
+    }
+    let blob = existing.verdict_blob.as_deref().unwrap_or("");
+    let provenance = existing.attack_provenance.as_deref().unwrap_or("Curated");
+    s.store
+        .findings()
+        .set_verify_result(id, new_status, blob, provenance)
+        .await?;
+    s.store
+        .findings()
+        .get(id)
+        .await?
+        .ok_or_else(|| ApiError::Internal("finding vanished after promote".to_string()))
+}
+
+async fn promote_candidate_to_finding(
+    s: &ServerState,
+    cand: &CandidateFindingRecord,
+) -> Result<(), ApiError> {
+    let line = cand.line.unwrap_or(-1);
+    let rule = cand
+        .rule_hint
+        .clone()
+        .unwrap_or_else(|| format!("ai-exploration:{}", cand.cap));
+    let id = nyx_agent_core::store::finding_id_hash(
+        &cand.repo,
+        &cand.path,
+        Some(line),
+        &cand.cap,
+        &rule,
+    );
+    let now = now_epoch_ms();
+    let verdict_blob = serde_json::to_string(&json!({
+        "kind": "ManualPromote",
+        "from": "candidate",
+        "candidate_id": cand.id,
+        "rationale": cand.rationale,
+    }))
+    .map_err(|e| ApiError::Internal(format!("serialize verdict blob: {e}")))?;
+    let rec = FindingRecord {
+        id,
+        run_id: cand.run_id.clone(),
+        repo: cand.repo.clone(),
+        path: cand.path.clone(),
+        line: cand.line,
+        cap: cand.cap.clone(),
+        rule,
+        severity: "High".to_string(),
+        // Manual promote skips the dynamic-verifier gate; mark Open
+        // (not Verified) so the operator's intent is preserved
+        // without claiming the row has been confirmed by the
+        // sandbox-replayed differential.
+        status: "Open".to_string(),
+        finding_origin: "AiExploration".to_string(),
+        first_seen: now,
+        last_seen: now,
+        superseded_by: None,
+        triage_state: "Open".to_string(),
+        triage_assigned_to: None,
+        verdict_blob: Some(verdict_blob),
+        repro_path: None,
+        attack_provenance: Some("ManualPromote".to_string()),
+        prompt_version: cand.prompt_version.clone(),
+        chain_id: None,
+    };
+    s.store.findings().upsert(&rec).await?;
+    s.store
+        .candidate_findings()
+        .set_status(&cand.id, CandidateStatus::Promoted.as_str())
+        .await?;
+    Ok(())
+}
+
+fn finding_to_quarantine_item(f: &FindingRecord) -> QuarantineItem {
+    QuarantineItem {
+        kind: QuarantineKind::Finding,
+        id: f.id.clone(),
+        run_id: f.run_id.clone(),
+        repo: f.repo.clone(),
+        path: f.path.clone(),
+        line: f.line,
+        cap: f.cap.clone(),
+        rule: Some(f.rule.clone()),
+        severity: Some(f.severity.clone()),
+        finding_origin: Some(f.finding_origin.clone()),
+        prompt_version: f.prompt_version.clone(),
+        attack_provenance: f.attack_provenance.clone(),
+        rationale: None,
+        verdict_blob: f.verdict_blob.clone(),
+        last_seen: Some(f.last_seen),
+    }
+}
+
+fn candidate_to_quarantine_item(c: &CandidateFindingRecord) -> QuarantineItem {
+    QuarantineItem {
+        kind: QuarantineKind::Candidate,
+        id: c.id.clone(),
+        run_id: c.run_id.clone(),
+        repo: c.repo.clone(),
+        path: c.path.clone(),
+        line: c.line,
+        cap: c.cap.clone(),
+        rule: c.rule_hint.clone(),
+        severity: None,
+        finding_origin: Some("AiExploration".to_string()),
+        prompt_version: c.prompt_version.clone(),
+        attack_provenance: None,
+        rationale: c.rationale.clone(),
+        verdict_blob: None,
+        last_seen: None,
+    }
+}
+
+// ---- /traces ----------------------------------------------------------------
+
+/// Trace row envelope: the `AgentTraceRecord` shape carries unsigned
+/// counts as `i64`, but for the wire we keep the raw shape so the
+/// frontend can render whatever the daemon persisted (zeroes for
+/// fields the per-pass outcome does not yet surface; widening the
+/// per-pass envelopes is tracked separately).
+#[derive(Debug, Serialize)]
+pub struct TraceRow {
+    pub id: String,
+    pub finding_id: Option<String>,
+    pub task_kind: String,
+    pub runtime_name: String,
+    pub model: String,
+    pub prompt_version: Option<String>,
+    pub conversation_jsonl_path: Option<String>,
+    pub tokens_in: i64,
+    pub tokens_out: i64,
+    pub cost_usd_micros: i64,
+    pub cache_hits: i64,
+    pub cache_misses: i64,
+    pub duration_ms: Option<i64>,
+    pub started_at: i64,
+    pub finished_at: Option<i64>,
+}
+
+impl From<AgentTraceRecord> for TraceRow {
+    fn from(r: AgentTraceRecord) -> Self {
+        Self {
+            id: r.id,
+            finding_id: r.finding_id,
+            task_kind: r.task_kind,
+            runtime_name: r.runtime_name,
+            model: r.model,
+            prompt_version: r.prompt_version,
+            conversation_jsonl_path: r.conversation_jsonl_path,
+            tokens_in: r.tokens_in,
+            tokens_out: r.tokens_out,
+            cost_usd_micros: r.cost_usd_micros,
+            cache_hits: r.cache_hits,
+            cache_misses: r.cache_misses,
+            duration_ms: r.duration_ms,
+            started_at: r.started_at,
+            finished_at: r.finished_at,
+        }
+    }
+}
+
+async fn traces_for_finding(
+    State(s): State<ServerState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<TraceRow>>, ApiError> {
+    let rows = s.store.agent_traces().list_for_finding(&id).await?;
+    Ok(Json(rows.into_iter().map(TraceRow::from).collect()))
+}
+
+async fn get_trace(
+    State(s): State<ServerState>,
+    Path(id): Path<String>,
+) -> Result<Json<TraceRow>, ApiError> {
+    s.store
+        .agent_traces()
+        .get(&id)
+        .await?
+        .map(TraceRow::from)
+        .map(Json)
+        .ok_or_else(|| ApiError::NotFound(format!("trace `{id}` not found")))
 }
 
 // ---- /events ----------------------------------------------------------------

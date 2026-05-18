@@ -4,14 +4,18 @@ import { Card } from "@/components/Card";
 import { Spinner } from "@/components/Spinner";
 import { FindingList } from "@/pages/Findings";
 import { Placeholder } from "@/pages/Placeholder";
+import { QuarantineList } from "@/pages/Quarantine";
 import { RepoList } from "@/pages/Repos";
 import { LiveScanView } from "@/pages/Runs";
+import { Settings } from "@/pages/Settings";
 import { SetupWizard } from "@/pages/Setup";
 import { useSetupStatus } from "@/api/client";
+import { useAdvancedMode } from "@/api/preferences";
 
 export function App() {
   const status = useSetupStatus();
   const location = useLocation();
+  const [advanced] = useAdvancedMode();
 
   if (status.isPending) {
     return (
@@ -49,8 +53,11 @@ export function App() {
         <Route path="/runs/:runId" element={<LiveScanView />} />
         <Route path="/findings" element={<FindingList />} />
         <Route path="/chains" element={<Placeholder />} />
-        <Route path="/quarantine" element={<Placeholder />} />
-        <Route path="/settings" element={<Placeholder />} />
+        <Route
+          path="/quarantine"
+          element={advanced ? <QuarantineList /> : <Navigate to="/settings" replace />}
+        />
+        <Route path="/settings" element={<Settings />} />
         <Route path="*" element={<Navigate to="/repos" replace />} />
       </Routes>
     </AppLayout>

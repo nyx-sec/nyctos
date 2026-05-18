@@ -420,6 +420,30 @@ impl<'a> FindingStore<'a> {
         Ok(())
     }
 
+    /// Stamp `id` with the supplied `attack_provenance` + `prompt_version`
+    /// pair without touching status / verdict_blob. Used after
+    /// PayloadSynthesis insert so the finding's detail view can render
+    /// "AI synthesised the payload for this row" without joining
+    /// through the `payloads` table. Runtime-checked SQL to keep the
+    /// `.sqlx/` cache from growing for a helper called once per
+    /// finding per scan.
+    pub async fn set_attack_provenance(
+        &self,
+        id: &str,
+        attack_provenance: &str,
+        prompt_version: &str,
+    ) -> Result<(), StoreError> {
+        sqlx::query(
+            "UPDATE findings SET attack_provenance = ?, prompt_version = ? WHERE id = ?",
+        )
+        .bind(attack_provenance)
+        .bind(prompt_version)
+        .bind(id)
+        .execute(self.pool)
+        .await?;
+        Ok(())
+    }
+
     /// Stamp the Phase 19 verifier outcome on `id`: flips `status`
     /// (Verified for Confirmed, Closed for NotConfirmed, untouched for
     /// Errored — the caller passes the row's existing status in that

@@ -3,6 +3,7 @@ import { Badge } from "@/components/Badge";
 import { Button } from "@/components/Button";
 import { CodeExcerpt, type CodeExcerptLine } from "@/components/CodeExcerpt";
 import { Spinner } from "@/components/Spinner";
+import { AiTraceViewer } from "@/components/AiTraceViewer";
 import { useFinding, type FindingRecord } from "@/api/client";
 import { ORIGIN_TONE, SEVERITY_TONE, STATUS_TONE } from "./diff";
 
@@ -133,7 +134,7 @@ function FindingDetailBody({ finding, evidence }: BodyProps) {
 
       <DynamicVerdict finding={finding} evidence={evidence} />
 
-      <AiReasoningPlaceholder finding={finding} />
+      <AiReasoningSection finding={finding} />
     </>
   );
 }
@@ -258,11 +259,11 @@ function NotesBlock({ notes }: { notes: string | string[] }) {
   );
 }
 
-interface AiReasoningPlaceholderProps {
+interface AiReasoningSectionProps {
   finding: FindingRecord;
 }
 
-function AiReasoningPlaceholder({ finding }: AiReasoningPlaceholderProps) {
+function AiReasoningSection({ finding }: AiReasoningSectionProps) {
   const [open, setOpen] = useState(false);
   return (
     <section className="finding-detail__section">
@@ -273,16 +274,7 @@ function AiReasoningPlaceholder({ finding }: AiReasoningPlaceholderProps) {
         </Button>
       </header>
       {open ? (
-        <p className="finding-detail__muted">
-          Phase 12 wires per-turn reasoning into the `agent_traces` table.
-          {finding.prompt_version && (
-            <>
-              {" "}
-              Last prompt version recorded for this finding:{" "}
-              <code className="finding-detail__code">{finding.prompt_version}</code>.
-            </>
-          )}
-        </p>
+        <AiTraceViewer findingId={finding.id} />
       ) : (
         <p className="finding-detail__muted">Collapsed — expand to read the per-turn trace.</p>
       )}

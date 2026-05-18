@@ -58,6 +58,14 @@ struct Cli {
 }
 
 #[derive(Debug, Subcommand)]
+enum InspectTarget {
+    /// List AI-discovered findings + candidates that are still
+    /// quarantined (i.e. not yet promoted by the dynamic-confirm
+    /// verifier or manual operator).
+    Quarantine,
+}
+
+#[derive(Debug, Subcommand)]
 enum Command {
     /// Scan one or more repositories for findings.
     Scan {
@@ -76,13 +84,21 @@ enum Command {
         #[arg(long)]
         finding: String,
     },
-    /// Print the stored payload for a run or finding.
+    /// Inspect persisted state. Sub-commands print terse listings the
+    /// operator can grep / pipe.
     Inspect {
-        /// Identifier of a run or finding.
-        id: String,
+        #[command(subcommand)]
+        target: InspectTarget,
     },
     /// Show budget consumption for the current configuration.
     Budget,
+    /// Print AI conversation traces (filtered by finding when supplied).
+    Traces {
+        /// Finding id to scope the listing to. Omit to list every trace
+        /// row currently persisted.
+        #[arg(long = "finding", value_name = "FINDING")]
+        finding: Option<String>,
+    },
     /// Verify that state directory, config, and logging look healthy.
     Doctor,
     /// Run the long-lived HTTP/UI server. Default if no subcommand is given.
@@ -162,10 +178,124 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             )
             .await
         }
-        Command::Reverify { .. } | Command::Inspect { .. } | Command::Budget => {
+        Command::Inspect { target } => {
+            nyx_agent_core::init_logging(&log_cfg)?;
+            match target {
+                InspectTarget::Quarantine => inspect_quarantine(&state_dir).await,
+            }
+        }
+        Command::Traces { finding } => {
+            nyx_agent_core::init_logging(&log_cfg)?;
+            inspect_traces(&state_dir, finding.as_deref()).await
+        }
+        Command::Reverify { .. } | Command::Budget => {
             nyx_agent_core::init_logging(&log_cfg)?;
             todo!("subcommand wiring lands in a later phase")
         }
+    }
+}
+
+async fn inspect_quarantine(state_dir: &StateDir) -> anyhow::Result<ExitCode> {
+    let store = Store::open(state_dir.root()).await?;
+    let filter = nyx_agent_core::store::FindingFilter {
+        status: Some("Quarantine"),
+        include_quarantine: true,
+        ..nyx_agent_core::store::FindingFilter::default()
+    };
+    let findings = store.findings().list_filtered(&filter).await?;
+    let pending = store.candidate_findings().list_pending().await?;
+    if findings.is_empty() && pending.is_empty() {
+        println!("quarantine: empty");
+        store.close().await;
+        return Ok(ExitCode::SUCCESS);
+    }
+    println!("kind     id                                 cap                  repo            path:line");
+    for f in &findings {
+        println!(
+            "finding  {:<34} {:<20} {:<15} {}:{}",
+            truncate_for_column(&f.id, 34),
+            truncate_for_column(&f.cap, 20),
+            truncate_for_column(&f.repo, 15),
+            f.path,
+            f.line.map(|l| l.to_string()).unwrap_or_else(|| "?".into()),
+        );
+    }
+    for c in &pending {
+        println!(
+            "candid.  {:<34} {:<20} {:<15} {}:{}",
+            truncate_for_column(&c.id, 34),
+            truncate_for_column(&c.cap, 20),
+            truncate_for_column(&c.repo, 15),
+            c.path,
+            c.line.map(|l| l.to_string()).unwrap_or_else(|| "?".into()),
+        );
+    }
+    println!(
+        "\n{} finding(s) + {} candidate(s) quarantined",
+        findings.len(),
+        pending.len()
+    );
+    store.close().await;
+    Ok(ExitCode::SUCCESS)
+}
+
+async fn inspect_traces(
+    state_dir: &StateDir,
+    finding: Option<&str>,
+) -> anyhow::Result<ExitCode> {
+    let store = Store::open(state_dir.root()).await?;
+    let rows = if let Some(fid) = finding {
+        store.agent_traces().list_for_finding(fid).await?
+    } else {
+        // No global "list all" exists on the store; gather every task-kind
+        // bucket so the CLI surface stays useful while a dedicated reader
+        // lands later.
+        let mut all = Vec::new();
+        for kind in [
+            "PayloadSynthesis",
+            "SpecDerivation",
+            "ChainReasoning",
+            "NovelFindings",
+            "Exploration",
+        ] {
+            all.extend(store.agent_traces().list_by_task_kind(kind).await?);
+        }
+        all.sort_by_key(|r| r.started_at);
+        all
+    };
+    if rows.is_empty() {
+        println!("traces: no rows match");
+        store.close().await;
+        return Ok(ExitCode::SUCCESS);
+    }
+    println!(
+        "task                runtime         model           prompt_version                  cost($) dur_ms finding_id"
+    );
+    for r in &rows {
+        println!(
+            "{:<19} {:<15} {:<15} {:<31} {:>7.4} {:>6} {}",
+            truncate_for_column(&r.task_kind, 19),
+            truncate_for_column(&r.runtime_name, 15),
+            truncate_for_column(&r.model, 15),
+            truncate_for_column(r.prompt_version.as_deref().unwrap_or(""), 31),
+            r.cost_usd_micros as f64 / 1_000_000.0,
+            r.duration_ms.unwrap_or(0),
+            r.finding_id.as_deref().unwrap_or("-"),
+        );
+    }
+    store.close().await;
+    Ok(ExitCode::SUCCESS)
+}
+
+fn truncate_for_column(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        let mut cut = max.saturating_sub(1);
+        while cut > 0 && !s.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        format!("{}…", &s[..cut])
     }
 }
 

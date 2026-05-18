@@ -10,12 +10,15 @@ import {
   SetupIcon,
   type IconProps,
 } from "./icons/Icons";
+import { useAdvancedMode } from "@/api/preferences";
 
 interface NavItem {
   to: string;
   label: string;
   Icon: FC<IconProps>;
   group: "primary" | "secondary" | "footer";
+  /** Hidden unless the operator opts into Settings → Show advanced. */
+  advanced?: boolean;
 }
 
 const NAV: NavItem[] = [
@@ -29,6 +32,7 @@ const NAV: NavItem[] = [
     label: "Quarantine",
     Icon: QuarantineIcon,
     group: "secondary",
+    advanced: true,
   },
   { to: "/settings", label: "Settings", Icon: SettingsIcon, group: "footer" },
 ];
@@ -38,9 +42,11 @@ function navLinkClass({ isActive }: { isActive: boolean }) {
 }
 
 export function Sidebar() {
-  const primary = NAV.filter((item) => item.group === "primary");
-  const secondary = NAV.filter((item) => item.group === "secondary");
-  const footer = NAV.filter((item) => item.group === "footer");
+  const [advanced] = useAdvancedMode();
+  const visible = NAV.filter((item) => !item.advanced || advanced);
+  const primary = visible.filter((item) => item.group === "primary");
+  const secondary = visible.filter((item) => item.group === "secondary");
+  const footer = visible.filter((item) => item.group === "footer");
 
   return (
     <aside className="app-layout__sidebar" aria-label="Primary navigation">
