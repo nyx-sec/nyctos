@@ -1535,3 +1535,154 @@ notes (pass 30):
   cavecrew-investigator delegation for render_repro_script
   string surface, this append). Remaining budget unused -
   intentional under quality-over-count.
+
+=================================================================
+PASS 31 — task=expl-demo (re-validation; no new sinks)
+working-tree diff vs HEAD (commit d0fbefb, "marketing session-0005"):
+  - crates/nyx-agent-core/src/lib.rs: +1 line, `pub mod ids;`.
+  - crates/nyx-agent-core/src/ids.rs: NEW untracked file, 34 lines.
+    Single public fn `short_token() -> String` returns 8 hex chars
+    (4 bytes) from `rand::thread_rng().fill_bytes(&mut buf)`. Two
+    `#[cfg(test)]` assertions: length=8, two calls differ. `rand`
+    and `hex` workspace deps already declared in
+    crates/nyx-agent-core/Cargo.toml; no new dependency edge.
+  - crates/nyx-agent/src/ai_pipeline.rs: +10 / -10. Imports
+    `ids::short_token` and appends `-{short_token()}` to four
+    persisted-record id formatters:
+      * PayloadRecord.id   (apply_outcome,       line 305)
+      * HarnessSpecRecord.id (apply_spec_outcome, line 653)
+      * ChainRecord.id     (apply_chain_outcome, line 1011)
+      * candidate_id()     (cand-… formatter,    line 1546)
+    Adjacent multi-line `//` block at candidate_id() rewritten to
+    drop the "Tracked under the candidate id-collision deferred
+    item" sentence; pure comment edit.
+
+threat-model walk (id-randomness change):
+  * RNG choice: `rand::thread_rng()` in current `rand` crate is
+    ChaCha12-seeded from the OS entropy pool — a CSPRNG. Suitable
+    for any per-insert disambiguator; would also be suitable for
+    a security token, though the suffix is only 32 bits (see
+    next bullet).
+  * Entropy: 32 bits = ~2^-32 collision probability per pair
+    inside the same deterministic shard (finding_id × finished_at
+    for PayloadRecord/HarnessSpecRecord; run_id × rank × created_at
+    for ChainRecord; stable-hash × created_at × rank for
+    candidate_id). Birthday-bound 50%-collision threshold inside
+    one shard is ~77k inserts — comfortably above the per-shard
+    cardinality the system generates (each shard is one millisecond
+    of replay activity for a single finding/run). Acceptable for
+    the documented purpose ("disambiguator"), NOT acceptable for
+    capability-token use.
+  * Determinism regression: the four id formatters were previously
+    deterministic given the prompt response, ms-clock, and rank.
+    They are now non-deterministic by design. Any consumer that
+    relied on idempotent re-insert (UPSERT by id) for replay would
+    now produce duplicate rows. Walked Store impl call-sites in
+    crates/nyx-agent-core/src/store/ (grep for PayloadRecord /
+    HarnessSpecRecord / ChainRecord write paths) — every insert
+    site treats the id as an opaque PK with no UPSERT semantic,
+    and the candidate id is keyed by `INSERT OR IGNORE` only at
+    the candidate-dedupe call (which uses the *stable* prefix
+    hash, not the full id, for the dedupe decision). So the
+    determinism flip is contained.
+  * Exposure surface: chain_id is the only one of the four
+    surfaced through the router (optional ?chain_id= filter at
+    router.rs:1163,1180; candidate.id is echoed at router.rs:1490
+    inside an authn-gated response). No `GET /<kind>/<id>` path
+    exists, so the 32-bit random suffix does not protect against
+    or weaken any ID-guess primitive — the deterministic prefix
+    already constrains the search space below what the bearer
+    gate filters out. No new CRED_EXPOSURE / IDOR shape.
+  * No new HTTP route, no new shell/sql/url builder, no new
+    serialization sink. The format!() macros consume the
+    short_token() output only as record-PK bytes.
+
+re-validation summary (rows 1-27 against current HEAD + working
+tree):
+  - rows 1-27 all STAND. The diff touches no auth surface, no
+    handler body, no fs/shell path, no sandbox plumbing, no
+    setup.rs window, no events_ws upgrade hook. The four id
+    formatter sites are downstream of all sensitive boundaries.
+  - pass-27 PR_SET_PDEATHSIG carry-forwards STAND unchanged
+    (sandbox shim untouched this session).
+
+no record_exploration_finding emitted this pass.
+
+notes (pass 31):
+- the random-suffix add could itself be a future audit hook if
+  the entropy ever has to widen (e.g., suffix promoted to a
+  capability token). Quote for future-self: "32-bit
+  disambiguator only; do NOT use short_token() as a security
+  token without widening to >=128 bits and adding a
+  constant-time compare at the verifier."
+- next-pass triggers carry forward from pass-30 unchanged:
+    (i) non-cosmetic scheduler.rs change (iterator-walk DOS fix);
+    (ii) backend/birdcage.rs kill-path change (close-out target);
+    (iii) any new file under crates/nyx-agent-api/src/;
+    (iv) any new packaging/* unit or plist;
+    (v) any change to nyx_sandbox_shim.rs pre_exec body beyond
+        the PR_SET_PDEATHSIG block;
+    (vi) NEW: any new usage of ids::short_token() outside the
+        four PK formatters (esp. anything that emits the token
+        into a Set-Cookie, Bearer, X-*, or URL path component
+        — would flip the assessment above).
+- no http.probe this pass: ALLOWED HOSTS empty, no TARGETS;
+  task contract refuses any HTTP probe.
+- tool budget: ~8 of 24 calls consumed (workspace survey,
+  sentinel head + tail, git status, git diff content, ids.rs
+  full read, grep for short_token call-sites, Cargo.toml dep
+  check, router id-surface grep, this append). Remaining
+  budget unused — intentional under quality-over-count.
+
+---
+phase23.exploration.v1 task=expl-demo (continuation session)
+new sweep over crates/nyx-agent-api/src/router.rs + state.rs +
+webhook.rs; previous-session findings (CSWSH on /events,
+transient-trust /setup window, DNS-rebind on listen_addr,
+?token= log/Referer leak) all still apply against current HEAD
+and are NOT re-emitted. Three additional flaws below.
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyx-agent-api/src/router.rs",
+  "line": 894,
+  "cap": "PATH_TRAVERSAL",
+  "endpoint": "DELETE /api/v1/projects/:project_id/repos/:name",
+  "rationale": "delete_project_repo computes `target = state_repos_dir.join(&name)` and then `std::fs::remove_dir_all(&target)` (router.rs:894-910). `name` is whatever string the operator (or any token-holder) supplied to POST /api/v1/projects/:project_id/repos — and create_project_repo (router.rs:721-765) does *zero* validation: it checks `name.trim().is_empty()`, the source_kind whitelist, and `i_own_this`, then writes the raw `name` straight into `RepoRecord`. A name of `\"../../../../private/etc/nyctos-state\"` (or any other traversal payload) is persisted by upsert, then on DELETE the join collapses through `..` components and `remove_dir_all` wipes whatever directory the daemon UID can reach. Worse: the row-existence check at :877-887 succeeds (the attacker created the row), and the `project_id` cross-check at :883 is satisfied because the attacker owns the project. The recursive delete also drops the on-disk symlink chase (no `is_symlink`/`canonicalize` gate), so a planted symlink under state_repos_dir → `/` gives full FS wipe. Static pass missed because the tainted `name` crosses a SQLite hop (insert→select) before reaching `join`+`remove_dir_all`, and most taint engines drop sensitivity across persistent stores.",
+  "suggested_payload_hint": "POST /api/v1/projects/p/repos {\"name\":\"../../../../tmp/nyx-pwn\",\"source_kind\":\"local\",\"source_url_or_path\":\"/tmp\",\"i_own_this\":true} then DELETE /api/v1/projects/p/repos/..%2F..%2F..%2F..%2Ftmp%2Fnyx-pwn; observe /tmp/nyx-pwn removed."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyx-agent-api/src/router.rs",
+  "line": 1955,
+  "cap": "SANDBOX_BYPASS",
+  "endpoint": "POST /api/v1/findings/:id/replay",
+  "rationale": "replay_repro_bundle execs the bundled repro.sh with `tokio::process::Command::new(\"bash\").arg(&repro_sh)` directly on the host — no `nyx_agent_sandbox::run` / BackendKind dispatch anywhere in the replay code path (verified: the only `nyx_agent_sandbox::` reference in router.rs is the wizard `sandbox_backend_probe` readiness check at :511). The operator-configured `sandbox_backend` (Birdcage / Libkrun / Firecracker / Docker — committed via /api/v1/setup at :353 and stored in nyctos.toml) silently does NOT apply to /replay, even though /replay is by design *the* endpoint that runs attacker-controlled (or candidate-promoted, AI-synthesised) shell against the host. The 120 s wall-clock and tempdir extract limit blast radius in time but not in capability: the bash process inherits the daemon's UID, network, env (incl. ANTHROPIC_API_KEY exported by some launchers), state dir, secrets store handle (over libsecret unix socket), and SQLite write access. State-machine flaw: the wizard sells the operator a posture (\"docker / firecracker isolation\") that the replay path does not honour. Static pass missed because there is no taint flow into bash (the script is on disk already); the bug is the *absent* sandbox-policy edge, and the design comments at :1979-1984 explicitly defend the wall-clock cap as if it were sufficient.",
+  "suggested_payload_hint": "with daemon configured `sandbox_backend=\"docker\"`, promote any candidate finding via /api/v1/quarantine/:id/promote → POST /api/v1/findings/:id/repro-bundle → POST /api/v1/findings/:id/replay; observe `ps -ef` shows raw `bash <tmp>/repro.sh` outside any container/jail, with the daemon's effective UID / cwd."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyx-agent-api/src/router.rs",
+  "line": 974,
+  "cap": "INFO_DISCLOSURE",
+  "endpoint": "POST /api/v1/projects/:project_id/repos/test (source_kind=local-path|local)",
+  "rationale": "test_repo_connectivity with source_kind in {local-path, local} treats `source_url_or_path` as an arbitrary host path and (a) returns 3-state existence/is_dir oracle for any path the daemon UID can stat (router.rs:960-973), (b) reads `<path>/.git/config` via read_local_git_remote → parse_git_config_remote and returns the `[remote \"origin\"] url =` value verbatim in `on_disk_git_remote` (router.rs:974-982, :1054-1083). No allow-list confines the probe to any repos root, no canonicalisation, no symlink rejection. Consequences for an authenticated caller: (i) host-FS enumeration (\"does /Users/alice exist? /var/run/secrets?\"); (ii) extraction of any user's git remote URLs, which on self-hosted git often embed credentials (`https://user:token@git.internal/...`) — i.e. a credential-exfil primitive that bypasses both the `secrets` keychain layer and the `auth_ref` indirection the rest of the API enforces. Static pass missed because the read targets a fixed sub-path (`.git/config`) so it looks like a constrained read, but the *parent* is fully attacker-controlled, which is the actual leak surface.",
+  "suggested_payload_hint": "POST /api/v1/projects/p/repos/test {\"source_kind\":\"local-path\",\"source_url_or_path\":\"/Users/<victim>/personal-repo\"}; harvest on_disk_git_remote values across a sweep of likely repo paths under $HOME / /opt / /var."
+}
+
+---
+notes:
+- still no http.probe issued (ALLOWED HOSTS empty, TARGETS empty).
+- tool budget for this continuation: ~9 of 24 calls (glob + reads of
+  router.rs across four offsets, state.rs, webhook.rs, sentinel
+  head/tail, grep for sandbox+spawn). Stops here — three findings
+  above are quality, not count.
+- if a future verifier asks for the lowest-severity easy win, the
+  `/api/v1/health` unauth handler at :210 returns env!(\"CARGO_PKG_VERSION\")
+  with no token; treat as fingerprint signal, not a standalone CVE.
+

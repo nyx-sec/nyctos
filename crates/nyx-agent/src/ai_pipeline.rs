@@ -52,8 +52,8 @@ use nyx_agent_core::store::{
     FindingRecord, HarnessSpecRecord, PayloadRecord, Store, TaskKind,
 };
 use nyx_agent_core::{
-    now_epoch_ms, AiConfig, AiRuntime as ConfigAiRuntime, RepoOutcome, RunBundle, RunConfig,
-    SandboxBackend, SandboxConfig, SecretStore, WorkspaceHandle,
+    ids::short_token, now_epoch_ms, AiConfig, AiRuntime as ConfigAiRuntime, RepoOutcome, RunBundle,
+    RunConfig, SandboxBackend, SandboxConfig, SecretStore, WorkspaceHandle,
 };
 use nyx_agent_nyx::Diag;
 use nyx_agent_sandbox::payload_runner::{
@@ -302,7 +302,7 @@ async fn apply_outcome(
         } => {
             let provenance = AttackProvenance::LlmSynthesised.as_str().to_string();
             let rec = PayloadRecord {
-                id: format!("payload-{finding_id}-{finished_at:x}"),
+                id: format!("payload-{finding_id}-{finished_at:x}-{}", short_token()),
                 finding_id: finding_id.clone(),
                 cap,
                 lang,
@@ -650,7 +650,7 @@ async fn apply_spec_outcome(
         } => {
             let provenance = AttackProvenance::LlmSynthesised.as_str().to_string();
             let rec = HarnessSpecRecord {
-                id: format!("spec-{finding_id}-{finished_at:x}"),
+                id: format!("spec-{finding_id}-{finished_at:x}-{}", short_token()),
                 cap,
                 lang,
                 spec_blob,
@@ -1008,7 +1008,7 @@ async fn apply_chain_outcome(
                     "rationale": chain.rationale,
                 })
                 .to_string();
-                let chain_id = format!("chain-{run_id}-{rank:02}-{created_at:x}",);
+                let chain_id = format!("chain-{run_id}-{rank:02}-{created_at:x}-{}", short_token());
                 let rec = ChainRecord {
                     id: chain_id.clone(),
                     run_id: run_id.clone(),
@@ -1539,11 +1539,11 @@ fn candidate_id(
         &c.cap,
         &folded_rule,
     );
-    // Append created-at-ms + rank so a deterministic-replay path (same
-    // prompt response twice in the same ms) still produces a unique
-    // row. Tracked under the candidate id-collision deferred item
-    // alongside PayloadRecord / HarnessSpecRecord / ChainRecord.
-    format!("cand-{stable}-{created_at_ms:x}-{rank:02}")
+    // Append created-at-ms + rank + a random 8-hex suffix so a
+    // deterministic-replay path (same prompt response twice in the
+    // same ms with identical rank ordering) still produces a unique
+    // row.
+    format!("cand-{stable}-{created_at_ms:x}-{rank:02}-{}", short_token())
 }
 
 // ----- Payload verification (Phase 19) -----------------------------------
