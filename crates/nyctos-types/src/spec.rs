@@ -1,7 +1,7 @@
 //! AI-derived harness-spec schemas.
 //!
 //! On-the-wire types the SpecDerivation task produces. The vendored
-//! `HarnessSpec` schema itself lives in `nyx-agent-nyx` (close to the
+//! `HarnessSpec` schema itself lives in `nyctos-nyx` (close to the
 //! static-scanner driver that consumes it); only the agent-side input
 //! envelope and a stable prompt-version tag live here so the task
 //! crate can stay vendor-neutral.

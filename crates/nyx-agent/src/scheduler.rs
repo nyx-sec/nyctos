@@ -33,8 +33,8 @@ use chrono::{DateTime, TimeZone, Utc};
 #[cfg(not(test))]
 use chrono::{DateTime, Utc};
 use cron::Schedule;
-use nyx_agent_api::{ScanTrigger, ScanTriggerError};
-use nyx_agent_core::ScheduleConfig;
+use nyctos_api::{ScanTrigger, ScanTriggerError};
+use nyctos_core::ScheduleConfig;
 use tokio::sync::watch;
 use tracing::{debug, error, warn};
 

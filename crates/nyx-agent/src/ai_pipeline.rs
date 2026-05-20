@@ -2,11 +2,11 @@
 //!
 //! Phase 14 lands two things here:
 //!
-//! 1. A [`BudgetStoreTracker`] that adapts `nyx-agent-core`'s SQLite
-//!    `BudgetStore` to the `nyx-agent-ai::BudgetTracker` host port the
+//! 1. A [`BudgetStoreTracker`] that adapts `nyctos-core`'s SQLite
+//!    `BudgetStore` to the `nyctos-ai::BudgetTracker` host port the
 //!    adapters call on every successful round trip. The trait surface
-//!    lives in `nyx-agent-ai`; the SQLite backend lives in
-//!    `nyx-agent-core`; this binary owns the wiring.
+//!    lives in `nyctos-ai`; the SQLite backend lives in
+//!    `nyctos-core`; this binary owns the wiring.
 //! 2. [`run_payload_synthesis_pass`], which scans a finished
 //!    `RunBundle<Diag>` for diags carrying
 //!    `Unsupported(NoPayloadsForCap)` and fans out one PayloadSynthesis
@@ -24,6 +24,25 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use nyctos_ai::{
+    read_spec_excerpt, run_chain_reasoning, run_exploration, run_novel_findings,
+    run_payload_synthesis, run_spec_derivation, AiRuntime, AnthropicSdkAdapter, BudgetTracker,
+    ChainReasoningOutcome, ClaudeCodeAdapter, EscapeSuiteGate, EscapeSuiteVerdict,
+    ExplorationEndpoint, ExplorationFinding, ExplorationHaltReason, ExplorationOutcome,
+    ExplorationScope, NovelFindingDiscoveryOutcome, PayloadSynthesisOutcome, SharedBudgetTracker,
+    SpecDerivationOutcome, DEFAULT_EXPLORATION_RUN_CAP_USD_MICROS,
+};
+use nyctos_core::store::{
+    AgentTraceRecord, CandidateFindingRecord, CandidateStatus, ChainRecord, FindingOrigin,
+    FindingRecord, HarnessSpecRecord, PayloadRecord, Store, TaskKind,
+};
+use nyctos_core::{
+    ids::short_token, now_epoch_ms, AiConfig, AiRuntime as ConfigAiRuntime, RepoOutcome, RunBundle,
+    RunConfig, SandboxBackend, SandboxConfig, SecretStore, WorkspaceHandle,
+};
+use nyctos_nyx::Diag;
+use nyctos_sandbox::payload_runner::{HarnessSource, HarnessSpecInput, PayloadRun, PayloadRunner};
+use nyctos_sandbox::BackendKind;
 use nyctos_types::agent::{AiError, BudgetKind};
 use nyctos_types::chain::{
     ChainReasoningEdge, ChainReasoningInput, ChainReasoningNode, CHAIN_REASONING_DEFAULT_MAX,
@@ -39,27 +58,6 @@ use nyctos_types::payload::{
 };
 use nyctos_types::spec::{SpecDerivationInput, SPEC_DERIVATION_PROMPT_VERSION};
 use nyctos_types::verify::{Oracle, VerifyResult, VerifyVerdict};
-use nyx_agent_ai::{
-    read_spec_excerpt, run_chain_reasoning, run_exploration, run_novel_findings,
-    run_payload_synthesis, run_spec_derivation, AiRuntime, AnthropicSdkAdapter, BudgetTracker,
-    ChainReasoningOutcome, ClaudeCodeAdapter, EscapeSuiteGate, EscapeSuiteVerdict,
-    ExplorationEndpoint, ExplorationFinding, ExplorationHaltReason, ExplorationOutcome,
-    ExplorationScope, NovelFindingDiscoveryOutcome, PayloadSynthesisOutcome, SharedBudgetTracker,
-    SpecDerivationOutcome, DEFAULT_EXPLORATION_RUN_CAP_USD_MICROS,
-};
-use nyx_agent_core::store::{
-    AgentTraceRecord, CandidateFindingRecord, CandidateStatus, ChainRecord, FindingOrigin,
-    FindingRecord, HarnessSpecRecord, PayloadRecord, Store, TaskKind,
-};
-use nyx_agent_core::{
-    ids::short_token, now_epoch_ms, AiConfig, AiRuntime as ConfigAiRuntime, RepoOutcome, RunBundle,
-    RunConfig, SandboxBackend, SandboxConfig, SecretStore, WorkspaceHandle,
-};
-use nyx_agent_nyx::Diag;
-use nyx_agent_sandbox::payload_runner::{
-    HarnessSource, HarnessSpecInput, PayloadRun, PayloadRunner,
-};
-use nyx_agent_sandbox::BackendKind;
 use tokio::sync::Semaphore;
 
 /// Per-call cap forwarded into `Budget.cap_usd_micros` for every
@@ -121,7 +119,7 @@ impl BudgetStoreTracker {
     }
 }
 
-fn store_err(e: nyx_agent_core::StoreError) -> AiError {
+fn store_err(e: nyctos_core::StoreError) -> AiError {
     AiError::BudgetTracker(format!("{e}"))
 }
 
@@ -175,7 +173,7 @@ pub async fn run_payload_synthesis_pass(
     if !matches!(config.runtime, ConfigAiRuntime::Anthropic) {
         return Ok(PayloadSynthesisPassReport::default());
     }
-    let api_key = match secrets.get(nyx_agent_core::secrets::ACCOUNT_AI_ANTHROPIC) {
+    let api_key = match secrets.get(nyctos_core::secrets::ACCOUNT_AI_ANTHROPIC) {
         Ok(Some(k)) => k,
         Ok(None) => {
             tracing::info!(
@@ -260,7 +258,7 @@ pub fn build_inputs(
                 continue;
             }
             let line = i64::from(diag.line);
-            let finding_id = nyx_agent_core::store::finding_id_hash(
+            let finding_id = nyctos_core::store::finding_id_hash(
                 &repo_bundle.repo,
                 &diag.path,
                 Some(line),
@@ -467,7 +465,7 @@ pub async fn run_spec_derivation_pass(
     if !matches!(config.runtime, ConfigAiRuntime::Anthropic) {
         return Ok(SpecDerivationPassReport::default());
     }
-    let api_key = match secrets.get(nyx_agent_core::secrets::ACCOUNT_AI_ANTHROPIC) {
+    let api_key = match secrets.get(nyctos_core::secrets::ACCOUNT_AI_ANTHROPIC) {
         Ok(Some(k)) => k,
         Ok(None) => {
             tracing::info!(
@@ -561,7 +559,7 @@ pub fn build_spec_inputs(
                 continue;
             }
             let line = i64::from(diag.line);
-            let finding_id = nyx_agent_core::store::finding_id_hash(
+            let finding_id = nyctos_core::store::finding_id_hash(
                 &repo_bundle.repo,
                 &diag.path,
                 Some(line),
@@ -752,7 +750,7 @@ pub async fn run_chain_reasoning_pass(
     if !matches!(config.runtime, ConfigAiRuntime::Anthropic) {
         return Ok(ChainReasoningPassReport::default());
     }
-    let api_key = match secrets.get(nyx_agent_core::secrets::ACCOUNT_AI_ANTHROPIC) {
+    let api_key = match secrets.get(nyctos_core::secrets::ACCOUNT_AI_ANTHROPIC) {
         Ok(Some(k)) => k,
         Ok(None) => {
             tracing::info!(
@@ -832,7 +830,7 @@ pub fn build_chain_input(bundle: &RunBundle<Diag>) -> Option<ChainReasoningInput
             continue;
         };
         for diag in diags {
-            let id = nyx_agent_core::store::finding_id_hash(
+            let id = nyctos_core::store::finding_id_hash(
                 &repo_bundle.repo,
                 &diag.path,
                 Some(i64::from(diag.line)),
@@ -1148,7 +1146,7 @@ pub async fn run_novel_finding_discovery_pass(
     if !matches!(config.runtime, ConfigAiRuntime::Anthropic) {
         return Ok(NovelFindingDiscoveryPassReport::default());
     }
-    let api_key = match secrets.get(nyx_agent_core::secrets::ACCOUNT_AI_ANTHROPIC) {
+    let api_key = match secrets.get(nyctos_core::secrets::ACCOUNT_AI_ANTHROPIC) {
         Ok(Some(k)) => k,
         Ok(None) => {
             tracing::info!(
@@ -1471,7 +1469,7 @@ async fn apply_novel_outcome(
                     // Pending = quarantined for AI proposals; promotion
                     // to a real finding requires the Phase 19 verifier
                     // to confirm via PayloadSynthesis + dynamic verify.
-                    status: nyx_agent_core::store::CandidateStatus::Pending.as_str().to_string(),
+                    status: nyctos_core::store::CandidateStatus::Pending.as_str().to_string(),
                     prompt_version: Some(prompt_version.clone()),
                 };
                 match store.candidate_findings().insert(&rec).await {
@@ -1533,7 +1531,7 @@ fn candidate_id(
         rule_hint = c.rule_hint.as_deref().unwrap_or(""),
         rationale = c.rationale,
     );
-    let stable = nyx_agent_core::store::finding_id_hash(
+    let stable = nyctos_core::store::finding_id_hash(
         repo,
         &c.path,
         Some(i64::from(c.line)),
@@ -1576,7 +1574,7 @@ pub struct PayloadVerificationPassReport {
 /// with the operator-facing knob that arrives in a later phase.
 const VERIFIER_PER_RUN_TIMEOUT_SECS: u64 = 10;
 
-/// Marker prefix in [`nyx_agent_nyx::HarnessSpec::oracle`] that selects
+/// Marker prefix in [`nyctos_nyx::HarnessSpec::oracle`] that selects
 /// [`Oracle::SinkProbe`] over the default [`Oracle::OutputContains`].
 /// Format: `sink-probe:<sentinel-path>[#<expect-contains>]`.
 const SINK_PROBE_ORACLE_PREFIX: &str = "sink-probe:";
@@ -1903,7 +1901,7 @@ async fn run_one_verify(
     spec: HarnessSpecRecord,
     workspace: &WorkspaceHandle,
 ) -> anyhow::Result<VerifyResult> {
-    let parsed = match nyx_agent_nyx::HarnessSpec::from_json(&spec.spec_blob) {
+    let parsed = match nyctos_nyx::HarnessSpec::from_json(&spec.spec_blob) {
         Ok((p, _)) => p,
         Err(err) => {
             return Ok(VerifyResult::errored(
@@ -2065,7 +2063,7 @@ async fn promote_candidate(
     let line = candidate.line.unwrap_or(-1);
     let rule =
         candidate.rule_hint.clone().unwrap_or_else(|| format!("ai-exploration:{}", candidate.cap));
-    let id = nyx_agent_core::store::finding_id_hash(
+    let id = nyctos_core::store::finding_id_hash(
         &candidate.repo,
         &candidate.path,
         Some(line),
@@ -2393,7 +2391,7 @@ async fn persist_exploration_finding(
 ) -> anyhow::Result<String> {
     let line = finding.line.map(i64::from);
     let rule = format!("ai-exploration:{}", finding.cap);
-    let id = nyx_agent_core::store::finding_id_hash(repo, &finding.path, line, &finding.cap, &rule);
+    let id = nyctos_core::store::finding_id_hash(repo, &finding.path, line, &finding.cap, &rule);
     let verdict_blob = serde_json::to_string(&serde_json::json!({
         "kind": "AiExploration",
         "rationale": finding.rationale,
@@ -2431,8 +2429,8 @@ async fn persist_exploration_finding(
 
 #[cfg(test)]
 mod tests {
+    use nyctos_core::run::{CrossRepoCallgraphStub, RepoBundle};
     use nyctos_types::verify::{Oracle, VerifyRun, VerifyVerdict};
-    use nyx_agent_core::run::{CrossRepoCallgraphStub, RepoBundle};
 
     use super::*;
 
@@ -2591,7 +2589,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let store = Store::open(tmp.path()).await.unwrap();
         // Seed a run row; budgets FK requires it.
-        let run = nyx_agent_core::store::RunRecord {
+        let run = nyctos_core::store::RunRecord {
             id: "run-bt".to_string(),
             started_at: 0,
             finished_at: None,
@@ -2627,7 +2625,7 @@ mod tests {
         // intact even when a peer task fans in just after.
         let tmp = tempfile::tempdir().unwrap();
         let store = Store::open(tmp.path()).await.unwrap();
-        let run = nyx_agent_core::store::RunRecord {
+        let run = nyctos_core::store::RunRecord {
             id: "run-cc".to_string(),
             started_at: 0,
             finished_at: None,
@@ -2848,8 +2846,8 @@ mod tests {
         assert_eq!(report, SpecDerivationPassReport::default());
     }
 
-    fn seed_run(id: &str) -> nyx_agent_core::store::RunRecord {
-        nyx_agent_core::store::RunRecord {
+    fn seed_run(id: &str) -> nyctos_core::store::RunRecord {
+        nyctos_core::store::RunRecord {
             id: id.to_string(),
             started_at: 0,
             finished_at: None,
@@ -2862,10 +2860,10 @@ mod tests {
         }
     }
 
-    fn seed_repo(name: &str) -> nyx_agent_core::store::RepoRecord {
-        nyx_agent_core::store::RepoRecord {
+    fn seed_repo(name: &str) -> nyctos_core::store::RepoRecord {
+        nyctos_core::store::RepoRecord {
             name: name.to_string(),
-            project_id: nyx_agent_core::store::DEFAULT_PROJECT_ID.to_string(),
+            project_id: nyctos_core::store::DEFAULT_PROJECT_ID.to_string(),
             source_kind: "local".to_string(),
             source_url_or_path: format!("/tmp/{name}"),
             branch: Some("main".to_string()),
@@ -2883,9 +2881,9 @@ mod tests {
         repo: &str,
         path: &str,
         rule: &str,
-    ) -> nyx_agent_core::store::FindingRecord {
-        let id = nyx_agent_core::store::finding_id_hash(repo, path, Some(10), "SQL_QUERY", rule);
-        nyx_agent_core::store::FindingRecord {
+    ) -> nyctos_core::store::FindingRecord {
+        let id = nyctos_core::store::finding_id_hash(repo, path, Some(10), "SQL_QUERY", rule);
+        nyctos_core::store::FindingRecord {
             id,
             run_id: run_id.to_string(),
             repo: repo.to_string(),
@@ -2932,7 +2930,7 @@ mod tests {
             "oracle": "row count > 0",
         })
         .to_string();
-        let (spec, canonical) = nyx_agent_nyx::HarnessSpec::from_json(&body).unwrap();
+        let (spec, canonical) = nyctos_nyx::HarnessSpec::from_json(&body).unwrap();
         let outcome = SpecDerivationOutcome::Synthesised {
             finding_id: fid.clone(),
             cap: "SQL_QUERY".to_string(),
@@ -2956,7 +2954,7 @@ mod tests {
         // Spec row exists and round-trips through the vendored schema.
         let specs = store.harness_specs().list_by_cap("SQL_QUERY").await.unwrap();
         assert_eq!(specs.len(), 1);
-        let (parsed, _) = nyx_agent_nyx::HarnessSpec::from_json(&specs[0].spec_blob).unwrap();
+        let (parsed, _) = nyctos_nyx::HarnessSpec::from_json(&specs[0].spec_blob).unwrap();
         parsed.validate().expect("vendored schema accepts persisted blob");
         assert_eq!(specs[0].attack_provenance.as_deref(), Some("LlmSynthesised"));
     }
@@ -3146,7 +3144,7 @@ mod tests {
         let entry_node = input.nodes.iter().find(|n| n.repo == "repo-A").unwrap().clone();
         let sink_node = input.nodes.iter().find(|n| n.repo == "repo-B").unwrap().clone();
         for n in [&entry_node, &sink_node] {
-            let f = nyx_agent_core::store::FindingRecord {
+            let f = nyctos_core::store::FindingRecord {
                 id: n.id.clone(),
                 run_id: "run-X".to_string(),
                 repo: n.repo.clone(),
@@ -3277,10 +3275,10 @@ mod tests {
 
     // -------- novel-finding-discovery pass coverage --------
 
+    use nyctos_ai::{AiRuntime, InMemoryBudgetTracker};
     use nyctos_types::agent::{
         AgentResult, AgentTask, Budget, CacheStats, CostEstimate, Prompt, Response, TokenUsage,
     };
-    use nyx_agent_ai::{AiRuntime, InMemoryBudgetTracker};
     use std::sync::Mutex as StdMutex;
 
     /// Scripted runtime mirroring the per-task fixtures. Each `one_shot`
@@ -4019,7 +4017,7 @@ mod tests {
 
     fn empty_exploration_result() -> AgentResult {
         AgentResult {
-            prompt_version: nyx_agent_ai::EXPLORATION_PROMPT_VERSION.to_string(),
+            prompt_version: nyctos_ai::EXPLORATION_PROMPT_VERSION.to_string(),
             task_id: String::new(),
             final_message: "ok".to_string(),
             turns: 1,
@@ -4083,10 +4081,10 @@ mod tests {
         // picks the repo's last_scan_run_id, which is None on a fresh
         // seed). Query by repo via the active-list helper with a
         // quarantine-inclusive filter.
-        let filter = nyx_agent_core::store::FindingFilter {
+        let filter = nyctos_core::store::FindingFilter {
             repo: Some("repo-X"),
             include_quarantine: true,
-            ..nyx_agent_core::store::FindingFilter::default()
+            ..nyctos_core::store::FindingFilter::default()
         };
         let rows = store.findings().list_filtered(&filter).await.unwrap();
         assert_eq!(rows.len(), 1, "expected one quarantined finding, got {}", rows.len());
@@ -4096,7 +4094,7 @@ mod tests {
         assert_eq!(row.cap, "AUTH_BYPASS");
         assert_eq!(row.path, "<api:/api/admin/orders>");
         assert_eq!(row.attack_provenance.as_deref(), Some("AiExploration"));
-        assert_eq!(row.prompt_version.as_deref(), Some(nyx_agent_ai::EXPLORATION_PROMPT_VERSION));
+        assert_eq!(row.prompt_version.as_deref(), Some(nyctos_ai::EXPLORATION_PROMPT_VERSION));
         let blob = row.verdict_blob.as_deref().expect("verdict blob");
         assert!(blob.contains("AiExploration"));
         assert!(blob.contains("unauthenticated"));

@@ -1866,59 +1866,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "nyctos-types"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "tokio",
- "ts-rs",
-]
-
-[[package]]
-name = "nyx-agent"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "assert_cmd",
- "async-trait",
- "axum",
- "chrono",
- "clap",
- "cron",
- "hex",
- "nyctos-types",
- "nyx-agent-ai",
- "nyx-agent-api",
- "nyx-agent-core",
- "nyx-agent-nyx",
- "nyx-agent-sandbox",
- "nyx-agent-ui",
- "predicates",
- "reqwest",
- "semver",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "webbrowser",
- "wiremock",
-]
-
-[[package]]
-name = "nyx-agent-ai"
+name = "nyctos-ai"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
  "blake3",
+ "nyctos-nyx",
  "nyctos-types",
- "nyx-agent-nyx",
  "reqwest",
  "serde",
  "serde_json",
@@ -1931,7 +1886,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "nyx-agent-api"
+name = "nyctos-api"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -1940,9 +1895,9 @@ dependencies = [
  "futures-util",
  "hex",
  "hmac",
+ "nyctos-core",
+ "nyctos-sandbox",
  "nyctos-types",
- "nyx-agent-core",
- "nyx-agent-sandbox",
  "reqwest",
  "serde",
  "serde_json",
@@ -1958,7 +1913,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "nyx-agent-core"
+name = "nyctos-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -1983,12 +1938,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "nyx-agent-nyx"
+name = "nyctos-nyx"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "nyctos-core",
  "nyctos-types",
- "nyx-agent-core",
  "semver",
  "serde",
  "serde_json",
@@ -2000,14 +1955,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "nyx-agent-sandbox"
+name = "nyctos-sandbox"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "birdcage",
  "libc",
+ "nyctos-core",
  "nyctos-types",
- "nyx-agent-core",
  "regex",
  "semver",
  "serde",
@@ -2020,12 +1975,57 @@ dependencies = [
 ]
 
 [[package]]
-name = "nyx-agent-ui"
+name = "nyctos-types"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "ts-rs",
+]
+
+[[package]]
+name = "nyctos-ui"
 version = "0.1.0"
 dependencies = [
  "axum",
  "mime_guess",
  "rust-embed",
+]
+
+[[package]]
+name = "nyx-agent"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "assert_cmd",
+ "async-trait",
+ "axum",
+ "chrono",
+ "clap",
+ "cron",
+ "hex",
+ "nyctos-ai",
+ "nyctos-api",
+ "nyctos-core",
+ "nyctos-nyx",
+ "nyctos-sandbox",
+ "nyctos-types",
+ "nyctos-ui",
+ "predicates",
+ "reqwest",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "webbrowser",
+ "wiremock",
 ]
 
 [[package]]

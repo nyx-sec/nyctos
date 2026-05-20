@@ -1,8 +1,8 @@
 //! AI-synthesised payload schemas.
 //!
 //! On-the-wire types the PayloadSynthesis task produces. They are
-//! plain serde so the task crate (`nyx-agent-ai`) does not have to
-//! pull in `nyx-agent-core::store`'s SQLx surface; the binary turns a
+//! plain serde so the task crate (`nyctos-ai`) does not have to
+//! pull in `nyctos-core::store`'s SQLx surface; the binary turns a
 //! [`PayloadSynthesisOutput`] + [`PayloadSynthesisInput`] into a
 //! `PayloadRecord` at persistence time.
 //!

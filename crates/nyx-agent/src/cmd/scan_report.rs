@@ -10,7 +10,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use nyx_agent_core::store::{ChainRecord, FindingRecord, Store, StoreError};
+use nyctos_core::store::{ChainRecord, FindingRecord, Store, StoreError};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

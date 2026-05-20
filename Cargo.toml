@@ -3,12 +3,12 @@ resolver = "2"
 members = [
     "crates/nyx-agent",
     "crates/nyctos-types",
-    "crates/nyx-agent-core",
-    "crates/nyx-agent-nyx",
-    "crates/nyx-agent-ai",
-    "crates/nyx-agent-sandbox",
-    "crates/nyx-agent-api",
-    "crates/nyx-agent-ui",
+    "crates/nyctos-core",
+    "crates/nyctos-nyx",
+    "crates/nyctos-ai",
+    "crates/nyctos-sandbox",
+    "crates/nyctos-api",
+    "crates/nyctos-ui",
     "xtask",
 ]
 

@@ -6,19 +6,19 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
-use nyctos_types::event::{AgentEvent, EventSink, RunEvent};
-use nyx_agent_api::{
+use nyctos_api::{
     build_router, AuthConfig, EnvSecretResolver, ScanTrigger, ScanTriggerError, ServerState,
     SetupContext, WebhookConfig, WebhookSecretResolver,
 };
-use nyx_agent_core::store::{finding_id_hash, FindingRecord, ProjectRecord, RepoRecord, RunRecord};
-use nyx_agent_core::{
+use nyctos_core::store::{finding_id_hash, FindingRecord, ProjectRecord, RepoRecord, RunRecord};
+use nyctos_core::{
     ingest, now_epoch_ms, Config, IngestError, IngestedRepo, LogConfig, Project, ProjectId, Repo,
     RepoOutcome, RepoSource, Run, RunBundle, RunDispatcher, SandboxBackend, SecretStore, StateDir,
     Store, WorkspaceHandle,
 };
-use nyx_agent_nyx::{Diag, NyxError, NyxRunner, NyxScanLane, MINIMUM_NYX_VERSION};
-use nyx_agent_sandbox::{select_backend, BackendChoice, BackendKind, Lane, LaneConcurrency};
+use nyctos_nyx::{Diag, NyxError, NyxRunner, NyxScanLane, MINIMUM_NYX_VERSION};
+use nyctos_sandbox::{select_backend, BackendChoice, BackendKind, Lane, LaneConcurrency};
+use nyctos_types::event::{AgentEvent, EventSink, RunEvent};
 use semver::Version;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -258,7 +258,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     }) {
         Command::Doctor => doctor(&state_dir, &config_path, &log_cfg, &config).await,
         Command::Scan { projects, repos, headless, output, since_ref } => {
-            nyx_agent_core::init_logging(&log_cfg)?;
+            nyctos_core::init_logging(&log_cfg)?;
             scan(
                 &state_dir,
                 &config,
@@ -272,15 +272,15 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             .await
         }
         Command::Project { action } => {
-            nyx_agent_core::init_logging(&log_cfg)?;
+            nyctos_core::init_logging(&log_cfg)?;
             project_command(&state_dir, action).await
         }
         Command::PrComment { report, repo, pr, ui_url, gh_api, token_env } => {
-            nyx_agent_core::init_logging(&log_cfg)?;
+            nyctos_core::init_logging(&log_cfg)?;
             pr_comment_cmd(&report, repo, pr, ui_url, gh_api, &token_env).await
         }
         Command::Serve { listen, no_open, headless, open_cmd } => {
-            nyx_agent_core::init_logging(&log_cfg)?;
+            nyctos_core::init_logging(&log_cfg)?;
             serve(
                 state_dir,
                 config,
@@ -294,17 +294,17 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             .await
         }
         Command::Inspect { target } => {
-            nyx_agent_core::init_logging(&log_cfg)?;
+            nyctos_core::init_logging(&log_cfg)?;
             match target {
                 InspectTarget::Quarantine => inspect_quarantine(&state_dir).await,
             }
         }
         Command::Traces { finding } => {
-            nyx_agent_core::init_logging(&log_cfg)?;
+            nyctos_core::init_logging(&log_cfg)?;
             inspect_traces(&state_dir, finding.as_deref()).await
         }
         Command::Reverify { .. } | Command::Budget => {
-            nyx_agent_core::init_logging(&log_cfg)?;
+            nyctos_core::init_logging(&log_cfg)?;
             todo!("subcommand wiring lands in a later phase")
         }
     }
@@ -312,10 +312,10 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
 
 async fn inspect_quarantine(state_dir: &StateDir) -> anyhow::Result<ExitCode> {
     let store = Store::open(state_dir.root()).await?;
-    let filter = nyx_agent_core::store::FindingFilter {
+    let filter = nyctos_core::store::FindingFilter {
         status: Some("Quarantine"),
         include_quarantine: true,
-        ..nyx_agent_core::store::FindingFilter::default()
+        ..nyctos_core::store::FindingFilter::default()
     };
     let findings = store.findings().list_filtered(&filter).await?;
     let pending = store.candidate_findings().list_pending().await?;
@@ -964,7 +964,7 @@ async fn serve(
     let auth_token = if headless { None } else { Some(state_dir.load_or_mint_auth_token()?) };
     let auth_config = AuthConfig::new(auth_token.clone());
 
-    let ui_bootstrap = Arc::new(nyx_agent_ui::UiBootstrap { auth_token: auth_token.clone() });
+    let ui_bootstrap = Arc::new(nyctos_ui::UiBootstrap { auth_token: auth_token.clone() });
     let mut server_state =
         ServerState::new(store.clone(), events_tx.clone(), trigger.clone(), setup, auth_config)
             .with_state_repos_dir(state_dir.repos())
@@ -1002,7 +1002,7 @@ async fn serve(
         let bootstrap = Arc::clone(&ui_bootstrap);
         move |uri: axum::http::Uri| {
             let bootstrap = Arc::clone(&bootstrap);
-            async move { nyx_agent_ui::spa_handler_with(uri, &bootstrap).await }
+            async move { nyctos_ui::spa_handler_with(uri, &bootstrap).await }
         }
     };
     let app = build_router(server_state).fallback(ui_fallback);
@@ -1336,7 +1336,7 @@ async fn select_scan_targets(
     requested_projects: &[String],
     requested_repos: &[String],
 ) -> anyhow::Result<Vec<(Project, Vec<Repo>)>> {
-    let candidate_projects: Vec<&nyx_agent_core::ProjectConfig> = if requested_projects.is_empty() {
+    let candidate_projects: Vec<&nyctos_core::ProjectConfig> = if requested_projects.is_empty() {
         config.projects.iter().collect()
     } else {
         let mut out = Vec::with_capacity(requested_projects.len());
@@ -1402,7 +1402,7 @@ async fn ensure_project_row(store: &Store, name: &str) -> anyhow::Result<Project
 
 /// Slugify `name` and append a hex `now_ms` so re-running with the same
 /// project name still yields a recognisable id. Matches the
-/// `nyx-agent-api` helper of the same shape so a CLI-created row and an
+/// `nyctos-api` helper of the same shape so a CLI-created row and an
 /// API-created row converge on the same prefix.
 fn project_id_slug(name: &str, now_ms: i64) -> String {
     let slug: String = name
@@ -1750,7 +1750,7 @@ async fn doctor(
     config: &Config,
 ) -> anyhow::Result<ExitCode> {
     println!("state dir OK at {}", state_dir.root().display());
-    println!("logs -> {}", nyx_agent_core::json_log_path(&log_cfg.log_dir).display());
+    println!("logs -> {}", nyctos_core::json_log_path(&log_cfg.log_dir).display());
     if config_path.exists() {
         println!("config OK at {}", config_path.display());
     } else {
@@ -1790,7 +1790,7 @@ async fn doctor(
         }
     };
 
-    match nyx_agent_ai::detect_claude_binary().await {
+    match nyctos_ai::detect_claude_binary().await {
         Ok(bin) => println!("claude-code: available v{} at {}", bin.version, bin.path.display()),
         Err(err) => println!("claude-code: unavailable ({err})"),
     }
@@ -1898,7 +1898,7 @@ fn report_sandbox_backends(config: &Config) {
 /// downgrades the chain + fast lane selectors to `Process`, so the
 /// doctor surface should call out the gap explicitly.
 fn report_sandbox_shim() {
-    match nyx_agent_sandbox::probe(BackendKind::Birdcage) {
+    match nyctos_sandbox::probe(BackendKind::Birdcage) {
         Ok(()) => println!("sandbox shim: nyx-sandbox-shim reachable"),
         Err(err) => println!("sandbox shim: unavailable ({err})"),
     }

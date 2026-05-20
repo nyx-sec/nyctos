@@ -39,7 +39,7 @@ declare global {
   }
 }
 
-/** Bearer token injected by `nyx-agent-ui::spa_handler_with` into
+/** Bearer token injected by `nyctos-ui::spa_handler_with` into
  *  `index.html`. `undefined` when the daemon was started with
  *  `--headless` (auth disabled). */
 export function getAuthToken(): string | undefined {
@@ -78,7 +78,7 @@ async function request<T>(
 
 // ---- record shapes ---------------------------------------------------------
 //
-// These mirror the `*Record` structs in `nyx_agent_core::store`. The
+// These mirror the `*Record` structs in `nyctos_core::store`. The
 // shared schema will move into `nyctos-types` once the type-hoist
 // deferred item lands.
 

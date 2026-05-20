@@ -11,13 +11,13 @@ name = "nyx-agent"
 path = "src/main.rs"
 
 [dependencies]
-nyx-agent-ai = { path = "../nyx-agent-ai" }
-nyx-agent-api = { path = "../nyx-agent-api" }
-nyx-agent-core = { path = "../nyx-agent-core" }
-nyx-agent-nyx = { path = "../nyx-agent-nyx" }
-nyx-agent-sandbox = { path = "../nyx-agent-sandbox" }
+nyctos-ai = { path = "../nyctos-ai" }
+nyctos-api = { path = "../nyctos-api" }
+nyctos-core = { path = "../nyctos-core" }
+nyctos-nyx = { path = "../nyctos-nyx" }
+nyctos-sandbox = { path = "../nyctos-sandbox" }
 nyctos-types = { path = "../nyctos-types" }
-nyx-agent-ui = { path = "../nyx-agent-ui" }
+nyctos-ui = { path = "../nyctos-ui" }
 anyhow = { workspace = true }
 async-trait = "0.1"
 axum = { workspace = true }
@@ -38,7 +38,7 @@ webbrowser = { workspace = true }
 
 [dev-dependencies]
 assert_cmd = "2"
-nyx-agent-core = { path = "../nyx-agent-core", features = ["test-util"] }
+nyctos-core = { path = "../nyctos-core", features = ["test-util"] }
 predicates = "3"
 serde_json = { workspace = true }
 tempfile = { workspace = true }
