@@ -119,8 +119,33 @@ impl Store {
         MIGRATOR.run(&pool).await?;
         Self::populate_meta(&pool).await?;
         Self::ensure_default_project(&pool).await?;
+        Self::warn_if_finding_id_collision_pressure(&pool).await?;
 
         Ok(Self { pool, path: path.to_path_buf() })
+    }
+
+    /// `finding_id_hash` truncates BLAKE3 to 64 bits so finding ids fit
+    /// neatly in UI rows. Birthday-collision pressure is negligible for
+    /// any plausible single-deployment row count, but a deployment that
+    /// crosses ~2^28 rows is close enough to the 2^32 expected-collision
+    /// bound that the operator deserves a warning while there is still
+    /// time to plan a schema migration (a `hash_version` column on
+    /// `findings`, or a widened id). Uses `MAX(rowid)` instead of
+    /// `COUNT(*)` so the check is O(log n) and adds no measurable
+    /// open-time latency on small databases.
+    async fn warn_if_finding_id_collision_pressure(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+        const WARN_THRESHOLD: i64 = 1 << 28;
+        let (max_rowid,): (Option<i64>,) =
+            sqlx::query_as("SELECT MAX(rowid) FROM findings").fetch_one(pool).await?;
+        if max_rowid.unwrap_or(0) >= WARN_THRESHOLD {
+            tracing::warn!(
+                target: "nyctos_core::store",
+                approx_findings_rowid = max_rowid,
+                threshold = WARN_THRESHOLD,
+                "findings table crossed 2^28 rows; finding_id_hash truncates BLAKE3 to 64 bits so birthday collisions become statistically meaningful near 2^32 rows. Plan a schema migration that widens finding ids or adds a hash_version column before that boundary."
+            );
+        }
+        Ok(())
     }
 
     /// Stamp the singleton `meta` row with the running binary's version,

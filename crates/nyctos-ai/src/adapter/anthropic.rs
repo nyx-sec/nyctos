@@ -169,23 +169,27 @@ impl AiRuntime for AnthropicSdkAdapter {
         let pricing = pricing_for(&model);
 
         // Pre-call budget check: refuse outright if we already past cap.
-        // Boundary is `>` (cap is the spendable ceiling); a call that lands
-        // exactly at cap proceeds, the one after does not. The post-call
-        // check uses the same `>` so both halves agree.
+        // The effective cap is the tighter of (a) the run-wide cap held
+        // by the shared tracker and (b) the per-call cap on the `Budget`
+        // envelope, so a caller can tighten the per-call ceiling without
+        // mutating shared run state. Boundary is `>` (cap is the
+        // spendable ceiling); a call that lands exactly at cap proceeds,
+        // the one after does not. The post-call check uses the same `>`
+        // so both halves agree.
         let spent_before = self.tracker.current_spend(&budget.run_id, budget.kind).await?;
-        if let Some(cap) = self.tracker.cap(&budget.run_id, budget.kind).await? {
-            if spent_before > cap {
-                let _ = sink.send(AgentEvent::Ai {
-                    data: AiEvent::TaskHalted {
-                        task_id: prompt.task_id.clone(),
-                        reason: HaltReason::BudgetCapReached,
-                    },
-                });
-                return Err(AiError::BudgetExceeded {
-                    cap_usd_micros: cap,
-                    spent_usd_micros: spent_before,
-                });
-            }
+        let tracker_cap = self.tracker.cap(&budget.run_id, budget.kind).await?;
+        let cap = effective_cap(tracker_cap, budget.cap_usd_micros);
+        if spent_before > cap {
+            let _ = sink.send(AgentEvent::Ai {
+                data: AiEvent::TaskHalted {
+                    task_id: prompt.task_id.clone(),
+                    reason: HaltReason::BudgetCapReached,
+                },
+            });
+            return Err(AiError::BudgetExceeded {
+                cap_usd_micros: cap,
+                spent_usd_micros: spent_before,
+            });
         }
 
         let body = build_request(&model, &prompt, self.supports_prompt_cache());
@@ -276,19 +280,19 @@ impl AiRuntime for AnthropicSdkAdapter {
             },
         });
 
-        if let Some(cap) = self.tracker.cap(&budget.run_id, budget.kind).await? {
-            if spent_after > cap {
-                let _ = sink.send(AgentEvent::Ai {
-                    data: AiEvent::TaskHalted {
-                        task_id: prompt.task_id.clone(),
-                        reason: HaltReason::BudgetCapReached,
-                    },
-                });
-                return Err(AiError::BudgetExceeded {
-                    cap_usd_micros: cap,
-                    spent_usd_micros: spent_after,
-                });
-            }
+        let tracker_cap = self.tracker.cap(&budget.run_id, budget.kind).await?;
+        let cap = effective_cap(tracker_cap, budget.cap_usd_micros);
+        if spent_after > cap {
+            let _ = sink.send(AgentEvent::Ai {
+                data: AiEvent::TaskHalted {
+                    task_id: prompt.task_id.clone(),
+                    reason: HaltReason::BudgetCapReached,
+                },
+            });
+            return Err(AiError::BudgetExceeded {
+                cap_usd_micros: cap,
+                spent_usd_micros: spent_after,
+            });
         }
 
         Ok(Response {
@@ -321,6 +325,19 @@ impl AiRuntime for AnthropicSdkAdapter {
         let min = approx_input_tokens * p.input_per_token_micros;
         let max = min + i64::from(prompt.max_output_tokens) * p.output_per_token_micros;
         Some(CostEstimate { min_usd_micros: min, max_usd_micros: max })
+    }
+}
+
+/// Reconcile the two budget cap sources the adapter sees. The shared
+/// `BudgetTracker` carries a run-wide cap configured at run start; the
+/// per-call `Budget` envelope carries a `cap_usd_micros` the caller can
+/// use to tighten an individual call. Min-wins so the envelope can
+/// never raise the run cap, only lower it; a caller that wants the
+/// tracker cap verbatim passes `i64::MAX`.
+fn effective_cap(tracker_cap: Option<i64>, envelope_cap: i64) -> i64 {
+    match tracker_cap {
+        Some(t) => t.min(envelope_cap),
+        None => envelope_cap,
     }
 }
 
@@ -585,6 +602,53 @@ mod tests {
             e,
             AiEvent::TaskHalted { reason: HaltReason::BudgetCapReached, .. }
         )));
+    }
+
+    #[tokio::test]
+    async fn envelope_cap_tightens_run_cap_min_wins() {
+        // Tracker run-wide cap is generous ($1) but the per-call envelope
+        // tightens to $0.01. The call cost lands at $0.02, so the
+        // post-call check must halt against the envelope-tightened cap
+        // and report 10_000 (envelope), not 1_000_000 (tracker).
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(test_support::canned_response(
+                "claude-haiku-4-5",
+                "ok",
+                20_000,
+                0,
+                None,
+                None,
+            )))
+            .mount(&server)
+            .await;
+
+        let tracker = Arc::new(InMemoryBudgetTracker::new());
+        tracker.set_cap("run-1", BudgetKind::OneShot, 1_000_000);
+        let adapter =
+            AnthropicSdkAdapter::new("k".to_string(), tracker.clone()).with_base_url(server.uri());
+
+        let (tx, _rx) = broadcast::channel::<AgentEvent>(32);
+        let err = adapter
+            .one_shot(sample_prompt(), budget(10_000), tx)
+            .await
+            .expect_err("envelope cap should halt");
+        match err {
+            AiError::BudgetExceeded { cap_usd_micros, spent_usd_micros } => {
+                assert_eq!(cap_usd_micros, 10_000, "envelope cap must win when tighter");
+                assert_eq!(spent_usd_micros, 20_000);
+            }
+            other => panic!("expected BudgetExceeded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn effective_cap_takes_min_of_two_sources() {
+        assert_eq!(effective_cap(Some(100), 50), 50);
+        assert_eq!(effective_cap(Some(50), 100), 50);
+        assert_eq!(effective_cap(None, 75), 75);
+        assert_eq!(effective_cap(Some(100), i64::MAX), 100);
     }
 
     #[tokio::test]
