@@ -1413,7 +1413,7 @@ async fn promote_quarantine(
         // reappears in the Findings browser. The operator's manual
         // promote skips the dynamic-confirm gate by design (acceptance:
         // "Manually promoting it moves it to Findings.").
-        let row = promote_finding_row(&s, &id, "Open").await?;
+        let row = manual_promote_finding_row(&s, &id).await?;
         Ok(Json(finding_to_quarantine_item(&row)))
     }
 }
@@ -1438,15 +1438,54 @@ async fn dismiss_quarantine(
         s.store.candidate_findings().set_status(&id, CandidateStatus::Dismissed.as_str()).await?;
         Ok(Json(candidate_to_quarantine_item(&cand)))
     } else {
-        let row = promote_finding_row(&s, &id, "Closed").await?;
+        let row = manual_dismiss_finding_row(&s, &id).await?;
         Ok(Json(finding_to_quarantine_item(&row)))
     }
 }
 
-async fn promote_finding_row(
+async fn manual_promote_finding_row(
     s: &ServerState,
     id: &str,
-    new_status: &str,
+) -> Result<FindingRecord, ApiError> {
+    let existing = require_quarantined_finding(s, id).await?;
+    let blob = serde_json::to_string(&json!({
+        "kind": "ManualPromote",
+        "from": "quarantine",
+        "prev_provenance": existing.attack_provenance,
+        "prev_verdict_blob": existing.verdict_blob,
+    }))
+    .map_err(|e| ApiError::Internal(format!("serialize manual-promote blob: {e}")))?;
+    s.store.findings().manual_promote(id, "Open", &blob).await?;
+    s.store
+        .findings()
+        .get(id)
+        .await?
+        .ok_or_else(|| ApiError::Internal("finding vanished after promote".to_string()))
+}
+
+async fn manual_dismiss_finding_row(
+    s: &ServerState,
+    id: &str,
+) -> Result<FindingRecord, ApiError> {
+    let existing = require_quarantined_finding(s, id).await?;
+    let blob = serde_json::to_string(&json!({
+        "kind": "ManualDismiss",
+        "from": "quarantine",
+        "prev_provenance": existing.attack_provenance,
+        "prev_verdict_blob": existing.verdict_blob,
+    }))
+    .map_err(|e| ApiError::Internal(format!("serialize manual-dismiss blob: {e}")))?;
+    s.store.findings().manual_dismiss(id, &blob).await?;
+    s.store
+        .findings()
+        .get(id)
+        .await?
+        .ok_or_else(|| ApiError::Internal("finding vanished after dismiss".to_string()))
+}
+
+async fn require_quarantined_finding(
+    s: &ServerState,
+    id: &str,
 ) -> Result<FindingRecord, ApiError> {
     let existing = s
         .store
@@ -1460,14 +1499,7 @@ async fn promote_finding_row(
             existing.status
         )));
     }
-    let blob = existing.verdict_blob.as_deref().unwrap_or("");
-    let provenance = existing.attack_provenance.as_deref().unwrap_or("Curated");
-    s.store.findings().set_verify_result(id, new_status, blob, provenance).await?;
-    s.store
-        .findings()
-        .get(id)
-        .await?
-        .ok_or_else(|| ApiError::Internal("finding vanished after promote".to_string()))
+    Ok(existing)
 }
 
 async fn promote_candidate_to_finding(
@@ -1735,6 +1767,7 @@ fn run_matches(ev: &AgentEvent, run_filter: Option<&str>) -> bool {
             | RunEvent::RepoStaticDone { run_id, .. }
             | RunEvent::RepoDynamicDone { run_id, .. }
             | RunEvent::RepoFailed { run_id, .. }
+            | RunEvent::RepoIngestFailed { run_id, .. }
             | RunEvent::RepoFinished { run_id, .. }
             | RunEvent::ProjectFinished { run_id, .. }
             | RunEvent::RunFinished { run_id, .. } => run_id.as_str(),

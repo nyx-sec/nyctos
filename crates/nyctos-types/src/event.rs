@@ -88,6 +88,19 @@ pub enum RunEvent {
         #[ts(type = "number")]
         elapsed_ms: i64,
     },
+    /// Ingest-time failure: the repo could not be cloned, fetched, or
+    /// snapshotted before the dispatcher saw a workspace. Emitted from
+    /// the caller (CLI / API drive-scan path) *before* `RunStarted`, so
+    /// subscribers connected at run start time can reconstruct the full
+    /// attempted-repo set from `RunStarted.repos` alone — the failing
+    /// repo is included there and `RepoIngestFailed` carries the
+    /// upstream error string for UI surfacing.
+    RepoIngestFailed {
+        run_id: String,
+        project_id: String,
+        repo: String,
+        message: String,
+    },
     /// Per-repo terminator. Always emitted regardless of outcome so
     /// subscribers can drop bookkeeping for the repo without diffing
     /// the success / failure event streams.

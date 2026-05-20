@@ -625,7 +625,7 @@ fn collect_spec_excerpts(
         out.push(ex);
     }
     let mut first_upstream = true;
-    for path in diag.flow_step_files() {
+    for path in diag.flow_step_files_ranked() {
         if out.len() >= max {
             break;
         }

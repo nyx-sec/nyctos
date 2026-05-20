@@ -213,6 +213,7 @@ pub struct RunDispatcher {
     static_concurrency: usize,
     per_repo_timeout: Duration,
     event_sink: Option<EventSink>,
+    attempted_repos: Option<Vec<String>>,
 }
 
 impl RunDispatcher {
@@ -231,6 +232,7 @@ impl RunDispatcher {
             static_concurrency: concurrency,
             per_repo_timeout: cfg.per_repo_timeout(),
             event_sink,
+            attempted_repos: None,
         }
     }
 
@@ -240,7 +242,22 @@ impl RunDispatcher {
         per_repo_timeout: Duration,
         event_sink: Option<EventSink>,
     ) -> Self {
-        Self { static_concurrency: static_concurrency.max(1), per_repo_timeout, event_sink }
+        Self {
+            static_concurrency: static_concurrency.max(1),
+            per_repo_timeout,
+            event_sink,
+            attempted_repos: None,
+        }
+    }
+
+    /// Override the repo list reported in `RunEvent::RunStarted.repos`.
+    /// Callers that ingest before dispatch (CLI / API drive-scan) use
+    /// this to include repos that failed ingest, so subscribers can
+    /// reconstruct the full attempted-repo set from `RunStarted.repos`
+    /// alone without joining `RepoIngestFailed` frames emitted earlier.
+    pub fn with_attempted_repos(mut self, attempted: Vec<String>) -> Self {
+        self.attempted_repos = Some(attempted);
+        self
     }
 
     pub fn static_concurrency(&self) -> usize {
@@ -279,11 +296,15 @@ impl RunDispatcher {
         D: Send + 'static,
     {
         let project_id = project.id.as_str().to_string();
+        let repos = match &self.attempted_repos {
+            Some(list) => list.clone(),
+            None => workspaces.iter().map(|w| w.name().to_string()).collect(),
+        };
         self.emit(AgentEvent::Run {
             data: RunEvent::RunStarted {
                 run_id: run.id.clone(),
                 project_id: project_id.clone(),
-                repos: workspaces.iter().map(|w| w.name().to_string()).collect(),
+                repos,
                 started_at_ms: run.started_at_ms,
             },
         });
@@ -826,5 +847,44 @@ mod tests {
         let mut names: Vec<_> = bundle.per_repo.iter().map(|b| b.repo.clone()).collect();
         names.sort();
         assert_eq!(names, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn with_attempted_repos_overrides_run_started_repos_list() {
+        let (tx, mut rx) = broadcast::channel::<AgentEvent>(16);
+        let tmp = tempfile::tempdir().expect("tmp");
+        let workspaces = vec![handle_for("alpha", tmp.path())];
+        let lane: Arc<dyn ScanLane<()>> =
+            Arc::new(|_w: &WorkspaceHandle, _t: Duration| -> Result<Vec<()>, ScanLaneError> {
+                Ok(Vec::new())
+            });
+        let dispatcher = RunDispatcher::with_explicit(1, Duration::from_secs(5), Some(tx.clone()))
+            .with_attempted_repos(vec![
+                "alpha".to_string(),
+                "beta-ingest-failed".to_string(),
+                "gamma-ingest-failed".to_string(),
+            ]);
+        let _ = dispatcher.dispatch_project::<dyn ScanLane<()>, ()>(
+            &test_project(),
+            Run::with_id("run-attempted"),
+            lane,
+            workspaces,
+        );
+        let mut started_repos = None;
+        while let Ok(ev) = rx.try_recv() {
+            if let AgentEvent::Run { data: RunEvent::RunStarted { repos, .. } } = ev {
+                started_repos = Some(repos);
+                break;
+            }
+        }
+        let started_repos = started_repos.expect("RunStarted must be published");
+        assert_eq!(
+            started_repos,
+            vec![
+                "alpha".to_string(),
+                "beta-ingest-failed".to_string(),
+                "gamma-ingest-failed".to_string(),
+            ],
+        );
     }
 }

@@ -138,6 +138,77 @@ impl Diag {
         out
     }
 
+    /// Same set as [`flow_step_files`] but ranked for the SpecDerivation
+    /// excerpt-selection heuristic. The first element is the preferred
+    /// `call_site` candidate (best-ranked step in user code); the rest
+    /// are ordered for the `framework` slot, with framework-y paths
+    /// (anything under `site-packages/` / `node_modules/` / `vendor/` /
+    /// `.venv/` / `dist-packages/` / `third_party/`) sorted ahead of
+    /// remaining user-code entries. Within each partition, steps are
+    /// ordered by `kind` (`source` > `call` > `sink` > everything else),
+    /// then by the original trace order. The bare `flow_step_files`
+    /// accessor preserves trace order for callers that do not want this
+    /// heuristic applied.
+    pub fn flow_step_files_ranked(&self) -> Vec<&str> {
+        #[derive(Clone, Copy)]
+        struct Entry<'a> {
+            order: usize,
+            path: &'a str,
+            kind_rank: u8,
+            framework: bool,
+        }
+        let mut entries: Vec<Entry<'_>> = Vec::new();
+        for (order, step) in self.flow_steps.iter().enumerate() {
+            let p = step.path.as_str();
+            if p == self.path {
+                continue;
+            }
+            if entries.iter().any(|e| e.path == p) {
+                continue;
+            }
+            entries.push(Entry {
+                order,
+                path: p,
+                kind_rank: flow_step_kind_rank(step.kind.as_deref()),
+                framework: is_framework_path(p),
+            });
+        }
+        if entries.is_empty() {
+            return Vec::new();
+        }
+        let sort_key = |e: &Entry<'_>| (e.kind_rank, e.order);
+
+        let mut user_entries: Vec<Entry<'_>> = entries.iter().filter(|e| !e.framework).copied().collect();
+        user_entries.sort_by_key(sort_key);
+        let mut framework_entries: Vec<Entry<'_>> =
+            entries.iter().filter(|e| e.framework).copied().collect();
+        framework_entries.sort_by_key(sort_key);
+
+        let mut out: Vec<&str> = Vec::with_capacity(entries.len());
+        // Call-site slot: best user-code entry, falling back to the best
+        // framework entry only when no user-code path was traced.
+        let call_site = user_entries
+            .first()
+            .copied()
+            .or_else(|| framework_entries.first().copied());
+        if let Some(cs) = call_site {
+            out.push(cs.path);
+        }
+        // Framework slots: framework-y paths first, then remaining user
+        // entries. Excludes whatever already filled the call-site slot.
+        for e in &framework_entries {
+            if !out.contains(&e.path) {
+                out.push(e.path);
+            }
+        }
+        for e in &user_entries {
+            if !out.contains(&e.path) {
+                out.push(e.path);
+            }
+        }
+        out
+    }
+
     /// Best-effort sink context (callee + arg expressions + a code
     /// excerpt around the sink line) built from `evidence.sink` and a
     /// short read of the workspace source. Returns `None` only when
@@ -212,6 +283,39 @@ fn read_excerpt(workspace_root: &Path, path: &str, line: u32) -> Option<String> 
         out.push_str(&format!("{:>4}: {l}\n", lo + i + 1));
     }
     Some(out)
+}
+
+/// Paths whose presence anywhere in a flow-step file marker signals
+/// framework / library code rather than the project's own source. The
+/// SpecDerivation excerpt picker prefers these for its `framework` slot.
+const FRAMEWORK_PATH_SEGMENTS: &[&str] = &[
+    "site-packages/",
+    "node_modules/",
+    "vendor/",
+    "_vendor/",
+    ".venv/",
+    "venv/",
+    "third_party/",
+    "dist-packages/",
+];
+
+fn is_framework_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    FRAMEWORK_PATH_SEGMENTS.iter().any(|seg| {
+        normalized.starts_with(seg) || normalized.contains(&format!("/{seg}"))
+    })
+}
+
+fn flow_step_kind_rank(kind: Option<&str>) -> u8 {
+    match kind {
+        Some(k) => match k.to_ascii_lowercase().as_str() {
+            "source" => 0,
+            "call" => 1,
+            "sink" => 2,
+            _ => 3,
+        },
+        None => 3,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -405,6 +509,74 @@ mod tests {
         d.lift_flow_steps();
         let files = d.flow_step_files();
         assert_eq!(files, vec!["router.py", "framework/orm.py"]);
+    }
+
+    #[test]
+    fn flow_step_files_ranked_picks_user_call_site_then_framework_paths() {
+        // Trace order interleaves a framework hop, two user-code hops,
+        // and a sink. The ranked accessor should put the best user-code
+        // entry first (source kind > call kind in user code), then push
+        // the `site-packages/` framework hop ahead of the remaining
+        // user entry for the framework slot.
+        let raw = r#"{
+            "path": "app/sink.py", "line": 42, "severity": "High",
+            "id": "taint", "category": "SQL_QUERY",
+            "evidence": {
+                "flow_steps": [
+                    {"step": 1, "kind": "call",   "file": "app/router.py",                       "line":  7},
+                    {"step": 2, "kind": "call",   "file": ".venv/lib/python3/site-packages/orm.py", "line": 88},
+                    {"step": 3, "kind": "source", "file": "app/controllers.py",                  "line": 13},
+                    {"step": 4, "kind": "sink",   "file": "app/sink.py",                         "line": 42}
+                ]
+            }
+        }"#;
+        let mut d: Diag = serde_json::from_str(raw).expect("parse");
+        d.lift_flow_steps();
+        let ranked = d.flow_step_files_ranked();
+        // Best user-code kind (`source`) wins the call_site slot.
+        assert_eq!(ranked[0], "app/controllers.py");
+        // Framework-y path is promoted ahead of the remaining user path.
+        assert_eq!(ranked[1], ".venv/lib/python3/site-packages/orm.py");
+        assert_eq!(ranked[2], "app/router.py");
+        assert_eq!(ranked.len(), 3, "self.path entry must stay filtered");
+    }
+
+    #[test]
+    fn flow_step_files_ranked_falls_back_to_framework_when_no_user_code() {
+        let raw = r#"{
+            "path": "app/sink.py", "line": 9, "severity": "Medium",
+            "id": "taint", "category": "SQL_QUERY",
+            "evidence": {
+                "flow_steps": [
+                    {"step": 1, "kind": "call", "file": "node_modules/express/router.js", "line": 22},
+                    {"step": 2, "kind": "call", "file": "vendor/orm/query.js",            "line": 18},
+                    {"step": 3, "kind": "sink", "file": "app/sink.py",                    "line":  9}
+                ]
+            }
+        }"#;
+        let mut d: Diag = serde_json::from_str(raw).expect("parse");
+        d.lift_flow_steps();
+        let ranked = d.flow_step_files_ranked();
+        assert_eq!(ranked.len(), 2);
+        assert!(ranked.iter().all(|p| is_framework_path(p)));
+    }
+
+    #[test]
+    fn flow_step_files_ranked_preserves_trace_order_within_tied_kinds() {
+        let raw = r#"{
+            "path": "app/sink.py", "line": 1, "severity": "Low",
+            "id": "taint", "category": "Y",
+            "evidence": {
+                "flow_steps": [
+                    {"step": 1, "kind": "call", "file": "app/a.py", "line": 1},
+                    {"step": 2, "kind": "call", "file": "app/b.py", "line": 2}
+                ]
+            }
+        }"#;
+        let mut d: Diag = serde_json::from_str(raw).expect("parse");
+        d.lift_flow_steps();
+        let ranked = d.flow_step_files_ranked();
+        assert_eq!(ranked, vec!["app/a.py", "app/b.py"]);
     }
 
     #[test]

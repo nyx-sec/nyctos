@@ -475,6 +475,53 @@ impl<'a> FindingStore<'a> {
         Ok(res.rows_affected())
     }
 
+    /// Operator-driven promote: flip `id` to `new_status`, write the
+    /// supplied JSON `verdict_blob`, and stamp
+    /// `attack_provenance = 'ManualPromote'` so the audit trail
+    /// distinguishes operator overrides from verifier-confirmed rows.
+    /// Mirror image of the candidate-side `promote_candidate_to_finding`
+    /// path: both writers now produce a typed `ManualPromote` blob
+    /// instead of reusing `set_verify_result`.
+    pub async fn manual_promote(
+        &self,
+        id: &str,
+        new_status: &str,
+        verdict_blob: &str,
+    ) -> Result<(), StoreError> {
+        sqlx::query(
+            "UPDATE findings SET status = ?, verdict_blob = ?, attack_provenance = 'ManualPromote' \
+             WHERE id = ?",
+        )
+        .bind(new_status)
+        .bind(verdict_blob)
+        .bind(id)
+        .execute(self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Operator-driven dismissal: flip `id` to `'Closed'`, write the
+    /// supplied JSON `verdict_blob`, and stamp
+    /// `attack_provenance = 'ManualDismiss'`. Used for the quarantine
+    /// dismiss flow, where reusing `set_verify_result` would silently
+    /// inherit the prior verifier's provenance and obscure the
+    /// operator's intent.
+    pub async fn manual_dismiss(
+        &self,
+        id: &str,
+        verdict_blob: &str,
+    ) -> Result<(), StoreError> {
+        sqlx::query(
+            "UPDATE findings SET status = 'Closed', verdict_blob = ?, \
+             attack_provenance = 'ManualDismiss' WHERE id = ?",
+        )
+        .bind(verdict_blob)
+        .bind(id)
+        .execute(self.pool)
+        .await?;
+        Ok(())
+    }
+
     /// Flip `id` to `status = 'Quarantine'`, stamping `verdict_blob`
     /// with the supplied JSON reason. PayloadSynthesis falls back
     /// here when both synthesis attempts fail to parse;
@@ -759,5 +806,47 @@ mod tests {
         let err = s.findings().upsert(&f).await.expect_err("must fail");
         let msg = format!("{err}");
         assert!(msg.to_lowercase().contains("foreign key"), "got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn manual_promote_stamps_provenance_and_status() {
+        let (_tmp, s) = fresh_store().await;
+        seed(&s).await;
+        let mut f = sample_finding("run-1", "repo-1", "src/a.rs", "rule-1");
+        f.status = "Quarantine".to_string();
+        f.attack_provenance = Some("PayloadSynthesis".to_string());
+        f.verdict_blob = Some(r#"{"kind":"PayloadSynthFailed"}"#.to_string());
+        s.findings().upsert(&f).await.expect("insert");
+
+        s.findings()
+            .manual_promote(&f.id, "Open", r#"{"kind":"ManualPromote","from":"quarantine"}"#)
+            .await
+            .expect("promote");
+        let got = s.findings().get(&f.id).await.expect("get").expect("row");
+        assert_eq!(got.status, "Open");
+        assert_eq!(got.attack_provenance.as_deref(), Some("ManualPromote"));
+        assert_eq!(
+            got.verdict_blob.as_deref(),
+            Some(r#"{"kind":"ManualPromote","from":"quarantine"}"#),
+        );
+    }
+
+    #[tokio::test]
+    async fn manual_dismiss_stamps_provenance_and_closes_row() {
+        let (_tmp, s) = fresh_store().await;
+        seed(&s).await;
+        let mut f = sample_finding("run-1", "repo-1", "src/a.rs", "rule-1");
+        f.status = "Quarantine".to_string();
+        f.attack_provenance = Some("SpecDerivation".to_string());
+        s.findings().upsert(&f).await.expect("insert");
+
+        s.findings()
+            .manual_dismiss(&f.id, r#"{"kind":"ManualDismiss"}"#)
+            .await
+            .expect("dismiss");
+        let got = s.findings().get(&f.id).await.expect("get").expect("row");
+        assert_eq!(got.status, "Closed");
+        assert_eq!(got.attack_provenance.as_deref(), Some("ManualDismiss"));
+        assert_eq!(got.verdict_blob.as_deref(), Some(r#"{"kind":"ManualDismiss"}"#));
     }
 }

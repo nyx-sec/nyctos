@@ -183,6 +183,7 @@ fn run_id_for_event(ev: &AgentEvent) -> Option<&str> {
             | RunEvent::RepoStaticDone { run_id, .. }
             | RunEvent::RepoDynamicDone { run_id, .. }
             | RunEvent::RepoFailed { run_id, .. }
+            | RunEvent::RepoIngestFailed { run_id, .. }
             | RunEvent::RepoFinished { run_id, .. }
             | RunEvent::ProjectFinished { run_id, .. }
             | RunEvent::RunFinished { run_id, .. } => Some(run_id.as_str()),

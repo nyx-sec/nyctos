@@ -2541,3 +2541,35 @@ pass-19 summary
 - finding 1: SSRF allow-list gap on --gh-api lets forked-PR YAML steer GITHUB_TOKEN to internal hosts or IMDS via numeric encodings; pass-1..18 reviewed handler crates only.
 - finding 2: empty allowed_hosts on the exploration scope encodes "deny-all" implicitly; no test in this crate pins the semantic, and the prompt-level guard is not an enforcement boundary.
 - tool budget ~10 / 24 used; halted on quality-over-count.
+
+---
+pass-20 findings (exploration: crates/nyx-agent, static survey only — ALLOWED HOSTS empty, no HTTP probe issued)
+
+record_exploration_finding
+{
+  "path": "crates/nyx-agent/src/main.rs",
+  "line": 600,
+  "cap": "CRED_EXPOSURE",
+  "endpoint": "GET /api/v1/events (WebSocket; replay buffer)",
+  "rationale": "The new `RepoIngestFailed` frame is emitted with `message: format!(\"ingest failed: {err}\")` where `err: IngestError`. `IngestError::Git.message` is filled by `String::from_utf8_lossy(&output.stderr).trim().to_string()` (nyctos-core/src/repo/git.rs:196, :231) — i.e. raw `git clone` / `git fetch` stderr. For the `token-env:<VAR>` auth scheme, git frequently echoes the failing remote URL with embedded credentials in error lines (`fatal: unable to access 'https://x-access-token:ghp_XXXX@github.com/owner/private-repo.git/': The requested URL returned error: 403`), and older git binaries do not redact. The frame is broadcast unfiltered to every WebSocket subscriber of `/api/v1/events` *and* stored in `s.replay` (nyctos-api/src/state.rs:95-99, `events_ws` replays the snapshot to new subscribers on connect — router.rs:1681). Net effect: a single ingest-time auth failure during a transient outage (token rotation, GitHub 5xx, scope-probe HTTP error) seeds the replay buffer with a long-lived `ghp_…` (or PAT, SSH agent fingerprints, GitLab project-token, etc.) that any future bearer-token holder can read for the lifetime of the daemon. The change is strictly worse than the prior `RepoFailed` path because RepoIngestFailed lands in the replay buffer BEFORE RunStarted, so it survives across operator UI reconnects with no client-side dedupe handle. Static pass missed this because the credential is not the literal sink argument — it's smuggled into a generic `message: String` field whose taint origin is `Command::output().stderr`, two crates upstream.",
+  "suggested_payload_hint": "Configure a repo with `auth = \"token-env:LEAKY\"` and a non-existent path (HTTP 404 from GitHub). Trigger a scan. Connect to `ws://127.0.0.1:<port>/api/v1/events?run_id=<id>&token=<bearer>` and assert the first replayed frame matches `{\"kind\":\"RepoIngestFailed\",\"message\":\"ingest failed: git command failed for repo `<name>`: fatal: unable to access 'https://x-access-token:<TOKEN>@github.com/...'\"}`. Defence: in nyctos-core/src/repo/git.rs scrub the URL out of stderr before constructing IngestError::Git.message (regex over `https?://[^@\\s]+@` → `https://<redacted>@`), and assert in a unit test that a synthetic stderr containing `ghp_AAA` round-trips to `<redacted>`. Belt-and-braces: in nyctos-agent/src/main.rs replace the bare `format!(\"ingest failed: {err}\")` with a dedicated redactor that calls `IngestError`'s public fields directly (e.g. emit `{name}` + a coarse `kind` enum string), never the raw Display, so an upstream `From<git2::Error>` or anyhow chain can't smuggle creds back in."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyctos-core/src/store/finding.rs",
+  "line": 489,
+  "cap": "AUTH_BYPASS",
+  "endpoint": "POST /api/v1/quarantine/:id/promote (via FindingStore::manual_promote signature)",
+  "rationale": "`FindingStore::manual_promote(&self, id: &str, new_status: &str, verdict_blob: &str)` accepts `new_status` as a free-form `&str` and binds it straight into `UPDATE findings SET status = ?` with no enum / allow-list / validator. Today the only caller (`manual_promote_finding_row` in nyctos-api/src/router.rs:1458) hard-codes `\"Open\"`, so the production surface is fine — but the *public, doc-commented* API contract says nothing about which strings are legal. The findings table treats `status` as an untyped string (no CHECK constraint visible in the migration referenced by the surrounding `set_verify_result` family). A future caller — e.g. a planned `/api/v1/findings/:id/status` route, or any operator UI that wires user input directly through `manual_promote` — silently gains the ability to write arbitrary status values (`\"Verified\"`, `\"OperatorApproved\"`, `\"Suppressed-by-policy\"`), bypassing the dynamic-confirm gate that PayloadSynthesis enforces by writing through `set_verify_result` (which also stamps provenance correctly). Pair this with the existing observation (pass-2 / pass-7 in this sentinel) that the quarantine endpoint is reachable to any bearer-token holder, and a single line-of-code change at the call site escalates `Quarantine` to `Verified` without ever running a payload. Static pass missed because the bug is the *absence* of an enum boundary at a crate API surface, not a tainted flow through the present code.",
+  "suggested_payload_hint": "Defence is enum-shaped: replace `new_status: &str` with `pub enum ManualPromoteStatus { Open }` (single variant for now), have the store implementation `match status { Open => \"Open\" }` to derive the bound parameter, and add a unit test that exhaustively asserts the only writable strings are `Open` (manual_promote) and `Closed` (manual_dismiss). Optional follow-up: add a SQLite CHECK constraint on `findings.status` in the next migration so a non-enum writer fails at the DB layer too. Exploitation sketch (today): grep for any caller that lands operator input into `manual_promote`'s third arg — if any future PR introduces one, send `POST /api/v1/.../<endpoint> { \"status\": \"Verified\" }` and observe the row appearing in the Verified-only export pipeline."
+}
+
+---
+pass-20 summary
+- 2 new findings from the latest HEAD diff (manual_promote / manual_dismiss + RepoIngestFailed wiring).
+- finding 1: RepoIngestFailed.message smuggles raw git stderr (token-in-URL) into the /events WS replay buffer; survives reconnects.
+- finding 2: FindingStore::manual_promote's `new_status: &str` is an unenforced contract — today safe (hard-coded "Open"), tomorrow a status-elevation primitive one call-site away.
+- pass re-validates earlier findings; no fix observed on /events Origin gate (CSWSH) or /setup pre-config window (TOCTOU).
+- tool budget ~10 / 24 used; halted on quality-over-count per task brief.

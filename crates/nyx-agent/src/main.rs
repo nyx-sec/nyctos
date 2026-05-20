@@ -560,6 +560,7 @@ async fn drive_scan(
     // Every selected repo belongs to `project`; the dispatcher emits
     // Project/Run events scoped to that id, and workspace dirs land
     // under `<state>/projects/<project_id>/repos/<name>/`.
+    let attempted_repo_names: Vec<String> = selected.iter().map(|r| r.name.clone()).collect();
     let mut ingest_failures: Vec<(String, IngestError)> = Vec::new();
     let mut workspaces: Vec<WorkspaceHandle> = Vec::new();
     for repo in &selected {
@@ -586,13 +587,17 @@ async fn drive_scan(
             }
             Err(err) => {
                 report_ingest_error(&repo.name, &err);
+                // Emit the typed ingest-failure frame BEFORE the
+                // dispatcher publishes `RunStarted`. Subscribers that
+                // attach at run-start time then see the failing repo
+                // in `RunStarted.repos` and the matching
+                // `RepoIngestFailed` frame in the replay buffer.
                 let _ = events.send(AgentEvent::Run {
-                    data: RunEvent::RepoFailed {
+                    data: RunEvent::RepoIngestFailed {
                         run_id: run.id.clone(),
                         project_id: repo.project_id.as_str().to_string(),
                         repo: repo.name.clone(),
                         message: format!("ingest failed: {err}"),
-                        elapsed_ms: 0,
                     },
                 });
                 ingest_failures.push((repo.name.clone(), err));
@@ -637,7 +642,8 @@ async fn drive_scan(
         workspaces.iter().map(|w| (w.name().to_string(), w.clone())).collect();
 
     let dispatcher =
-        RunDispatcher::from_config(&config.performance, workspaces.len(), Some(events.clone()));
+        RunDispatcher::from_config(&config.performance, workspaces.len(), Some(events.clone()))
+            .with_attempted_repos(attempted_repo_names.clone());
     let run_for_dispatch = run.clone();
     let project_for_dispatch = project.clone();
     let dispatch_handle = tokio::task::spawn_blocking(move || {
