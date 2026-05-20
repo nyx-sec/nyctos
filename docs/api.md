@@ -511,8 +511,9 @@ to `pong`) and `close` (terminates the stream).
 `RunEvent` variants on the stream: `Heartbeat`, `RunStarted`,
 `ProjectStarted`, `RepoStarted`, `RepoStaticDone`,
 `RepoDynamicDone`, `RepoFailed`, `RepoFinished`,
-`ProjectFinished`, `RunFinished`. See
-`crates/nyctos-types/src/event.rs` for the field-by-field shape.
+`ProjectFinished`, `RunFinished`. See [events.md](events.md) for
+the ordering contract, AI runtime variants, and the field-by-field
+shape sourced from `crates/nyctos-types/src/event.rs`.
 
 ## Git webhook
 

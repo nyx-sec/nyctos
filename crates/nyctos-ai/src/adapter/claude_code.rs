@@ -6,7 +6,7 @@
 //! run if it is missing; callers fall back to the Anthropic adapter
 //! for `one_shot` work.
 //!
-//! Wire shape per the Phase-13 contract:
+//! Wire shape:
 //! 1. Write `agent_task.md` into a per-task scratch directory.
 //! 2. Invoke `claude --print --output-format stream-json --verbose` with
 //!    the instruction file content piped on stdin (the public CLI does
@@ -16,9 +16,9 @@
 //!    republishing tool-use blocks as `AiEvent::ToolCallStarted`/
 //!    `Finished` on the shared event bus.
 //! 4. Lift recognised tool calls into `ExtractedAgentResult` variants
-//!    so downstream phases (PayloadSynthesis, SpecExtraction, ChainRanking,
-//!    Exploration) consume a typed agent-loop result rather than re-parsing
-//!    Claude Code's raw transcript.
+//!    so downstream tasks (PayloadSynthesis, SpecExtraction,
+//!    ChainRanking, Exploration) consume a typed agent-loop result
+//!    rather than re-parsing Claude Code's raw transcript.
 
 use std::path::PathBuf;
 use std::process::Stdio;

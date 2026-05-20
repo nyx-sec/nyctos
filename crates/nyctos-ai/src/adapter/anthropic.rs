@@ -3,8 +3,8 @@
 //! Direct `reqwest` against `POST /v1/messages` to avoid pulling a
 //! third-party SDK whose version drift would couple us to its release
 //! cadence. The adapter implements `one_shot` only; `agent_loop`
-//! returns `AiError::UnsupportedMode("agent_loop")` per the phase
-//! contract (the Claude Code adapter ships in Phase 13).
+//! returns `AiError::UnsupportedMode("agent_loop")`. Agent-loop work
+//! lives in the Claude Code adapter sibling module.
 //!
 //! Wire format follows the public Messages API: a JSON body with
 //! `model`, `system` (string or block array with `cache_control`),

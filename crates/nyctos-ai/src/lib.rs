@@ -1,11 +1,11 @@
 //! `AiRuntime` trait + concrete vendor adapters.
 //!
-//! Phase 12 ships the trait, the `BudgetTracker` host port, and the
-//! direct-HTTP Anthropic Messages adapter. Subsequent phases add the
-//! Claude Code CLI driver (Phase 13), OpenAI / Bedrock / Vertex
-//! adapters, and a local-LLM driver. Adapters depend only on
-//! `nyctos-types`; the agent binary wires the host-side budget
-//! port to `nyctos-core`'s `BudgetStore` at startup.
+//! Ships the trait, the `BudgetTracker` host port, the direct-HTTP
+//! Anthropic Messages adapter (`one_shot`), and the Claude Code CLI
+//! driver (`agent_loop`). OpenAI / Bedrock / Vertex and a local-LLM
+//! driver remain on the roadmap. Adapters depend only on
+//! `nyctos-types`; the agent binary wires the host-side budget port
+//! to `nyctos-core`'s `BudgetStore` at startup.
 
 pub mod adapter;
 pub mod runtime;

@@ -10,8 +10,8 @@
 //!
 //! The task crate stays vendor-neutral. It does not depend on
 //! `nyctos-core::store`; the binary turns every candidate into a
-//! `candidate_findings` row (quarantined awaiting Phase 19's verifier)
-//! at persistence time.
+//! `candidate_findings` row (quarantined awaiting the verifier) at
+//! persistence time.
 
 use std::collections::HashSet;
 
@@ -36,8 +36,8 @@ const SYSTEM_PROMPT_V1_STRICTER: &str = include_str!("../prompts/novel_findings.
 
 /// Outcome of one `run` invocation. The binary turns every
 /// [`Discovered::candidates`] entry into a `candidate_findings` row
-/// (quarantined until the Phase 19 verifier promotes it). `NoCandidates`
-/// is recorded only in the agent trace.
+/// (quarantined until the verifier promotes it). `NoCandidates` is
+/// recorded only in the agent trace.
 #[derive(Debug, Clone)]
 pub enum NovelFindingDiscoveryOutcome {
     /// Both deserialise + validate gates passed. `output.candidates`

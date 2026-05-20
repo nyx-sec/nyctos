@@ -33,6 +33,9 @@ Both names appear in these pages for the reasons explained in
 - [runs.md](runs.md): per-run lifecycle, the dispatcher's
   per-repo fan-out, `RunBundle` aggregation, the `runs` SQLite
   table, and stability of finding ids across re-scans.
+- [events.md](events.md): `AgentEvent` envelope, the fixed
+  per-run / per-project / per-repo ordering, the AI runtime
+  stream, the WS replay buffer, and the `Lagged` warning frame.
 
 ## Projects
 

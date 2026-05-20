@@ -1,7 +1,7 @@
 //! `AiRuntime` trait + the small `BudgetTracker` port that adapters
 //! hit on every successful round-trip to land a `BudgetTick` row in the
-//! Phase-03 `budgets` table. The trait stays vendor-neutral; concrete
-//! adapters live under `adapter/`.
+//! `budgets` table. The trait stays vendor-neutral; concrete adapters
+//! live under `adapter/`.
 
 use std::sync::{Arc, Mutex};
 

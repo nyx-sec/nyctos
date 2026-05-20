@@ -1,4 +1,4 @@
-//! AI Exploration agent task (Phase 23).
+//! AI Exploration agent task.
 //!
 //! Drives the Claude Code agent loop against a running chain-lane
 //! sandbox so the model can probe a real deployment with HTTP, shell,
@@ -8,15 +8,15 @@
 //!
 //! Three guard-rails wrap every call:
 //!
-//! 1. **Escape suite gate.** An [`EscapeSuiteGate`] runs the Phase 18
-//!    escape regression suite before the AI driver starts. A red
+//! 1. **Escape suite gate.** An [`EscapeSuiteGate`] runs the
+//!    escape-regression suite before the AI driver starts. A red
 //!    fixture refuses dispatch with a banner that names the failing
 //!    test; the [`ClaudeCodeAdapter::agent_loop`] is never invoked.
 //! 2. **Per-run hard cap.** The adapter checks the same
 //!    `(run_id, AgentLoop)` budget bucket every other task uses.
-//!    Phase 23 ships a default cap of $10 in USD micros tuned for
-//!    Claude Opus pricing; the agent task surfaces `BudgetExceeded`
-//!    in the typed outcome.
+//!    Default cap is $10 in USD micros tuned for Claude Opus
+//!    pricing; the agent task surfaces `BudgetExceeded` in the
+//!    typed outcome.
 //! 3. **Per-task soft cap.** A separate warning threshold emits
 //!    `AiEvent::TokenReceived` with a `[soft-cap]` prefix when the
 //!    agent crosses the limit mid-run; spend continues until the
@@ -26,12 +26,12 @@
 //! The crate stays vendor-neutral. It does not depend on
 //! `nyctos-core::store` or `nyctos-sandbox`. The binary glue in
 //! `crates/nyx-agent/src/ai_pipeline.rs` wires:
-//!   * an escape-suite gate backed by the real Phase 18 probe binary,
+//!   * an escape-suite gate backed by the real probe binary,
 //!   * persistence of each [`ExplorationFinding`] as a `findings` row
 //!     with `finding_origin = AiExploration` and `status = Quarantine`
-//!     (the same dynamic-confirm gate Phase 17 candidates flow
-//!     through. Phase 19's verifier promotes them when a payload
-//!     + spec pair confirms).
+//!     (the same dynamic-confirm gate novel-finding candidates flow
+//!     through; the verifier promotes them when a payload + spec pair
+//!     confirms).
 
 use std::time::Duration;
 
@@ -42,12 +42,15 @@ use nyctos_types::event::{AgentEvent, AiEvent, EventSink};
 
 use crate::runtime::AiRuntime;
 
-/// Stable identifier for the Phase 23 exploration prompt template.
-/// Persisted on every audit log entry so trail-back is unambiguous.
+/// Stable identifier for the exploration prompt template. Persisted
+/// on every audit log entry so trail-back is unambiguous. The
+/// `phase23` substring is a historical version slug, not a roadmap
+/// marker; rev it only when the prompt body changes in a way
+/// downstream consumers must distinguish.
 pub const EXPLORATION_PROMPT_VERSION: &str = "phase23.exploration.v1";
 
 /// Default per-run hard cap. $10 in USD micros, tuned for Claude Opus
-/// pricing per the Phase 23 spec.
+/// pricing.
 pub const DEFAULT_EXPLORATION_RUN_CAP_USD_MICROS: i64 = 10_000_000;
 
 /// Default per-task soft cap. Crossing this threshold emits a single
@@ -77,9 +80,9 @@ pub struct ExplorationScope {
     /// surface; tool-side enforcement lives in the binary's tool
     /// adapter.
     pub allowed_hosts: Vec<String>,
-    /// Endpoints the env-builder (Phase 20) surfaced for this run.
-    /// Carries a free-form description per endpoint so the prompt can
-    /// hand the agent a structured starting point.
+    /// Endpoints the env-builder surfaced for this run. Carries a
+    /// free-form description per endpoint so the prompt can hand the
+    /// agent a structured starting point.
     pub target_endpoints: Vec<ExplorationEndpoint>,
     /// Hard ceiling on tool invocations. The adapter's `max_turns`
     /// flag is the primary bound; this is the upper limit the
@@ -154,17 +157,17 @@ pub enum EscapeSuiteVerdict {
 /// verdict it produces.
 #[async_trait::async_trait]
 pub trait EscapeSuiteGate: Send + Sync {
-    /// Run the Phase 18 escape suite (or a cached recent result) and
-    /// surface the verdict. Returning `Err` is reserved for cases
+    /// Run the escape-regression suite (or a cached recent result)
+    /// and surface the verdict. Returning `Err` is reserved for cases
     /// where the suite itself could not run; a normal red fixture
     /// returns `Ok(EscapeSuiteVerdict::Red { .. })`.
     async fn check(&self) -> Result<EscapeSuiteVerdict, AiError>;
 }
 
 /// Typed view of one tool invocation the agent took. Built directly
-/// from the [`AgentResult::extracted`] list. Phase 23 ships this as the
-/// audit log surface; the binary persists it alongside the run's
-/// `agent_traces` row when the trace-viewer phase wires that up.
+/// from the [`AgentResult::extracted`] list. Ships as the audit log
+/// surface; the binary persists it alongside the run's
+/// `agent_traces` row when the trace viewer wires that up.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuditEntry {
     /// Recognised tool name (`http.probe`, `record_exploration_finding`,
