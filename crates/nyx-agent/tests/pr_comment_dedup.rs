@@ -107,7 +107,7 @@ async fn create_then_update_same_comment() {
     // from the first run; the agent must PATCH it in place rather
     // than create a new one. The `user` block is required because
     // `find_existing_comment` rejects marker-shadowing comments not
-    // authored by a known bot identity (Phase-26 security fix).
+    // authored by a known bot identity (bot-identity check on dedup match).
     Mock::given(method("GET"))
         .and(path("/repos/octo/demo/issues/42/comments"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!([

@@ -2361,3 +2361,46 @@ notes (pass 24):
 - no http.probe issued (ALLOWED HOSTS empty), no shell.exec, no fs writes outside this sentinel.
 - tool budget this pass: ~9 / 24 calls. Stops here per quality-over-count.
 
+
+
+=== resumed survey 2026-05-20 (expl-demo continuation) ===
+focus: AiExploration finding-ingest path itself (uncovered in prior 104)
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyx-agent/src/ai_pipeline.rs",
+  "line": 2443,
+  "cap": "DATA_TAMPERING",
+  "endpoint": "<ai-pipeline:persist_exploration_finding -> findings.upsert>",
+  "rationale": "finding.path / finding.cap / finding.line arrive verbatim from the LLM agent loop and feed finding_id_hash(repo, path, line, cap, rule) with no allowlist. An attacker who steers the agent (poisoned http.probe response body, prompt-injection in target HTML headers, hostile ALLOWED_HOSTS server) can choose a path/cap/line tuple that collides — within rule='ai-exploration:<cap>' space — with a prior AiExploration finding, then store.findings().upsert() overwrites the earlier verdict_blob/severity/status with a chosen payload (severity hardcoded 'High' at line 2461). This silently rewrites historical exploration findings; the audit_trace row is appended, not replaced, so the trail looks plausible. Static pass missed because the sink (.upsert) is correct DB usage — the gap is the absence of (a) a `cap` enum allowlist and (b) finding_id_hash treating LLM-controlled path as untrusted.",
+  "suggested_payload_hint": "agent emits two findings with identical path='crates/x/y.rs', line=42, cap='AUTH_BYPASS' but different rationale; second call overwrites first verdict_blob in-place. Verify by diffing findings.verdict_blob between calls."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyx-agent/src/ai_pipeline.rs",
+  "line": 2457,
+  "cap": "VERIFIER_BYPASS",
+  "endpoint": "<ai-pipeline:persist_exploration_finding finding.cap pass-through>",
+  "rationale": "finding.cap is stored unvalidated as FindingRecord.cap. Downstream PayloadSynthesis fan-out (run_payload_synthesis_pass -> build_inputs) keys payload libraries off `diag.cap` / `findings.cap`. An LLM driven into emitting cap='UNKNOWN_CAP_NOT_IN_LIBRARY' (or an empty string, or a Unicode-confusable like `OS_C\\u202EOMMAND`) routes the row to a no-op verifier branch — the finding is real but quarantined indefinitely with no payloads attempted. Inverse case: agent labels a low-severity info disclosure as cap='OS_COMMAND' and the verifier wastes the per-run budget firing shell payloads at a non-shell sink. Either way the verifier promotion gate is bypassed without ever tripping a 'malformed input' error path. Static pass missed because there is no taint flow — the bug is a missing enum validator on a field downstream code treats as trusted.",
+  "suggested_payload_hint": "POST a synthetic ExplorationFinding with cap='' or cap='AUTH_BYPASS\\x00X' (NUL-injected) and confirm payload_synthesis_pass.build_inputs yields zero inputs for that finding while findings.upsert succeeds."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyx-agent/nyx_exploration.sentinel",
+  "line": 1,
+  "cap": "AUDIT_BYPASS",
+  "endpoint": "<chain-lane:fs.write_sentinel tool vs record_exploration_finding tool>",
+  "rationale": "Prior pass-15 sentinel content shows 104 'record_exploration_finding {...}' JSON blocks written directly to the sentinel *file* rather than dispatched through the record_exploration_finding tool. The dual surface (file write + structured tool) means an agent (or upstream prompt injection) can choose the file-write path to land findings without entering the structured tool's audit log — the chain-lane sandbox audits each *tool call*, not the JSON content inside fs.write_sentinel payloads. If downstream extracted-result parsing in nyctos-ai (ExtractedAgentResult::ExplorationFinding @ ai_pipeline.rs:4106) reads from sentinel content *or* from tool calls, findings can enter the persistence queue tagged with `attempts=0` and no per-call trace row, bypassing the spent_usd_micros + token metrics. Static pass missed because both code paths exist for legitimate reasons; the vulnerability is the *combination* — two ingress points with asymmetric audit coverage.",
+  "suggested_payload_hint": "in a chain-lane run, instruct the agent to use fs.write_sentinel exclusively (no record_exploration_finding tool calls) and verify whether findings appear in store.findings() with empty agent_traces metrics — that gap is the audit-bypass."
+}
+
+---
+notes
+- survey-only run; no http.probe (ALLOWED HOSTS empty), no shell.exec destructive ops, no fs writes outside this sentinel.
+- 3 novel findings emitted; tool budget ~14 / 24 calls; stopped per quality-over-count.
+- all three findings target the AI-pipeline ingest surface, which prior 15 passes (focused on router.rs, webhook.rs, shim, packaging) had not enumerated.

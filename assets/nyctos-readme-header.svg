@@ -25,24 +25,24 @@
     </style>
   </defs>
 
-  <g transform="translate(54 48)">
-    <text class="banner" x="0" y="0">
-      <tspan fill="#2ea067">███╗   ██╗██╗   ██╗ ██████╗</tspan><tspan fill="#c79a2b">████████╗ ██████╗ ███████╗</tspan>
+  <g transform="translate(-22 48)" xml:space="preserve">
+    <text class="banner" x="0" y="0" xml:space="preserve">
+      <tspan fill="#2ea067" xml:space="preserve">███╗   ██╗██╗   ██╗ ██████╗</tspan><tspan fill="#c79a2b" xml:space="preserve">████████╗ ██████╗ ███████╗</tspan>
     </text>
-    <text class="banner" x="0" y="38">
-      <tspan fill="#2ea067">████╗  ██║╚██╗ ██╔╝██╔════╝</tspan><tspan fill="#c79a2b">╚══██╔══╝██╔═══██╗██╔════╝</tspan>
+    <text class="banner" x="0" y="38" xml:space="preserve">
+      <tspan fill="#2ea067" xml:space="preserve">████╗  ██║╚██╗ ██╔╝██╔════╝</tspan><tspan fill="#c79a2b" xml:space="preserve">╚══██╔══╝██╔═══██╗██╔════╝</tspan>
     </text>
-    <text class="banner" x="0" y="76">
-      <tspan fill="#2ea067">██╔██╗ ██║ ╚████╔╝ ██║     </tspan><tspan fill="#c79a2b">   ██║   ██║   ██║███████╗</tspan>
+    <text class="banner" x="0" y="76" xml:space="preserve">
+      <tspan fill="#2ea067" xml:space="preserve">██╔██╗ ██║ ╚████╔╝ ██║     </tspan><tspan fill="#c79a2b" xml:space="preserve">   ██║   ██║   ██║███████╗</tspan>
     </text>
-    <text class="banner" x="0" y="114">
-      <tspan fill="#2ea067">██║╚██╗██║  ╚██╔╝  ██║     </tspan><tspan fill="#c79a2b">   ██║   ██║   ██║╚════██║</tspan>
+    <text class="banner" x="0" y="114" xml:space="preserve">
+      <tspan fill="#2ea067" xml:space="preserve">██║╚██╗██║  ╚██╔╝  ██║     </tspan><tspan fill="#c79a2b" xml:space="preserve">   ██║   ██║   ██║╚════██║</tspan>
     </text>
-    <text class="banner" x="0" y="152">
-      <tspan fill="#2ea067">██║ ╚████║   ██║   ╚██████╗</tspan><tspan fill="#c79a2b">   ██║   ╚██████╔╝███████║</tspan>
+    <text class="banner" x="0" y="152" xml:space="preserve">
+      <tspan fill="#2ea067" xml:space="preserve">██║ ╚████║   ██║   ╚██████╗</tspan><tspan fill="#c79a2b" xml:space="preserve">   ██║   ╚██████╔╝███████║</tspan>
     </text>
-    <text class="banner" x="0" y="190">
-      <tspan fill="#2ea067">╚═╝  ╚═══╝   ╚═╝    ╚═════╝</tspan><tspan fill="#c79a2b">   ╚═╝    ╚═════╝ ╚══════╝</tspan>
+    <text class="banner" x="0" y="190" xml:space="preserve">
+      <tspan fill="#2ea067" xml:space="preserve">╚═╝  ╚═══╝   ╚═╝    ╚═════╝</tspan><tspan fill="#c79a2b" xml:space="preserve">   ╚═╝    ╚═════╝ ╚══════╝</tspan>
     </text>
   </g>
 

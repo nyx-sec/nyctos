@@ -1036,7 +1036,7 @@ async fn repro_bundle_endpoint_builds_and_downloads() {
     h.abort();
 }
 
-// ---- /webhook/git (Phase 27) ------------------------------------------------
+// ---- /webhook/git -----------------------------------------------------------
 
 async fn start_webhook_server(
     secret: &[u8],
@@ -1402,7 +1402,7 @@ async fn webhook_refless_body_without_event_header_does_not_trigger() {
     h.abort();
 }
 
-// ---- /projects (Phase 5) ----------------------------------------------------
+// ---- /projects --------------------------------------------------------------
 
 #[tokio::test]
 async fn projects_crud_roundtrip() {

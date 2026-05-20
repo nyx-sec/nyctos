@@ -1,23 +1,22 @@
 //! AI runtime + agent-task pipeline glue.
 //!
-//! Phase 14 lands two things here:
+//! The module wires together:
 //!
-//! 1. A [`BudgetStoreTracker`] that adapts `nyctos-core`'s SQLite
+//! 1. [`BudgetStoreTracker`]: adapts `nyctos-core`'s SQLite
 //!    `BudgetStore` to the `nyctos-ai::BudgetTracker` host port the
 //!    adapters call on every successful round trip. The trait surface
 //!    lives in `nyctos-ai`; the SQLite backend lives in
 //!    `nyctos-core`; this binary owns the wiring.
-//! 2. [`run_payload_synthesis_pass`], which scans a finished
+//! 2. [`run_payload_synthesis_pass`]: scans a finished
 //!    `RunBundle<Diag>` for diags carrying
 //!    `Unsupported(NoPayloadsForCap)` and fans out one PayloadSynthesis
 //!    task per finding. Concurrency is capped by
 //!    `[ai] max_concurrent_one_shot`; spend is recorded against the
 //!    run's `budgets` row.
-//!
-//! Phase 15 adds [`run_spec_derivation_pass`], same shape as the
-//! payload pass but firing on `Inconclusive(SpecDerivationFailed)`
-//! diags. Successful outcomes land in the `harness_specs` table and
-//! the parent finding's `spec_id` back-link is stamped.
+//! 3. [`run_spec_derivation_pass`]: same shape as the payload pass
+//!    but firing on `Inconclusive(SpecDerivationFailed)` diags.
+//!    Successful outcomes land in the `harness_specs` table and the
+//!    parent finding's `spec_id` back-link is stamped.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -80,8 +79,8 @@ const SPEC_DERIVATION_PER_CALL_CAP_USD_MICROS: i64 = AiConfig::DEFAULT_RUN_BUDGE
 const SPEC_DERIVATION_EXCERPT_RADIUS: u32 = 4;
 
 /// Maximum upstream files the SpecDerivation pre-fetch attaches to a
-/// prompt. The phase 15 plan caps this at "up to three relevant files
-/// (call site, sink, framework binding)".
+/// prompt. Capped at three relevant files (call site, sink, framework
+/// binding) so the prompt envelope stays bounded.
 const SPEC_DERIVATION_MAX_EXCERPTS: usize = 3;
 
 /// `BudgetTracker` impl backed by the SQLite `budgets` table.
@@ -369,8 +368,8 @@ async fn apply_outcome(
 }
 
 /// Map a source path to a language tag the prompt can quote. Keeps the
-/// table small (Phase 14 only ships PayloadSynthesis for the languages
-/// nyx already supports); unknown extensions land as `unknown`.
+/// table small (PayloadSynthesis only ships for the languages nyx
+/// already supports); unknown extensions land as `unknown`.
 pub fn infer_lang(path: &str) -> String {
     let lower = path.to_lowercase();
     let ext = lower.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
@@ -1095,7 +1094,7 @@ async fn apply_chain_outcome(
     Ok(())
 }
 
-// ----- NovelFindingDiscovery (Phase 17) -----------------------------------
+// ----- NovelFindingDiscovery ----------------------------------------------
 
 /// Per-call cap forwarded into each NovelFindingDiscovery `Budget`.
 /// Matches the per-run cap so a single batch may use the full bucket
@@ -1168,12 +1167,12 @@ pub struct NovelFindingDiscoveryPassReport {
 /// repo in `bundle`. No-op (returns a default report) when
 /// `config.runtime != Anthropic` or no API key is configured.
 ///
-/// Per the Phase 17 plan, this is the most expensive pass; a per-run
-/// cap (default $5 model spend, sourced from
+/// This is the most expensive AI pass; a per-run cap (default $5
+/// model spend, sourced from
 /// [`DEFAULT_NOVEL_DISCOVERY_RUN_CAP_USD_MICROS`]) halts further
 /// batches once the cumulative `(run_id, OneShot)` spend crosses it.
 /// All output starts in Quarantine (`candidate_findings.status =
-/// 'Pending'`); promotion to a real finding lands with Phase 19's
+/// 'Pending'`); promotion to a real finding lands with the payload
 /// verifier.
 pub async fn run_novel_finding_discovery_pass(
     config: &AiConfig,
@@ -1509,7 +1508,7 @@ async fn apply_novel_outcome(
                     rationale: Some(c.rationale.clone()),
                     suggested_payload_hint: c.suggested_payload_hint.clone(),
                     // Pending = quarantined for AI proposals; promotion
-                    // to a real finding requires the Phase 19 verifier
+                    // to a real finding requires the payload verifier
                     // to confirm via PayloadSynthesis + dynamic verify.
                     status: nyctos_core::store::CandidateStatus::Pending.as_str().to_string(),
                     prompt_version: Some(prompt_version.clone()),
@@ -1567,7 +1566,7 @@ fn candidate_id(
 ) -> String {
     // The stable half reuses `finding_id_hash`'s 8-byte BLAKE3 truncation
     // so the candidate id mirrors the eventual `findings.id` shape if
-    // the Phase 19 verifier promotes it. `run_id` + `rationale` are
+    // the payload verifier promotes it. `run_id` + `rationale` are
     // folded into the `rule` slot so two candidates that differ only
     // in rationale do not collide.
     let folded_rule = format!(
@@ -1589,7 +1588,7 @@ fn candidate_id(
     format!("cand-{stable}-{created_at_ms:x}-{rank:02}-{}", short_token())
 }
 
-// ----- Payload verification (Phase 19) -----------------------------------
+// ----- Payload verification ----------------------------------------------
 
 /// Counts surfaced by [`run_payload_verification_pass`].
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -1810,7 +1809,7 @@ async fn drive_verify_for_candidate(
 ) -> anyhow::Result<VerifyOutcome> {
     // Candidates do not yet flow through PayloadSynthesis +
     // SpecDerivation (that hand-off is the deferred
-    // candidate-confirmation pipeline). Phase 19 picks up the
+    // candidate-confirmation pipeline). The verifier picks up the
     // promotion side using a built-in per-cap harness template
     // seeded by `suggested_payload_hint` plus a constant benign
     // control. When the synthesis hand-off lands, this path swaps
@@ -2057,9 +2056,9 @@ fn degenerate_oracle_reason(oracle: &Oracle) -> Option<&'static str> {
 
 /// Serialise a `VerifyResult` and stamp `kind = "VerifyResult"` at the
 /// top level so the UI can distinguish verifier output from the
-/// Phase-04 free-form `{"message": ...}` blob without sniffing field
-/// names. The original `VerifyResult` fields remain at the top level
-/// so legacy parsers that read `serde_json::from_str::<VerifyResult>`
+/// legacy free-form `{"message": ...}` verdict blob without sniffing
+/// field names. The original `VerifyResult` fields remain at the top
+/// level so direct `serde_json::from_str::<VerifyResult>` consumers
 /// keep working.
 fn stamp_verdict_kind(result: &VerifyResult) -> anyhow::Result<String> {
     let mut value = serde_json::to_value(result)?;
@@ -2075,8 +2074,8 @@ async fn persist_finding_verdict(
     result: &VerifyResult,
 ) -> anyhow::Result<()> {
     // Stamp the `VerifyResult` JSON with a typed `kind` discriminator so
-    // the API and UI can distinguish Phase-19 verifier output from the
-    // Phase-04 free-form `{"message": ...}` blob without sniffing
+    // the API and UI can distinguish verifier output from the legacy
+    // free-form `{"message": ...}` verdict blob without sniffing
     // field names. The fields remain at the top level so direct
     // `serde_json::from_str::<VerifyResult>` consumers still parse.
     let verdict_blob = stamp_verdict_kind(result)?;
@@ -2146,7 +2145,7 @@ async fn promote_candidate(
     Ok(())
 }
 
-// ----- AI Exploration (Phase 23) -----------------------------------------
+// ----- AI Exploration ----------------------------------------------------
 
 /// Counts surfaced by [`run_ai_exploration_pass`].
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -2162,7 +2161,7 @@ pub struct AiExplorationPassReport {
     /// already exhausted before the call.
     pub halted_budget_exhausted: u32,
     /// `findings` rows written with `finding_origin = AiExploration`
-    /// and `status = Quarantine`. The Phase 19 verifier promotes them
+    /// and `status = Quarantine`. The payload verifier promotes them
     /// to `Verified` when a payload + spec pair confirms.
     pub findings_quarantined: u32,
     /// Exploration calls that bubbled an unrecoverable upstream error
@@ -2210,15 +2209,15 @@ impl EscapeSuiteGate for StaticEscapeSuiteGate {
 /// agent loop. Findings the model records via the
 /// `record_exploration_finding` tool land in the `findings` table with
 /// `finding_origin = AiExploration` and `status = Quarantine`; the
-/// Phase 19 verifier promotes them to `Verified` when a payload + spec
-/// pair confirms (the same dynamic-confirm gate Phase 17 candidates
-/// flow through).
+/// payload verifier promotes them to `Verified` when a payload + spec
+/// pair confirms (the same dynamic-confirm gate NovelFindingDiscovery
+/// candidates flow through).
 ///
-/// Per the Phase 23 plan, the escape suite is a precondition: a red
-/// fixture halts the driver before any agent loop fires. A run-wide
-/// hard cap (default $10 in USD micros, tuned for Claude Opus pricing)
-/// bounds spend; a per-task soft cap emits a warning frame on the
-/// event bus without halting the run.
+/// The escape suite is a precondition: a red fixture halts the driver
+/// before any agent loop fires. A run-wide hard cap (default $10 in
+/// USD micros, tuned for Claude Opus pricing) bounds spend; a per-task
+/// soft cap emits a warning frame on the event bus without halting
+/// the run.
 pub async fn run_ai_exploration_pass(
     config: &AiConfig,
     store: &Store,
@@ -2227,12 +2226,12 @@ pub async fn run_ai_exploration_pass(
     escape_gate: &dyn EscapeSuiteGate,
     events: EventSink,
 ) -> anyhow::Result<AiExplorationPassReport> {
-    // Phase 23 routes the exploration loop through Claude Code's
-    // agent loop adapter specifically; the Anthropic Messages
-    // adapter does not support agent_loop. Future phases may add
-    // additional agent-loop adapters; the dispatch picks Claude Code
-    // when the configured runtime is `claude-code` OR when the
-    // configured runtime is `anthropic` and a Claude Code binary is
+    // Route the exploration loop through Claude Code's agent loop
+    // adapter specifically; the Anthropic Messages adapter does not
+    // support agent_loop. Future agent-loop adapters slot in here;
+    // the dispatch picks Claude Code when the configured runtime is
+    // `claude-code` OR when the configured runtime is `anthropic`
+    // and a Claude Code binary is
     // on PATH (since the Anthropic adapter cannot drive an agent
     // loop).
     let _ = config;
@@ -2249,7 +2248,7 @@ pub async fn run_ai_exploration_pass(
 
 /// Inner driver, generic over `AiRuntime` so tests can supply a
 /// scripted agent-loop runtime without going through the production
-/// Claude Code adapter. Shape mirrors the Phase-17 `drive_novel_finding_pass`
+/// Claude Code adapter. Shape mirrors the `drive_novel_finding_pass`
 /// inner driver.
 pub(crate) async fn drive_ai_exploration_pass<R: AiRuntime + ?Sized>(
     runtime: &R,
@@ -2305,8 +2304,8 @@ fn make_exploration_tracker(store: &Store) -> SharedBudgetTracker {
 
 fn build_exploration_scope(run_id: &str, repo: &str) -> ExplorationScope {
     let mut scope = ExplorationScope::new(run_id, format!("expl-{repo}"));
-    // Endpoint discovery is the env-builder's job (Phase 20). Until
-    // that wiring lands, the agent receives an empty target list and
+    // Endpoint discovery is the env-builder's job. Until that wiring
+    // lands, the agent receives an empty target list and
     // the prompt instructs it to survey the workspace before probing.
     // The allowed-host list stays empty by default; operators wire
     // real hosts through the settings page once it ships.
@@ -3496,11 +3495,12 @@ mod tests {
 
     #[tokio::test]
     async fn drive_novel_finding_pass_persists_candidate_for_similar_second_sink() {
-        // Phase 17 acceptance: a repo with one nyx-finding (line 3) and
-        // an intentionally-similar second vulnerability (line 6)
-        // produces a CandidateFinding for the second one. The candidate
-        // lands as `candidate_findings.Pending` so nothing surfaces to
-        // the operator without the Phase 19 verifier confirming it.
+        // NovelFindingDiscovery acceptance: a repo with one nyx-finding
+        // (line 3) and an intentionally-similar second vulnerability
+        // (line 6) produces a CandidateFinding for the second one. The
+        // candidate lands as `candidate_findings.Pending` so nothing
+        // surfaces to the operator without the payload verifier
+        // confirming it.
         let tmp_db = tempfile::tempdir().unwrap();
         let store = Store::open(tmp_db.path()).await.unwrap();
         store.repos().upsert(&seed_repo("repo-1")).await.unwrap();
@@ -3684,7 +3684,7 @@ mod tests {
         assert_eq!(report, NovelFindingDiscoveryPassReport::default());
     }
 
-    // -------- payload verification pass coverage (Phase 19) --------
+    // -------- payload verification pass coverage --------------------
 
     fn shell_spec_blob() -> String {
         // Canned SQLi-style shell harness. Same fixture as the
@@ -3750,8 +3750,8 @@ mod tests {
 
     #[tokio::test]
     async fn verifier_confirms_finding_with_llm_payload() {
-        // Phase 19 acceptance #3: an LLM-synthesised payload for a
-        // test finding flows through the verifier and lands a verdict.
+        // Verifier acceptance: an LLM-synthesised payload for a test
+        // finding flows through the verifier and lands a verdict.
         let (_ws_tmp, ws_handle) = ws_handle_for("repo-V").await;
         let mut workspaces = HashMap::new();
         workspaces.insert("repo-V".to_string(), ws_handle);
@@ -3803,7 +3803,7 @@ mod tests {
 
     #[tokio::test]
     async fn verifier_closes_finding_when_payload_is_benign() {
-        // Phase 19 acceptance #2: replacing the vuln payload with the
+        // Verifier acceptance: replacing the vuln payload with the
         // benign one yields NotConfirmed; the finding flips to Closed.
         let (_ws_tmp, ws_handle) = ws_handle_for("repo-B").await;
         let mut workspaces = HashMap::new();
@@ -3839,7 +3839,7 @@ mod tests {
 
     #[tokio::test]
     async fn verifier_promotes_quarantined_candidate_on_confirmed() {
-        // Phase 19 acceptance #4: an AI-discovered candidate gets
+        // Verifier acceptance: an AI-discovered candidate gets
         // promoted from Quarantined to Confirmed when its verify
         // passes. The promoted row lands with `finding_origin =
         // AiExploration`.
@@ -3868,8 +3868,8 @@ mod tests {
             ),
         };
         store.candidate_findings().insert(&cand).await.unwrap();
-        // Phase 19 candidate promotion uses the built-in per-cap
-        // harness template seeded by `suggested_payload_hint`; no
+        // Candidate promotion uses the built-in per-cap harness
+        // template seeded by `suggested_payload_hint`; no
         // payload / spec rows are pre-staged. The candidate-confirmation
         // pipeline (deferred) swaps this to real per-candidate
         // synthesis output.
@@ -4085,8 +4085,8 @@ mod tests {
 
     #[tokio::test]
     async fn drive_ai_exploration_persists_quarantined_finding() {
-        // Phase 23 acceptance: an AI-discovered finding flows into
-        // `findings` with `finding_origin = AiExploration` and
+        // Exploration acceptance: an AI-discovered finding flows
+        // into `findings` with `finding_origin = AiExploration` and
         // `status = Quarantine`.
         let tmp_db = tempfile::tempdir().unwrap();
         let store = Store::open(tmp_db.path()).await.unwrap();
@@ -4158,8 +4158,9 @@ mod tests {
 
     #[tokio::test]
     async fn drive_ai_exploration_red_gate_halts_with_banner() {
-        // Phase 23 acceptance: a red escape-suite fixture halts the AI
-        // driver. The agent loop must not fire (the scripted runtime's
+        // Exploration acceptance: a red escape-suite fixture halts
+        // the AI driver. The agent loop must not fire (the scripted
+        // runtime's
         // queue is empty, so a stray dispatch would panic), and the
         // report counts the halt.
         let tmp_db = tempfile::tempdir().unwrap();

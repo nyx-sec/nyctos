@@ -95,8 +95,8 @@ fn run(cfg: ShimConfig) -> ExitCode {
     }
     // Birdcage refuses some exceptions (path does not exist, filesystem
     // the kernel cannot landlock, Seatbelt-incompatible pattern). Until
-    // an out-of-band status fd lands (paired with the Phase 18 status-fd
-    // shim work), surface refusals on stderr so callers see why the
+    // an out-of-band status fd lands (paired with the structured
+    // status-fd shim work), surface refusals on stderr so callers see why the
     // sandboxee later trips a confusing "permission denied" on a path
     // they thought was allowed. The parent BirdcageSandbox captures
     // this stream via SandboxOutcome.stderr.

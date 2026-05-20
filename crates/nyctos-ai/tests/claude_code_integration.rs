@@ -1,5 +1,5 @@
-//! Phase-13 integration test: drive `ClaudeCodeAdapter` against the
-//! real `claude` CLI when it is on `PATH`. The test is skipped cleanly
+//! Integration test: drive `ClaudeCodeAdapter` against the real
+//! `claude` CLI when it is on `PATH`. The test is skipped cleanly
 //! when the binary is missing so CI without Claude Code installed
 //! stays green.
 

@@ -1,4 +1,4 @@
-//! Phase 20 acceptance: docker-compose env-builder.
+//! Acceptance tests for the docker-compose env-builder.
 //!
 //! Two tests live here:
 //!

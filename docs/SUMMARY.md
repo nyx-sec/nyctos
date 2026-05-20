@@ -36,6 +36,10 @@ Both names appear in these pages for the reasons explained in
 - [events.md](events.md): `AgentEvent` envelope, the fixed
   per-run / per-project / per-repo ordering, the AI runtime
   stream, the WS replay buffer, and the `Lagged` warning frame.
+- [ai-runtime.md](ai-runtime.md): the `AiRuntime` trait, the
+  shipped Anthropic and Claude Code adapters, the
+  `BudgetTracker` host port, and the five typed task
+  implementations layered on top.
 
 ## Projects
 
