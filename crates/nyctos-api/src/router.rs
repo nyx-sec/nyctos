@@ -1866,9 +1866,7 @@ fn ensure_bundle_path_inside_root(
 fn bundle_to_api(err: BundleError) -> ApiError {
     match err {
         BundleError::FindingNotFound(id) => ApiError::NotFound(format!("finding `{id}` not found")),
-        BundleError::PathTooLong(p) => {
-            ApiError::BadRequest(format!("bundle path `{p}` exceeds USTAR limit"))
-        }
+        BundleError::Tar(e) => ApiError::Internal(format!("bundle tar write: {e}")),
         BundleError::Store(e) => ApiError::Store(e),
         BundleError::Io { path, source } => {
             ApiError::Internal(format!("bundle io at {}: {source}", path.display()))
@@ -2074,86 +2072,38 @@ async fn replay_repro_bundle(
     Ok(Sse::new(stream).keep_alive(Default::default()))
 }
 
-/// Minimal USTAR extractor for the format produced by
-/// `nyctos_core::report::repro_bundle::build_ustar`. Each entry is
-/// either a directory (`typeflag == '5'`) or a regular file (`'0'` or
-/// `'\0'`). The format-spec exit (two empty 512-byte blocks) stops the
-/// walk.
+/// Extract the USTAR/PAX tarball produced by
+/// `nyctos_core::report::repro_bundle::build_ustar`. Rejects entries
+/// whose path escapes the destination via `..` or absolute components
+/// so a substituted bundle cannot write outside the tempdir.
 fn extract_ustar(bytes: &[u8], dest: &std::path::Path) -> std::io::Result<()> {
-    use std::io::Write;
-    let mut i = 0;
-    while i + 512 <= bytes.len() {
-        let header = &bytes[i..i + 512];
-        if header.iter().all(|b| *b == 0) {
-            break;
-        }
-        let name_end = header[..100].iter().position(|b| *b == 0).unwrap_or(100);
-        let name = std::str::from_utf8(&header[..name_end])
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?
-            .to_string();
-        let size = parse_octal(&header[124..135]);
-        let typeflag = header[156];
-        let safe_name = sanitise_tar_path(&name).ok_or_else(|| {
+    let mut archive = tar::Archive::new(std::io::Cursor::new(bytes));
+    // Honor on-record perms but refuse path traversal. The `tar` crate
+    // calls this "Overwrite" + "PreservePermissions" + "Unpack"; the
+    // default unpack already rejects `..`, but we sanitise explicitly
+    // so a malformed PAX `path` extension cannot smuggle one in.
+    archive.set_preserve_permissions(true);
+    archive.set_overwrite(true);
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?.into_owned();
+        let safe = sanitise_tar_path(&path).ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::InvalidData, "unsafe tar path")
         })?;
-        let target = dest.join(&safe_name);
-        if typeflag == b'5' || name.ends_with('/') {
-            std::fs::create_dir_all(&target)?;
-        } else {
-            if let Some(parent) = target.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            let mut f = std::fs::File::create(&target)?;
-            let data_start = i + 512;
-            let data_end = data_start + size as usize;
-            if data_end > bytes.len() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    "truncated tar",
-                ));
-            }
-            f.write_all(&bytes[data_start..data_end])?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let mode = parse_octal(&header[100..107]) as u32;
-                if mode > 0 {
-                    let _ = std::fs::set_permissions(
-                        &target,
-                        std::fs::Permissions::from_mode(mode & 0o777),
-                    );
-                }
-            }
-        }
-        let data_blocks = size.div_ceil(512);
-        i += 512 + (data_blocks as usize) * 512;
+        let target = dest.join(safe);
+        entry.unpack(&target)?;
     }
     Ok(())
 }
 
-fn parse_octal(bytes: &[u8]) -> u64 {
-    let mut v: u64 = 0;
-    for b in bytes {
-        if *b == 0 || *b == b' ' {
-            break;
-        }
-        if !(b'0'..=b'7').contains(b) {
-            break;
-        }
-        v = v * 8 + (b - b'0') as u64;
-    }
-    v
-}
-
 /// Reject tar entries containing `..` components or absolute paths so
 /// extraction stays inside the destination tempdir.
-fn sanitise_tar_path(name: &str) -> Option<std::path::PathBuf> {
-    let p = std::path::Path::new(name);
-    if p.is_absolute() {
+fn sanitise_tar_path(name: &std::path::Path) -> Option<std::path::PathBuf> {
+    if name.is_absolute() {
         return None;
     }
     let mut out = std::path::PathBuf::new();
-    for component in p.components() {
+    for component in name.components() {
         match component {
             std::path::Component::Normal(s) => out.push(s),
             std::path::Component::CurDir => {}

@@ -34,7 +34,7 @@ use axum::http::{HeaderMap, Request, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
 use hmac::{Hmac, Mac};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use sha2::Sha256;
 use subtle::ConstantTimeEq;
 
@@ -252,27 +252,158 @@ pub struct WebhookConfig {
     /// HMAC body) does not retrigger the dispatcher. Shared across
     /// clones of the config so a router rebuild keeps the cache hot.
     pub dedup: Arc<Mutex<DeliveryDedupCache>>,
+    /// Provider-specific decoder for the verified push body. Operators
+    /// pick this via `[triggers].webhook_provider`; the default
+    /// (`refheads`) covers GitHub / Gitea / Forgejo / Gogs / GitLab,
+    /// which all ship the branch under top-level `ref`.
+    pub extractor: Arc<dyn WebhookPayloadExtractor>,
 }
 
 impl WebhookConfig {
-    /// Build a webhook config with a fresh dedup cache. Production +
-    /// tests use this so they do not have to spell the `dedup` field
-    /// in struct literals.
+    /// Build a webhook config with a fresh dedup cache and the default
+    /// `ref: refs/heads/<branch>` extractor.
     pub fn new(
         secret: Arc<dyn WebhookSecretResolver>,
         branch: Option<String>,
         repo: Option<String>,
     ) -> Self {
-        Self { secret, branch, repo, dedup: Arc::new(Mutex::new(DeliveryDedupCache::new())) }
+        Self::with_extractor(secret, branch, repo, Arc::new(RefHeadsExtractor))
+    }
+
+    /// Build a webhook config with a fresh dedup cache and an explicit
+    /// extractor. Used when the operator's `[triggers].webhook_provider`
+    /// names a non-default shape (Bitbucket Server, Sourcehut, ...).
+    pub fn with_extractor(
+        secret: Arc<dyn WebhookSecretResolver>,
+        branch: Option<String>,
+        repo: Option<String>,
+        extractor: Arc<dyn WebhookPayloadExtractor>,
+    ) -> Self {
+        Self {
+            secret,
+            branch,
+            repo,
+            dedup: Arc::new(Mutex::new(DeliveryDedupCache::new())),
+            extractor,
+        }
     }
 }
 
-/// Body shape we extract. Extra fields are tolerated.
-#[derive(Debug, Deserialize)]
-struct WebhookPayload {
-    /// `refs/heads/<branch>` for push events.
-    #[serde(rename = "ref", default)]
-    pub ref_: Option<String>,
+/// Outcome of pulling the push fields out of an upstream-signed body.
+/// `branch` carries the bare branch name (e.g. `main`, not the full
+/// `refs/heads/main` ref). `repo_hint` is the upstream-reported repo
+/// identifier when present; reserved for the future per-repo trigger
+/// path (today the handler scope-alls and ignores the hint).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ParsedPush {
+    pub branch: Option<String>,
+    pub repo_hint: Option<String>,
+}
+
+/// Provider-specific decoder for the verified webhook body. Implementors
+/// receive the raw headers (so they can pick a payload shape per
+/// `Content-Type` or X-Event-Key) and the byte slice the HMAC already
+/// covered. Returning `None` signals "this body is not a push we can
+/// route" and the handler responds 200 + `triggered=false`.
+pub trait WebhookPayloadExtractor: Send + Sync + 'static {
+    fn extract(&self, headers: &HeaderMap, body: &[u8]) -> Option<ParsedPush>;
+}
+
+/// Decodes the top-level `"ref": "refs/heads/<branch>"` shape shipped by
+/// GitHub, Gitea, Forgejo, Gogs, and GitLab. Tolerates extra fields and
+/// reads `repository.full_name` when present so future per-repo routing
+/// has a hint to work with.
+pub struct RefHeadsExtractor;
+
+impl WebhookPayloadExtractor for RefHeadsExtractor {
+    fn extract(&self, _headers: &HeaderMap, body: &[u8]) -> Option<ParsedPush> {
+        let value: serde_json::Value = serde_json::from_slice(body).ok()?;
+        let branch = value
+            .get("ref")
+            .and_then(|v| v.as_str())
+            .and_then(|r| r.strip_prefix("refs/heads/"))
+            .map(|s| s.to_string());
+        let repo_hint = value
+            .get("repository")
+            .and_then(|r| r.get("full_name").or_else(|| r.get("name")))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        Some(ParsedPush { branch, repo_hint })
+    }
+}
+
+/// Decodes the Bitbucket Server / Data Center push shape:
+/// `{ "changes": [ { "refId": "refs/heads/<branch>", ... } ], "repository": { "slug": "..." } }`.
+pub struct BitbucketServerExtractor;
+
+impl WebhookPayloadExtractor for BitbucketServerExtractor {
+    fn extract(&self, _headers: &HeaderMap, body: &[u8]) -> Option<ParsedPush> {
+        let value: serde_json::Value = serde_json::from_slice(body).ok()?;
+        let branch = value
+            .get("changes")
+            .and_then(|c| c.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|first| first.get("refId"))
+            .and_then(|v| v.as_str())
+            .and_then(|r| r.strip_prefix("refs/heads/"))
+            .map(|s| s.to_string());
+        let repo_hint = value
+            .get("repository")
+            .and_then(|r| r.get("slug").or_else(|| r.get("name")))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        Some(ParsedPush { branch, repo_hint })
+    }
+}
+
+/// Decodes the Sourcehut `hgmail`/builds shape that nests the refs under
+/// `event.refs[0].name`. Repo hint comes from `event.repo.name`.
+pub struct SourcehutExtractor;
+
+impl WebhookPayloadExtractor for SourcehutExtractor {
+    fn extract(&self, _headers: &HeaderMap, body: &[u8]) -> Option<ParsedPush> {
+        let value: serde_json::Value = serde_json::from_slice(body).ok()?;
+        let event = value.get("event")?;
+        let branch = event
+            .get("refs")
+            .and_then(|r| r.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|first| first.get("name"))
+            .and_then(|v| v.as_str())
+            .and_then(|r| r.strip_prefix("refs/heads/").or(Some(r)))
+            .map(|s| s.to_string());
+        let repo_hint = event
+            .get("repo")
+            .and_then(|r| r.get("name"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        Some(ParsedPush { branch, repo_hint })
+    }
+}
+
+/// Parse the operator's `[triggers].webhook_provider` string into an
+/// extractor. Unknown / empty strings fall back to the default
+/// (`RefHeadsExtractor`) so a typo never silently disables webhooks.
+pub fn extractor_for_provider(name: Option<&str>) -> Arc<dyn WebhookPayloadExtractor> {
+    let Some(raw) = name else { return Arc::new(RefHeadsExtractor) };
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "" | "github" | "gitea" | "forgejo" | "gogs" | "gitlab" | "refheads" => {
+            Arc::new(RefHeadsExtractor)
+        }
+        "bitbucket" | "bitbucket-server" | "bitbucket_data_center" => {
+            Arc::new(BitbucketServerExtractor)
+        }
+        "sourcehut" | "srht" => Arc::new(SourcehutExtractor),
+        // Unknown provider falls back to the default but is worth a
+        // log line so the operator can spot the typo in their config.
+        other => {
+            tracing::warn!(
+                provider = other,
+                "unknown `[triggers].webhook_provider`; defaulting to `refheads`"
+            );
+            Arc::new(RefHeadsExtractor)
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -414,31 +545,26 @@ pub async fn webhook_git(
         }
     }
 
-    // Best-effort decode. A non-JSON body that still verified is
-    // accepted (some upstream form-encoded payloads include a JSON
-    // value as the `payload` form field; we tolerate that by reading
-    // `ref` only when the top-level body is JSON-shaped).
-    let parsed: Option<WebhookPayload> = serde_json::from_slice(body_bytes.as_ref()).ok();
-    let branch = parsed
-        .as_ref()
-        .and_then(|p| p.ref_.as_deref())
-        .and_then(|r| r.strip_prefix("refs/heads/"))
-        .map(|s| s.to_string());
+    // Best-effort decode via the operator-selected extractor. A body
+    // the extractor cannot parse is accepted (some upstream form-encoded
+    // payloads include a JSON value as the `payload` form field; we
+    // tolerate that by reading the branch only when the extractor
+    // recognises the shape).
+    let parsed = cfg.extractor.extract(&headers, body_bytes.as_ref());
+    let branch = parsed.as_ref().and_then(|p| p.branch.clone());
 
-    // A signed-but-refless body for an Unknown-event provider is not a
-    // push; refuse to trigger. (Push events for known providers were
+    // A signed-but-branchless body for an Unknown-event provider is not
+    // a push; refuse to trigger. (Push events for known providers were
     // already classified above; this guard catches the legacy
     // best-effort path so it stops accepting non-push deliveries
     // whose provider did not set an event header.)
-    if matches!(event, EventKind::Unknown)
-        && parsed.as_ref().and_then(|p| p.ref_.as_deref()).is_none()
-    {
+    if matches!(event, EventKind::Unknown) && branch.is_none() {
         return Ok((
             StatusCode::OK,
             Json(WebhookResponse {
                 triggered: false,
                 run_id: None,
-                message: "payload carried no `ref`; not a push event".to_string(),
+                message: "payload carried no recognised ref; not a push event".to_string(),
             }),
         )
             .into_response());
@@ -688,6 +814,124 @@ mod tests {
         assert!(cache.record("a"));
         assert!(!cache.record("a"), "second insert must report duplicate");
         assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn refheads_extractor_reads_github_push() {
+        let body = br#"{"ref":"refs/heads/main","repository":{"full_name":"acme/api"}}"#;
+        let parsed = RefHeadsExtractor.extract(&HeaderMap::new(), body).expect("parsed");
+        assert_eq!(parsed.branch.as_deref(), Some("main"));
+        assert_eq!(parsed.repo_hint.as_deref(), Some("acme/api"));
+    }
+
+    #[test]
+    fn refheads_extractor_returns_none_branch_for_tag_push() {
+        let body = br#"{"ref":"refs/tags/v1.2.3"}"#;
+        let parsed = RefHeadsExtractor.extract(&HeaderMap::new(), body).expect("parsed");
+        assert!(parsed.branch.is_none(), "tag pushes are not branch pushes");
+    }
+
+    #[test]
+    fn refheads_extractor_falls_back_to_repo_name() {
+        let body = br#"{"ref":"refs/heads/dev","repository":{"name":"api"}}"#;
+        let parsed = RefHeadsExtractor.extract(&HeaderMap::new(), body).expect("parsed");
+        assert_eq!(parsed.repo_hint.as_deref(), Some("api"));
+    }
+
+    #[test]
+    fn refheads_extractor_returns_none_on_garbage() {
+        assert!(RefHeadsExtractor.extract(&HeaderMap::new(), b"not-json").is_none());
+    }
+
+    #[test]
+    fn bitbucket_server_extractor_reads_changes_array() {
+        let body = br#"{
+            "changes":[{"refId":"refs/heads/develop","type":"UPDATE"}],
+            "repository":{"slug":"api","name":"Api Service"}
+        }"#;
+        let parsed = BitbucketServerExtractor.extract(&HeaderMap::new(), body).expect("parsed");
+        assert_eq!(parsed.branch.as_deref(), Some("develop"));
+        assert_eq!(parsed.repo_hint.as_deref(), Some("api"));
+    }
+
+    #[test]
+    fn bitbucket_server_extractor_returns_none_branch_when_changes_empty() {
+        let body = br#"{"changes":[],"repository":{"slug":"api"}}"#;
+        let parsed = BitbucketServerExtractor.extract(&HeaderMap::new(), body).expect("parsed");
+        assert!(parsed.branch.is_none());
+        assert_eq!(parsed.repo_hint.as_deref(), Some("api"));
+    }
+
+    #[test]
+    fn sourcehut_extractor_reads_nested_event_refs() {
+        let body =
+            br#"{"event":{"refs":[{"name":"refs/heads/main"}],"repo":{"name":"~user/proj"}}}"#;
+        let parsed = SourcehutExtractor.extract(&HeaderMap::new(), body).expect("parsed");
+        assert_eq!(parsed.branch.as_deref(), Some("main"));
+        assert_eq!(parsed.repo_hint.as_deref(), Some("~user/proj"));
+    }
+
+    #[test]
+    fn sourcehut_extractor_keeps_bare_branch_names() {
+        // Some sr.ht builds emit just the branch name without the
+        // `refs/heads/` prefix.
+        let body = br#"{"event":{"refs":[{"name":"main"}]}}"#;
+        let parsed = SourcehutExtractor.extract(&HeaderMap::new(), body).expect("parsed");
+        assert_eq!(parsed.branch.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn extractor_for_provider_defaults_when_missing() {
+        let body = br#"{"ref":"refs/heads/main"}"#;
+        let ex = extractor_for_provider(None);
+        assert_eq!(
+            ex.extract(&HeaderMap::new(), body).and_then(|p| p.branch).as_deref(),
+            Some("main"),
+        );
+    }
+
+    #[test]
+    fn extractor_for_provider_matches_known_aliases() {
+        for name in ["github", "GITHUB", " gitea ", "forgejo", "gogs", "gitlab", "refheads"] {
+            let ex = extractor_for_provider(Some(name));
+            let body = br#"{"ref":"refs/heads/main"}"#;
+            assert_eq!(
+                ex.extract(&HeaderMap::new(), body).and_then(|p| p.branch).as_deref(),
+                Some("main"),
+                "alias `{name}` should map to RefHeadsExtractor",
+            );
+        }
+    }
+
+    #[test]
+    fn extractor_for_provider_picks_bitbucket() {
+        let ex = extractor_for_provider(Some("bitbucket"));
+        let body = br#"{"changes":[{"refId":"refs/heads/main"}]}"#;
+        assert_eq!(
+            ex.extract(&HeaderMap::new(), body).and_then(|p| p.branch).as_deref(),
+            Some("main"),
+        );
+    }
+
+    #[test]
+    fn extractor_for_provider_picks_sourcehut() {
+        let ex = extractor_for_provider(Some("sourcehut"));
+        let body = br#"{"event":{"refs":[{"name":"refs/heads/main"}]}}"#;
+        assert_eq!(
+            ex.extract(&HeaderMap::new(), body).and_then(|p| p.branch).as_deref(),
+            Some("main"),
+        );
+    }
+
+    #[test]
+    fn extractor_for_provider_falls_back_on_unknown() {
+        let ex = extractor_for_provider(Some("notarealthing"));
+        let body = br#"{"ref":"refs/heads/main"}"#;
+        // Unknown provider warns + falls back to RefHeads.
+        assert_eq!(
+            ex.extract(&HeaderMap::new(), body).and_then(|p| p.branch).as_deref(),
+            Some("main"),
+        );
     }
 
     #[test]

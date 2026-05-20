@@ -2400,7 +2400,71 @@ record_exploration_finding
 }
 
 ---
+record_exploration_finding
+{
+  "path": "crates/nyctos-api/src/router.rs",
+  "line": 2079,
+  "cap": "PATH_TRAVERSAL",
+  "endpoint": "POST /api/v1/findings/:id/replay (bundle extract)",
+  "rationale": "extract_ustar replaced the hand-rolled USTAR walker (which only honoured typeflag '0'/'5') with `tar::Archive` + `entry.unpack(&target)`. sanitise_tar_path constrains the *entry path* (rejects absolute + `..`) but does NOT validate symlink/hardlink linknames. The `tar` crate's `Entry::unpack` happily writes symlink, hardlink, char/block-device, and FIFO entries; for a symlink it emits a symlink whose target is the header `linkname` verbatim. Combined with `archive.set_overwrite(true)` + `set_preserve_permissions(true)`, a bundle whose blake3 matches the `repro_bundles.sha256` row (operator-controllable on a write-the-DB-and-the-file primitive) can: (a) land a symlink at `<id>/repro.sh` pointing at any attacker-staged shell script — the next-line `bash repro_sh.spawn()` then executes it as the daemon user; (b) symlink `<id>/expected` -> `/var/log` and let a later regular-file entry write through, escaping the tempdir; (c) drop a setuid binary (mode `0o4755`) that survives if the tempdir's `delete_on_drop` is overridden. Defense-in-depth gap missed by the static pass — sanitise_tar_path looks safe in isolation, but unpack's link semantics are out-of-band.",
+  "suggested_payload_hint": "craft a tar with header { typeflag='2' (symlink), name='<id>/repro.sh', linkname='/tmp/atk.sh' }, write `/tmp/atk.sh` first (or own the DB), recompute blake3, overwrite the `repro_bundles` row's sha256 + path, POST /api/v1/findings/:id/replay, observe `bash` exec the symlink target."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyctos-api/src/webhook.rs",
+  "line": 360,
+  "cap": "TRIGGER_CONFUSION",
+  "endpoint": "POST /webhook/git (webhook_provider='bitbucket')",
+  "rationale": "BitbucketServerExtractor reads `changes[0].refId` only — no inspection of `changes[0].type` and no fan-out across additional `changes[]` entries. Bitbucket Server emits `type: \"UPDATE\" | \"ADD\" | \"DELETE\"`. A push that *deletes* a branch (type='DELETE') still yields a parseable `refs/heads/<branch>` refId, so the dispatcher treats the deletion as a trigger and kicks a scan against a branch that no longer exists upstream — the resulting clone fails, but the trigger spent its dedup slot and a run row, masking real follow-up pushes that hit the same delivery-id dedup window. Worse: a batched push with `changes=[delete branch X, push to branch Y]` only ever sees X. Combined with `webhook_branch` allow-list semantics (an exact-string match at handler scope, not provider scope), an upstream that deletes a stale `main` branch on the same commit that pushes to a feature branch will trigger a scan-on-deleted-main and silently drop the real push. State-machine flaw the static pass cannot model — no taint, just missing typeflag validation + array head-only read.",
+  "suggested_payload_hint": "POST a Bitbucket Server webhook body `{\"changes\":[{\"refId\":\"refs/heads/main\",\"type\":\"DELETE\"},{\"refId\":\"refs/heads/feat\",\"type\":\"UPDATE\"}]}` and observe a triggered run against deleted `main` plus zero run for `feat`."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyctos-api/src/webhook.rs",
+  "line": 385,
+  "cap": "TRIGGER_CONFUSION",
+  "endpoint": "POST /webhook/git (webhook_provider='sourcehut')",
+  "rationale": "SourcehutExtractor parses the ref via `.strip_prefix(\"refs/heads/\").or(Some(r))` — the fallback was added to tolerate sr.ht builds that emit bare branch names, but it also accepts *non-branch* refs verbatim. A push of `refs/tags/v1.2.3` returns `branch=Some(\"refs/tags/v1.2.3\")`, which then flows into the webhook_branch allow-list comparator: if the operator sets `webhook_branch=\"refs/tags/v1.2.3\"` (or, more dangerously, leaves it `None` so all branches match), a tag push triggers a branch-shaped run. Downstream cloners that derive a working tree from this string will resolve `refs/heads/refs/tags/v1.2.3` and fail, but the run row, the dedup slot, and the audit row are already spent — a low-bandwidth DoS on the trigger pipeline. Symmetric to the Bitbucket finding: the producer-side ref-shape ambiguity becomes a trigger-side correctness failure. Static pass missed because both `strip_prefix` and `or(Some)` are individually safe.",
+  "suggested_payload_hint": "POST a sr.ht webhook body `{\"event\":{\"refs\":[{\"name\":\"refs/tags/v1.2.3\"}]}}` with webhook_branch unset; verify a triggered run with branch field literally `refs/tags/v1.2.3` and observe the downstream clone failure burning the dedup slot."
+}
+
+---
 notes
 - survey-only run; no http.probe (ALLOWED HOSTS empty), no shell.exec destructive ops, no fs writes outside this sentinel.
-- 3 novel findings emitted; tool budget ~14 / 24 calls; stopped per quality-over-count.
-- all three findings target the AI-pipeline ingest surface, which prior 15 passes (focused on router.rs, webhook.rs, shim, packaging) had not enumerated.
+- 3 novel findings emitted on prior pass (AI-pipeline ingest surface); this pass-16 re-validation adds 3 more targeting the changed files in HEAD diff (extract_ustar tar-unpack semantics, BitbucketServerExtractor delete-event handling, SourcehutExtractor tag-as-branch fallback).
+- tool budget ~10 / 24 calls used this pass; stopped per quality-over-count.
+
+---
+pass-17 nyx-agent crate survey (workspace scope locked to crates/nyx-agent by sandbox classifier)
+re-validated against current code: prior 4 findings (WS-origin, setup-window, DNS-rebind, query-token-logging) target nyctos-api/main.rs, still apply; this pass surfaces 2 new ones inside nyx-agent's own modules.
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyx-agent/src/ai_pipeline.rs",
+  "line": 141,
+  "cap": "BUDGET_BYPASS",
+  "rationale": "BudgetStoreTracker::add_spend is unconditional: it inserts the row (ensure_default) then issues a bare `UPDATE budgets SET spent = spent + ? RETURNING …`, never comparing the new total against cap_usd_micros. The cap check lives upstream in the adapter as a separate `tracker.cap()` + `tracker.current_spend()` pre-roundtrip read; add_spend only fires *after* the (already-paid-for) AI call returns. Combined with the `max_concurrent_one_shot` Semaphore at run_payload_synthesis_pass:197 (default ≥1, AiConfig::max_concurrent_one_shot_resolved typically 4), N concurrent fan-out tasks each pass the same gate snapshot, dispatch, and only then settle their spend — total spend can land at cap + (N-1)*per_call without any code path refusing or refunding. The regression test at ai_pipeline.rs:2670 asserts `spent_usd_micros == 8_000` for 8×1000-micro concurrent add_spends *without* ever asserting the cap was respected, baking the bypass into the test surface. Static pass missed because the bug is a check-then-act TOCTOU spanning two SQL roundtrips + an N-task fan-out — no single function shows a tainted-flow sink to a cap-relaxed write. Fix shape: collapse to a single atomic `UPDATE budgets SET spent = spent + ? WHERE spent + ? <= cap RETURNING spent, cap`, surface the WHERE-fail as `BudgetExceeded`, and have the adapter reserve spend *before* the AI roundtrip with a refund on actual cost delta.",
+  "suggested_payload_hint": "test: cap=1_000_000, max_concurrent_one_shot=4, queue 8 PayloadSynthesis inputs whose simulated per-call cost is 400_000; observe row.spent_usd_micros > cap_usd_micros after the join and zero BudgetExceeded errors on the wire."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyx-agent/src/cmd/pr_comment.rs",
+  "line": 366,
+  "cap": "SSRF",
+  "endpoint": "pr-comment --gh-api <URL> (forwards GITHUB_TOKEN Bearer to host)",
+  "rationale": "validate_gh_api_url's IMDS guard does string-compare on the raw authority literal (`host_lc == \"169.254.169.254\"` and `host_lc.starts_with(\"169.254.\")`), but reqwest delegates to the `url` crate which normalises non-canonical IPv4 forms — decimal (`2852039166`), hex (`0xa9.0xfe.0xa9.0xfe`), octal (`0251.0376.0251.0376`), shorthand (`169.254.43518`), and zero-padded (`169.254.0169.0254`) — into 169.254.169.254 *after* validate_gh_api_url returns Ok. The check at :371 also misses `0.0.0.0` (kernel routes to a local listener on Linux) and IPv4-mapped IPv6 (`https://[::ffff:a9fe:a9fe]/`) which reach the IMDS endpoint over IPv6 dualstack on many cloud hosts. Trust boundary: `pull_request_target` workflows interpolate forked-PR inputs into the `--gh-api` flag, so the attacker controls the URL while the runner attaches `Authorization: Bearer $GITHUB_TOKEN` (build_client:401) and ships it on the first GET. Static pass missed because the bug is a parser-mismatch (validator sees raw string; transport sees normalised host), not a tainted flow — every sink is already authenticated, every URL is operator-supplied.",
+  "suggested_payload_hint": "gh-api='https://2852039166/latest/api-token' (decimal IMDS) or 'https://[::ffff:a9fe:a9fe]/latest/meta-data/iam/security-credentials/' from a forked PR's title via pull_request_target interpolation — observe GITHUB_TOKEN in the IMDS access log."
+}
+
+---
+notes
+- pass-17 scope: 2 novel findings inside nyx-agent (not the api/core sibling crates that pass-16 covered).
+- both findings are missing-validation patterns the heuristic novel-finding pass would skip (no tainted-flow sink → no diag).
+- tool budget ~8 / 24 calls used; halted on quality-over-count per task brief.

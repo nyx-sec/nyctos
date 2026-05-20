@@ -15,10 +15,9 @@
 //!     trace.jsonl
 //! ```
 //!
-//! The writer hand-rolls a minimal USTAR archive so the workspace
-//! does not have to pick up a tar/zstd dep just for this surface.
-//! USTAR is the same format `tar`/`bsdtar`/`gnu tar` produce by
-//! default; standard `tar xf <bundle>.tar` reads it.
+//! Built via the `tar` crate so PAX extension headers (long names),
+//! symlinks, and the rest of the standard typeflags work for free.
+//! Standard `tar xf <bundle>.tar` reads the output.
 //!
 //! Compression is deliberately omitted - the inputs are small
 //! (kilobytes per finding) and a deterministic uncompressed archive
@@ -65,8 +64,8 @@ pub struct BundleManifest {
 pub enum BundleError {
     #[error("finding `{0}` not found")]
     FindingNotFound(String),
-    #[error("path component `{0}` exceeds 100 bytes; cannot fit USTAR name field")]
-    PathTooLong(String),
+    #[error("tar write error: {0}")]
+    Tar(#[source] std::io::Error),
     #[error(transparent)]
     Store(#[from] StoreError),
     #[error("io error at {path}: {source}")]
@@ -320,24 +319,41 @@ fn build_ustar(
     artifacts: &[BundleArtifact],
     now_ms: i64,
 ) -> Result<Vec<u8>, BundleError> {
-    let mut out = Vec::with_capacity(4096);
-    let dirs = collect_directories(finding_id, artifacts);
     let mtime = (now_ms / 1_000).max(0) as u64;
-    for dir in &dirs {
-        let header = build_header(dir, 0o755, 0, mtime, b'5')?;
-        out.extend_from_slice(&header);
+    let mut builder = tar::Builder::new(Vec::with_capacity(4096));
+    // Reproducible: omit owner/group strings, deterministic uid/gid 0,
+    // and write entries in a fixed order so the sha256 the API stamps
+    // on repro_bundles.sha256 is stable across writer hosts.
+    for dir in collect_directories(finding_id, artifacts) {
+        let mut header = tar::Header::new_ustar();
+        header.set_path(&dir).map_err(BundleError::Tar)?;
+        header.set_mode(0o755);
+        header.set_uid(0);
+        header.set_gid(0);
+        header.set_size(0);
+        header.set_mtime(mtime);
+        header.set_entry_type(tar::EntryType::Directory);
+        header.set_cksum();
+        builder.append(&header, std::io::empty()).map_err(BundleError::Tar)?;
     }
     for a in artifacts {
         let entry_path = format!("{finding_id}/{}", a.path);
-        let header = build_header(&entry_path, a.mode, a.contents.len() as u64, mtime, b'0')?;
-        out.extend_from_slice(&header);
-        out.extend_from_slice(&a.contents);
-        let pad = (512 - (a.contents.len() % 512)) % 512;
-        out.extend(std::iter::repeat_n(0u8, pad));
+        let mut header = tar::Header::new_ustar();
+        // set_path falls back to PAX extension for paths longer than
+        // the 100-byte USTAR name field; the extractor crate handles
+        // PAX records transparently.
+        header.set_path(&entry_path).map_err(BundleError::Tar)?;
+        header.set_mode(a.mode);
+        header.set_uid(0);
+        header.set_gid(0);
+        header.set_size(a.contents.len() as u64);
+        header.set_mtime(mtime);
+        header.set_entry_type(tar::EntryType::Regular);
+        header.set_cksum();
+        builder.append(&header, a.contents.as_slice()).map_err(BundleError::Tar)?;
     }
-    // Two empty 512-byte blocks terminate a USTAR stream.
-    out.extend(std::iter::repeat_n(0u8, 1024));
-    Ok(out)
+    builder.finish().map_err(BundleError::Tar)?;
+    builder.into_inner().map_err(BundleError::Tar)
 }
 
 fn collect_directories(finding_id: &str, artifacts: &[BundleArtifact]) -> Vec<String> {
@@ -354,68 +370,6 @@ fn collect_directories(finding_id: &str, artifacts: &[BundleArtifact]) -> Vec<St
         }
     }
     dirs.into_keys().collect()
-}
-
-fn build_header(
-    name: &str,
-    mode: u32,
-    size: u64,
-    mtime: u64,
-    typeflag: u8,
-) -> Result<[u8; 512], BundleError> {
-    if name.len() > 100 {
-        return Err(BundleError::PathTooLong(name.to_string()));
-    }
-    let mut h = [0u8; 512];
-    write_str(&mut h[0..100], name);
-    write_octal(&mut h[100..108], mode as u64, 7);
-    write_octal(&mut h[108..116], 0, 7);
-    write_octal(&mut h[116..124], 0, 7);
-    write_octal(&mut h[124..136], size, 11);
-    write_octal(&mut h[136..148], mtime, 11);
-    // Initialise checksum field with ASCII spaces before computing it.
-    for b in &mut h[148..156] {
-        *b = b' ';
-    }
-    h[156] = typeflag;
-    // linkname remains zero
-    h[257..263].copy_from_slice(b"ustar\0");
-    h[263..265].copy_from_slice(b"00");
-    let sum: u32 = h.iter().map(|b| *b as u32).sum();
-    write_octal(&mut h[148..156], sum as u64, 6);
-    h[154] = 0;
-    h[155] = b' ';
-    Ok(h)
-}
-
-fn write_str(dst: &mut [u8], s: &str) {
-    let bytes = s.as_bytes();
-    let n = bytes.len().min(dst.len());
-    dst[..n].copy_from_slice(&bytes[..n]);
-}
-
-fn write_octal(dst: &mut [u8], value: u64, digits: usize) {
-    // Render `value` as a zero-padded octal of `digits` width, then a
-    // trailing NUL. USTAR allows trailing space OR NUL; we use NUL.
-    let mut tmp = [b'0'; 32];
-    let mut idx = tmp.len();
-    let mut v = value;
-    while v > 0 && idx > 0 {
-        idx -= 1;
-        tmp[idx] = b'0' + ((v & 0o7) as u8);
-        v >>= 3;
-    }
-    let rendered = &tmp[idx..];
-    let pad = digits.saturating_sub(rendered.len());
-    for slot in dst.iter_mut().take(pad) {
-        *slot = b'0';
-    }
-    let start = pad.min(dst.len());
-    let end = (start + rendered.len()).min(dst.len().saturating_sub(1));
-    dst[start..end].copy_from_slice(&rendered[..end - start]);
-    if dst.len() > digits {
-        dst[digits] = 0;
-    }
 }
 
 fn blake3_hex(bytes: &[u8]) -> String {
@@ -509,22 +463,12 @@ mod tests {
         let bundle_dir = tempfile::tempdir().expect("bundle dir");
         let manifest = build_bundle(&store, &fid, bundle_dir.path(), 8_000).await.expect("bundle");
         let bytes = std::fs::read(&manifest.bundle_path).expect("read tar");
-        // USTAR header names live at offset 0..100 of each 512-byte block.
-        // Walk the blocks and collect the names we recognise.
+        let mut archive = tar::Archive::new(std::io::Cursor::new(&bytes));
         let mut names: Vec<String> = Vec::new();
-        let mut i = 0;
-        while i + 512 <= bytes.len() {
-            let header = &bytes[i..i + 512];
-            if header.iter().all(|b| *b == 0) {
-                break;
-            }
-            let name_end = header[..100].iter().position(|b| *b == 0).unwrap_or(100);
-            let name = String::from_utf8_lossy(&header[..name_end]).to_string();
-            names.push(name);
-            // Size lives at offset 124..135 as octal ASCII.
-            let size = parse_octal(&header[124..135]);
-            let data_blocks = size.div_ceil(512);
-            i += 512 + (data_blocks as usize) * 512;
+        for entry in archive.entries().expect("entries") {
+            let entry = entry.expect("entry");
+            let path = entry.path().expect("path").display().to_string();
+            names.push(path);
         }
         assert!(
             names.iter().any(|n| n.ends_with("/repro.sh")),
@@ -546,17 +490,6 @@ mod tests {
         let bundle_dir = tempfile::tempdir().expect("bundle dir");
         let err = build_bundle(&store, "ghost", bundle_dir.path(), 0).await.expect_err("missing");
         assert!(matches!(err, BundleError::FindingNotFound(_)));
-    }
-
-    fn parse_octal(bytes: &[u8]) -> u64 {
-        let mut v: u64 = 0;
-        for b in bytes {
-            if *b == 0 || *b == b' ' {
-                break;
-            }
-            v = v * 8 + (b - b'0') as u64;
-        }
-        v
     }
 
     #[test]

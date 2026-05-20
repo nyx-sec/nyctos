@@ -300,6 +300,14 @@ pub struct TriggersConfig {
     /// `None` accepts any branch.
     #[serde(default)]
     pub webhook_branch: Option<String>,
+    /// Selects the body decoder for `POST /webhook/git`. Accepted
+    /// values: `refheads` (default, covers GitHub / Gitea / Forgejo /
+    /// Gogs / GitLab top-level `ref`), `bitbucket` (Bitbucket Server /
+    /// Data Center `changes[].refId`), `sourcehut` (nested
+    /// `event.refs[0].name`). Unknown values fall back to `refheads`
+    /// with a warning so a typo never silently disables webhooks.
+    #[serde(default)]
+    pub webhook_provider: Option<String>,
 }
 
 /// One `[[schedule]]` entry. A 5-field cron expression plus
@@ -460,6 +468,7 @@ mod tests {
                 schedule_cron: Some("0 * * * *".to_string()),
                 webhook_secret_ref: Some("env:NYX_WEBHOOK_SECRET".to_string()),
                 webhook_branch: Some("main".to_string()),
+                webhook_provider: Some("github".to_string()),
             },
             nyx: NyxConfig {
                 binary_path: Some(PathBuf::from("/opt/nyx/bin/nyx")),

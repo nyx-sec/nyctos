@@ -976,10 +976,14 @@ async fn serve(
     if config.triggers.webhook_secret_ref.is_some() {
         let resolver =
             Arc::new(EnvSecretResolver { spec: config.triggers.webhook_secret_ref.clone() });
-        server_state = server_state.with_webhook(WebhookConfig::new(
+        let extractor = nyctos_api::webhook::extractor_for_provider(
+            config.triggers.webhook_provider.as_deref(),
+        );
+        server_state = server_state.with_webhook(WebhookConfig::with_extractor(
             resolver,
             config.triggers.webhook_branch.clone(),
             None,
+            extractor,
         ));
     }
 

@@ -24,6 +24,7 @@ reqwest = { workspace = true }
 keyring = { workspace = true }
 rand = { workspace = true }
 hex = { workspace = true }
+tar = { workspace = true }
 
 [features]
 test-util = []
