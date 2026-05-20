@@ -1085,3 +1085,79 @@ record_exploration_finding
   "rationale": "HEAD diff adds a Content-Length pre-check that 413s an oversized advertised body before `to_bytes` runs. This closes the cheap-DOS lane for clients that honestly declare size, but the comment at webhook.rs:192-194 claims `to_bytes enforces the same cap (covering chunked transfer encoding where Content-Length is absent)` — that is the LIMIT enforcement, not an EARLY refuse. An attacker who sends `Transfer-Encoding: chunked` with a well-formed-but-wrong `X-Hub-Signature-256` still forces the server to: (a) buffer up to MAX_WEBHOOK_BODY_BYTES (1 MiB) of attacker bytes into memory, then (b) run HMAC-SHA256 over those bytes, then (c) 401. Per request: ~1 MiB I/O + one 1 MiB HMAC pass, all unauthenticated. Static pass + the existing pass-19 sentinel row (line 426) flagged the pre-HMAC body buffering DOS in general; the diff partially mitigates it but leaves the chunked-TE bypass open. The mitigation gap is invisible to a static rule because the chunked path is the *default* axum body reader — there is no syntactic difference from a normal POST. Fix sketch: refuse `Transfer-Encoding: chunked` on `/webhook/git` (git servers always send Content-Length), or cap the chunked read budget at a much smaller value (e.g. 64 KiB pre-HMAC, with a second-pass body cap once the signature checks out).",
   "suggested_payload_hint": "curl -sS -X POST http://127.0.0.1:8088/webhook/git -H 'X-Hub-Signature-256: sha256=00000000000000000000000000000000000000000000000000000000deadbeef' -H 'Transfer-Encoding: chunked' --data-binary @<(yes A | head -c 1048576) — repeat at concurrency N to measure CPU saturation; compare against a Content-Length: 10485760 baseline (which now returns 413 immediately)."
 }
+
+
+=================================================================
+PASS 25 — task=expl-demo (this-session uncommitted diff: diag.rs
+UnsupportedReason / InconclusiveReason enum refactor)
+working-tree diff:
+  M crates/nyx-agent-nyx/src/diag.rs (+116 -18 — adds two
+    Copy+Eq+Hash enums with private `from_str` lookups, two new
+    public `unsupported_reason()` / `inconclusive_reason()`
+    accessors, rewrites `is_unsupported_no_payloads` and
+    `is_spec_derivation_failed` as `matches!` over the typed
+    accessors, adds two negative/positive parse tests covering
+    primary + fallback evidence-key conventions and the
+    unknown-reason → None case)
+The refactor is a TYPE-SAFETY widening, not a behaviour change.
+Call-site grep confirms only `is_unsupported_no_payloads`
+(ai_pipeline.rs:259) and `is_spec_derivation_failed`
+(ai_pipeline.rs:559) consume these markers, and both call sites
+keep their pre-refactor predicate semantics under every input
+shape exercised by prior tests:
+  - primary key matches known reason → was true, is true
+  - primary key matches but reason variant unknown to the new
+    enum → was true (literal string compare in old code matched
+    only the one literal "NoPayloadsForCap"/"SpecDerivationFailed"
+    so an unknown literal already returned false), is false
+    (from_str returns None) — SAME OUTCOME for the only literal
+    the old code recognised
+  - fallback `evidence.reason` matches the known reason → was
+    true, is true
+  - neither key present, or both keys hold unknown strings → was
+    false, is false
+The two new accessors are public surface (`pub fn
+unsupported_reason() -> Option<UnsupportedReason>`,
+`pub fn inconclusive_reason() -> Option<InconclusiveReason>`)
+returning `Copy` Eq+Hash enums — fine for downstream callers,
+no Drop side-effects, no interior mutability, no panic path.
+No new sink, no new trust boundary, no new fan-out trigger.
+=================================================================
+
+notes (pass 25):
+- NO new row this pass. The diff is a clean refactor — same predicate
+  set, same call sites, same fan-out behaviour for PayloadSynthesis
+  (ai_pipeline.rs:259) and SpecDerivation (ai_pipeline.rs:559). The
+  enum-vs-string compare is semantically equivalent for the one
+  variant each currently enumerates, AND structurally safer for the
+  next variant: old code required adding two literal-string compares
+  per new marker (one for primary key, one for fallback `reason`);
+  new code requires adding one `from_str` arm and one `matches!`
+  helper, so the dual-key tolerance cannot accidentally regress on
+  the fallback path when a new reason lands.
+- the pass-24 latent gap (NyxRunner unbounded stderr drain +
+  PATH-planting RCE on the upstream `nyx` binary) is the upstream
+  trust boundary that turns ANY enrichment of these markers into an
+  amplification primitive — a compromised `nyx` binary emitting N
+  diags all carrying `evidence.unsupported = "NoPayloadsForCap"`
+  fans out to N PayloadSynthesis tokio tasks at run_payload_synthesis_pass
+  (ai_pipeline.rs:194-220): the semaphore at line 200 caps
+  CONCURRENCY but not TOTAL SPAWN COUNT — `handles.push(tokio::spawn(...))`
+  in the loop at line 208 allocates one tokio task per input up-front,
+  each holding a clone of PayloadSynthesisInput. SharedBudgetTracker
+  caps $-spend at the adapter level (good), but the eager spawn
+  vector is the RAM-side gap. Not pass-25 row material because the
+  diff under review (diag.rs) does not change this surface; flagged
+  here as a carry-forward observation for whoever lands the next
+  pass against ai_pipeline.rs — likely belongs as a chunked iterator
+  + `for_each_concurrent`-style consumer pattern, not a fresh spawn
+  vector. The amplification PRIMITIVE is bounded today by the pass-24
+  binary-attestation gap; close pass-24 fix option (4) and this
+  carry-forward stops being externally reachable.
+- prior-pass rows 1-24 all STAND or remain in their prior
+  STANDS-FIXED / STANDS-LATENT / STANDS-PARTIAL-FIX classifications;
+  this session's diff is a security-neutral refactor and adds NO
+  new row.
+- no http.probe this pass: ALLOWED HOSTS empty per task contract;
+  pass-25 is a survey-and-classify closure of the working-tree diff,
+  no new finding emitted.

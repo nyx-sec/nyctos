@@ -45,29 +45,86 @@ pub struct Diag {
     pub flow_steps: Vec<FlowStep>,
 }
 
+/// Reason a nyx diag carries an `Unsupported(...)` marker. Parsed from
+/// `evidence.unsupported` (current shape) or `evidence.reason` (fallback
+/// shape). New upstream reasons land as new variants; the string at the
+/// wire-shape boundary stays a tolerant lookup so unknown reasons fold
+/// to `None` rather than panicking the parser.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum UnsupportedReason {
+    /// Static pass has no canonical payload for the diag's cap, so the
+    /// PayloadSynthesis AI pass owns the row.
+    NoPayloadsForCap,
+}
+impl UnsupportedReason {
+    fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "NoPayloadsForCap" => Some(Self::NoPayloadsForCap),
+            _ => None,
+        }
+    }
+}
+
+/// Reason a nyx diag carries an `Inconclusive(...)` marker. Same
+/// dual-key tolerance as `UnsupportedReason`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum InconclusiveReason {
+    /// Static pass could not derive a harness spec, so the
+    /// SpecDerivation AI pass owns the row.
+    SpecDerivationFailed,
+}
+impl InconclusiveReason {
+    fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "SpecDerivationFailed" => Some(Self::SpecDerivationFailed),
+            _ => None,
+        }
+    }
+}
+
 impl Diag {
-    /// True when the static scanner flagged this diag with the
-    /// `Unsupported(NoPayloadsForCap)` marker. Phase 14's
-    /// PayloadSynthesis fan-out fires exactly on these rows.
-    ///
-    /// The marker is tolerated under two evidence-shape conventions:
-    /// `evidence.unsupported == "NoPayloadsForCap"` (current `nyx` shape)
-    /// and the fallback `evidence.reason == "NoPayloadsForCap"`.
-    pub fn is_unsupported_no_payloads(&self) -> bool {
-        self.evidence_string("unsupported").as_deref() == Some("NoPayloadsForCap")
-            || self.evidence_string("reason").as_deref() == Some("NoPayloadsForCap")
+    /// Typed read of `evidence.unsupported` (current nyx shape) with
+    /// `evidence.reason` as the fallback. Returns `None` when neither
+    /// key carries a known reason; new reasons land as new
+    /// `UnsupportedReason` variants without churning call sites.
+    pub fn unsupported_reason(&self) -> Option<UnsupportedReason> {
+        if let Some(r) = self
+            .evidence_string("unsupported")
+            .as_deref()
+            .and_then(UnsupportedReason::from_str)
+        {
+            return Some(r);
+        }
+        self.evidence_string("reason")
+            .as_deref()
+            .and_then(UnsupportedReason::from_str)
     }
 
-    /// True when the static scanner flagged this diag with the
-    /// `Inconclusive(SpecDerivationFailed)` marker. Phase 15's
-    /// SpecDerivation fan-out fires exactly on these rows.
-    ///
-    /// Marker is tolerated under the same two evidence-shape conventions
-    /// as the payload marker: `evidence.inconclusive == "SpecDerivationFailed"`
-    /// (primary) and the fallback `evidence.reason == "SpecDerivationFailed"`.
+    /// Typed read of `evidence.inconclusive` with `evidence.reason` as
+    /// the fallback. Mirror of `unsupported_reason`.
+    pub fn inconclusive_reason(&self) -> Option<InconclusiveReason> {
+        if let Some(r) = self
+            .evidence_string("inconclusive")
+            .as_deref()
+            .and_then(InconclusiveReason::from_str)
+        {
+            return Some(r);
+        }
+        self.evidence_string("reason")
+            .as_deref()
+            .and_then(InconclusiveReason::from_str)
+    }
+
+    /// True when the diag carries the `Unsupported(NoPayloadsForCap)`
+    /// marker. Phase 14's PayloadSynthesis fan-out fires exactly here.
+    pub fn is_unsupported_no_payloads(&self) -> bool {
+        matches!(self.unsupported_reason(), Some(UnsupportedReason::NoPayloadsForCap))
+    }
+
+    /// True when the diag carries the `Inconclusive(SpecDerivationFailed)`
+    /// marker. Phase 15's SpecDerivation fan-out fires exactly here.
     pub fn is_spec_derivation_failed(&self) -> bool {
-        self.evidence_string("inconclusive").as_deref() == Some("SpecDerivationFailed")
-            || self.evidence_string("reason").as_deref() == Some("SpecDerivationFailed")
+        matches!(self.inconclusive_reason(), Some(InconclusiveReason::SpecDerivationFailed))
     }
 
     /// Collect every flow-step file reference distinct from the diag's
@@ -356,6 +413,47 @@ mod tests {
         d.lift_flow_steps();
         let files = d.flow_step_files();
         assert_eq!(files, vec!["router.py", "framework/orm.py"]);
+    }
+
+    #[test]
+    fn unsupported_reason_typed_under_both_conventions() {
+        let primary: Diag = serde_json::from_str(
+            r#"{"path":"a.py","line":1,"severity":"Low","id":"X","category":"Y",
+                "evidence":{"unsupported":"NoPayloadsForCap"}}"#,
+        )
+        .unwrap();
+        assert_eq!(primary.unsupported_reason(), Some(UnsupportedReason::NoPayloadsForCap));
+
+        let fallback: Diag = serde_json::from_str(
+            r#"{"path":"a.py","line":1,"severity":"Low","id":"X","category":"Y",
+                "evidence":{"reason":"NoPayloadsForCap"}}"#,
+        )
+        .unwrap();
+        assert_eq!(fallback.unsupported_reason(), Some(UnsupportedReason::NoPayloadsForCap));
+
+        let neither: Diag = serde_json::from_str(
+            r#"{"path":"a.py","line":1,"severity":"Low","id":"X","category":"Y",
+                "evidence":{"reason":"OtherThing"}}"#,
+        )
+        .unwrap();
+        assert_eq!(neither.unsupported_reason(), None);
+    }
+
+    #[test]
+    fn inconclusive_reason_typed_under_both_conventions() {
+        let primary: Diag = serde_json::from_str(
+            r#"{"path":"a.py","line":1,"severity":"Low","id":"X","category":"Y",
+                "evidence":{"inconclusive":"SpecDerivationFailed"}}"#,
+        )
+        .unwrap();
+        assert_eq!(primary.inconclusive_reason(), Some(InconclusiveReason::SpecDerivationFailed));
+
+        let fallback: Diag = serde_json::from_str(
+            r#"{"path":"a.py","line":1,"severity":"Low","id":"X","category":"Y",
+                "evidence":{"reason":"SpecDerivationFailed"}}"#,
+        )
+        .unwrap();
+        assert_eq!(fallback.inconclusive_reason(), Some(InconclusiveReason::SpecDerivationFailed));
     }
 
     #[test]
