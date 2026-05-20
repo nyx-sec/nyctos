@@ -139,6 +139,23 @@ impl Sandbox for BirdcageSandbox {
     async fn kill(&mut self) -> Result<(), SandboxError> {
         if let Some(state) = self.inner.as_mut() {
             state.killed_by_operator = true;
+            // The shim calls setsid() at startup so it is its own pgrp
+            // leader; killpg(shim_pid, SIGKILL) reaps the shim AND the
+            // sandboxee in one syscall. This is the macOS-portable kill
+            // path (PR_SET_PDEATHSIG does not exist on Darwin) and is
+            // additive to the Linux PDEATHSIG fallback. If setsid has
+            // not completed yet (tiny window between fork+exec and the
+            // shim's first instruction), no pgrp with this pgid exists
+            // and killpg returns ESRCH; we then fall through to
+            // start_kill on the shim alone (no sandboxee has been
+            // spawned yet in that window, so nothing to leak).
+            #[cfg(unix)]
+            if let Some(pid) = state.child.id() {
+                let ret = unsafe { libc::killpg(pid as libc::pid_t, libc::SIGKILL) };
+                if ret == 0 {
+                    return Ok(());
+                }
+            }
             let _ = state.child.start_kill();
         }
         Ok(())

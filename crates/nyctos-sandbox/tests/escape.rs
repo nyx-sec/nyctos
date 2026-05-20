@@ -175,6 +175,65 @@ async fn symlink_pointing_outside_workspace_is_contained() {
 }
 
 #[tokio::test]
+async fn kill_reaps_grandchild_sandboxee() {
+    // Regression: BirdcageSandbox::kill must terminate the sandboxee, not
+    // just the shim. The shim calls setsid() at startup so the daemon
+    // can issue killpg(shim_pid, SIGKILL) and reap the whole process
+    // group; on Linux this composes additively with the shim's
+    // PR_SET_PDEATHSIG block. On macOS it is the only mechanism (Darwin
+    // has no PDEATHSIG equivalent), so this test is the load-bearing
+    // assertion for the macOS half of the kill contract.
+    let scratch = tempdir().unwrap();
+    let workspace = scratch.path().join("ws");
+    std::fs::create_dir(&workspace).unwrap();
+    let pidfile = workspace.join("sleep.pid");
+
+    let opts = base_opts(
+        &workspace,
+        vec!["sleep-pidfile".into(), pidfile.display().to_string(), "30".into()],
+    );
+    let mut sb = make_sandbox();
+    sb.run(opts).await.expect("sandbox run");
+
+    // Wait for the sandboxee to publish its pid before issuing kill, so
+    // the test exercises the "child fully running under setsid" path.
+    let mut waited = Duration::ZERO;
+    while !pidfile.exists() && waited < Duration::from_secs(5) {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        waited += Duration::from_millis(25);
+    }
+    assert!(pidfile.exists(), "sandboxee did not publish pidfile in 5s");
+    let sandboxee_pid: i32 = std::fs::read_to_string(&pidfile)
+        .expect("read pidfile")
+        .trim()
+        .parse()
+        .expect("parse pid");
+
+    sb.kill().await.expect("kill");
+    let outcome = sb.wait().await.expect("wait");
+    assert!(
+        matches!(outcome.status, SandboxStatus::Killed),
+        "expected Killed after operator kill, got {:?} stderr={:?}",
+        outcome.status,
+        String::from_utf8_lossy(&outcome.stderr),
+    );
+
+    // Poll for the sandboxee pid to disappear. killpg sends SIGKILL
+    // synchronously but the kernel still has to schedule the death and
+    // init/launchd has to reap the zombie; budget up to 2s.
+    let mut still_alive = true;
+    for _ in 0..80 {
+        let ret = unsafe { libc::kill(sandboxee_pid as libc::pid_t, 0) };
+        if ret == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+            still_alive = false;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(!still_alive, "sandboxee pid {sandboxee_pid} still alive 2s after kill");
+}
+
+#[tokio::test]
 async fn noop_harness_cold_start_under_50ms() {
     let scratch = tempdir().unwrap();
     let workspace = scratch.path().join("ws");

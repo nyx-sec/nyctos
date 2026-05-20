@@ -28,6 +28,7 @@ fn main() -> ExitCode {
         "fork-write-outside" => fork_write_outside(args.next()),
         "symlink-write" => symlink_write(args.next(), args.next()),
         "noop" => ExitCode::SUCCESS,
+        "sleep-pidfile" => sleep_pidfile(args.next(), args.next()),
         other => {
             eprintln!("escape-attempt: unknown subcommand `{other}`");
             ExitCode::from(2)
@@ -144,6 +145,20 @@ fn fork_write_outside(path: Option<String>) -> ExitCode {
             ExitCode::from(1)
         }
     }
+}
+
+fn sleep_pidfile(pidfile: Option<String>, secs: Option<String>) -> ExitCode {
+    let Some(pidfile) = pidfile else {
+        return ExitCode::from(2);
+    };
+    let secs: u64 = secs.and_then(|s| s.parse().ok()).unwrap_or(30);
+    let pid = std::process::id();
+    if let Err(e) = std::fs::write(&pidfile, pid.to_string()) {
+        eprintln!("escape-attempt: pidfile write failed: {e}");
+        return ExitCode::from(1);
+    }
+    std::thread::sleep(std::time::Duration::from_secs(secs));
+    ExitCode::SUCCESS
 }
 
 fn symlink_write(link: Option<String>, target: Option<String>) -> ExitCode {

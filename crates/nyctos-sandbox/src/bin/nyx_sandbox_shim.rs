@@ -33,6 +33,23 @@ fn main() -> ExitCode {
 fn run(cfg: ShimConfig) -> ExitCode {
     use birdcage::{Birdcage, Exception, Sandbox};
 
+    // Become our own process-group leader so the daemon's
+    // BirdcageSandbox::kill can issue killpg(shim_pid, SIGKILL) and reap
+    // the shim AND the sandboxee (and any helpers the sandboxee spawned)
+    // in one syscall. This is the macOS-portable half of the kill story;
+    // on Linux it composes with the PR_SET_PDEATHSIG block below as a
+    // defence-in-depth measure. EPERM here means the shim was already a
+    // pgrp leader (rare; the daemon would have to explicitly place us in
+    // our own group), which is the state we wanted anyway.
+    unsafe {
+        if libc::setsid() == -1 {
+            let err = std::io::Error::last_os_error();
+            if err.raw_os_error() != Some(libc::EPERM) {
+                eprintln!("nyx-sandbox-shim: setsid failed: {err}");
+            }
+        }
+    }
+
     let mut cmd = Command::new(&cfg.program);
     cmd.args(&cfg.args);
     if let Some(cwd) = &cfg.cwd {

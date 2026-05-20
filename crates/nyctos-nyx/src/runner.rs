@@ -196,8 +196,15 @@ fn parse_diags(bytes: &[u8]) -> Result<Vec<Diag>, NyxError> {
         return Ok(Vec::new());
     }
     let mut diags = if trimmed[0] == b'[' {
-        serde_json::from_slice::<Vec<Diag>>(bytes)
-            .map_err(|e| NyxError::MalformedOutput(e.to_string()))?
+        let values: Vec<serde_json::Value> = serde_json::from_slice(bytes)
+            .map_err(|e| NyxError::MalformedOutput(e.to_string()))?;
+        let mut out = Vec::with_capacity(values.len());
+        for (idx, value) in values.into_iter().enumerate() {
+            let d: Diag = serde_json::from_value(value)
+                .map_err(|e| NyxError::MalformedOutput(format!("element {idx}: {e}")))?;
+            out.push(d);
+        }
+        out
     } else {
         let text =
             std::str::from_utf8(bytes).map_err(|e| NyxError::MalformedOutput(e.to_string()))?;
@@ -335,6 +342,24 @@ mod tests {
         let err = parse_diags(raw).expect_err("malformed");
         match err {
             NyxError::MalformedOutput(msg) => assert!(msg.contains("line 1")),
+            other => panic!("expected MalformedOutput, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_diags_array_shape_mismatch_reports_element_index() {
+        let raw = br#"[
+            {"path":"a.py","line":1,"category":"x","id":"R1","severity":"Low"},
+            {"path":"b.py","line":2,"category":"y","id":"R2","severity":42}
+        ]"#;
+        let err = parse_diags(raw).expect_err("shape mismatch");
+        match err {
+            NyxError::MalformedOutput(msg) => {
+                assert!(
+                    msg.contains("element 1"),
+                    "expected element index in error, got: {msg}"
+                );
+            }
             other => panic!("expected MalformedOutput, got {other:?}"),
         }
     }
