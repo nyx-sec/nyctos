@@ -49,17 +49,36 @@ fn run(cfg: ShimConfig) -> ExitCode {
     cmd.stderr(std::process::Stdio::inherit());
 
     let mut sb = Birdcage::new();
+    let mut refused: Vec<String> = Vec::new();
     for p in &cfg.allow_read {
-        let _ = sb.add_exception(Exception::ExecuteAndRead(p.into()));
+        if let Err(e) = sb.add_exception(Exception::ExecuteAndRead(p.into())) {
+            refused.push(format!("ExecuteAndRead({}): {e}", p.display()));
+        }
     }
     for p in &cfg.allow_write {
-        let _ = sb.add_exception(Exception::WriteAndRead(p.into()));
+        if let Err(e) = sb.add_exception(Exception::WriteAndRead(p.into())) {
+            refused.push(format!("WriteAndRead({}): {e}", p.display()));
+        }
     }
     for k in &cfg.allow_env {
-        let _ = sb.add_exception(Exception::Environment(k.into()));
+        if let Err(e) = sb.add_exception(Exception::Environment(k.into())) {
+            refused.push(format!("Environment({k}): {e}"));
+        }
     }
     if cfg.allow_network {
-        let _ = sb.add_exception(Exception::Networking);
+        if let Err(e) = sb.add_exception(Exception::Networking) {
+            refused.push(format!("Networking: {e}"));
+        }
+    }
+    // Birdcage refuses some exceptions (path does not exist, filesystem
+    // the kernel cannot landlock, Seatbelt-incompatible pattern). Until
+    // an out-of-band status fd lands (paired with the Phase 18 status-fd
+    // shim work), surface refusals on stderr so callers see why the
+    // sandboxee later trips a confusing "permission denied" on a path
+    // they thought was allowed. The parent BirdcageSandbox captures
+    // this stream via SandboxOutcome.stderr.
+    for line in &refused {
+        eprintln!("nyx-sandbox-shim: exception refused {line}");
     }
 
     let mut child = match sb.spawn(cmd) {

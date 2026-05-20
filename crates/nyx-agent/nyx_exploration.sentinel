@@ -1161,3 +1161,56 @@ notes (pass 25):
 - no http.probe this pass: ALLOWED HOSTS empty per task contract;
   pass-25 is a survey-and-classify closure of the working-tree diff,
   no new finding emitted.
+
+
+=================================================================
+PASS 26 — task=expl-demo (this-session uncommitted diff:
+nyx-sandbox-shim refused-exception surfacing)
+working-tree diff:
+  M crates/nyx-agent-sandbox/src/bin/nyx_sandbox_shim.rs (+23 -4 —
+    captures `Birdcage::add_exception` errors into a `refused: Vec<String>`
+    and writes one `eprintln!("nyx-sandbox-shim: exception refused {line}")`
+    per failure before `sb.spawn(cmd)`. No bail; spawn proceeds under
+    whatever exceptions did land. Comment at lines 73-79 acknowledges
+    this is a temp fix awaiting "an out-of-band status fd... paired
+    with the Phase 18 status-fd shim work.")
+=================================================================
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyx-agent-sandbox/src/bin/nyx_sandbox_shim.rs",
+  "line": 81,
+  "cap": "AUDIT_LOG_INJECTION",
+  "endpoint": "<shim:exception-refused-diag> → SandboxOutcome.stderr",
+  "rationale": "The diff adds `eprintln!(\"nyx-sandbox-shim: exception refused {line}\")` at line 81, BUT line 49 keeps `cmd.stderr(Stdio::inherit())` — the sandboxee's stderr is glued to the SAME pipe the shim writes its own diagnostics into. The parent `BirdcageSandbox` captures that pipe into `SandboxOutcome.stderr` (backend/birdcage.rs:150) with no demarcation, no FD separation, no length-tagged framing. Two distinct gaps, one shared root cause:\n\n  (A) Audit-log forgery primitive: the payload-under-test (payload_runner / chain_runner runs adversary-shaped payloads in this very shim) can emit `eprintln!(\"nyx-sandbox-shim: exception refused Networking: simulated\")` from inside its sandbox. The forged line is byte-identical to a real shim diagnostic. No downstream parser keys off the prefix today, but the comment at lines 73-79 self-documents the *direction of travel*: the operator stack will grow a `SandboxOutcome.stderr` consumer that triages refusals (otherwise why surface them?), and per the pass-24 NyxRunner observation + the pass-25 carry-forward on ai_pipeline.rs evidence-key fan-out, the verifier-confidence layer is the natural consumer. By the time that consumer ships, the forgery primitive is pre-positioned — every payload that runs under birdcage has been able to spoof shim diagnostics since this commit lands. Adjacent: a noisy sandboxee can also CROWD OUT the genuine diagnostic by emitting `eprintln!(\"nyx-sandbox-shim: exception refused ExecuteAndRead(/etc/passwd): not-permitted\")` repeatedly, defeating an operator grep on the prefix.\n\n  (B) Silent policy divergence (fail-quiet skew): there is no `return ExitCode::from(N)` bail after `refused.is_empty() == false`. If `Exception::WriteAndRead` for the configured workspace path is refused because the path is on a filesystem Birdcage cannot landlock (tmpfs without landlock support, overlay mount, NFS), the child still spawns — under STRICTER policy than the caller declared. Safe direction (deny stricter), but it INVERTS the policy contract the SandboxOpts API claims: a caller that conditioned downstream logic on `allow_write: vec![workspace.clone()]` having LANDED has no programmatic signal — only a free-form stderr line buried in `SandboxOutcome.stderr`. Symmetric for `allow_network: true` refused on a kernel that lacks `Exception::Networking` support: the sandboxee runs without network, but a caller that expected to probe HTTP from inside the sandbox sees only a runtime ECONNREFUSED with no upstream attestation that the policy refused-to-apply.\n\n  Combined attack: an adversarial payload-under-test (1) emits forged `exception refused` lines to mislead the verifier evidence channel; (2) emits its OWN ground-truth-looking diagnostics that mimic shim output (`nyx-sandbox-shim: birdcage spawn failed: ...` at line 87, `nyx-sandbox-shim: wait failed: ...` at line 95 — all unprefixed); (3) returns a clean exit code while the verifier confidence layer downgrades the run based on forged refusal evidence — the finding is then incorrectly classified as inconclusive.\n\n  Static pass missed because: (i) `eprintln!` is the most idiomatic Rust diagnostics call — no taint flow, no sink-shaped syntactic tell; (ii) `Stdio::inherit` at line 49 is the documented birdcage shim pattern — the gap only resolves when read together with the new line-81 emission and the parent's stderr capture; (iii) the silent-fail-open is the *absence* of a bail on `!refused.is_empty()` — a missing-check pattern, not a wrong-check; (iv) the comment at lines 73-79 reads as a justification (\"until an out-of-band status fd lands\") not a flag, the same self-documenting-known-debt shape as the pass-20 payload_runner.rs:226-229 and pass-24 runner.rs:6-8 comments — static review treats the comment as exculpatory; (v) no downstream consumer of the prefix exists *today*, so a sink-tracking pass finds zero flows.\n\n  Fix options (priority order):\n  (1) Bail on critical refusals: if any `WriteAndRead` path the caller declared is refused, `return ExitCode::from(6)` and let the parent classify SandboxStatus::PolicyRefused. Tolerate `ExecuteAndRead` refusals only when the path is non-existent (i.e., the path WAS the workspace and the operator forgot to materialise it — a config error, not a sandbox-skew). Refuse-silently for `Environment` (low blast radius) is acceptable.\n  (2) Land the status-fd the comment promises: a separate FD (3, opened by the parent before exec, inherited as `Stdio::from_raw_fd(3)`) carries newline-delimited JSON `{\"kind\":\"refused\",\"exception\":\"...\",\"reason\":\"...\"}` records. Parent reads FD-3 in parallel with stdout/stderr. Sandboxee cannot write to FD-3 because `cmd.stderr(...)` would only inherit stderr, and FD-3 is the shim's own — the demarcation is by FD identity, not by prefix-string convention. This is the structural fix; the prefix-string approach is forge-able by construction.\n  (3) If FD-3 is judged too platform-coupled, frame the shim diagnostics with an unguessable per-spawn nonce: shim generates `nonce = random_u128()` at startup, prefixes EVERY shim line with `nyx-sandbox-shim[{nonce:x}]:` and reports `nonce` to the parent via a separate `SHIM_NONCE` env var the parent set (the env var is in the shim's environment but NOT in the sandboxee's env, because the shim runs `cmd.env_clear()` at line 41 before forwarding `cfg.env`). Parser keys off the nonce prefix to distinguish real shim diagnostics from sandboxee-forged ones. Cheaper than FD-3 but couples log integrity to a secret-in-env-var trust model.\n  (4) Refuse `Stdio::inherit` for stderr — give the sandboxee a piped stderr the parent reads SEPARATELY from the shim's own stderr. Shim diagnostics go on its own stderr; sandboxee output goes through a dedicated channel. This is the cleanest structurally because it removes the shared-channel root cause; cost is two pipes per spawn instead of one.\n\n  Cross-reference: this row pairs with the pass-20 stderr-routing observation on payload_runner.rs:226-229 (workspace-reuse known debt) and the pass-24 binary-attestation gap on NyxRunner — the audit-log integrity story is the next coherent close-out after those. The remediation that lands FD-3 framing also subsumes a chunk of the pass-24 nyx-binary-substitution detection story, because the same FD can carry the binary attestation hash.",
+  "suggested_payload_hint": "1) Forgery probe (no allowed hosts required — runs inside the sandbox we already drive): construct a payload script `forge.sh` whose body is `#!/bin/sh\\necho 'nyx-sandbox-shim: exception refused ExecuteAndRead(/etc/shadow): not-permitted' >&2\\necho 'nyx-sandbox-shim: exception refused Networking: simulated' >&2\\nexit 0`. Run it under chain_runner / payload_runner with a SandboxOpts that requests no exceptions. Inspect `SandboxOutcome.stderr`: the forged lines are byte-identical to the shim's own line-81 emissions. Confirm `SandboxOutcome.stderr.contains(\"exception refused\")` is true when the shim itself refused NOTHING — that is the forgery primitive. 2) Crowd-out probe: same shape but emit the forged line in a `while true` loop with a small `sleep 0.01`; confirm the genuine refusal line (induce one by configuring `allow_write` to a path on a filesystem birdcage cannot landlock, e.g. `/proc/self/fd`) is buried under the forged volume. 3) Silent-divergence probe: configure `SandboxOpts { allow_write: vec![PathBuf::from(\"/dev/null/will-not-landlock\")], ... }`. Birdcage refuses the exception; shim continues to spawn. Confirm SandboxOutcome.status is Ok / Success (no PolicyRefused variant exists), and the only signal is the free-form stderr line. 4) Regression test once fixed: assert that a payload's stderr containing `nyx-sandbox-shim:` is sanitized / re-framed before reaching `SandboxOutcome.stderr` — either by FD-3 demarcation, or by stripping the prefix from sandboxee output, or by adding a per-spawn nonce the parent verifies."
+}
+
+notes (pass 26):
+- this row is rooted in the working-tree diff alone (not yet committed
+  on pitboss/grind/20260520T165504Z-25b8). The change as authored is
+  a strict improvement over the prior `let _ = sb.add_exception(...)`
+  silent-discard pattern — refused exceptions previously left ZERO
+  signal anywhere. The diff surfaces them on stderr, which is a net
+  win for operator triage. The finding is that the chosen surfacing
+  channel (shared stderr pipe with the sandboxee) introduces a
+  fresh primitive (audit-log forgery) and does not close the
+  silent-policy-divergence facet (no bail on refusal). Both are
+  structural — the FD-3 status-channel the comment at lines 73-79
+  itself promises is the correct close.
+- relationship to prior passes: pass-20 (payload_runner workspace
+  reuse), pass-24 (NyxRunner unbounded stderr + PATH-planting RCE),
+  pass-25 (diag.rs typed-enum refactor — security-neutral). This
+  pass-26 row is the audit-integrity facet of the same arc those
+  rows trace through; closing options (2) or (4) above lands the
+  structural primitive that pass-24 fix-option-(5)'s startup
+  binary-attestation line and the pass-25 carry-forward's
+  PayloadSynthesis fan-out evidence consumer both benefit from.
+- prior-pass rows 1-25 all STAND or remain in their prior
+  STANDS-FIXED / STANDS-LATENT / STANDS-PARTIAL-FIX classifications;
+  this diff adds ONE new row and otherwise carries only the
+  uncommitted shim-diag surfacing change.
+- no http.probe this pass: ALLOWED HOSTS empty per task contract;
+  pass-26 is rooted in the working-tree diff and the existing
+  source-level reachability matrix, no network probe required.
