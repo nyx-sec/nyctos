@@ -48,6 +48,32 @@ fn run(cfg: ShimConfig) -> ExitCode {
     cmd.stdout(std::process::Stdio::inherit());
     cmd.stderr(std::process::Stdio::inherit());
 
+    // Make the sandboxee die with the shim. Without this, a SIGKILL on
+    // the shim (issued by `BirdcageSandbox::kill` when the daemon
+    // cancels or a per-run timeout fires) reparents the grandchild to
+    // init/launchd and the sandboxee keeps running after the kill path
+    // returned. The pre_exec closure runs after fork in the child;
+    // PR_SET_PDEATHSIG survives the subsequent exec.
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            cmd.pre_exec(|| {
+                // SAFETY: prctl is async-signal-safe; pre_exec requires
+                // we avoid the allocator and any non-async-signal-safe
+                // call, which a bare FFI prctl satisfies.
+                let ret = libc::prctl(
+                    libc::PR_SET_PDEATHSIG,
+                    libc::SIGKILL as libc::c_ulong,
+                );
+                if ret == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+
     let mut sb = Birdcage::new();
     let mut refused: Vec<String> = Vec::new();
     for p in &cfg.allow_read {
