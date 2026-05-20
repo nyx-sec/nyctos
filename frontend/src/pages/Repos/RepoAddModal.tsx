@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
-import { useForm, type FieldErrors, type Resolver } from "react-hook-form";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { Badge } from "@/components/Badge";
 import { Button } from "@/components/Button";
@@ -35,8 +36,8 @@ function buildSchema(tab: Tab) {
         "Letters, numbers, dot, dash, underscore (max 64 chars)",
       ),
     source_url_or_path: z.string().min(1, "Required"),
-    branch: z.string().optional().default(""),
-    auth_ref: z.string().optional().default(""),
+    branch: z.string(),
+    auth_ref: z.string(),
     i_own_this: z
       .boolean()
       .refine((v) => v === true, "You must attest ownership before adding the repo"),
@@ -67,21 +68,7 @@ export function RepoAddModal({ projectId, onClose, onAdded }: Props) {
   const test = useTestProjectRepo(projectId);
   const firstInputRef = useRef<HTMLInputElement | null>(null);
 
-  const resolver: Resolver<FormValues> = async (values) => {
-    const schema = buildSchema(tab);
-    const result = schema.safeParse(values);
-    if (result.success) {
-      return { values: result.data, errors: {} };
-    }
-    const errors: FieldErrors<FormValues> = {};
-    for (const issue of result.error.issues) {
-      const key = issue.path[0] as keyof FormValues | undefined;
-      if (key && !(key in errors)) {
-        errors[key] = { type: "validation", message: issue.message };
-      }
-    }
-    return { values: {}, errors };
-  };
+  const resolver = useMemo(() => zodResolver(buildSchema(tab)), [tab]);
 
   const form = useForm<FormValues>({
     resolver,

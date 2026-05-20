@@ -20,8 +20,8 @@ nyx-agent-core = { path = "../nyx-agent-core" }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-serde_yaml = "0.9"
-regex = "1"
+serde_yaml = { workspace = true }
+regex = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

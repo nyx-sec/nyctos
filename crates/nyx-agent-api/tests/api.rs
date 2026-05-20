@@ -1174,6 +1174,89 @@ async fn webhook_wrong_branch_is_skipped_not_triggered() {
     h.abort();
 }
 
+/// Send a raw HTTP/1.1 POST without writing the announced body and
+/// return (status_code, response_body). Used to test webhook
+/// short-circuit paths where the handler refuses the request before
+/// reading the body, which would race with reqwest's body writer
+/// closing the connection.
+async fn raw_post_headers_only(
+    addr: std::net::SocketAddr,
+    path: &str,
+    headers: &[(&str, &str)],
+    content_length: usize,
+) -> (u16, String) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+    let mut req = format!(
+        "POST {path} HTTP/1.1\r\nHost: {host}\r\nContent-Length: {content_length}\r\n",
+        host = addr,
+    );
+    for (k, v) in headers {
+        req.push_str(&format!("{k}: {v}\r\n"));
+    }
+    req.push_str("\r\n");
+    stream.write_all(req.as_bytes()).await.expect("write headers");
+    // Intentionally do NOT write the body. If the server short-circuits
+    // on header inspection, it will respond and close; if it tries to
+    // buffer the body, the test hangs (and we time out the read below).
+    let mut buf = Vec::new();
+    let read =
+        tokio::time::timeout(std::time::Duration::from_secs(5), stream.read_to_end(&mut buf)).await;
+    let bytes = match read {
+        Ok(Ok(_)) => buf,
+        Ok(Err(_)) => buf,
+        Err(_) => panic!(
+            "server did not respond within 5s; likely buffered body instead of short-circuiting"
+        ),
+    };
+    let text = String::from_utf8_lossy(&bytes).to_string();
+    let status_line = text.lines().next().unwrap_or("");
+    let status_code: u16 =
+        status_line.split_whitespace().nth(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+    (status_code, text)
+}
+
+#[tokio::test]
+async fn webhook_malformed_signature_short_circuits_without_body_read() {
+    // A malformed signature (e.g. wrong digest length) must 401 before
+    // the handler buffers the body. Announce a body via Content-Length
+    // but never write it. If the handler short-circuits on the header
+    // shape, it responds + closes; if it tries to buffer the body, the
+    // test deadlocks until the timeout fires.
+    let secret = b"shared-secret";
+    let (addr, trigger, h, _tmp) = start_webhook_server(secret, None, None).await;
+    let (status, _body) = raw_post_headers_only(
+        addr,
+        "/webhook/git",
+        &[("X-Hub-Signature-256", "sha256=deadbeef"), ("Content-Type", "application/json")],
+        1024,
+    )
+    .await;
+    assert_eq!(status, 401, "malformed signature must 401");
+    let calls = trigger.calls.lock().await.clone();
+    assert!(calls.is_empty(), "malformed signature must not trigger");
+    h.abort();
+}
+
+#[tokio::test]
+async fn webhook_oversized_content_length_returns_413() {
+    let secret = b"shared-secret";
+    let (addr, trigger, h, _tmp) = start_webhook_server(secret, None, None).await;
+    // Well-formed signature so the handler reaches the size check.
+    let well_formed_sig = format!("sha256={}", "0".repeat(64));
+    let (status, _body) = raw_post_headers_only(
+        addr,
+        "/webhook/git",
+        &[("X-Hub-Signature-256", &well_formed_sig), ("Content-Type", "application/json")],
+        10 * 1024 * 1024, // 10 MiB; cap is 1 MiB
+    )
+    .await;
+    assert_eq!(status, 413, "oversized Content-Length must 413");
+    let calls = trigger.calls.lock().await.clone();
+    assert!(calls.is_empty(), "413 must short-circuit before trigger");
+    h.abort();
+}
+
 // ---- /projects (Phase 5) ----------------------------------------------------
 
 #[tokio::test]

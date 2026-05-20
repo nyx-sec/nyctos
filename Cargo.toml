@@ -54,6 +54,8 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 hmac = "0.12"
 sha2 = "0.10"
 subtle = "2"
+regex = "1"
+serde_yaml = "0.9"
 
 [profile.release]
 lto = "thin"

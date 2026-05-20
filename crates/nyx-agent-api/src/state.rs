@@ -294,6 +294,8 @@ pub enum ApiError {
     BadRequest(String),
     #[error("unauthorized")]
     Unauthorized,
+    #[error("payload too large: {0}")]
+    PayloadTooLarge(String),
     #[error("store error: {0}")]
     Store(#[from] StoreError),
     #[error("scan trigger failed: {0}")]
@@ -308,6 +310,7 @@ impl IntoResponse for ApiError {
             ApiError::NotFound(_) => (StatusCode::NOT_FOUND, "not_found"),
             ApiError::BadRequest(_) => (StatusCode::BAD_REQUEST, "bad_request"),
             ApiError::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized"),
+            ApiError::PayloadTooLarge(_) => (StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large"),
             ApiError::Store(_) => (StatusCode::INTERNAL_SERVER_ERROR, "store_error"),
             ApiError::Scan(ScanTriggerError::Rejected(_)) => {
                 (StatusCode::BAD_REQUEST, "scan_rejected")

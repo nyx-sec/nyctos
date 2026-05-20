@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
-import { useForm, type FieldErrors, type Resolver } from "react-hook-form";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { Button } from "@/components/Button";
 import { Spinner } from "@/components/Spinner";
@@ -22,11 +23,9 @@ const schema = z.object({
       NAME_PATTERN,
       "Letters, numbers, dot, dash, underscore (max 64 chars)",
     ),
-  description: z.string().max(512).optional().default(""),
+  description: z.string().max(512),
   target_base_url: z
     .string()
-    .optional()
-    .default("")
     .refine(
       (v) => v.trim().length === 0 || /^https?:\/\//.test(v.trim()),
       "Must start with http:// or https://",
@@ -42,21 +41,8 @@ export function ProjectAddModal({ onClose, onAdded }: Props) {
   const create = useCreateProject();
   const firstInputRef = useRef<HTMLInputElement | null>(null);
 
-  const resolver: Resolver<FormValues> = async (values) => {
-    const result = schema.safeParse(values);
-    if (result.success) return { values: result.data, errors: {} };
-    const errors: FieldErrors<FormValues> = {};
-    for (const issue of result.error.issues) {
-      const key = issue.path[0] as keyof FormValues | undefined;
-      if (key && !(key in errors)) {
-        errors[key] = { type: "validation", message: issue.message };
-      }
-    }
-    return { values: {}, errors };
-  };
-
   const form = useForm<FormValues>({
-    resolver,
+    resolver: zodResolver(schema),
     mode: "onBlur",
     defaultValues: { name: "", description: "", target_base_url: "" },
   });

@@ -28,6 +28,7 @@ use std::sync::Arc;
 
 use axum::body::{to_bytes, Body};
 use axum::extract::State;
+use axum::http::header::CONTENT_LENGTH;
 use axum::http::{Request, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
@@ -47,6 +48,19 @@ pub const MAX_WEBHOOK_BODY_BYTES: usize = 1024 * 1024;
 
 const SIGNATURE_HEADER: &str = "X-Hub-Signature-256";
 const SIGNATURE_PREFIX: &str = "sha256=";
+
+/// `sha256` produces a 32-byte digest, which encodes to 64 hex chars.
+const SIGNATURE_HEX_LEN: usize = 64;
+
+/// Quick syntactic check on the signature header. Refuses anything that
+/// is not `sha256=` + exactly 64 lowercase-or-uppercase hex chars. Lets
+/// the handler 401 a forged delivery without buffering the body or
+/// running a full HMAC pass.
+fn signature_header_is_well_formed(header: &str) -> bool {
+    let Some(rest) = header.trim().strip_prefix(SIGNATURE_PREFIX) else { return false };
+    let rest = rest.trim();
+    rest.len() == SIGNATURE_HEX_LEN && rest.bytes().all(|b| b.is_ascii_hexdigit())
+}
 
 /// Pluggable resolver that turns the operator's
 /// `triggers.webhook_secret_ref` value into the raw bytes used as the
@@ -160,17 +174,38 @@ pub async fn webhook_git(
     };
 
     // Pull the signature header BEFORE consuming the body so a missing
-    // header short-circuits without buffering.
+    // or syntactically-malformed header short-circuits without
+    // buffering and without burning an HMAC pass per forged delivery.
     let sig_header = req
         .headers()
         .get(SIGNATURE_HEADER)
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string())
         .ok_or(ApiError::Unauthorized)?;
+    if !signature_header_is_well_formed(&sig_header) {
+        return Err(ApiError::Unauthorized);
+    }
+
+    // Reject oversized payloads on the advertised Content-Length before
+    // buffering. `to_bytes` enforces the same cap (covering chunked
+    // transfer encoding where Content-Length is absent), but the
+    // header-side check refuses a hostile sender before any body read.
+    if let Some(declared) = req
+        .headers()
+        .get(CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<usize>().ok())
+    {
+        if declared > MAX_WEBHOOK_BODY_BYTES {
+            return Err(ApiError::PayloadTooLarge(format!(
+                "webhook body {declared} bytes exceeds {MAX_WEBHOOK_BODY_BYTES} byte limit"
+            )));
+        }
+    }
 
     let (_parts, body) = req.into_parts();
     let body_bytes = to_bytes(body, MAX_WEBHOOK_BODY_BYTES).await.map_err(|e| {
-        ApiError::BadRequest(format!("webhook body exceeded limit or failed to read: {e}"))
+        ApiError::PayloadTooLarge(format!("webhook body exceeded limit or failed to read: {e}"))
     })?;
 
     if !verify_signature(&secret, body_bytes.as_ref(), &sig_header) {
@@ -315,5 +350,41 @@ mod tests {
         let resolver = EnvSecretResolver { spec: Some(format!("env:{var}")) };
         assert!(resolver.resolve().is_none(), "empty env-backed secret must not pass HMAC auth");
         std::env::remove_var(&var);
+    }
+
+    #[test]
+    fn signature_header_shape_accepts_canonical_form() {
+        let header = format!("sha256={}", "a".repeat(SIGNATURE_HEX_LEN));
+        assert!(signature_header_is_well_formed(&header));
+    }
+
+    #[test]
+    fn signature_header_shape_accepts_mixed_case_hex() {
+        let header = format!("sha256={}", "AbCdEf0123456789".repeat(4));
+        assert!(signature_header_is_well_formed(&header));
+    }
+
+    #[test]
+    fn signature_header_shape_rejects_missing_prefix() {
+        let header = "a".repeat(SIGNATURE_HEX_LEN);
+        assert!(!signature_header_is_well_formed(&header));
+    }
+
+    #[test]
+    fn signature_header_shape_rejects_short_digest() {
+        let header = format!("sha256={}", "a".repeat(SIGNATURE_HEX_LEN - 1));
+        assert!(!signature_header_is_well_formed(&header));
+    }
+
+    #[test]
+    fn signature_header_shape_rejects_long_digest() {
+        let header = format!("sha256={}", "a".repeat(SIGNATURE_HEX_LEN + 1));
+        assert!(!signature_header_is_well_formed(&header));
+    }
+
+    #[test]
+    fn signature_header_shape_rejects_non_hex_chars() {
+        let header = format!("sha256={}", "z".repeat(SIGNATURE_HEX_LEN));
+        assert!(!signature_header_is_well_formed(&header));
     }
 }
