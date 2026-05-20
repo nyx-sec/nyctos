@@ -16,7 +16,7 @@ use assert_cmd::Command;
 fn stub_nyx_script() -> &'static str {
     "#!/usr/bin/env sh\n\
 case \"$1\" in\n\
-  --version) echo \"nyx 0.1.0\" ;;\n\
+  --version) echo \"nyx 0.7.0\" ;;\n\
   scan)\n\
     shift\n\
     while [ \"$#\" -gt 0 ]; do\n\

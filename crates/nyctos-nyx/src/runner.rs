@@ -23,7 +23,15 @@ use crate::error::NyxError;
 /// is never lowered. `resolve_min_nyx_version` takes
 /// `max(MINIMUM_NYX_VERSION, configured)` so a configured value below the
 /// floor is silently clamped up.
-pub const MINIMUM_NYX_VERSION: &str = "0.1.0";
+///
+/// Pinned to `0.7.0` because the `Diag` schema in `crate::diag` consumes
+/// fields first introduced in that upstream release: `evidence.flow_steps`
+/// (lifted into `Diag::flow_steps` for taint flow rendering, spec
+/// derivation, and chain reasoning), `confidence`, and the
+/// `evidence.unsupported` / `evidence.reason` shapes that drive the
+/// AI handoff. An older `nyx` would parse without errors (every field is
+/// `#[serde(default)]`) but silently drop the data those passes rely on.
+pub const MINIMUM_NYX_VERSION: &str = "0.7.0";
 
 #[derive(Debug, Clone)]
 pub struct NyxRunner {

@@ -2468,3 +2468,47 @@ notes
 - pass-17 scope: 2 novel findings inside nyx-agent (not the api/core sibling crates that pass-16 covered).
 - both findings are missing-validation patterns the heuristic novel-finding pass would skip (no tainted-flow sink → no diag).
 - tool budget ~8 / 24 calls used; halted on quality-over-count per task brief.
+
+---
+pass-18 expl-demo (2026-05-20): nyctos-api crate-rename remap + webhook fail-open
+
+Crate path remap (affects ALL prior pass-1..17 rows whose `path` starts with
+`crates/nyx-agent-api/`): re-read against HEAD shows the crate was renamed to
+`nyctos-api`. Same module layout (router.rs / state.rs / webhook.rs). Findings
+still apply at the new path:
+
+- prior `crates/nyx-agent-api/src/router.rs:1441` (events_ws CSWSH)  →  `crates/nyctos-api/src/router.rs:1637-1654`
+- prior `crates/nyx-agent-api/src/router.rs:89`   (setup auth bypass) →  `crates/nyctos-api/src/router.rs:99-119`
+- prior `crates/nyx-agent-api/src/router.rs:132`  (?token= URL auth)  →  `crates/nyctos-api/src/router.rs:141-152` (+ TraceLayer at :89)
+- prior `crates/nyx-agent-api/src/router.rs:793`  (SSRF /repos/test)  →  `crates/nyctos-api/src/router.rs:992` (`git ls-remote` still no scheme allowlist)
+- prior `crates/nyx-agent-api/src/router.rs:799`  (ext:: RCE)         →  same handler at `crates/nyctos-api/src/router.rs:992`
+
+No new mitigations observed; the pre-1.0 surface is identical.
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyctos-api/src/webhook.rs",
+  "line": 530,
+  "cap": "AUTH_BYPASS",
+  "endpoint": "POST /webhook/git (replay-dedup cache)",
+  "rationale": "WebhookConfig.dedup is an Arc<std::sync::Mutex<DeliveryDedupCache>>. The handler at :524-534 calls `cfg.dedup.lock()`; on a poisoned mutex the `Err(poisoned)` arm logs a warn and returns `true` — i.e. treats the delivery as fresh and continues to trigger a scan. Poisoning persists for the lifetime of the daemon (the Arc is shared across the router; no `clear_poison`/recovery path), so once a single panic occurs while the lock is held, replay protection is permanently disabled and every subsequent re-delivery of any HMAC-valid push (captured webhook body the operator's git server may retry, or an attacker who learned the secret via the env-var-read primitive of the SECRET_LOG row) will spin a fresh scan run. HMAC still gates *who* can submit, but for an attacker who already has a single valid (signature, body) pair the dedup cache is the only defense against unbounded scan-trigger DoS — and it fails open. Static pass missed this because the bug is a defensive-on-error choice in a Result match arm, not a tainted sink.",
+  "suggested_payload_hint": "induce a panic while record() holds the lock (e.g. cap eviction during allocator OOM with a large run of long delivery ids), then replay any captured valid (X-Hub-Signature-256, body) pair — observe a new run_id each replay instead of the `delivery `<id>` already processed` short-circuit. Defence: change the Err arm to `return Err(ApiError::Internal(...))` (fail closed) and/or swap to a parking_lot mutex that does not poison."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyctos-api/src/webhook.rs",
+  "line": 561,
+  "cap": "BUSINESS_LOGIC_SKIP",
+  "endpoint": "POST /webhook/git (Unknown-event provider legacy path)",
+  "rationale": "When no recognised provider event header is present (none of X-GitHub-Event / X-Gitea-Event / X-Forgejo-Event / X-Gogs-Event / X-Gitlab-Event), classify_event returns EventKind::Unknown and the handler at :467 falls through to the body extractor. The Unknown-path guard at :561 only refuses when `branch.is_none()`; any signed body that decodes to a non-empty branch (the default RefHeadsExtractor pulls `refs/heads/<branch>` from a top-level `\"ref\"` field) is then accepted as a push and the scan is triggered at :598. The body shape `\"ref\": \"refs/heads/<branch>\"` is shared by GitHub's `create` event (branch creation) and many GitLab event variants. An attacker who has captured *one* HMAC-valid `create`-event body from the wire (TLS-stripped LAN, mirror server, log dump) can replay it with the event-name header stripped to coerce the daemon to scan on every branch-creation echo, even though the operator's branch filter is set to gate only true pushes. Net effect: replay-once-per-branch-creation amplification of scan triggers, without ever satisfying the operator's intended `Push`-only contract. Static pass missed because the policy violation is a *missing* event-type assertion in the Unknown fallback, not a tainted flow.",
+  "suggested_payload_hint": "capture an HMAC-valid `X-GitHub-Event: create` delivery whose body contains `{\\\"ref\\\":\\\"refs/heads/feature-x\\\",...}`; resend with the X-GitHub-Event header removed and a fresh X-GitHub-Delivery id. Expect HTTP 202 + new run_id even though the original event was not a push. Defence: in the Unknown-event arm, require an extra signal (e.g. a top-level `commits` array or `pusher` object) before treating the body as a push."
+}
+
+---
+pass-18 summary
+- 0 new mitigations, 1 path remap (crate rename nyx-agent-api → nyctos-api), 2 new findings.
+- new findings target webhook.rs which pass-1..17 had not enumerated (router.rs-centric scope drift).
+- tool budget ~6 / 24 used; halted on quality-over-count per task brief.

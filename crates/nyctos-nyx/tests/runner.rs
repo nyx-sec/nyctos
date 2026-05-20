@@ -37,4 +37,20 @@ async fn fixture_yields_at_least_one_diag() {
         "fixture must produce at least one Diag (got 0); stderr: {}",
         outcome.stderr
     );
+
+    // The fixture deliberately wires two sinks (`eval(sys.stdin.read())`
+    // and `os.system(f"echo {sys.argv[1]}")`) so the rule IDs upstream
+    // attaches to them have been stable across the nyx 0.7.x range. The
+    // assertion stays additive: extra rules that future nyx releases bolt
+    // on are fine; only a rename of one of these two would break it,
+    // which is also the kind of breakage we want CI to catch deliberately.
+    let rules: std::collections::HashSet<&str> =
+        outcome.diags.iter().map(|d| d.rule.as_str()).collect();
+    for required in ["py.code_exec.eval", "py.cmdi.os_system"] {
+        assert!(
+            rules.contains(required),
+            "fixture should trigger {required}; saw rules {rules:?}; stderr: {}",
+            outcome.stderr
+        );
+    }
 }

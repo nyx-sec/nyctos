@@ -13,7 +13,7 @@ against the workspace in this repository.
 | Component | Version | Notes |
 |---|---|---|
 | Rust toolchain | 1.83 or newer, channel `stable` | Pinned in `rust-toolchain.toml`. `rustup` picks it up automatically on first `cargo` invocation. |
-| `nyx` static scanner | 0.1.0 or newer | External GPL-3.0 binary spawned as a subprocess. See [Install the `nyx` scanner](#install-the-nyx-scanner). |
+| `nyx` static scanner | 0.7.0 or newer | External GPL-3.0 binary spawned as a subprocess. See [Install the `nyx` scanner](#install-the-nyx-scanner). |
 | Node.js + `npm` | Node 18+ | Required only for `cargo build --release` (the release build bundles the SPA). Debug builds ship a stub page and skip Node. |
 | `claude-code` CLI | recent | Optional. Required only if you intend to run the AI exploit-synthesis layer. See [Optional: claude-code](#optional-claude-code). |
 | SQLite | bundled | Linked into the binary via SQLx; no system SQLite needed. |
@@ -60,10 +60,13 @@ Two ways to make `nyx` discoverable, in order of preference:
 1. Place `nyx` on `PATH`. Verify with `which nyx`.
 2. Set `[nyx].binary_path = "/abs/path/to/nyx"` in `nyctos.toml`.
 
-The minimum version is `0.1.0` (the `MINIMUM_NYX_VERSION` constant in
-`crates/nyx-agent-nyx/src/runner.rs:24`). Override per install via
-`[nyx].min_version = "0.2.0"` in `nyctos.toml` if a deployment
-needs a newer floor than the agent default.
+The minimum version is `0.7.0` (the `MINIMUM_NYX_VERSION` constant in
+`crates/nyctos-nyx/src/runner.rs`). The floor pins to the upstream
+release that introduced `evidence.flow_steps`, which the taint flow,
+spec-derivation, and chain-reasoning passes all consume. Override per
+install via `[nyx].min_version = "0.8.0"` in `nyctos.toml` if a
+deployment needs a newer floor than the agent default; values below the
+built-in floor are clamped up silently.
 
 The upstream `nyx` scanner is GPL-3.0-or-later, distributed
 separately. It is the only GPL component in the stack. Nyctos itself
@@ -115,7 +118,7 @@ state dir OK at /home/op/.local/share/nyctos
 logs -> /home/op/.local/share/nyctos/logs/agent.jsonl
 config not found at ./nyctos.toml (using defaults)
 db OK at /home/op/.local/share/nyctos/state.db (schema v1)
-nyx OK at /usr/local/bin/nyx (version 0.1.0, minimum 0.1.0)
+nyx OK at /usr/local/bin/nyx (version 0.7.0, minimum 0.7.0)
 claude-code: available v1.0.0 at /usr/local/bin/claude
 sandbox chain lane -> birdcage (selected by host probe) [2 simultaneous]
 sandbox fast lane  -> process (selected by host probe) [8 simultaneous]

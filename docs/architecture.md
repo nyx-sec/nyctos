@@ -84,8 +84,8 @@ only through `fork`/`exec`, never as a linked library:
 - `nyx_agent_nyx::NyxRunner::discover` resolves the binary via
   `Config::nyx.binary` (operator override) or `$PATH`, then runs
   `nyx --version` and refuses to start if the version is below
-  `MINIMUM_NYX_VERSION` (currently `0.1.0`, see
-  `crates/nyx-agent-nyx/src/runner.rs:24`).
+  `MINIMUM_NYX_VERSION` (currently `0.7.0`, see
+  `crates/nyctos-nyx/src/runner.rs`).
 - `NyxRunner::scan` spawns `nyx scan --format json --no-index
   <repo>` with `--verify` if the lane asks for verification.
   Stdout is redirected to a temp file (not a pipe) because the
