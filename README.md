@@ -1,5 +1,12 @@
 <!-- nyx: verbatim -->
-# Nyctos
+<div align="center">
+  <img src="assets/nyctos-readme-header.svg" alt="NYCTOS - automated pentesting, refined" width="900"/>
+
+[![Status: pre-MVP](https://img.shields.io/badge/status-pre--MVP-2ea067)](#status)
+[![Binary: nyx-agent](https://img.shields.io/badge/binary-nyx--agent-c79a2b)](#naming)
+[![License: PolyForm Small Business 1.0.0](https://img.shields.io/badge/license-PolyForm%20Small%20Business-9fa3ad)](LICENSE.md)
+[![Docs](https://img.shields.io/badge/docs-operator%20guide-58a6ff)](docs/SUMMARY.md)
+</div>
 
 Nyctos is a self-hosted security analysis daemon that wraps the `nyx`
 scanner with an AI-driven exploit-synthesis layer and a full-environment
