@@ -60,17 +60,27 @@ both, to avoid double-firing.
 
 ### launchd (macOS)
 
+The shipped plist is a per-user LaunchAgent, not a system
+LaunchDaemon. Install it under your own `~/Library/LaunchAgents/`
+so the daemon runs as your user account, not as root:
+
 ```bash
-sudo install -m 0644 packaging/com.nyx.agent.plist \
-  /Library/LaunchDaemons/com.nyx.agent.plist
-sudo launchctl bootstrap system /Library/LaunchDaemons/com.nyx.agent.plist
+install -m 0644 packaging/com.nyx.agent.plist \
+  "$HOME/Library/LaunchAgents/com.nyx.agent.plist"
+launchctl bootstrap gui/$(id -u) "$HOME/Library/LaunchAgents/com.nyx.agent.plist"
 ```
 
-The plist runs `nyx-agent serve --headless` with `KeepAlive=true`, so
-the daemon stays up across reboots. Periodic kicks come from the
-in-process scheduler reading `[[schedule]]` entries out of
-`nyctos.toml`; there is no separate launchd calendar trigger to
+The plist runs `nyx-agent serve --headless` with `KeepAlive=true`,
+so the daemon stays up across login sessions. Periodic kicks come
+from the in-process scheduler reading `[[schedule]]` entries out
+of `nyctos.toml`; there is no separate launchd calendar trigger to
 configure.
+
+Do not install this file under `/Library/LaunchDaemons/`. That
+path runs the daemon as root, which contradicts the systemd
+recipe's `DynamicUser=yes` hardening and broadens the blast radius
+of every OS_COMMAND / PATH_TRAVERSAL / SSRF surface the agent
+exposes to its own configured repositories.
 
 ## Verifying
 

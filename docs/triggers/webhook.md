@@ -17,11 +17,33 @@ webhook_secret_ref = "env:NYX_WEBHOOK_SECRET"
 webhook_branch = "main"
 ```
 
-Set `NYX_WEBHOOK_SECRET` in the daemon's environment (e.g. via a
-systemd `EnvironmentFile=` drop-in or the macOS launchd plist's
-`EnvironmentVariables` dict). The handler returns HTTP 503 when the
-ref is configured but the env var is unset, so a misconfigured host
-cannot accept unauthenticated triggers.
+Set `NYX_WEBHOOK_SECRET` in the daemon's environment via a
+systemd `EnvironmentFile=` drop-in installed under `/etc/nyx/secret`
+with mode 0600 so only the daemon user can read it.
+
+On macOS, source the secret from a 0600 sidecar file in the
+LaunchAgent wrapper rather than pasting the value into the plist's
+`EnvironmentVariables` dict. `install -m 0644` on a plist makes it
+world-readable, so any local user could `plutil -extract
+EnvironmentVariables.NYX_WEBHOOK_SECRET raw -` the file and forge
+HMAC-valid `/webhook/git` deliveries (HMAC is the only auth on this
+endpoint). The recommended shape is a launchd wrapper:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+NYX_WEBHOOK_SECRET="$(cat "$HOME/.config/nyctos/webhook.secret")"
+export NYX_WEBHOOK_SECRET
+exec /usr/local/bin/nyx-agent serve --headless
+```
+
+Save with mode 0700 and point the LaunchAgent's `ProgramArguments`
+at it. The sidecar file itself should be created with `install -m
+0600`.
+
+The handler returns HTTP 503 when the ref is configured but the
+env var is unset, so a misconfigured host cannot accept
+unauthenticated triggers.
 
 ## Wire format
 

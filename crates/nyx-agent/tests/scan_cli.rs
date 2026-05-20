@@ -85,6 +85,38 @@ fn scan_project_round_trips_against_stub() {
 }
 
 #[test]
+fn scan_headless_suppresses_human_progress() {
+    let state_root = tempfile::tempdir().expect("state");
+    let repo_src = tempfile::tempdir().expect("repo");
+    fs::write(repo_src.path().join("README.md"), b"hi\n").expect("seed");
+
+    let stub_dir = tempfile::tempdir().expect("stub");
+    let stub_path = write_stub(stub_dir.path());
+    let config_path = write_config(state_root.path(), &stub_path, repo_src.path());
+
+    let assert = Command::cargo_bin("nyx-agent")
+        .expect("nyx-agent binary")
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "--state-dir",
+            state_root.path().to_str().unwrap(),
+            "scan",
+            "--project",
+            "demo-project",
+            "--headless",
+        ])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    assert!(
+        stdout.is_empty(),
+        "expected --headless to suppress every stdout line, got: {stdout:?}"
+    );
+}
+
+#[test]
 fn scan_repo_without_project_is_rejected() {
     let state_root = tempfile::tempdir().expect("state");
     let repo_src = tempfile::tempdir().expect("repo");

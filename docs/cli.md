@@ -89,7 +89,7 @@ nyx-agent scan --project acme-app --output report.json --since-ref origin/main
 |---|---|
 | `--project PROJECT` | Project to scan, by name from `[[project]] name` in config. Pass once per project; omit to scan every enabled project. |
 | `--repo REPO` | Repository to scan, narrowed within `--project`. Requires at least one `--project` to be set. Matched against `[[project.repo]] name`. Pass `--repo` once per repo. |
-| `--headless` | Accepted for compatibility with `serve` invocations re-used in CI. `scan` never opens a browser, so the flag is a no-op. |
+| `--headless` | Suppress human-readable stdout so only `--output PATH` carries machine-readable signal. Errors still go to stderr. Pair with `--output` in CI lanes that consume the JSON report and ignore console output. |
 | `--output PATH` | Write a machine-readable JSON report to `PATH`. Consumed by `pr-comment --report` and external dashboards. |
 | `--since-ref REF` | Filter the report to findings whose `path` was touched by `git diff --name-only --diff-filter=AMR REF...HEAD` in each workspace. Computed per repo; requires a git workspace. |
 

@@ -41,6 +41,8 @@ pub enum PrCommentError {
     Report(#[from] super::scan_report::ScanReportError),
     #[error("token is required (set --token-env or GITHUB_TOKEN)")]
     MissingToken,
+    #[error("refused --gh-api `{url}`: {reason}")]
+    UnsafeGhApi { url: String, reason: &'static str },
 }
 
 /// Configuration for [`run`]. Built from CLI args + env.
@@ -69,6 +71,7 @@ pub async fn run(
     report_path: &Path,
     cfg: PrCommentConfig,
 ) -> Result<PrCommentOutcome, PrCommentError> {
+    validate_gh_api_url(&cfg.gh_api)?;
     let report = ScanReport::load(report_path)?;
     let (owner, repo_name) = split_repo(&cfg.repo)?;
 
@@ -305,6 +308,74 @@ fn code_safe(s: &str) -> String {
 
 fn trim_url(url: &str) -> &str {
     url.trim_end_matches('/')
+}
+
+/// Refuse `--gh-api` values that could exfiltrate the GitHub bearer
+/// token. The operator-supplied URL is fed into
+/// `reqwest::Client::default_headers(Authorization: Bearer …)`, so any
+/// URL we accept here will receive the token on the next request. The
+/// trust boundary is "operator typed it in the workflow YAML", which
+/// breaks under `pull_request_target` flows that interpolate forked-PR
+/// input. The checks:
+///   * scheme must be `https`, except for `http://127.0.0.1` /
+///     `http://[::1]` / `http://localhost` which are reachable only by
+///     a local wiremock test fixture;
+///   * URL must NOT contain user-info (`https://user:pw@host/...` would
+///     ship the literal `user:pw` to a third-party DNS query before the
+///     redirect even fires);
+///   * host must not be the IMDS / cloud-metadata range
+///     (`169.254.169.254`, `fd00:ec2::254`, `metadata.google.internal`,
+///     `metadata.azure.com`, link-local `fe80::/10`).
+pub fn validate_gh_api_url(url: &str) -> Result<(), PrCommentError> {
+    let refuse =
+        |reason: &'static str| PrCommentError::UnsafeGhApi { url: url.to_string(), reason };
+
+    let (scheme, rest) = url.split_once("://").ok_or_else(|| refuse("missing URL scheme"))?;
+    let scheme = scheme.to_ascii_lowercase();
+    if scheme != "https" && scheme != "http" {
+        return Err(refuse("scheme must be https (http allowed only for loopback)"));
+    }
+
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    if authority.is_empty() {
+        return Err(refuse("URL has no host"));
+    }
+    if authority.contains('@') {
+        return Err(refuse("URL must not contain user-info (`user:pw@host`)"));
+    }
+
+    let host_with_port = authority;
+    let host = if let Some(end) = host_with_port.strip_prefix('[').and_then(|r| r.split_once(']')) {
+        end.0
+    } else {
+        host_with_port.rsplit_once(':').map(|(h, _)| h).unwrap_or(host_with_port)
+    };
+    let host_lc = host.to_ascii_lowercase();
+
+    let is_loopback_v4 = host == "127.0.0.1";
+    let is_loopback_v6 = host == "::1";
+    let is_loopback_name = host_lc == "localhost";
+    let is_loopback = is_loopback_v4 || is_loopback_v6 || is_loopback_name;
+
+    if scheme == "http" && !is_loopback {
+        return Err(refuse(
+            "plain http is allowed only against loopback (127.0.0.1/::1/localhost)",
+        ));
+    }
+
+    const METADATA_HOSTS: &[&str] =
+        &["169.254.169.254", "fd00:ec2::254", "metadata.google.internal", "metadata.azure.com"];
+    if METADATA_HOSTS.iter().any(|m| host_lc == *m) {
+        return Err(refuse("host is a cloud-metadata endpoint"));
+    }
+    if host_lc.starts_with("169.254.") {
+        return Err(refuse("host is in the link-local IPv4 range (169.254/16)"));
+    }
+    if host_lc.starts_with("fe80:") {
+        return Err(refuse("host is in the link-local IPv6 range (fe80::/10)"));
+    }
+
+    Ok(())
 }
 
 fn split_repo(repo: &str) -> Result<(&str, &str), PrCommentError> {
@@ -651,6 +722,57 @@ mod tests {
             performed_via_github_app: None,
         };
         assert!(!comment_owned_by_known_bot(&no_user));
+    }
+
+    #[test]
+    fn validate_gh_api_accepts_canonical_endpoint() {
+        assert!(validate_gh_api_url("https://api.github.com").is_ok());
+        assert!(validate_gh_api_url("https://api.github.com/").is_ok());
+        assert!(validate_gh_api_url("https://ghe.example.com").is_ok());
+        assert!(validate_gh_api_url("https://ghe.example.com:8443/api/v3").is_ok());
+    }
+
+    #[test]
+    fn validate_gh_api_accepts_loopback_http_for_wiremock() {
+        assert!(validate_gh_api_url("http://127.0.0.1:8080").is_ok());
+        assert!(validate_gh_api_url("http://[::1]:8080").is_ok());
+        assert!(validate_gh_api_url("http://localhost:8080").is_ok());
+    }
+
+    #[test]
+    fn validate_gh_api_refuses_plain_http_remote() {
+        let err = validate_gh_api_url("http://example.com").expect_err("must refuse");
+        assert!(matches!(err, PrCommentError::UnsafeGhApi { .. }), "got: {err:?}");
+    }
+
+    #[test]
+    fn validate_gh_api_refuses_user_info() {
+        let err = validate_gh_api_url("https://user:pw@api.github.com").expect_err("must refuse");
+        assert!(
+            matches!(err, PrCommentError::UnsafeGhApi { reason, .. } if reason.contains("user-info"))
+        );
+    }
+
+    #[test]
+    fn validate_gh_api_refuses_imds_host() {
+        let err = validate_gh_api_url("http://169.254.169.254/latest/meta-data/")
+            .expect_err("must refuse");
+        assert!(matches!(err, PrCommentError::UnsafeGhApi { .. }));
+        assert!(validate_gh_api_url("http://metadata.google.internal/").is_err());
+        assert!(validate_gh_api_url("http://metadata.azure.com/").is_err());
+        assert!(validate_gh_api_url("https://169.254.42.7/").is_err());
+    }
+
+    #[test]
+    fn validate_gh_api_refuses_link_local_v6() {
+        let err = validate_gh_api_url("http://[fe80::1]/").expect_err("must refuse");
+        assert!(matches!(err, PrCommentError::UnsafeGhApi { .. }));
+    }
+
+    #[test]
+    fn validate_gh_api_refuses_missing_scheme() {
+        let err = validate_gh_api_url("api.github.com").expect_err("must refuse");
+        assert!(matches!(err, PrCommentError::UnsafeGhApi { .. }));
     }
 
     #[test]

@@ -116,9 +116,9 @@ enum Command {
         /// at least one `--project` to be set.
         #[arg(long = "repo", value_name = "REPO")]
         repos: Vec<String>,
-        /// Run without opening a browser or prompting. Scan never does
-        /// either, so this is accepted for compatibility with CI
-        /// invocations that re-use the flag from `serve`.
+        /// Suppress human-readable progress on stdout so only
+        /// `--output PATH` carries machine-readable signal. Errors still
+        /// go to stderr. Use in CI lanes that only want the report file.
         #[arg(long)]
         headless: bool,
         /// Write a machine-readable JSON report to `PATH`. Consumed by
@@ -257,7 +257,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         open_cmd: None,
     }) {
         Command::Doctor => doctor(&state_dir, &config_path, &log_cfg, &config).await,
-        Command::Scan { projects, repos, headless: _, output, since_ref } => {
+        Command::Scan { projects, repos, headless, output, since_ref } => {
             nyx_agent_core::init_logging(&log_cfg)?;
             scan(
                 &state_dir,
@@ -267,6 +267,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 "Manual",
                 output.as_deref(),
                 since_ref.as_deref(),
+                headless,
             )
             .await
         }
@@ -402,6 +403,7 @@ fn truncate_for_column(s: &str, max: usize) -> String {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn scan(
     state_dir: &StateDir,
     config: &Config,
@@ -410,6 +412,7 @@ async fn scan(
     triggered_by: &str,
     output_path: Option<&std::path::Path>,
     since_ref: Option<&str>,
+    headless: bool,
 ) -> anyhow::Result<ExitCode> {
     if !requested_repos.is_empty() && requested_projects.is_empty() {
         eprintln!(
@@ -454,7 +457,7 @@ async fn scan(
             repos,
             &run,
             events_tx.clone(),
-            true,
+            !headless,
             output_path,
             since_ref,
         )
@@ -463,7 +466,9 @@ async fn scan(
         match result {
             Ok(report) => {
                 overall_success &= report.success;
-                print_scan_report(&project, &report);
+                if !headless {
+                    print_scan_report(&project, &report);
+                }
                 reports.push(report);
             }
             Err(err) => {

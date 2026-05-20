@@ -6,6 +6,20 @@
     <key>Label</key>
     <string>com.nyx.agent</string>
 
+    <!--
+      This plist is a per-user LaunchAgent. Install it under
+        ~/Library/LaunchAgents/com.nyx.agent.plist
+      and load with `launchctl bootstrap gui/$(id -u) ...`.
+
+      LaunchAgents run as the logged-in user, so the daemon never
+      executes with root, and the state directory resolves to the
+      user's default data dir (~/Library/Application Support/nyctos).
+
+      Do NOT install this file under /Library/LaunchDaemons. That
+      path runs the daemon as root by default and broadens the blast
+      radius of every OS_COMMAND / PATH_TRAVERSAL / SSRF surface.
+    -->
+
     <key>ProgramArguments</key>
     <array>
         <string>/usr/local/bin/nyx-agent</string>
@@ -19,20 +33,11 @@
     <key>KeepAlive</key>
     <true/>
 
-    <key>WorkingDirectory</key>
-    <string>/usr/local/var/lib/nyctos</string>
-
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>NYX_AGENT_STATE_DIR</key>
-        <string>/usr/local/var/lib/nyctos</string>
-    </dict>
-
     <key>StandardOutPath</key>
-    <string>/usr/local/var/log/nyx-agent.out.log</string>
+    <string>/tmp/nyx-agent.out.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/usr/local/var/log/nyx-agent.err.log</string>
+    <string>/tmp/nyx-agent.err.log</string>
 
     <key>ProcessType</key>
     <string>Background</string>
