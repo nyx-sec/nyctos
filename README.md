@@ -41,19 +41,34 @@ as its own phase. The upstream dynamic-verification engine `nyx`
 
 ## Status
 
-Pre-MVP. Phases 01-27 of `.pitboss/play/plan.md` have landed: the
-cargo workspace, SQLite store, `nyx` subprocess driver, parallel run
-aggregator, Axum HTTP/WebSocket API, the embedded SPA (first-launch
-wizard, project + repo manager, findings browser, live scan view,
-quarantine + AI trace viewer), two AI runtime adapters (Anthropic
-SDK and Claude Code) wired to four agent tasks (PayloadSynthesis,
-SpecDerivation, ChainReasoning, NovelFindingDiscovery), the sandbox
-fast lane (birdcage) and chain lane (libkrun / Firecracker / Docker
-with auto-selection), env-builder docker-compose spinup, the
-cross-repo chain runner, reports + repro bundles, the GitHub
-Actions composite for PR gating, and the cron + webhook scan
-triggers. Phase 28 (end-to-end demo fixture) is in flight; phases
-29 (MVP polish) and 30 (closed-beta packaging) follow before tag.
+Pre-MVP. The daemon is functional end-to-end against the upstream
+`nyx` scanner. The end-to-end demo fixture, MVP polish, and
+closed-beta packaging phases come next, before the first tag.
+
+What ships today:
+
+- `nyx` subprocess driver with parallel run aggregation and a
+  SQLite-backed state store.
+- Axum HTTP + WebSocket API, auth-token gated, loopback bind by
+  default.
+- Embedded SPA: first-launch wizard, project + repo manager,
+  findings browser, live scan view, quarantine, AI trace viewer.
+- Two AI runtime adapters, Anthropic SDK and Claude Code, wired to
+  four tasks: payload synthesis, spec derivation, chain reasoning,
+  novel finding discovery.
+- Two sandbox lanes: birdcage (in-process seccomp on Linux) and a
+  chain lane that auto-selects libkrun, Firecracker, or Docker.
+- Env-builder docker-compose spinup, cross-repo chain runner, and
+  reproducible-evidence bundles for every confirmed finding.
+- Scan triggers: CLI, cron, webhook, plus a GitHub Actions
+  composite for PR gating.
+
+The daemon UI is a loopback-bound SPA. The project detail page is
+the operator's main work surface: project metadata, target base
+URL, and the attached repos with their scan status, last scan
+timestamp, and per-row "Scan now" + "Remove" actions:
+
+![Nyctos project detail page for a project named acme-app, showing the project header with description and target base URL http://localhost:3000, and a Repositories card listing two LOCAL-PATH repos (acme-backend, acme-frontend) with IDLE status pills, Scan all and Add repo buttons, and a green "Daemon ready" indicator in the page header](assets/screenshots/ui-project-detail.png)
 
 `nyx-agent doctor` prints the runtime probes the daemon uses at
 startup:

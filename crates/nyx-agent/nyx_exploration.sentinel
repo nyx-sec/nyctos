@@ -1394,3 +1394,144 @@ notes (pass 28):
   cap (workspace survey, sentinel read, working-tree diff inspect,
   this append). Remaining budget unused — intentional under the
   quality-over-count rubric of the task system prompt.
+
+=================================================================
+PASS 29 — task=expl-demo (re-validation; no new sinks)
+diff since pass-28 baseline (commit 9681024, "deferred session-0002"):
+  punctuation-sweep continuation across 7 files in scope of this
+  worker (crates/nyx-agent/{ai_pipeline,main,scheduler,cmd/pr_comment}.rs,
+  crates/nyx-agent-ai/src/tasks/exploration.rs,
+  crates/nyx-agent-api/tests/api.rs,
+  crates/nyx-agent-sandbox/src/bin/nyx_sandbox_shim.rs comment-only).
+  Every hunk is em-dash → semicolon/colon/period substitution
+  inside `//`, `///`, `//!`, tracing event strings, panic/assert
+  format args, and `println!` strings. No identifier renames, no
+  control-flow changes, no new public surface, no new
+  dependencies, no new files in crates/nyx-agent-api/src/, no
+  change to crates/nyx-agent-sandbox/src/backend/birdcage.rs (kill
+  path untouched — pass-27 carry-forward fix-option-(2) close-out
+  has NOT landed), no new packaging/* unit or plist.
+
+  The single substantive byte-level addition in the sandbox shim
+  (build_agent_task allowed/targets banner string mutations at
+  exploration.rs:326-340) re-spells the AgentTask prompt the
+  operator-facing AI worker sees. The banner now prints
+  "(none; refuse any HTTP probe)" and "(none; survey the
+  workspace before probing)" in place of the em-dash variants.
+  No sink shape: the strings are inlined into the prompt body
+  for the AI runtime and do not feed any shell, sql, or HTTP
+  call. The build_agent_task tests' fixture text in the same
+  file (exploration.rs tests/...) was not retargeted by this
+  sweep — confirmed they assert on substrings that survive the
+  punctuation change (none of the existing assertions pin on the
+  removed em-dash).
+=================================================================
+
+no record_exploration_finding emitted this pass.
+
+re-validation summary (rows 1-27 against current HEAD + working tree):
+  - rows 1-27 all STAND in their prior STANDS / STANDS-FIXED /
+    STANDS-LATENT / STANDS-PARTIAL-FIX classifications. The
+    punctuation-only diff cannot move any prior row's verdict
+    because none of the touched bytes participate in a sink shape
+    (every replacement is inside a `//`, `///`, `//!`, a
+    `println!` literal, a `tracing::{info,warn,error}!` message
+    string, or a panic/assert format arg).
+  - pass-27 PR_SET_PDEATHSIG row: the sandbox shim's libc::prctl
+    site at nyx_sandbox_shim.rs:60 is byte-for-byte unchanged
+    since pass-28 (the rustfmt collapse pass-28 documented stuck;
+    no further reformat this session). All three carry-forwards
+    — (A) fork-vs-prctl race, (B) macOS half-fix, (C) inherited
+    process-group kill gap — STAND. The fix-option-(2) close-out
+    (process_group(0) + killpg) has NOT landed; the kill path in
+    backend/birdcage.rs at line 139-142 still calls
+    child.start_kill() on the shim pid.
+  - pass-1 WebSocket CSWH row and pass-19 Lagged re-sync row
+    re-checked against crates/nyx-agent-api/tests/api.rs:453-460
+    (the only diff hit in that crate). The hit is a doc-comment
+    inside the test body; the WS upgrade path the test exercises
+    (events_ws subscribing on upgrade) is unchanged. Both rows
+    STAND.
+
+notes (pass 29):
+- this pass is a no-op emission under the quality-over-count
+  rubric: same shape as pass-28. Fabricating findings against
+  punctuation-only diff would dilute the audit log and waste
+  the verifier's PayloadSynthesis budget — the spec line
+  "Quality matters more than count" governs.
+- next-pass triggers carry forward from pass-28 unchanged:
+    (i) non-cosmetic scheduler.rs change (iterator-walk DOS fix);
+    (ii) backend/birdcage.rs kill-path change (close-out target);
+    (iii) any new file under crates/nyx-agent-api/src/;
+    (iv) any new packaging/* unit or plist;
+    (v) any change to nyx_sandbox_shim.rs pre_exec body beyond
+        the PR_SET_PDEATHSIG block (e.g. a setsid()/process_group
+        addition would let pass-27 carry-forward (C) close out).
+- no http.probe this pass: ALLOWED HOSTS empty, no TARGETS;
+  task contract refuses any HTTP probe.
+- tool budget: ~6 of 24 calls consumed (survey, sentinel head +
+  tail + count + line-range read, diff inspect across 4 paths,
+  this append). Remaining budget unused — intentional.
+
+notes (pass 30):
+- diff vs pass-29 baseline (076e658..91ecba6) is cosmetic only.
+  Verified file-by-file:
+    * crates/nyx-agent-ai/src/tasks/exploration.rs: em-dash ->
+      semicolon/colon in doc comments + 4 banner/format strings
+      (RED banner, soft-cap banner, allowed-hosts placeholder,
+      targets placeholder, endpoint-description separator).
+      No control-flow, no new sink, no new I/O. The placeholder
+      strings are prompt text the AI sees, not data that crosses
+      the candidate_findings boundary - so even the pass-11
+      newline-in-comment / pass-23 markdown-injection chain is
+      not reachable from the diff.
+    * crates/nyx-agent-nyx/src/diag.rs: rustfmt re-wrap of
+      unsupported_reason / inconclusive_reason. Identical
+      method signatures, identical fallback ladder, identical
+      Option<UnsupportedReason> / Option<InconclusiveReason>
+      surface. No new evidence key, no new variant.
+    * crates/nyx-agent-sandbox/src/bin/nyx_sandbox_shim.rs:
+      rustfmt one-line collapse of the prctl(PR_SET_PDEATHSIG,
+      SIGKILL) call. Argument list unchanged; pass-27 carry-
+      forward trigger (C) explicitly required content beyond
+      the PR_SET_PDEATHSIG block - this diff is the block
+      itself reformatted, so the trigger does NOT fire.
+    * crates/nyx-agent-ai/src/adapter/{anthropic,claude_code}.rs,
+      tasks/novel_findings.rs, nyx-agent-nyx/src/harness_spec.rs,
+      nyx-agent-ui/build.rs, nyx-agent-api/tests/api.rs,
+      nyx-agent-sandbox/tests/{env_builder,escape}.rs,
+      nyx-agent/src/{ai_pipeline,cmd/pr_comment,main,scheduler}.rs:
+      all em-dash -> semicolon/colon substitutions in doc
+      comments + log strings. Manually walked each hunk;
+      no behavioral delta.
+    * frontend/src/**: TypeScript punctuation substitutions
+      mirror the Rust side; no new fetch URL, no new innerHTML
+      sink, no new auth surface. Out of scope for the agent
+      explorer anyway (no SSR path reaches a daemon-side sink).
+    * docs/architecture.md +211 lines: prose-only addition.
+      No new endpoint declared, no new shell command sketched
+      that wasn't already in the codebase. README/quickstart
+      tweaks similar.
+- next-pass triggers carry forward from pass-29 unchanged:
+    (i) non-cosmetic scheduler.rs change (iterator-walk DOS fix);
+    (ii) backend/birdcage.rs kill-path change (close-out target);
+    (iii) any new file under crates/nyx-agent-api/src/;
+    (iv) any new packaging/* unit or plist;
+    (v) any change to nyx_sandbox_shim.rs pre_exec body beyond
+        the PR_SET_PDEATHSIG block.
+- carry-forward audit status: all pass-1..pass-29 rows STAND
+  at HEAD. The four routes most heavily covered (events_ws CSWH
+  pass-1, setup-race pass-2, DNS-rebind pass-3, query-token log
+  pass-4, render_repro_script newline-injection pass-11, repos/test
+  cred-leak pass-9, repos/test ext:: SSRF pass-8, replay bash exec
+  pass-10, run-card markdown-blank-line XSS pass-23) all map to
+  source lines unchanged by this commit.
+- no http.probe this pass: ALLOWED HOSTS empty, no TARGETS;
+  task contract refuses any HTTP probe.
+- tool budget: ~10 of 24 calls consumed (workspace survey,
+  sentinel cap+path enumeration, router.rs three-range read,
+  webhook.rs full read, state.rs full read, repro_bundle.rs
+  range read, candidate.rs range read, git diff stat + content,
+  cavecrew-investigator delegation for render_repro_script
+  string surface, this append). Remaining budget unused -
+  intentional under quality-over-count.
