@@ -93,6 +93,12 @@ the top-level flags every subcommand inherits:
 
 ![nyx-agent --help output listing the nine subcommands (scan, project, pr-comment, reverify, inspect, budget, traces, doctor, serve) and the top-level --config, --state-dir, --log-level flags](assets/screenshots/cli-help.png)
 
+The `project` subcommand the quickstart leads with is the entry
+point for the Project / repo model: `create`, `list`, `show`,
+`delete`, `add-repo`.
+
+![nyx-agent project --help output listing the create, list, show, delete, and add-repo subcommands plus the top-level --config, --state-dir, --log-level flags](assets/screenshots/cli-project.png)
+
 See [`docs/quickstart.md`](docs/quickstart.md) for the worked
 walkthrough (wizard, TOML form, HTTP form, output shape) and
 [`docs/cli.md#project`](docs/cli.md) for the full `project`
@@ -110,67 +116,12 @@ no FFI link against it. The `nyx` binary must be installed and discoverable:
 minimum supported version. It exits non-zero when the binary is missing or
 below the minimum.
 
-## Working with the SQLite store
+## Contributing
 
-`nyx-agent-core` uses SQLx's compile-time-checked query macros against a
-SQLite schema shipped under `crates/nyx-agent-core/migrations/`. Recorded
-query plans live in `.sqlx/` at the workspace root and are checked into
-version control so the workspace builds without a database present (CI
-runs with `SQLX_OFFLINE=true`).
+Contributor-facing notes for working on the daemon itself live under
+[`docs/dev/`](docs/dev/):
 
-If you add, remove, or modify a `sqlx::query!` / `sqlx::query_as!` call,
-regenerate the cache:
-
-```
-cargo install sqlx-cli --no-default-features --features sqlite,rustls
-rm -f /tmp/sqlx-prepare.db
-DATABASE_URL="sqlite:///tmp/sqlx-prepare.db?mode=rwc" sqlx database create
-DATABASE_URL="sqlite:///tmp/sqlx-prepare.db?mode=rwc" \
-    sqlx migrate run --source crates/nyx-agent-core/migrations
-DATABASE_URL="sqlite:///tmp/sqlx-prepare.db?mode=rwc" \
-    cargo sqlx prepare --workspace
-```
-
-Commit the resulting `.sqlx/` changes. CI fails if the cache is stale.
-
-## Frontend SPA workflow
-
-The `nyx-agent` daemon serves a single-page UI at `/`. The
-`nyx-agent-ui` crate embeds the SPA assets via `rust_embed`, and the
-embed contents depend on the cargo build profile.
-
-### Release builds
-
-`cargo build --release` (or any profile equal to `release`) runs the
-real frontend build inside `crates/nyx-agent-ui/build.rs`:
-
-1. `npm ci --silent` in `frontend/` if `node_modules/` is absent.
-2. `npm run build`, producing `frontend/dist/`.
-3. The dist tree is mirrored into `crates/nyx-agent-ui/dist/` so
-   `rust_embed` picks it up at compile time.
-
-A release build with a missing or broken `frontend/` checkout fails
-the build script with a panic. Set `NYCTOS_SKIP_FRONTEND_BUILD=1` to
-opt out and ship the stub instead (used by environments that build
-the SPA separately and prepopulate `crates/nyx-agent-ui/dist/`).
-
-### Debug builds
-
-`cargo run` and `cargo build` (no `--release`) write a tiny stub
-`index.html` into `crates/nyx-agent-ui/dist/` that explains the
-situation and points at `/api/v1/health`. The stub keeps `GET /`
-returning a usable page in CI environments without Node installed.
-
-For an iterative dev loop, run two processes side by side:
-
-```sh
-# Terminal 1: daemon on 127.0.0.1:8765.
-cargo run -p nyx-agent -- serve
-
-# Terminal 2: Vite dev server on 127.0.0.1:5173, proxying /api to 8765.
-cd frontend && npm install && npm run dev
-```
-
-Open `http://127.0.0.1:5173/` for the hot-reload SPA. The daemon at
-`:8765` still answers `/api/v1/...` directly, so curl-based testing
-against `:8765` keeps working without Vite running.
+- [`docs/dev/sqlx.md`](docs/dev/sqlx.md): regenerating the SQLx
+  prepared-query cache after a `query!` change.
+- [`docs/dev/frontend.md`](docs/dev/frontend.md): release vs debug
+  SPA embedding, plus the two-terminal Vite dev loop.

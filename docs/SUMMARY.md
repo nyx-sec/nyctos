@@ -65,6 +65,13 @@ chain runner all operate per project, so a multi-repo product
   composite Action that runs a scan against a pull request and posts
   a dedup'd PR comment for Confirmed + cross-repo chain findings.
 
+## Contributor docs
+
+- [dev/sqlx.md](dev/sqlx.md): regenerating the SQLx prepared-query
+  cache after editing a `sqlx::query!` / `query_as!` call.
+- [dev/frontend.md](dev/frontend.md): release vs debug SPA embed
+  behaviour and the two-terminal Vite dev loop.
+
 ## Conventions
 
 - Source pointers use the `crates/<crate>/src/<file>.rs:<line>` form
