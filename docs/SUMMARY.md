@@ -43,6 +43,12 @@ chain runner all operate per project, so a multi-repo product
   root for a populated example, and `docs/PROJECT_ENTITY_PLAN.md`
   for the phased refactor that introduced the model.
 
+## HTTP API
+
+- [api.md](api.md): every `/api/v1/` route, the request and
+  response shape, the bearer-auth contract, the WebSocket event
+  stream, and the HMAC webhook.
+
 ## Triggers
 
 - [triggers/README.md](triggers/README.md): index of the no-touch

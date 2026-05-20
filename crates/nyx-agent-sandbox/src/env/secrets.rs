@@ -1,15 +1,15 @@
 //! Prod-token regex scan for `<state>/secrets/test.env`.
 //!
 //! Threat model. The env-builder is a dev-env replay surface. An
-//! operator who hands it production credentials by accident — a real
-//! Stripe live key, an AWS prod ARN, a working GitHub PAT — risks the
+//! operator who hands it production credentials by accident (a real
+//! Stripe live key, an AWS prod ARN, a working GitHub PAT) risks the
 //! sandboxed services touching production from inside the harness. The
 //! check refuses to start when any line of `test.env` matches a
 //! prod-token shape. Fail-closed: a single match halts the run with a
 //! clear error message that names the file, the line number, and the
 //! token kind that matched.
 //!
-//! The regex set is deliberately conservative — it favours false
+//! The regex set is deliberately conservative; it favours false
 //! positives over false negatives. Operators that hit a false positive
 //! on a synthetic test value can rename it (e.g.
 //! `STRIPE_TEST_KEY=sk_test_...` instead of `sk_live_...`) rather than

@@ -5,20 +5,20 @@
 //!
 //! Backends shipped today:
 //!
-//! * `process` — fork+exec with no isolation upgrade. The unhardened
+//! * `process`: fork+exec with no isolation upgrade. The unhardened
 //!   default used when an operator picks the `process` backend, or when
 //!   no stronger backend is available on this host.
-//! * `birdcage` — wraps the `birdcage` crate, which compiles to Linux
+//! * `birdcage`: wraps the `birdcage` crate, which compiles to Linux
 //!   landlock + seccomp or macOS Seatbelt. FS deny-by-default plus a
 //!   single workspace-write exception; network deny unless
 //!   [`SandboxOpts::allow_loopback`] is set.
-//! * `libkrun` — macOS-first microVM via HVF (Linux+KVM also
+//! * `libkrun`: macOS-first microVM via HVF (Linux+KVM also
 //!   supported). Routed through a `libkrun-runner` helper binary so
 //!   FFI symbol drift cannot crash the daemon.
-//! * `firecracker` — Linux+KVM microVM. Routed through a
+//! * `firecracker`: Linux+KVM microVM. Routed through a
 //!   `nyx-fc-runner` helper binary.
-//! * `docker` — fallback container backend used when no stronger
-//!   isolation is available; the chain-lane delegates to Phase 20's
+//! * `docker`: fallback container backend used when no stronger
+//!   isolation is available; the chain-lane delegates to the
 //!   docker-compose env-builder for the actual spin-up.
 
 use std::path::PathBuf;
@@ -57,7 +57,7 @@ pub enum BackendKind {
     /// Firecracker microVM (Linux+KVM).
     Firecracker,
     /// docker container fallback. Chain-lane spin-up delegates to
-    /// Phase 20's docker-compose env-builder.
+    /// the docker-compose env-builder.
     Docker,
 }
 
@@ -75,7 +75,7 @@ impl BackendKind {
 
 /// Which scan lane the sandbox runs under. The chain lane spins up the
 /// full dev-env replay alongside the AI-driven exploitation, which is
-/// expensive — it gets a stricter concurrency cap than the fast lane.
+/// expensive; it gets a stricter concurrency cap than the fast lane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Lane {
     /// Static-pass + lightweight verifier work. Tolerates high
@@ -96,8 +96,8 @@ impl Lane {
 
 /// Per-lane simultaneous-spinup caps. The chain lane defaults to 2 (a
 /// full env-replay can easily consume several GB of RAM); the fast
-/// lane defaults to 8 (matches Phase 06's `static_concurrency`
-/// ceiling on a typical 8-core dev box).
+/// lane defaults to 8 (matches the `static_concurrency` ceiling on a
+/// typical 8-core dev box).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LaneConcurrency {
     pub chain: usize,
@@ -256,7 +256,7 @@ pub struct SandboxOpts {
     /// [`SandboxStatus::TimedOut`].
     pub timeout: Duration,
     /// Allow loopback network traffic. birdcage cannot scope further than
-    /// "all network or none" — when set, all egress is allowed.
+    /// "all network or none": when set, all egress is allowed.
     pub allow_loopback: bool,
     /// Extra read-only paths visible to the sandboxed child (defaults
     /// like `/lib`, `/usr` are added by the backend).
@@ -304,7 +304,7 @@ pub enum SandboxStatus {
 impl SandboxStatus {
     /// Did the sandbox successfully contain the child? A `contained`
     /// child either failed to exec, exited non-zero, was killed by the
-    /// kernel, or was torn down by the harness — anything except a clean
+    /// kernel, or was torn down by the harness: anything except a clean
     /// `exit(0)`. The escape regression suite asserts this.
     pub fn contained(&self) -> bool {
         !matches!(self, SandboxStatus::Exited(0))

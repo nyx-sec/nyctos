@@ -1,8 +1,8 @@
 //! Process backend: spawn the child and watch it. No isolation upgrade.
 //!
 //! This is the unhardened default. It exists so the rest of the daemon
-//! can speak the [`Sandbox`] trait everywhere — even when birdcage is
-//! unavailable or the operator opts out — without forking on the call
+//! can speak the [`Sandbox`] trait everywhere (even when birdcage is
+//! unavailable or the operator opts out) without forking on the call
 //! site. Static-pass scanning runs on this backend in CI today.
 
 use std::time::Instant;

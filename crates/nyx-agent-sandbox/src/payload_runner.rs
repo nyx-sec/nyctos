@@ -1,4 +1,4 @@
-//! Deterministic payload runner (Phase 19).
+//! Deterministic payload runner.
 //!
 //! Drives a known payload against a known harness inside a [`Sandbox`]
 //! and emits a [`VerifyResult`] under differential rule v1: a finding is
@@ -12,15 +12,15 @@
 //!
 //! Harness source. The plan calls for two harness origins:
 //!
-//! * `OnDisk { rel_path }` — nyx's spec-derivation pipeline already
+//! * `OnDisk { rel_path }`: nyx's spec-derivation pipeline already
 //!   vendored a runnable harness file under the workspace; the runner
 //!   execs it directly.
-//! * `Synthesised` — the harness body is materialised from the
+//! * `Synthesised`: the harness body is materialised from the
 //!   [`HarnessSpecInput`]'s `setup` / `invoke` / `teardown` lines. The
 //!   runner writes `harness.<ext>` into the workspace, splices the
 //!   payload into the invoke template, and execs `runtime harness.<ext>`.
 //!
-//! Languages supported in Phase 19: `python` / `python3` and
+//! Languages supported today: `python` / `python3` and
 //! `sh` / `bash`. Anything else returns [`PayloadRunnerError::UnsupportedLang`].
 //!
 //! Oracle predicates ([`Oracle::OutputContains`] + [`Oracle::SinkProbe`])
@@ -216,7 +216,7 @@ impl PayloadRunner {
         };
 
         // For OnDisk harnesses with PAYLOAD-aware contents, we still
-        // need to pass the payload — write a sibling `payload.bin` the
+        // need to pass the payload: write a sibling `payload.bin` the
         // harness can read. For synthesised harnesses the payload is
         // already inlined, so this file is redundant but harmless.
         let payload_path = run.workspace.join(payload_filename(label));
@@ -226,7 +226,7 @@ impl PayloadRunner {
         // file. Clear it between runs so the previous payload's flag
         // does not leak into the next run's verdict. Verifiers that
         // run each payload in a fresh workspace snapshot would not
-        // need this, but Phase 19 reuses the workspace.
+        // need this, but the payload runner reuses the workspace.
         if let Oracle::SinkProbe { sentinel_path, .. } = &run.oracle {
             let abs = run.workspace.join(sentinel_path);
             if abs.exists() {
@@ -318,10 +318,9 @@ impl PayloadRunner {
                 sb.wait().await
             }
             // The deterministic payload runner does not yet drive the
-            // chain-lane VM backends — Phase 19's verifier is wired
-            // only to the fast lane. Surfacing BackendUnavailable
-            // keeps the error path uniform until the chain-lane
-            // verifier lands.
+            // chain-lane VM backends; this verifier is wired only to
+            // the fast lane. Surfacing BackendUnavailable keeps the
+            // error path uniform until the chain-lane verifier lands.
             BackendKind::Libkrun => Err(SandboxError::BackendUnavailable {
                 backend: "libkrun",
                 reason: "payload runner is fast-lane only; libkrun is reserved for chain lane"
@@ -517,8 +516,8 @@ mod tests {
 
     #[tokio::test]
     async fn canned_sqli_vuln_payload_produces_confirmed() {
-        // Acceptance #1 of Phase 19: canned SQLi harness + canned
-        // vuln/benign pair yields Confirmed.
+        // Canned SQLi harness + canned vuln/benign pair yields
+        // Confirmed.
         let dir = ws();
         let runner = PayloadRunner::default();
         let result = runner
@@ -543,8 +542,8 @@ mod tests {
 
     #[tokio::test]
     async fn swapping_vuln_for_benign_produces_not_confirmed() {
-        // Acceptance #2 of Phase 19: replacing the vuln payload with
-        // the benign one yields NotConfirmed.
+        // Replacing the vuln payload with the benign one yields
+        // NotConfirmed.
         let dir = ws();
         let runner = PayloadRunner::default();
         let result = runner
@@ -569,8 +568,8 @@ mod tests {
 
     #[tokio::test]
     async fn llm_synthesised_provenance_propagates_through_pipeline() {
-        // Acceptance #3 of Phase 19: an LlmSynthesised payload pair
-        // flows through and lands a verdict carrying the provenance.
+        // An LlmSynthesised payload pair flows through and lands a
+        // verdict carrying the provenance.
         let dir = ws();
         let runner = PayloadRunner::default();
         let result = runner

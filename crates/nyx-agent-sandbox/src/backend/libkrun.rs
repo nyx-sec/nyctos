@@ -2,11 +2,11 @@
 //!
 //! libkrun is a lightweight VMM (https://github.com/containers/libkrun)
 //! that boots a kernel under macOS Hypervisor.framework or Linux KVM.
-//! On macOS it is the strongest isolation tier we ship — birdcage's
+//! On macOS it is the strongest isolation tier we ship: birdcage's
 //! Seatbelt sandboxes only the calling process, while libkrun gives the
 //! sandboxee a separate kernel and a private FS namespace via virtio-fs.
 //!
-//! Phase 21 wires the backend selection + invocation skeleton:
+//! Backend selection + invocation skeleton:
 //!
 //! * Construction probes for `libkrun-runner` on `$PATH` (or
 //!   `$NYX_LIBKRUN_RUNNER` for tests). The runner is a thin helper
@@ -19,10 +19,10 @@
 //!   helper boots a fresh microVM per call, execs the target inside,
 //!   and prints captured stdout/stderr on the parent's pipes.
 //!
-//! The full VM boot is owned by `libkrun-runner` — out of scope for
-//! Phase 21 source. The acceptance test "on macOS with libkrun
-//! installed, a chain-lane run boots a microVM with the customer's
-//! compose env inside" requires the helper to be present; without it,
+//! The full VM boot is owned by `libkrun-runner`; out of scope for
+//! this crate. The acceptance test "on macOS with libkrun installed,
+//! a chain-lane run boots a microVM with the customer's compose env
+//! inside" requires the helper to be present; without it,
 //! [`LibkrunSandbox::new`] returns [`SandboxError::BackendUnavailable`].
 
 use std::path::{Path, PathBuf};

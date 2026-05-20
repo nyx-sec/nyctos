@@ -1,6 +1,6 @@
 //! docker-compose detection + super-compose merge.
 //!
-//! Phase 20 ships a deliberately tight merge: top-level `services`,
+//! The env-builder ships a deliberately tight merge: top-level `services`,
 //! `volumes`, and `networks` are renamed `<repo_prefix>_<name>` so two
 //! repos that both declare a `db` service do not collide. Per-service
 //! `depends_on`, named-volume mounts, `networks` lists, and
@@ -33,7 +33,7 @@ pub struct ComposeFile {
 /// env config without reading the agent's TOML.
 ///
 /// Both fields are written as compose `x-nyx-*` extension keys. The
-/// compose schema reserves the `x-` prefix for arbitrary user extras —
+/// compose schema reserves the `x-` prefix for arbitrary user extras;
 /// docker compose silently ignores them but preserves them on round-trip
 /// so a `docker compose config` dump exposes the values to a downstream
 /// consumer.
@@ -70,8 +70,8 @@ pub enum ComposeError {
 }
 
 /// Find the canonical compose file for a single repo, if any. Walks the
-/// repo root only — nested compose files (e.g. under `infra/compose/`)
-/// are out of scope for Phase 20.
+/// repo root only; nested compose files (e.g. under `infra/compose/`)
+/// are out of scope for the merge today.
 pub fn detect(repo_root: &Path, repo_name: &str) -> Option<ComposeFile> {
     for name in CANDIDATE_FILES {
         let p = repo_root.join(name);

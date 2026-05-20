@@ -2,8 +2,8 @@
 //!
 //! The sandboxed child must not mutate the source-of-truth workspace
 //! checkout; every run gets its own copy. Where the OS supports
-//! copy-on-write at the filesystem layer we use it — macOS APFS
-//! `clonefile(2)` and Linux btrfs/xfs `FICLONE` — and fall back to
+//! copy-on-write at the filesystem layer we use it (macOS APFS
+//! `clonefile(2)` and Linux btrfs/xfs `FICLONE`), falling back to
 //! `std::fs::copy` everywhere else.
 //!
 //! The fallback path is recursive: it walks the source tree, recreates

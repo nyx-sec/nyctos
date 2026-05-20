@@ -1,11 +1,11 @@
-//! Cross-repo chain attack runner (Phase 22).
+//! Cross-repo chain attack runner.
 //!
 //! Drives an AI-reasoned chain step-by-step inside the chain lane,
 //! threading prior-step output into next-step input via the
 //! `NYX_PREV_OUTPUT` env var, and confirming the final sink-probe
 //! sentinel fired.
 //!
-//! A [`ChainRun`] carries an ordered list of [`ChainStep`]s — each step
+//! A [`ChainRun`] carries an ordered list of [`ChainStep`]s. Each step
 //! is one finding's harness (synthesised or vendored on disk) plus the
 //! payload bytes to splice. The terminal step's verdict is gated on the
 //! caller-supplied [`Oracle::SinkProbe`] sentinel: every non-terminal
@@ -26,7 +26,7 @@
 //! reproduced the same verdict (same `Confirmed`, or the same
 //! `Inconclusive { which }`).
 //!
-//! Backend dispatch. The chain runner exists to drive the chain lane —
+//! Backend dispatch. The chain runner drives the chain lane:
 //! libkrun (macOS) / firecracker (Linux) / docker / birdcage / process.
 //! Today only `process` and `birdcage` route to real backends; the
 //! microVM and container paths surface
@@ -186,10 +186,9 @@ pub enum ChainVerdict {
     Inconclusive(InconclusiveReason),
 }
 
-/// Why a chain failed to confirm. Phase 22 collapses every "the step
-/// broke" cause under one variant so callers only program against the
-/// step index; richer cause reporting lands when a downstream consumer
-/// needs it.
+/// Why a chain failed to confirm. Every "the step broke" cause folds
+/// under one variant so callers only program against the step index;
+/// richer cause reporting lands when a downstream consumer needs it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InconclusiveReason {
     /// `which` is the 0-indexed step whose verdict was not clean.
@@ -434,21 +433,20 @@ impl ChainRunner {
                 sb.wait().await
             }
             // libkrun / firecracker / docker still need their helper
-            // binaries and the env-builder spin-up wiring (deferred
-            // items from Phase 21 / Phase 20). Surface a clean
-            // BackendUnavailable so the chain lane can fall back to
-            // birdcage / process under the auto-selector.
+            // binaries and the env-builder spin-up wiring. Surface a
+            // clean BackendUnavailable so the chain lane can fall back
+            // to birdcage / process under the auto-selector.
             BackendKind::Libkrun => Err(SandboxError::BackendUnavailable {
                 backend: "libkrun",
-                reason: "libkrun-runner helper binary not yet wired (Phase 21 deferred)".into(),
+                reason: "libkrun-runner helper binary not yet wired".into(),
             }),
             BackendKind::Firecracker => Err(SandboxError::BackendUnavailable {
                 backend: "firecracker",
-                reason: "nyx-fc-runner helper binary not yet wired (Phase 21 deferred)".into(),
+                reason: "nyx-fc-runner helper binary not yet wired".into(),
             }),
             BackendKind::Docker => Err(SandboxError::BackendUnavailable {
                 backend: "docker",
-                reason: "docker chain-lane spin-up not yet wired (Phase 20 deferred)".into(),
+                reason: "docker chain-lane spin-up not yet wired".into(),
             }),
         }
     }
@@ -502,11 +500,10 @@ mod tests {
     // Step 0 ("repo-A": auth bypass). Emits a session token on stdout
     // for the next step to read via `NYX_PREV_OUTPUT`. The harness has
     // a hard fail-fast guard: if the chain runner ran this step out of
-    // order — meaning a non-empty NYX_PREV_OUTPUT was already present
-    // (the sink step's stdout, which is empty by convention) OR the
-    // payload was the SQLi probe instead of the auth probe — it exits
-    // non-zero. That makes the "wrong order" acceptance test
-    // deterministic.
+    // order (a non-empty NYX_PREV_OUTPUT was already present, i.e. the
+    // sink step's stdout which is empty by convention) OR the payload
+    // was the SQLi probe instead of the auth probe, it exits non-zero.
+    // That makes the "wrong order" acceptance test deterministic.
     fn auth_bypass_step() -> ChainStep {
         ChainStep {
             finding_id: "repoA:auth-bypass".to_string(),
@@ -515,7 +512,7 @@ mod tests {
                 cap: "AUTH_BYPASS".to_string(),
                 lang: "shell".to_string(),
                 setup: vec![],
-                // The payload IS the literal `bypass` marker — the
+                // The payload IS the literal `bypass` marker. The
                 // harness rejects any other body. If the chain is
                 // replayed with steps reversed, the SQLi step's payload
                 // (`'; LEAK--`) lands here instead and the grep fails.
@@ -594,8 +591,8 @@ mod tests {
 
     #[tokio::test]
     async fn two_step_cross_repo_chain_confirms() {
-        // Phase 22 acceptance #1: ordered (auth bypass -> sqli sink)
-        // chain confirms via the terminal sink probe.
+        // Ordered (auth bypass -> sqli sink) chain confirms via the
+        // terminal sink probe.
         let dir = ws();
         let runner = ChainRunner::default();
         let run = build_run(
@@ -616,9 +613,9 @@ mod tests {
 
     #[tokio::test]
     async fn wrong_order_yields_inconclusive_at_first_step() {
-        // Phase 22 acceptance #2: swap the two steps. The (now-first)
-        // SQLi sink step sees an empty NYX_PREV_OUTPUT, refuses to
-        // proceed, and the chain breaks at step 0.
+        // Swap the two steps. The (now-first) SQLi sink step sees an
+        // empty NYX_PREV_OUTPUT, refuses to proceed, and the chain
+        // breaks at step 0.
         let dir = ws();
         let runner = ChainRunner::default();
         let run = build_run(

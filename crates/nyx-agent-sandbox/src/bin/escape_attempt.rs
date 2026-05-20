@@ -2,8 +2,8 @@
 //!
 //! Each subcommand drives a single classic escape attempt (write outside
 //! the workspace, read a secret file, open a socket, ...). Exits 0 when
-//! the operation *succeeded* — i.e. the sandbox failed to contain the
-//! probe — and non-zero (or via a signal) when the kernel rejected it.
+//! the operation *succeeded* (the sandbox failed to contain the
+//! probe), and non-zero (or via a signal) when the kernel rejected it.
 //!
 //! This binary is intentionally minimal and stdlib-only so it has no
 //! dynamic dependencies birdcage's default exception list needs to

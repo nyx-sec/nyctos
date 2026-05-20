@@ -1,17 +1,16 @@
-//! Env-builder (Phase 20): detect docker-compose files across connected
-//! repos, merge into a super-compose, spin up via `docker compose`, and
-//! tear down at run completion.
+//! Env-builder: detect docker-compose files across connected repos,
+//! merge into a super-compose, spin up via `docker compose`, and tear
+//! down at run completion.
 //!
-//! Project-scoped (Phase 7 of the project-entity refactor). One
-//! [`EnvBuilder`] instance operates over the repos of a single
-//! [`Project`]. The super-compose filename embeds the project name so
-//! two projects under the same workspace cannot clobber each other, and
-//! the project's `target_base_url` / `env_config` are stamped onto the
-//! merged compose document as `x-nyx-*` extension keys for downstream
-//! tools to read.
+//! Project-scoped. One [`EnvBuilder`] instance operates over the repos
+//! of a single [`Project`]. The super-compose filename embeds the
+//! project name so two projects under the same workspace cannot
+//! clobber each other, and the project's `target_base_url` /
+//! `env_config` are stamped onto the merged compose document as
+//! `x-nyx-*` extension keys for downstream tools to read.
 //!
-//! This phase is docker-compose only. Kubernetes + devcontainer
-//! detection ships in a later release.
+//! docker-compose only. Kubernetes + devcontainer detection ships in
+//! a later release.
 //!
 //! Threat-model boundary. `EnvBuilder::up` refuses to start unless
 //! `<state>/secrets/test.env` exists AND none of its lines match any of
@@ -102,11 +101,11 @@ pub struct EnvBuilder {
     /// operator project maps 1:1 to a `--project-name` namespace and
     /// teardown cannot collide with the operator's own containers.
     pub project_name: String,
-    /// Optional target base URL the project points at — stamped onto
+    /// Optional target base URL the project points at; stamped onto
     /// the merged compose document as `x-nyx-target-base-url` so the
     /// trace-viewer and scanner can pick it up.
     pub target_base_url: Option<String>,
-    /// Optional project-level env config (free-form JSON) — stamped
+    /// Optional project-level env config (free-form JSON); stamped
     /// onto the merged compose document as `x-nyx-env-config` for
     /// downstream consumers.
     pub env_config: Option<serde_json::Value>,

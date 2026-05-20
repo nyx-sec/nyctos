@@ -6,12 +6,12 @@
 //! rootfs in tens of milliseconds and isolates the sandboxee in a
 //! separate kernel, network namespace, and devices set.
 //!
-//! Phase 21 ships the agent-side selection + invocation skeleton. The
-//! real boot path lives in a separate `nyx-fc-runner` helper binary
-//! (out-of-tree as of this phase; the established skeleton is the one
-//! nyx-engine already vendors and we shell out to avoid pulling its
-//! source into nyx-agent's build graph). The backend feeds the runner
-//! a JSON spec on stdin and reads captured guest stdio on stdout/stderr.
+//! Agent-side selection + invocation skeleton. The real boot path
+//! lives in a separate `nyx-fc-runner` helper binary (out-of-tree;
+//! the established skeleton is the one nyx-engine already vendors and
+//! we shell out to avoid pulling its source into nyx-agent's build
+//! graph). The backend feeds the runner a JSON spec on stdin and
+//! reads captured guest stdio on stdout/stderr.
 //!
 //! On hosts without `/dev/kvm` or without `nyx-fc-runner`, every call
 //! returns [`SandboxError::BackendUnavailable`] with a structured

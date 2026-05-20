@@ -8,7 +8,7 @@
 //! then applies birdcage exceptions and `spawn`s the real target.
 //!
 //! Configuration of `allow_loopback` maps onto birdcage's
-//! `Exception::Networking`, which is all-or-none — there is no
+//! `Exception::Networking`, which is all-or-none: there is no
 //! loopback-only carve-out at the seccomp/Seatbelt layer.
 
 use std::path::PathBuf;
@@ -34,7 +34,7 @@ pub struct BirdcageSandbox {
 
 impl BirdcageSandbox {
     /// Construct a backend that locates the shim via `$NYX_SANDBOX_SHIM`
-    /// or — failing that — as a sibling of `std::env::current_exe()`.
+    /// or, failing that, as a sibling of `std::env::current_exe()`.
     pub fn new() -> Result<Self, SandboxError> {
         let shim_path = resolve_shim_path()?;
         Ok(Self { shim_path, inner: None, last_logs: (Vec::new(), Vec::new()) })
