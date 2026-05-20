@@ -178,7 +178,8 @@ impl Diag {
         }
         let sort_key = |e: &Entry<'_>| (e.kind_rank, e.order);
 
-        let mut user_entries: Vec<Entry<'_>> = entries.iter().filter(|e| !e.framework).copied().collect();
+        let mut user_entries: Vec<Entry<'_>> =
+            entries.iter().filter(|e| !e.framework).copied().collect();
         user_entries.sort_by_key(sort_key);
         let mut framework_entries: Vec<Entry<'_>> =
             entries.iter().filter(|e| e.framework).copied().collect();
@@ -187,10 +188,8 @@ impl Diag {
         let mut out: Vec<&str> = Vec::with_capacity(entries.len());
         // Call-site slot: best user-code entry, falling back to the best
         // framework entry only when no user-code path was traced.
-        let call_site = user_entries
-            .first()
-            .copied()
-            .or_else(|| framework_entries.first().copied());
+        let call_site =
+            user_entries.first().copied().or_else(|| framework_entries.first().copied());
         if let Some(cs) = call_site {
             out.push(cs.path);
         }
@@ -301,9 +300,9 @@ const FRAMEWORK_PATH_SEGMENTS: &[&str] = &[
 
 fn is_framework_path(path: &str) -> bool {
     let normalized = path.replace('\\', "/");
-    FRAMEWORK_PATH_SEGMENTS.iter().any(|seg| {
-        normalized.starts_with(seg) || normalized.contains(&format!("/{seg}"))
-    })
+    FRAMEWORK_PATH_SEGMENTS
+        .iter()
+        .any(|seg| normalized.starts_with(seg) || normalized.contains(&format!("/{seg}")))
 }
 
 fn flow_step_kind_rank(kind: Option<&str>) -> u8 {

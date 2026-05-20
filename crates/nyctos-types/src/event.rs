@@ -95,12 +95,7 @@ pub enum RunEvent {
     /// attempted-repo set from `RunStarted.repos` alone — the failing
     /// repo is included there and `RepoIngestFailed` carries the
     /// upstream error string for UI surfacing.
-    RepoIngestFailed {
-        run_id: String,
-        project_id: String,
-        repo: String,
-        message: String,
-    },
+    RepoIngestFailed { run_id: String, project_id: String, repo: String, message: String },
     /// Per-repo terminator. Always emitted regardless of outcome so
     /// subscribers can drop bookkeeping for the repo without diffing
     /// the success / failure event streams.

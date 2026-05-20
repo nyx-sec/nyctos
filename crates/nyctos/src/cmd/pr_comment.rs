@@ -20,14 +20,14 @@ use super::scan_report::{ReportChain, ReportFinding, ScanReport};
 /// Hidden HTML marker placed at the top of the comment body. The
 /// version suffix lets future schema bumps reuse the same approach
 /// without colliding with an in-flight comment from an older binary.
-pub const COMMENT_MARKER: &str = "<!-- nyx-agent:pr-comment v1 -->";
+pub const COMMENT_MARKER: &str = "<!-- nyctos:pr-comment v1 -->";
 
 /// Default GitHub REST base. Override via `--gh-api` for GHE.
 pub const DEFAULT_GH_API_BASE: &str = "https://api.github.com";
 
 /// User agent reported to the GH API. GitHub rejects requests with a
 /// missing UA, so always send one.
-pub const USER_AGENT: &str = "nyx-agent-pr-comment";
+pub const USER_AGENT: &str = "nyctos-pr-comment";
 
 #[derive(Debug, thiserror::Error)]
 pub enum PrCommentError {
@@ -156,7 +156,7 @@ pub fn build_comment_body(
     let mut out = String::new();
     out.push_str(COMMENT_MARKER);
     out.push('\n');
-    out.push_str("## nyx-agent: confirmed findings on this PR\n\n");
+    out.push_str("## nyctos: confirmed findings on this PR\n\n");
 
     let confirmed_count = filtered.findings.iter().filter(|f| f.status == "Verified").count();
     let chain_count = filtered.chains.len();
@@ -710,8 +710,8 @@ mod tests {
         let app = CommentEnvelope {
             id: 9,
             body: Some(COMMENT_MARKER.into()),
-            user: Some(CommentUser { login: "nyx-agent[bot]".into(), user_type: "Bot".into() }),
-            performed_via_github_app: Some(GitHubAppRef { slug: "nyx-agent".into() }),
+            user: Some(CommentUser { login: "nyctos[bot]".into(), user_type: "Bot".into() }),
+            performed_via_github_app: Some(GitHubAppRef { slug: "nyctos".into() }),
         };
         assert!(comment_owned_by_known_bot(&app));
 

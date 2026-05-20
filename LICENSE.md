@@ -1,6 +1,6 @@
 # Nyctos License
 
-Nyctos (the `nyx-agent` daemon, the web UI, and every accompanying file in
+Nyctos (the `nyctos` daemon, the web UI, and every accompanying file in
 this repository) is **source-available** software, not "open source".  The OSI
 term *open source* refers exclusively to software distributed under an
 OSI-approved license; Nyctos is not.  Approved phrasing for this software is

@@ -82,12 +82,8 @@ impl ScanReport {
     /// --output-only-pr-worthy` so the on-disk report stays small on
     /// runs whose static-pass output dwarfs the verified set.
     pub fn retain_pr_worthy(&mut self) {
-        let cross_repo_chains: HashSet<String> = self
-            .chains
-            .iter()
-            .filter(|c| c.cross_repo)
-            .map(|c| c.id.clone())
-            .collect();
+        let cross_repo_chains: HashSet<String> =
+            self.chains.iter().filter(|c| c.cross_repo).map(|c| c.id.clone()).collect();
         let cross_repo_members: HashSet<String> = self
             .chains
             .iter()
@@ -96,12 +92,9 @@ impl ScanReport {
             .collect();
         self.findings.retain(|f| {
             let confirmed = f.status == "Verified";
-            let in_chain = f
-                .chain_id
-                .as_deref()
-                .map(|cid| cross_repo_chains.contains(cid))
-                .unwrap_or(false)
-                || cross_repo_members.contains(&f.id);
+            let in_chain =
+                f.chain_id.as_deref().map(|cid| cross_repo_chains.contains(cid)).unwrap_or(false)
+                    || cross_repo_members.contains(&f.id);
             confirmed || in_chain
         });
         self.chains.retain(|c| c.cross_repo);

@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/nyx-agent",
+    "crates/nyctos",
     "crates/nyctos-types",
     "crates/nyctos-core",
     "crates/nyctos-nyx",

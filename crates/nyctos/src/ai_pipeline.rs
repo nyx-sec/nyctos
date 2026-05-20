@@ -4285,7 +4285,10 @@ mod tests {
             .filter(|t| t.finding_id.is_none())
             .collect();
         assert_eq!(parent_rows.len(), 1, "expected one parent Exploration trace");
-        assert_eq!(parent_rows[0].cost_usd_micros, 0, "parent cost must be zero when findings split it");
+        assert_eq!(
+            parent_rows[0].cost_usd_micros, 0,
+            "parent cost must be zero when findings split it"
+        );
         assert_eq!(parent_rows[0].tokens_in, 100);
         assert_eq!(parent_rows[0].tokens_out, 50);
 

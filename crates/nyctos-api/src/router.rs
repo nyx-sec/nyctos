@@ -1443,10 +1443,7 @@ async fn dismiss_quarantine(
     }
 }
 
-async fn manual_promote_finding_row(
-    s: &ServerState,
-    id: &str,
-) -> Result<FindingRecord, ApiError> {
+async fn manual_promote_finding_row(s: &ServerState, id: &str) -> Result<FindingRecord, ApiError> {
     let existing = require_quarantined_finding(s, id).await?;
     let blob = serde_json::to_string(&json!({
         "kind": "ManualPromote",
@@ -1463,10 +1460,7 @@ async fn manual_promote_finding_row(
         .ok_or_else(|| ApiError::Internal("finding vanished after promote".to_string()))
 }
 
-async fn manual_dismiss_finding_row(
-    s: &ServerState,
-    id: &str,
-) -> Result<FindingRecord, ApiError> {
+async fn manual_dismiss_finding_row(s: &ServerState, id: &str) -> Result<FindingRecord, ApiError> {
     let existing = require_quarantined_finding(s, id).await?;
     let blob = serde_json::to_string(&json!({
         "kind": "ManualDismiss",
@@ -1483,10 +1477,7 @@ async fn manual_dismiss_finding_row(
         .ok_or_else(|| ApiError::Internal("finding vanished after dismiss".to_string()))
 }
 
-async fn require_quarantined_finding(
-    s: &ServerState,
-    id: &str,
-) -> Result<FindingRecord, ApiError> {
+async fn require_quarantined_finding(s: &ServerState, id: &str) -> Result<FindingRecord, ApiError> {
     let existing = s
         .store
         .findings()

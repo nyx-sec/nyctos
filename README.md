@@ -51,10 +51,10 @@ timestamp, and per-row "Scan now" + "Remove" actions:
 
 ![Nyctos project detail page for a project named acme-app, showing the project header with description and target base URL http://localhost:3000, and a Repositories card listing two LOCAL-PATH repos (acme-backend, acme-frontend) with IDLE status pills, Scan all and Add repo buttons, and a green "Daemon ready" indicator in the page header](assets/screenshots/ui-project-detail.png)
 
-`nyx-agent doctor` prints the runtime probes the daemon uses at
+`nyctos doctor` prints the runtime probes the daemon uses at
 startup:
 
-![nyx-agent doctor output showing state dir, config, SQLite schema v2, resolved nyx scanner version, claude-code adapter, sandbox chain lane on docker, sandbox fast lane on birdcage, scheduler and webhook status](assets/screenshots/cli-doctor.png)
+![nyctos doctor output showing state dir, config, SQLite schema v2, resolved nyx scanner version, claude-code adapter, sandbox chain lane on docker, sandbox fast lane on birdcage, scheduler and webhook status](assets/screenshots/cli-doctor.png)
 
 ## Documentation
 
@@ -63,7 +63,7 @@ Operator-facing docs live under [`docs/`](docs/); the
 here:
 
 - [`docs/install.md`](docs/install.md): prerequisites, source build,
-  and `nyx-agent doctor`.
+  and `nyctos doctor`.
 - [`docs/quickstart.md`](docs/quickstart.md): first daemon, first
   project, first scan, first findings.
 - [`docs/triggers/cron.md`](docs/triggers/cron.md) and
@@ -78,22 +78,22 @@ Repos in Nyctos are always nested under a `Project`. A fresh
 install reaches a first scan in three steps:
 
 ```bash
-nyx-agent project create acme-app --target-base-url http://localhost:3000
-nyx-agent project add-repo acme-app acme-backend --path /abs/path/backend --i-own-this
-nyx-agent scan --project acme-app
+nyctos project create acme-app --target-base-url http://localhost:3000
+nyctos project add-repo acme-app acme-backend --path /abs/path/backend --i-own-this
+nyctos scan --project acme-app
 ```
 
-`nyx-agent --help` shows the rest of the surface (scan, project,
+`nyctos --help` shows the rest of the surface (scan, project,
 pr-comment, reverify, inspect, budget, traces, doctor, serve) plus
 the top-level flags every subcommand inherits:
 
-![nyx-agent --help output listing the nine subcommands (scan, project, pr-comment, reverify, inspect, budget, traces, doctor, serve) and the top-level --config, --state-dir, --log-level flags](assets/screenshots/cli-help.png)
+![nyctos --help output listing the nine subcommands (scan, project, pr-comment, reverify, inspect, budget, traces, doctor, serve) and the top-level --config, --state-dir, --log-level flags](assets/screenshots/cli-help.png)
 
 The `project` subcommand the quickstart leads with is the entry
 point for the Project / repo model: `create`, `list`, `show`,
 `delete`, `add-repo`.
 
-![nyx-agent project --help output listing the create, list, show, delete, and add-repo subcommands plus the top-level --config, --state-dir, --log-level flags](assets/screenshots/cli-project.png)
+![nyctos project --help output listing the create, list, show, delete, and add-repo subcommands plus the top-level --config, --state-dir, --log-level flags](assets/screenshots/cli-project.png)
 
 See [`docs/quickstart.md`](docs/quickstart.md) for the worked
 walkthrough (wizard, TOML form, HTTP form, output shape) and
@@ -102,13 +102,13 @@ subcommand reference.
 
 ## Upstream `nyx` scanner
 
-`nyx-agent` shells out to the upstream `nyx` static scanner; the agent has
+`nyctos` shells out to the upstream `nyx` static scanner; the agent has
 no FFI link against it. The `nyx` binary must be installed and discoverable:
 
 - by default on `PATH` (verify with `which nyx`), or
 - via `[nyx].binary_path = "/abs/path/to/nyx"` in `nyctos.toml`.
 
-`nyx-agent doctor` reports the resolved path, the detected version, and the
+`nyctos doctor` reports the resolved path, the detected version, and the
 minimum supported version. It exits non-zero when the binary is missing or
 below the minimum.
 

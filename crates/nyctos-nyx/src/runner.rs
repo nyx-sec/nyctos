@@ -196,8 +196,8 @@ fn parse_diags(bytes: &[u8]) -> Result<Vec<Diag>, NyxError> {
         return Ok(Vec::new());
     }
     let mut diags = if trimmed[0] == b'[' {
-        let values: Vec<serde_json::Value> = serde_json::from_slice(bytes)
-            .map_err(|e| NyxError::MalformedOutput(e.to_string()))?;
+        let values: Vec<serde_json::Value> =
+            serde_json::from_slice(bytes).map_err(|e| NyxError::MalformedOutput(e.to_string()))?;
         let mut out = Vec::with_capacity(values.len());
         for (idx, value) in values.into_iter().enumerate() {
             let d: Diag = serde_json::from_value(value)
@@ -355,10 +355,7 @@ mod tests {
         let err = parse_diags(raw).expect_err("shape mismatch");
         match err {
             NyxError::MalformedOutput(msg) => {
-                assert!(
-                    msg.contains("element 1"),
-                    "expected element index in error, got: {msg}"
-                );
+                assert!(msg.contains("element 1"), "expected element index in error, got: {msg}");
             }
             other => panic!("expected MalformedOutput, got {other:?}"),
         }

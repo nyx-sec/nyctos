@@ -203,11 +203,8 @@ async fn kill_reaps_grandchild_sandboxee() {
         waited += Duration::from_millis(25);
     }
     assert!(pidfile.exists(), "sandboxee did not publish pidfile in 5s");
-    let sandboxee_pid: i32 = std::fs::read_to_string(&pidfile)
-        .expect("read pidfile")
-        .trim()
-        .parse()
-        .expect("parse pid");
+    let sandboxee_pid: i32 =
+        std::fs::read_to_string(&pidfile).expect("read pidfile").trim().parse().expect("parse pid");
 
     sb.kill().await.expect("kill");
     let outcome = sb.wait().await.expect("wait");

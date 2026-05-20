@@ -1,4 +1,4 @@
-//! Startup banner printed by `nyx-agent serve` when stdout is a TTY.
+//! Startup banner printed by `nyctos serve` when stdout is a TTY.
 
 use std::io::IsTerminal;
 

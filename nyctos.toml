@@ -35,8 +35,8 @@ replay_stable_check = false
 # operate per project — repos cannot live outside a project.
 #
 # Replace the local-path values with absolute paths to your own
-# checkouts, or delete this block and run `nyx-agent project create`
-# / `nyx-agent project add-repo` to drive it from the CLI.
+# checkouts, or delete this block and run `nyctos project create`
+# / `nyctos project add-repo` to drive it from the CLI.
 
 [[project]]
 name = "example-app"

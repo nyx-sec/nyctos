@@ -1876,6 +1876,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "nyctos"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "assert_cmd",
+ "async-trait",
+ "axum",
+ "chrono",
+ "clap",
+ "cron",
+ "hex",
+ "nyctos-ai",
+ "nyctos-api",
+ "nyctos-core",
+ "nyctos-nyx",
+ "nyctos-sandbox",
+ "nyctos-types",
+ "nyctos-ui",
+ "predicates",
+ "reqwest",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "webbrowser",
+ "wiremock",
+]
+
+[[package]]
 name = "nyctos-ai"
 version = "0.1.0"
 dependencies = [
@@ -2005,40 +2039,6 @@ dependencies = [
  "axum",
  "mime_guess",
  "rust-embed",
-]
-
-[[package]]
-name = "nyx-agent"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "assert_cmd",
- "async-trait",
- "axum",
- "chrono",
- "clap",
- "cron",
- "hex",
- "nyctos-ai",
- "nyctos-api",
- "nyctos-core",
- "nyctos-nyx",
- "nyctos-sandbox",
- "nyctos-types",
- "nyctos-ui",
- "predicates",
- "reqwest",
- "semver",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "webbrowser",
- "wiremock",
 ]
 
 [[package]]

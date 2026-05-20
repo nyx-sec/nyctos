@@ -16,8 +16,8 @@ pub use adapter::anthropic::{
     DEFAULT_SYNTHESIS_MODEL,
 };
 pub use adapter::claude_code::{
-    detect_claude_binary, parse_stream_json, ClaudeBinary, ClaudeCodeAdapter, DEFAULT_CLAUDE_BINARY,
-    MINIMUM_CLAUDE_VERSION,
+    detect_claude_binary, parse_stream_json, ClaudeBinary, ClaudeCodeAdapter,
+    DEFAULT_CLAUDE_BINARY, MINIMUM_CLAUDE_VERSION,
 };
 pub use runtime::{
     deterministic_seed, AiRuntime, BudgetTracker, InMemoryBudgetTracker, SharedBudgetTracker,

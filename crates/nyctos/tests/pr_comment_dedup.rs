@@ -44,7 +44,7 @@ fn sample_report_json() -> String {
     serde_json::to_string_pretty(&report).expect("serialise sample report")
 }
 
-const MARKER: &str = "<!-- nyx-agent:pr-comment v1 -->";
+const MARKER: &str = "<!-- nyctos:pr-comment v1 -->";
 
 #[tokio::test]
 async fn create_then_update_same_comment() {
@@ -79,8 +79,8 @@ async fn create_then_update_same_comment() {
     let config_path = state_root.path().join("nyctos.toml");
     fs::write(&config_path, "[general]\nlog_level = \"info\"\n").expect("config");
 
-    Command::cargo_bin("nyx-agent")
-        .expect("nyx-agent binary")
+    Command::cargo_bin("nyctos")
+        .expect("nyctos binary")
         .env("GITHUB_TOKEN", "ghs_TESTTOKEN")
         .args([
             "--config",
@@ -131,8 +131,8 @@ async fn create_then_update_same_comment() {
         .mount(&server)
         .await;
 
-    Command::cargo_bin("nyx-agent")
-        .expect("nyx-agent binary")
+    Command::cargo_bin("nyctos")
+        .expect("nyctos binary")
         .env("GITHUB_TOKEN", "ghs_TESTTOKEN")
         .args([
             "--config",
@@ -193,8 +193,8 @@ async fn skips_when_report_has_no_pr_worthy_rows() {
     let state_root = tempfile::tempdir().expect("state");
     let config_path = state_root.path().join("nyctos.toml");
     fs::write(&config_path, "[general]\nlog_level = \"info\"\n").expect("config");
-    Command::cargo_bin("nyx-agent")
-        .expect("nyx-agent binary")
+    Command::cargo_bin("nyctos")
+        .expect("nyctos binary")
         .env("GITHUB_TOKEN", "ghs_TESTTOKEN")
         .args([
             "--config",

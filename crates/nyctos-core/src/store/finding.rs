@@ -506,11 +506,7 @@ impl<'a> FindingStore<'a> {
     /// dismiss flow, where reusing `set_verify_result` would silently
     /// inherit the prior verifier's provenance and obscure the
     /// operator's intent.
-    pub async fn manual_dismiss(
-        &self,
-        id: &str,
-        verdict_blob: &str,
-    ) -> Result<(), StoreError> {
+    pub async fn manual_dismiss(&self, id: &str, verdict_blob: &str) -> Result<(), StoreError> {
         sqlx::query(
             "UPDATE findings SET status = 'Closed', verdict_blob = ?, \
              attack_provenance = 'ManualDismiss' WHERE id = ?",
@@ -840,10 +836,7 @@ mod tests {
         f.attack_provenance = Some("SpecDerivation".to_string());
         s.findings().upsert(&f).await.expect("insert");
 
-        s.findings()
-            .manual_dismiss(&f.id, r#"{"kind":"ManualDismiss"}"#)
-            .await
-            .expect("dismiss");
+        s.findings().manual_dismiss(&f.id, r#"{"kind":"ManualDismiss"}"#).await.expect("dismiss");
         let got = s.findings().get(&f.id).await.expect("get").expect("row");
         assert_eq!(got.status, "Closed");
         assert_eq!(got.attack_provenance.as_deref(), Some("ManualDismiss"));

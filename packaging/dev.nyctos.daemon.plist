@@ -4,11 +4,11 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.nyx.agent</string>
+    <string>dev.nyctos.daemon</string>
 
     <!--
       This plist is a per-user LaunchAgent. Install it under
-        ~/Library/LaunchAgents/com.nyx.agent.plist
+        ~/Library/LaunchAgents/dev.nyctos.daemon.plist
       and load with `launchctl bootstrap gui/$(id -u) ...`.
 
       LaunchAgents run as the logged-in user, so the daemon never
@@ -22,7 +22,7 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/local/bin/nyx-agent</string>
+        <string>/usr/local/bin/nyctos</string>
         <string>serve</string>
         <string>--headless</string>
     </array>
@@ -34,10 +34,10 @@
     <true/>
 
     <key>StandardOutPath</key>
-    <string>/tmp/nyx-agent.out.log</string>
+    <string>/tmp/nyctos.out.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/tmp/nyx-agent.err.log</string>
+    <string>/tmp/nyctos.err.log</string>
 
     <key>ProcessType</key>
     <string>Background</string>

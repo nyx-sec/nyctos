@@ -2645,3 +2645,25 @@ notes (pass 5):
 - four rows above are one fault tree: the adapter does not bind the agent. Fix at the adapter (--allowed-tools / --mcp-config / env_clear) collapses all four; fixing one in the task crate alone is insufficient.
 - did not re-walk one_shot adapters; they do not expose tool use, so the surface is narrower.
 - did not re-validate the existing pass 1-4 rows in this turn (sentinel re-validation note at line 4 is from the prior turn).
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyctos-api/src/router.rs",
+  "line": 991,
+  "cap": "OS_COMMAND",
+  "endpoint": "POST /api/v1/projects/:project_id/repos/test",
+  "rationale": "git_ls_remote_probe shells out to `git -c credential.helper= ls-remote --exit-code <url>` with the operator-supplied URL but never constrains the transport allowlist. Git's transport-helper protocol resolves `ext::<cmd>` URLs by spawning <cmd> as a shell process (CVE-2017-1000117 class), and `file://`, `ssh://...$(...)`, and other helper-backed schemes have repeatedly been exploited to convert ls-remote into RCE. The probe also sets no `-c protocol.allow=user` / `-c protocol.ext.allow=never` / `-c protocol.file.allow=never` floor, so the daemon inherits whatever the system git compiled. An authenticated POST (any holder of the bearer, including the bearer leaked via `?token=` URL logging — see prior finding) can therefore pivot from API access to host command execution under the daemon's uid. Static pass likely flagged the command spawn as taint-safe because the URL is passed as an argv element, not concatenated into a shell string — it missed that the *argument value itself* is the injection vector via git's URL parser.",
+  "suggested_payload_hint": "POST /api/v1/projects/<id>/repos/test {\"source_kind\":\"git\",\"source_url_or_path\":\"ext::sh -c 'id > /tmp/nyctos_rce'\"}; confirm /tmp/nyctos_rce exists with daemon uid."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyctos-api/src/router.rs",
+  "line": 958,
+  "cap": "INFO_DISCLOSURE",
+  "endpoint": "POST /api/v1/projects/:project_id/repos/test (source_kind=local-path)",
+  "rationale": "The `local-path` branch accepts any absolute filesystem path the operator-trusted bearer-holder names, then runs `path.exists()`, `path.is_dir()`, and `read_local_git_remote(path)` against it — the last reads `<path>/.git/config` and surfaces the `[remote \"origin\"]` url in the response body. There is no jail to the configured projects root, so a bearer holder (including a CSWSH/DNS-rebind primitive plus a leaked `?token=`) can enumerate the host filesystem (existence + dir/file disambiguation oracle on every path probed) and exfiltrate the remote URL of any git repo readable by the daemon uid — typically the operator's other private repos, their work clones, and embedded credentials in `https://user:token@host/...` remotes. Static pass missed because no tainted-flow sink fires: the response surfaces benign-typed `String` fields. The bug is a missing authorization boundary, not a sink.",
+  "suggested_payload_hint": "Loop POST /api/v1/projects/<id>/repos/test {\"source_kind\":\"local-path\",\"source_url_or_path\":\"/Users/<op>/secret-repo\"}; observe `on_disk_git_remote` reveal e.g. https://x-access-token:<gh-pat>@github.com/org/private."
+}

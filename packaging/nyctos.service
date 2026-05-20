@@ -1,18 +1,18 @@
 [Unit]
-Description=Nyx scanning daemon
+Description=Nyctos scanning daemon
 Documentation=https://nyctos.dev/docs/triggers/
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-# The systemd timer in `nyx-agent.timer` triggers a one-shot scan via
+# The systemd timer in `nyctos.timer` triggers a one-shot scan via
 # the daemon's `POST /api/v1/scan` endpoint, but the daemon itself
 # should run continuously so the API + WebSocket surfaces stay
 # reachable and the in-process cron scheduler can fire `[[schedule]]`
 # entries. Operators who prefer to drive scans purely via the timer
 # can set Type=oneshot and replace ExecStart with the scan command.
-ExecStart=/usr/local/bin/nyx-agent serve --headless
+ExecStart=/usr/local/bin/nyctos --state-dir %S/nyctos serve --headless
 Restart=on-failure
 RestartSec=5
 
@@ -20,8 +20,7 @@ RestartSec=5
 # access to anything outside its state directory.
 DynamicUser=yes
 StateDirectory=nyctos
-WorkingDirectory=%S/nyx-agent
-Environment=NYX_AGENT_STATE_DIR=%S/nyx-agent
+WorkingDirectory=%S/nyctos
 ProtectSystem=strict
 ProtectHome=true
 ProtectKernelTunables=true

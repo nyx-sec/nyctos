@@ -1,8 +1,8 @@
-//! End-to-end tests for `nyx-agent scan --project <name>` and the
+//! End-to-end tests for `nyctos scan --project <name>` and the
 //! `project` subcommand.
 //!
 //! Builds a fake `nyx` binary as a shell stub (responds to
-//! `--version` and `scan ...`), then runs `nyx-agent` against a local
+//! `--version` and `scan ...`), then runs `nyctos` against a local
 //! state directory and a local-path repo. The stub is platform-gated
 //! to Unix; on other targets the test is skipped.
 
@@ -62,8 +62,8 @@ fn scan_project_round_trips_against_stub() {
     let stub_path = write_stub(stub_dir.path());
     let config_path = write_config(state_root.path(), &stub_path, repo_src.path());
 
-    let assert = Command::cargo_bin("nyx-agent")
-        .expect("nyx-agent binary")
+    let assert = Command::cargo_bin("nyctos")
+        .expect("nyctos binary")
         .args([
             "--config",
             config_path.to_str().unwrap(),
@@ -94,8 +94,8 @@ fn scan_headless_suppresses_human_progress() {
     let stub_path = write_stub(stub_dir.path());
     let config_path = write_config(state_root.path(), &stub_path, repo_src.path());
 
-    let assert = Command::cargo_bin("nyx-agent")
-        .expect("nyx-agent binary")
+    let assert = Command::cargo_bin("nyctos")
+        .expect("nyctos binary")
         .args([
             "--config",
             config_path.to_str().unwrap(),
@@ -126,8 +126,8 @@ fn scan_repo_without_project_is_rejected() {
     let stub_path = write_stub(stub_dir.path());
     let config_path = write_config(state_root.path(), &stub_path, repo_src.path());
 
-    let assert = Command::cargo_bin("nyx-agent")
-        .expect("nyx-agent binary")
+    let assert = Command::cargo_bin("nyctos")
+        .expect("nyctos binary")
         .args([
             "--config",
             config_path.to_str().unwrap(),
@@ -151,8 +151,8 @@ fn scan_repo_without_project_is_rejected() {
 fn project_create_then_list() {
     let state_root = tempfile::tempdir().expect("state");
 
-    let create = Command::cargo_bin("nyx-agent")
-        .expect("nyx-agent binary")
+    let create = Command::cargo_bin("nyctos")
+        .expect("nyctos binary")
         .args([
             "--state-dir",
             state_root.path().to_str().unwrap(),
@@ -167,8 +167,8 @@ fn project_create_then_list() {
     let stdout = String::from_utf8_lossy(&create.get_output().stdout).into_owned();
     assert!(stdout.contains("created project acme-app"), "expected creation line, got: {stdout}");
 
-    let list = Command::cargo_bin("nyx-agent")
-        .expect("nyx-agent binary")
+    let list = Command::cargo_bin("nyctos")
+        .expect("nyctos binary")
         .args(["--state-dir", state_root.path().to_str().unwrap(), "project", "list"])
         .assert()
         .success();

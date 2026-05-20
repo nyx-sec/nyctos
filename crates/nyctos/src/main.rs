@@ -30,7 +30,7 @@ mod scheduler;
 use banner::print_startup_banner;
 
 #[derive(Debug, Parser)]
-#[command(name = "nyx-agent", version, about = "Nyctos repository agent", propagate_version = true)]
+#[command(name = "nyctos", version, about = "Nyctos repository agent", propagate_version = true)]
 struct Cli {
     /// Path to `nyctos.toml`. Defaults to `./nyctos.toml`.
     #[arg(long, global = true, value_name = "PATH")]
@@ -1920,7 +1920,7 @@ fn report_sandbox_backends(config: &Config) {
 
 /// Report whether the `nyx-sandbox-shim` helper binary resolves. Birdcage
 /// only runs when this binary is reachable (via `$NYX_SANDBOX_SHIM` or as
-/// a sibling of the running `nyx-agent`); a missing shim silently
+/// a sibling of the running `nyctos`); a missing shim silently
 /// downgrades the chain + fast lane selectors to `Process`, so the
 /// doctor surface should call out the gap explicitly.
 fn report_sandbox_shim() {
