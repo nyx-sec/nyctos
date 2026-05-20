@@ -304,6 +304,8 @@ interface FlowStepsBlockProps {
 }
 
 function FlowStepsBlock({ steps }: FlowStepsBlockProps) {
+  const [copied, setCopied] = useState<string | null>(null);
+
   if (steps.length === 0) {
     return (
       <section className="finding-detail__section">
@@ -312,34 +314,50 @@ function FlowStepsBlock({ steps }: FlowStepsBlockProps) {
       </section>
     );
   }
+
+  async function copyTarget(target: string) {
+    try {
+      await navigator.clipboard.writeText(target);
+      setCopied(target);
+    } catch {
+      setCopied(`${target} (copy failed)`);
+    }
+    window.setTimeout(() => setCopied((cur) => (cur === target ? null : cur)), 1800);
+  }
+
   return (
     <section className="finding-detail__section">
       <h3 className="finding-detail__h3">Flow steps</h3>
       <ol className="finding-detail__flow">
-        {steps.map((step, idx) => (
-          <li key={idx}>
-            <button
-              type="button"
-              className="finding-detail__flow-step"
-              onClick={() => {
-                // Phase 11 stub: no editor jump yet. Surface the
-                // target so the operator can copy it; Phase 22's
-                // editor integration owns the click.
-                const target = `${step.path}${step.line ? `:${step.line}` : ""}`;
-                window.alert(`Step → ${target}`);
-              }}
-            >
-              <span className="finding-detail__flow-path">{step.path}</span>
-              {step.line && (
-                <span className="finding-detail__flow-line"> :{step.line}</span>
-              )}
-              {step.message && (
-                <span className="finding-detail__flow-msg"> · {step.message}</span>
-              )}
-            </button>
-          </li>
-        ))}
+        {steps.map((step, idx) => {
+          const target = `${step.path}${step.line ? `:${step.line}` : ""}`;
+          return (
+            <li key={idx}>
+              <button
+                type="button"
+                className="finding-detail__flow-step"
+                title={`Copy ${target}`}
+                onClick={() => copyTarget(target)}
+              >
+                <span className="finding-detail__flow-path">{step.path}</span>
+                {step.line && (
+                  <span className="finding-detail__flow-line"> :{step.line}</span>
+                )}
+                {step.message && (
+                  <span className="finding-detail__flow-msg"> · {step.message}</span>
+                )}
+              </button>
+            </li>
+          );
+        })}
       </ol>
+      <div
+        className="finding-detail__flow-toast"
+        role="status"
+        aria-live="polite"
+      >
+        {copied ? `Copied ${copied} to clipboard.` : ""}
+      </div>
     </section>
   );
 }

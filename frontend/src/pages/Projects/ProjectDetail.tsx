@@ -3,6 +3,7 @@ import { useNavigate, useParams, Link } from "react-router-dom";
 import { Badge, type BadgeTone } from "@/components/Badge";
 import { Button } from "@/components/Button";
 import { Card } from "@/components/Card";
+import { ConfirmModal } from "@/components/ConfirmModal";
 import { EmptyState } from "@/components/EmptyState";
 import { Spinner } from "@/components/Spinner";
 import {
@@ -38,6 +39,7 @@ export function ProjectDetail() {
   const [live, setLive] = useState<LiveMap>({});
   const [banner, setBanner] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
+  const [removeTarget, setRemoveTarget] = useState<RepoRecord | null>(null);
 
   useAgentEvents({
     onEvent: (ev: AgentEventLike) => {
@@ -70,8 +72,9 @@ export function ProjectDetail() {
     }
   }
 
-  async function onDeleteRepo(name: string) {
-    if (!window.confirm(`Remove repo "${name}" and its workspace dir?`)) return;
+  async function onConfirmRemoveRepo() {
+    if (!removeTarget) return;
+    const name = removeTarget.name;
     try {
       await deleteRepo.mutateAsync(name);
       setBanner(`Removed ${name}.`);
@@ -80,8 +83,10 @@ export function ProjectDetail() {
         delete next[name];
         return next;
       });
+      setRemoveTarget(null);
     } catch (err) {
       setBanner(`Could not remove ${name}: ${String(err)}`);
+      setRemoveTarget(null);
     }
   }
 
@@ -229,7 +234,7 @@ export function ProjectDetail() {
                       repo={repo}
                       live={live[repo.name] ?? { status: "Idle", runId: null }}
                       onScan={() => onScanOne(repo.name)}
-                      onDelete={() => onDeleteRepo(repo.name)}
+                      onDelete={() => setRemoveTarget(repo)}
                       busy={triggerScan.isPending || deleteRepo.isPending}
                     />
                   ))}
@@ -248,6 +253,29 @@ export function ProjectDetail() {
             setShowAdd(false);
             setBanner(`Added ${name}. Trigger a scan when ready.`);
           }}
+        />
+      )}
+
+      {removeTarget && (
+        <ConfirmModal
+          title={`Remove "${removeTarget.name}"?`}
+          body={
+            <>
+              <p>
+                The daemon will delete the workspace directory for this repo
+                and forget the connection. Findings and run history under it
+                are retained.
+              </p>
+              <p className="repo-list__source">
+                Source: <code>{removeTarget.source_url_or_path}</code>
+              </p>
+            </>
+          }
+          confirmLabel="Remove repo"
+          confirmVariant="danger"
+          busy={deleteRepo.isPending}
+          onConfirm={onConfirmRemoveRepo}
+          onCancel={() => setRemoveTarget(null)}
         />
       )}
     </>

