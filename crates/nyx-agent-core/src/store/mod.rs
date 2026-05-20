@@ -327,6 +327,7 @@ mod tests {
             duration_ms: Some(5_000),
             started_at: 5_000,
             finished_at: Some(10_000),
+            verifier_blob: None,
         };
         s.agent_traces().insert(&t).await.expect("trace");
 

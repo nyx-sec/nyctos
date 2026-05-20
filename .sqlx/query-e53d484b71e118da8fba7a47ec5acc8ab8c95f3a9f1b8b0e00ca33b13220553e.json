@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "\n            SELECT id AS \"id!\", finding_id,\n                   task_kind AS \"task_kind!\",\n                   runtime_name AS \"runtime_name!\",\n                   model AS \"model!\", prompt_version, conversation_jsonl_path,\n                   tokens_in       AS \"tokens_in!: i64\",\n                   tokens_out      AS \"tokens_out!: i64\",\n                   cost_usd_micros AS \"cost_usd_micros!: i64\",\n                   cache_hits      AS \"cache_hits!: i64\",\n                   cache_misses    AS \"cache_misses!: i64\",\n                   duration_ms,\n                   started_at      AS \"started_at!: i64\",\n                   finished_at\n            FROM agent_traces WHERE id = ?\n            ",
+  "query": "\n            SELECT id AS \"id!\", finding_id,\n                   task_kind AS \"task_kind!\",\n                   runtime_name AS \"runtime_name!\",\n                   model AS \"model!\", prompt_version, conversation_jsonl_path,\n                   tokens_in       AS \"tokens_in!: i64\",\n                   tokens_out      AS \"tokens_out!: i64\",\n                   cost_usd_micros AS \"cost_usd_micros!: i64\",\n                   cache_hits      AS \"cache_hits!: i64\",\n                   cache_misses    AS \"cache_misses!: i64\",\n                   duration_ms,\n                   started_at      AS \"started_at!: i64\",\n                   finished_at,\n                   verifier_blob\n            FROM agent_traces WHERE id = ?\n            ",
   "describe": {
     "columns": [
       {
@@ -77,6 +77,11 @@
         "name": "finished_at",
         "ordinal": 14,
         "type_info": "Integer"
+      },
+      {
+        "name": "verifier_blob",
+        "ordinal": 15,
+        "type_info": "Text"
       }
     ],
     "parameters": {
@@ -97,8 +102,9 @@
       false,
       true,
       false,
+      true,
       true
     ]
   },
-  "hash": "e566a190013a91bf0ad91bf29aa9e0e5eb268cb8e2c799e94ab27e9d6399452c"
+  "hash": "e53d484b71e118da8fba7a47ec5acc8ab8c95f3a9f1b8b0e00ca33b13220553e"
 }

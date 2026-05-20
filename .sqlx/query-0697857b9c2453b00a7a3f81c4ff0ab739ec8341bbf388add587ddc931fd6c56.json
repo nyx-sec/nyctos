@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            INSERT INTO agent_traces (\n                id, finding_id, task_kind, runtime_name, model, prompt_version,\n                conversation_jsonl_path, tokens_in, tokens_out, cost_usd_micros,\n                cache_hits, cache_misses, duration_ms, started_at, finished_at,\n                verifier_blob\n            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 16
+    },
+    "nullable": []
+  },
+  "hash": "0697857b9c2453b00a7a3f81c4ff0ab739ec8341bbf388add587ddc931fd6c56"
+}

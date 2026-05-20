@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "\n            SELECT id AS \"id!\", finding_id,\n                   task_kind AS \"task_kind!\",\n                   runtime_name AS \"runtime_name!\",\n                   model AS \"model!\", prompt_version, conversation_jsonl_path,\n                   tokens_in       AS \"tokens_in!: i64\",\n                   tokens_out      AS \"tokens_out!: i64\",\n                   cost_usd_micros AS \"cost_usd_micros!: i64\",\n                   cache_hits      AS \"cache_hits!: i64\",\n                   cache_misses    AS \"cache_misses!: i64\",\n                   duration_ms,\n                   started_at      AS \"started_at!: i64\",\n                   finished_at\n            FROM agent_traces WHERE finding_id = ? ORDER BY started_at\n            ",
+  "query": "\n            SELECT id AS \"id!\", finding_id,\n                   task_kind AS \"task_kind!\",\n                   runtime_name AS \"runtime_name!\",\n                   model AS \"model!\", prompt_version, conversation_jsonl_path,\n                   tokens_in       AS \"tokens_in!: i64\",\n                   tokens_out      AS \"tokens_out!: i64\",\n                   cost_usd_micros AS \"cost_usd_micros!: i64\",\n                   cache_hits      AS \"cache_hits!: i64\",\n                   cache_misses    AS \"cache_misses!: i64\",\n                   duration_ms,\n                   started_at      AS \"started_at!: i64\",\n                   finished_at,\n                   verifier_blob\n            FROM agent_traces WHERE finding_id = ? ORDER BY started_at\n            ",
   "describe": {
     "columns": [
       {
@@ -77,6 +77,11 @@
         "name": "finished_at",
         "ordinal": 14,
         "type_info": "Integer"
+      },
+      {
+        "name": "verifier_blob",
+        "ordinal": 15,
+        "type_info": "Text"
       }
     ],
     "parameters": {
@@ -97,8 +102,9 @@
       false,
       true,
       false,
+      true,
       true
     ]
   },
-  "hash": "8f1e84d468c7404a05ee5372922e5e8265526ecd976b7cb813379e83e0d0b5ae"
+  "hash": "c01ee3402760629072eb0e129a2706d2859930fc6243fca30296ca701ec1813a"
 }

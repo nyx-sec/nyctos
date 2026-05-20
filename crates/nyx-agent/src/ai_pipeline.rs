@@ -426,6 +426,7 @@ fn build_trace_row(
         duration_ms: Some(duration),
         started_at: started_at_ms,
         finished_at: Some(finished_at_ms),
+        verifier_blob: None,
     }
 }
 
@@ -1697,11 +1698,14 @@ async fn drive_verify_for_finding(
         prompt_version.as_deref().unwrap_or(&spec_id),
         started_at,
         finished_at,
+        Some(&spec_id),
+        Some(&result),
     )
     .await;
     Ok(VerifyOutcome::Verdict(result.verdict))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn persist_verifier_trace(
     store: &Store,
     finding_id: Option<String>,
@@ -1709,8 +1713,10 @@ async fn persist_verifier_trace(
     prompt_version: &str,
     started_at: i64,
     finished_at: i64,
+    spec_id: Option<&str>,
+    result: Option<&VerifyResult>,
 ) {
-    let row = build_trace_row(
+    let mut row = build_trace_row(
         TaskKind::Verifier,
         finding_id,
         backend,
@@ -1720,7 +1726,36 @@ async fn persist_verifier_trace(
         started_at,
         finished_at,
     );
+    row.verifier_blob = build_verifier_blob(spec_id, result);
     persist_trace_row(store, row).await;
+}
+
+/// Render the `agent_traces.verifier_blob` JSON for a Verifier row.
+///
+/// Returns `None` when no inputs are available (i.e. the runner failed
+/// before producing a `VerifyResult` AND no spec id was known). The
+/// shape matches the contract in migration `0003_verifier_blob.sql`:
+/// every field is independently optional so callers stamp whatever
+/// they have.
+fn build_verifier_blob(spec_id: Option<&str>, result: Option<&VerifyResult>) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let mut obj = serde_json::Map::new();
+    if let Some(id) = spec_id {
+        obj.insert("spec_id".into(), serde_json::Value::String(id.to_string()));
+    }
+    if let Some(r) = result {
+        let vuln_hash = hex::encode(Sha256::digest(&r.vuln_run.payload));
+        let benign_hash = hex::encode(Sha256::digest(&r.benign_run.payload));
+        obj.insert("vuln_payload_sha256".into(), serde_json::Value::String(vuln_hash));
+        obj.insert("vuln_exit_code".into(), serde_json::Value::from(r.vuln_run.exit_code));
+        obj.insert("benign_payload_sha256".into(), serde_json::Value::String(benign_hash));
+        obj.insert("benign_exit_code".into(), serde_json::Value::from(r.benign_run.exit_code));
+    }
+    if obj.is_empty() {
+        None
+    } else {
+        Some(serde_json::Value::Object(obj).to_string())
+    }
 }
 
 async fn drive_verify_for_candidate(
@@ -1772,6 +1807,8 @@ async fn drive_verify_for_candidate(
                 &prompt_version,
                 started_at,
                 now_epoch_ms(),
+                None,
+                None,
             )
             .await;
             return Ok(VerifyOutcome::Verdict(VerifyVerdict::Errored));
@@ -1800,6 +1837,8 @@ async fn drive_verify_for_candidate(
         &prompt_version,
         started_at,
         finished_at,
+        None,
+        Some(&result),
     )
     .await;
     Ok(VerifyOutcome::Verdict(result.verdict))
@@ -2392,9 +2431,60 @@ async fn persist_exploration_finding(
 
 #[cfg(test)]
 mod tests {
+    use nyctos_types::verify::{Oracle, VerifyRun, VerifyVerdict};
     use nyx_agent_core::run::{CrossRepoCallgraphStub, RepoBundle};
 
     use super::*;
+
+    fn fake_verify_run(payload: &[u8], oracle_fired: bool, exit_code: i32) -> VerifyRun {
+        VerifyRun {
+            payload: payload.to_vec(),
+            oracle_fired,
+            exit_code,
+            timed_out: false,
+            stdout: vec![],
+            stderr: vec![],
+            duration_ms: 1,
+        }
+    }
+
+    #[test]
+    fn verifier_blob_carries_spec_id_and_payload_hashes() {
+        let result = VerifyResult {
+            finding_id: "f-1".to_string(),
+            verdict: VerifyVerdict::Confirmed,
+            oracle: Oracle::OutputContains { marker: "x".to_string() },
+            vuln_run: fake_verify_run(b"VULN", true, 7),
+            benign_run: fake_verify_run(b"BENIGN", false, 0),
+            attack_provenance: AttackProvenance::Curated,
+            replay_stable: None,
+            error_message: None,
+        };
+        let blob = build_verifier_blob(Some("spec-abc"), Some(&result)).expect("populated");
+        let v: serde_json::Value = serde_json::from_str(&blob).expect("json");
+        assert_eq!(v["spec_id"], "spec-abc");
+        assert_eq!(v["vuln_exit_code"], 7);
+        assert_eq!(v["benign_exit_code"], 0);
+        // sha256("VULN") = ad9a82ba23ddccd8...
+        let vuln = v["vuln_payload_sha256"].as_str().expect("hex string");
+        assert_eq!(vuln.len(), 64, "sha256 hex is 64 chars");
+        let benign = v["benign_payload_sha256"].as_str().expect("hex string");
+        assert_eq!(benign.len(), 64);
+        assert_ne!(vuln, benign, "distinct payloads hash distinctly");
+    }
+
+    #[test]
+    fn verifier_blob_is_none_when_no_inputs() {
+        assert!(build_verifier_blob(None, None).is_none());
+    }
+
+    #[test]
+    fn verifier_blob_with_only_spec_id() {
+        let blob = build_verifier_blob(Some("spec-1"), None).expect("populated");
+        let v: serde_json::Value = serde_json::from_str(&blob).expect("json");
+        assert_eq!(v["spec_id"], "spec-1");
+        assert!(v.get("vuln_payload_sha256").is_none());
+    }
 
     fn diag_unsupported(path: &str, line: u32, cap: &str, rule: &str) -> Diag {
         serde_json::from_value(serde_json::json!({

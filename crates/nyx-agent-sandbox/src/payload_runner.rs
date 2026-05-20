@@ -453,20 +453,17 @@ fn python_literal(payload: &[u8]) -> String {
     s
 }
 
-/// Quote `payload` as a single-quoted shell string. Single quotes
-/// inside the payload close-and-reopen via `'\''`.
+/// Render `payload` as a POSIX-shell argv expression evaluating to the
+/// exact byte sequence. Each byte is encoded as a 3-digit octal escape
+/// and decoded by `printf '%b'` inside a command substitution, so
+/// non-ASCII / non-printable / single-quote bytes round-trip without
+/// UTF-8 reencoding.
 fn shell_literal(payload: &[u8]) -> String {
-    let mut s = String::with_capacity(payload.len() + 2);
-    s.push('\'');
+    let mut esc = String::with_capacity(payload.len() * 4);
     for &b in payload {
-        if b == b'\'' {
-            s.push_str("'\\''");
-        } else {
-            s.push(b as char);
-        }
+        esc.push_str(&format!("\\{b:03o}"));
     }
-    s.push('\'');
-    s
+    format!("\"$(printf '%b' '{esc}')\"")
 }
 
 pub(crate) fn bytes_contains(haystack: &[u8], needle: &[u8]) -> bool {
@@ -653,7 +650,43 @@ mod tests {
     #[test]
     fn shell_literal_handles_internal_single_quote() {
         let lit = shell_literal(b"it's");
-        assert_eq!(lit, "'it'\\''s'");
+        assert_eq!(lit, "\"$(printf '%b' '\\151\\164\\047\\163')\"");
+    }
+
+    #[test]
+    fn shell_literal_escapes_high_bytes() {
+        let lit = shell_literal(b"\x00\x7f\x80\xff");
+        assert_eq!(lit, "\"$(printf '%b' '\\000\\177\\200\\377')\"");
+    }
+
+    #[tokio::test]
+    async fn shell_harness_with_non_ascii_payload_round_trips() {
+        let dir = ws();
+        let spec = HarnessSpecInput {
+            cap: "OS_COMMAND".to_string(),
+            lang: "shell".to_string(),
+            setup: vec![],
+            invoke: "case @PAYLOAD in *$(printf '\\200\\201')*) : > sentinel.flag ;; esac"
+                .to_string(),
+            teardown: vec![],
+        };
+        let runner = PayloadRunner::default();
+        let oracle =
+            Oracle::SinkProbe { sentinel_path: "sentinel.flag".to_string(), expect_contains: None };
+        let result = runner
+            .verify(PayloadRun {
+                finding_id: "f-utf8".to_string(),
+                spec,
+                vuln_payload: b"\x80\x81\x82".to_vec(),
+                benign_payload: b"\x90\x91\x92".to_vec(),
+                oracle,
+                attack_provenance: AttackProvenance::Curated,
+                harness_source: HarnessSource::Synthesised,
+                workspace: dir.path().to_path_buf(),
+            })
+            .await
+            .expect("verify");
+        assert_eq!(result.verdict, VerifyVerdict::Confirmed, "{result:?}");
     }
 
     #[test]

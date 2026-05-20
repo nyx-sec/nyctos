@@ -49,6 +49,14 @@ pub struct AgentTraceRecord {
     pub duration_ms: Option<i64>,
     pub started_at: i64,
     pub finished_at: Option<i64>,
+    /// JSON blob populated for `TaskKind::Verifier` rows.
+    ///
+    /// Carries the spec id, vuln/benign payload sha256 hex digests,
+    /// and per-run exit codes so the trace viewer can render the
+    /// verifier's inputs + outputs without joining
+    /// `findings.verdict_blob`. `None` for non-verifier rows and for
+    /// pre-migration verifier rows.
+    pub verifier_blob: Option<String>,
 }
 
 pub struct AgentTraceStore<'a> {
@@ -66,8 +74,9 @@ impl<'a> AgentTraceStore<'a> {
             INSERT INTO agent_traces (
                 id, finding_id, task_kind, runtime_name, model, prompt_version,
                 conversation_jsonl_path, tokens_in, tokens_out, cost_usd_micros,
-                cache_hits, cache_misses, duration_ms, started_at, finished_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                cache_hits, cache_misses, duration_ms, started_at, finished_at,
+                verifier_blob
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
             t.id,
             t.finding_id,
@@ -84,6 +93,7 @@ impl<'a> AgentTraceStore<'a> {
             t.duration_ms,
             t.started_at,
             t.finished_at,
+            t.verifier_blob,
         )
         .execute(self.pool)
         .await?;
@@ -105,7 +115,8 @@ impl<'a> AgentTraceStore<'a> {
                    cache_misses    AS "cache_misses!: i64",
                    duration_ms,
                    started_at      AS "started_at!: i64",
-                   finished_at
+                   finished_at,
+                   verifier_blob
             FROM agent_traces WHERE id = ?
             "#,
             id
@@ -133,7 +144,8 @@ impl<'a> AgentTraceStore<'a> {
                    cache_misses    AS "cache_misses!: i64",
                    duration_ms,
                    started_at      AS "started_at!: i64",
-                   finished_at
+                   finished_at,
+                   verifier_blob
             FROM agent_traces WHERE finding_id = ? ORDER BY started_at
             "#,
             finding_id
@@ -158,7 +170,8 @@ impl<'a> AgentTraceStore<'a> {
                    cache_misses    AS "cache_misses!: i64",
                    duration_ms,
                    started_at      AS "started_at!: i64",
-                   finished_at
+                   finished_at,
+                   verifier_blob
             FROM agent_traces WHERE task_kind = ? ORDER BY started_at
             "#,
             kind
@@ -191,6 +204,7 @@ mod tests {
             duration_ms: Some(7_500),
             started_at: 5_000,
             finished_at: Some(12_500),
+            verifier_blob: None,
         }
     }
 

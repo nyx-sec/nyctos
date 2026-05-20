@@ -510,6 +510,7 @@ mod tests {
                 duration_ms: Some(2_000),
                 started_at: 4_000,
                 finished_at: Some(6_000),
+                verifier_blob: None,
             })
             .await
             .expect("trace-1");
@@ -531,6 +532,7 @@ mod tests {
                 duration_ms: Some(7_000),
                 started_at: 5_000,
                 finished_at: Some(12_000),
+                verifier_blob: None,
             })
             .await
             .expect("trace-2");

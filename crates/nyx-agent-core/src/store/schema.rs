@@ -11,7 +11,7 @@ use crate::store::StoreError;
 /// Highest schema version shipped by this build. Bump this number when
 /// adding a new migration file (and only ever add - never edit a prior
 /// migration).
-pub const CURRENT_SCHEMA_VERSION: i64 = 2;
+pub const CURRENT_SCHEMA_VERSION: i64 = 3;
 
 pub static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 

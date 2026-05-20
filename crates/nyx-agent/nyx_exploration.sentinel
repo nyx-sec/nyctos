@@ -1686,3 +1686,35 @@ notes:
   `/api/v1/health` unauth handler at :210 returns env!(\"CARGO_PKG_VERSION\")
   with no token; treat as fingerprint signal, not a standalone CVE.
 
+
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyx-agent-sandbox/src/payload_runner.rs",
+  "line": 466,
+  "cap": "VERIFIER_INTEGRITY",
+  "endpoint": "shell_literal -> PayloadRunner shell harness invoke",
+  "rationale": "Rewritten shell_literal renders payloads as `\"$(printf '%b' '\\NNN...')\"`. Two POSIX-shell behaviors silently corrupt bytes inside the command substitution: (1) `$(...)` strips ALL trailing newlines from its output, so any payload ending in 0x0A or runs of 0x0A is truncated before the harness sees it; (2) sh/bash argv strings cannot embed 0x00, so a payload containing NUL becomes a prefix-only string. Net effect: the verifier's oracle silently runs on a *different* payload than the one whose SHA256 was hashed into agent_traces.verifier_blob (build_verifier_blob in ai_pipeline.rs:1730), producing false-negative VerifyVerdict::Negative for any OS_COMMAND/SQL_QUERY finding whose smallest exploit ends with a newline or contains NUL — exactly the byte classes attackers use to truncate downstream parsers. Static pass missed because the bug is a semantic mismatch between Rust byte fidelity and POSIX command-substitution stripping, not a tainted source. Verifier-integrity attestation breaks: the trace claims `sha256(VULN\\n)` was tested but the shell actually saw `VULN`.",
+  "suggested_payload_hint": "Curated harness with invoke='case @PAYLOAD in *X) : > sentinel.flag ;; esac' and vuln_payload=b\"X\\n\". Expect Confirmed; observe Negative because $() ate the newline so the case label never matches. Mirror test with vuln_payload=b\"X\\x00Y\" — only b\"X\" reaches argv."
+}
+
+
+pass 20 (task=expl-demo): working-tree diff = A migrations/0003_verifier_blob.sql, M store/{trace,schema,mod}.rs (AgentTraceRecord.verifier_blob TEXT, schema bumped 2->3), M report/{run_card,repro_bundle}.rs (test-shim None init), M ai_pipeline.rs (build_verifier_blob hashes vuln/benign payload bytes + spec_id, persist_verifier_trace gains two trailing args, three new unit tests), M sandbox/payload_runner.rs (shell_literal rewrite + new tests). Rows 1-18 from prior passes re-validated against current trees: STAND. Pass-19 row (payload_runner.rs:466 VERIFIER_INTEGRITY) re-validated and empirically corroborated against live shells on the agent host:
+- bash 3.2 / dash / /bin/sh all accept `\NNN` octal under `printf '%b'` — portability concern dismissed, encoder decodes uniformly.
+- BUT command-substitution byte stripping confirmed on this host: `x="$(printf '%b' '\110\151\012\012')"` -> ${#x}=2 (both trailing 0x0a stripped); `x="$(printf '%b' '\110\000\151')"` -> ${#x}=2 (NUL plus tail truncated to "Hi"). Sentinel-flag harness with vuln_payload ending in 0x0a confirms VerifyVerdict::Negative against a payload whose verifier_blob.vuln_payload_sha256 is the *un-truncated* hash — audit attestation diverges from oracle reality.
+notes (pass 20):
+- shell_literal_escapes_high_bytes test at payload_runner.rs:657 asserts the *encoded string* `"$(printf '%b' '\000\177\200\377')"` matches; it never executes the resulting harness, so a runtime test would not catch the round-trip loss. Fix candidates: prefix the encoded body to write payload bytes to a file via `printf` redirection (no $() capture) and substitute `@PAYLOAD` with `"$(cat ./_nyx_payload.bin)"` only when the spec opts into shell-string substitution, OR drop shell harness support for payloads whose bytes contain 0x00 / trailing 0x0a and surface a Verifier error (not a Negative) so the audit log records the gap rather than a false benign verdict.
+- build_verifier_blob is sound for non-shell harnesses; the divergence is harness-language-specific. Python harness uses bytes-literal substitution (payload_runner.rs:438-454) which round-trips through `bytes` correctly. No new finding for the python path.
+- no http.probe issued: ALLOWED HOSTS empty per the task contract.
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyx-agent/src/ai_pipeline.rs",
+  "line": 1719,
+  "cap": "VERIFIER_FORENSIC_GAP",
+  "endpoint": "<trace-store:agent_traces.verifier_blob — post-0003 schema>",
+  "rationale": "build_verifier_blob persists only {spec_id, vuln_payload_sha256, vuln_exit_code, benign_payload_sha256, benign_exit_code}. It drops the four fields that actually determine a VerifyVerdict: VerifyRun.oracle_fired, VerifyRun.timed_out, VerifyResult.replay_stable, VerifyResult.error_message. Concretely: a Confirmed verdict (oracle_fired=true, exit_code=0) is indistinguishable in the blob from a Refuted verdict (oracle_fired=false, exit_code=0); a flaky Confirmed-then-Refuted pair caught by ChainRunner's replay_stable_check is indistinguishable from a clean Confirmed (replay_stable not recorded); a runner crash mid-spawn writes NULL verifier_blob via the early-error branch (drive_verify_for_candidate :1806 passes Some(spec_id?? no — None, None)) — but the migration comment says NULL means 'pre-migration row, fall back to verdict_blob join'. Post-0003 the trace viewer cannot distinguish 'pre-migration legacy' from 'post-migration verifier crashed before producing a result'. Two operationally critical states collapse to one NULL marker, defeating the audit purpose of the column. Static pass missed because each individual field write is correct; the gap is what is *not* in the schema.",
+  "suggested_payload_hint": "Drive any finding through drive_verify_for_candidate with a HarnessSpecInput whose `invoke` references an unset variable so `set -u` exits the shell before the oracle runs. Result: VerifyVerdict::Errored, verifier_blob populated with both sha256s + both exit_code=1 — operator reading the trace cannot tell whether the harness ran or whether the verifier crashed at spawn time."
+}

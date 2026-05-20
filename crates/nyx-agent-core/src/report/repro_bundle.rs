@@ -445,6 +445,7 @@ mod tests {
                 duration_ms: Some(500),
                 started_at: 5_000,
                 finished_at: Some(5_500),
+                verifier_blob: None,
             })
             .await
             .expect("trace");
