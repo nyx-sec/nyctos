@@ -30,6 +30,9 @@ Both names appear in these pages for the reasons explained in
 - [architecture.md](architecture.md): crate map, the subprocess
   boundary to the GPL `nyx` scanner, the tokio + rayon process
   model, and the broadcast event bus.
+- [runs.md](runs.md): per-run lifecycle, the dispatcher's
+  per-repo fan-out, `RunBundle` aggregation, the `runs` SQLite
+  table, and stability of finding ids across re-scans.
 
 ## Projects
 
@@ -46,8 +49,7 @@ chain runner all operate per project, so a multi-repo product
   end.
 - The TOML shape is `[[project]]` blocks that nest `[[project.repo]]`
   entries. See [`nyctos.toml`](../nyctos.toml) at the repo
-  root for a populated example, and `docs/PROJECT_ENTITY_PLAN.md`
-  for the phased refactor that introduced the model.
+  root for a populated example.
 
 ## HTTP API
 

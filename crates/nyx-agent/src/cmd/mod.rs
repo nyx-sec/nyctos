@@ -1,6 +1,6 @@
 //! Subcommand glue isolated from `main.rs`.
 //!
-//! Phase 26 ships two surfaces here:
+//! Two surfaces ship here:
 //!
 //! * [`scan_report`] - shared `report.json` schema written by
 //!   `scan --output` and read by `pr-comment --report`.

@@ -546,9 +546,9 @@ async fn drive_scan(
     since_ref: Option<&str>,
 ) -> anyhow::Result<ScanReport> {
     let now_ms = now_epoch_ms();
-    // Phase 6: every selected repo belongs to `project`; the dispatcher
-    // emits Project/Run events scoped to that id, and workspace dirs
-    // land under `<state>/projects/<project_id>/repos/<name>/`.
+    // Every selected repo belongs to `project`; the dispatcher emits
+    // Project/Run events scoped to that id, and workspace dirs land
+    // under `<state>/projects/<project_id>/repos/<name>/`.
     let mut ingest_failures: Vec<(String, IngestError)> = Vec::new();
     let mut workspaces: Vec<WorkspaceHandle> = Vec::new();
     for repo in &selected {
@@ -619,7 +619,7 @@ async fn drive_scan(
         }
     };
 
-    // Clone every handle into a name-keyed map so the Phase-14
+    // Clone every handle into a name-keyed map so the
     // payload-synthesis pass can read source after the dispatcher
     // consumes the original `workspaces` Vec.
     let workspaces_for_ai: HashMap<String, WorkspaceHandle> =
@@ -655,9 +655,9 @@ async fn drive_scan(
         return Err(err);
     }
 
-    // Phase 14: fan out PayloadSynthesis tasks against every diag the
-    // static pass flagged with `Unsupported(NoPayloadsForCap)`. No-op
-    // when the AI runtime is disabled or no key is configured.
+    // Fan out PayloadSynthesis tasks against every diag the static
+    // pass flagged with `Unsupported(NoPayloadsForCap)`. No-op when
+    // the AI runtime is disabled or no key is configured.
     let secrets = SecretStore::from_env();
     match ai_pipeline::run_payload_synthesis_pass(
         &config.ai,
@@ -684,10 +684,10 @@ async fn drive_scan(
         Err(err) => tracing::warn!(error = %err, "payload synthesis pass failed"),
     }
 
-    // Phase 15: fan out SpecDerivation tasks against every diag the
-    // static pass flagged with `Inconclusive(SpecDerivationFailed)`.
-    // Same no-op gating as the payload pass; shares the run's budget
-    // bucket so per-call caps stack on top of payload spend.
+    // Fan out SpecDerivation tasks against every diag the static pass
+    // flagged with `Inconclusive(SpecDerivationFailed)`. Same no-op
+    // gating as the payload pass; shares the run's budget bucket so
+    // per-call caps stack on top of payload spend.
     match ai_pipeline::run_spec_derivation_pass(
         &config.ai,
         store,
@@ -713,10 +713,10 @@ async fn drive_scan(
         Err(err) => tracing::warn!(error = %err, "spec derivation pass failed"),
     }
 
-    // Phase 16: rank cross-repo exploitable chains across the run's
-    // finding graph. Single-call pass; shares the run's budget bucket
-    // with payload + spec passes. No-op when no API key is configured
-    // or fewer than two findings landed in the bundle.
+    // Rank cross-repo exploitable chains across the run's finding
+    // graph. Single-call pass; shares the run's budget bucket with
+    // payload + spec passes. No-op when no API key is configured or
+    // fewer than two findings landed in the bundle.
     match ai_pipeline::run_chain_reasoning_pass(
         &config.ai,
         store,
@@ -743,11 +743,11 @@ async fn drive_scan(
         Err(err) => tracing::warn!(error = %err, "chain reasoning pass failed"),
     }
 
-    // Phase 17: scan repo source for candidate vulnerabilities the
-    // static pass missed. Most-expensive pass; each batch is gated on a
-    // per-run cap ($5 default), and every emitted CandidateFinding
-    // lands in `candidate_findings.Pending` so nothing surfaces to the
-    // operator until the Phase 19 verifier promotes it.
+    // Scan repo source for candidate vulnerabilities the static pass
+    // missed. Most-expensive pass; each batch is gated on a per-run
+    // cap ($5 default), and every emitted CandidateFinding lands in
+    // `candidate_findings.Pending` so nothing surfaces to the operator
+    // until the payload verifier promotes it.
     match ai_pipeline::run_novel_finding_discovery_pass(
         &config.ai,
         store,
@@ -779,14 +779,13 @@ async fn drive_scan(
         Err(err) => tracing::warn!(error = %err, "novel finding discovery pass failed"),
     }
 
-    // Phase 23: drive the Claude Code agent loop against the running
-    // chain-lane sandbox so the model can probe shadow APIs, CORS
-    // misconfig, business-logic skips, etc. Gated by the Phase 18
-    // escape suite (a red fixture halts the driver) and capped by a
-    // per-run hard cap (default $10) plus a soft warning threshold.
-    // Findings land in `findings` with `finding_origin =
-    // AiExploration` and `status = Quarantine`; the verifier below
-    // promotes them on Confirmed.
+    // Drive the Claude Code agent loop against the running chain-lane
+    // sandbox so the model can probe shadow APIs, CORS misconfig,
+    // business-logic skips, etc. Gated by the static escape suite (a
+    // red fixture halts the driver) and capped by a per-run hard cap
+    // (default $10) plus a soft warning threshold. Findings land in
+    // `findings` with `finding_origin = AiExploration` and `status =
+    // Quarantine`; the verifier below promotes them on Confirmed.
     let escape_gate = ai_pipeline::StaticEscapeSuiteGate::green();
     match ai_pipeline::run_ai_exploration_pass(
         &config.ai,
@@ -820,10 +819,10 @@ async fn drive_scan(
         Err(err) => tracing::warn!(error = %err, "ai exploration pass failed"),
     }
 
-    // Phase 19: drive the deterministic payload runner across every
-    // finding (and AI-discovered candidate) that has a payload+spec
-    // pair ready. Confirms or rejects each row under differential
-    // rule v1; Quarantined candidates flip to Promoted on Confirmed.
+    // Drive the deterministic payload runner across every finding
+    // (and AI-discovered candidate) that has a payload+spec pair
+    // ready. Confirms or rejects each row under differential rule v1;
+    // Quarantined candidates flip to Promoted on Confirmed.
     match ai_pipeline::run_payload_verification_pass(
         &config.run,
         &config.sandbox,
@@ -971,10 +970,9 @@ async fn serve(
             .with_state_repos_dir(state_dir.repos())
             .with_state_bundles_dir(state_dir.bundles());
 
-    // Phase 27: enable `POST /webhook/git` when the operator has
-    // configured a shared secret. Resolves the env-backed ref on each
-    // request so a wizard rotate flow does not require a daemon
-    // restart.
+    // Enable `POST /webhook/git` when the operator has configured a
+    // shared secret. Resolves the env-backed ref on each request so a
+    // wizard rotate flow does not require a daemon restart.
     if config.triggers.webhook_secret_ref.is_some() {
         let resolver =
             Arc::new(EnvSecretResolver { spec: config.triggers.webhook_secret_ref.clone() });
@@ -1045,12 +1043,12 @@ async fn serve(
         });
     }
 
-    // Phase 27: spawn the cron scheduler when at least one
-    // `[[schedule]]` entry is configured. The watch channel is the
-    // shutdown signal: flipping it to `true` ends the loop. A
-    // refused `[[schedule]]` config aborts startup so an operator who
-    // fat-fingers a cron expression cannot run a daemon with the
-    // trigger surface silently disabled.
+    // Spawn the cron scheduler when at least one `[[schedule]]` entry
+    // is configured. The watch channel is the shutdown signal:
+    // flipping it to `true` ends the loop. A refused `[[schedule]]`
+    // config aborts startup so an operator who fat-fingers a cron
+    // expression cannot run a daemon with the trigger surface
+    // silently disabled.
     let (scheduler_shutdown_tx, scheduler_shutdown_rx) = tokio::sync::watch::channel(false);
     let scheduler_handle = if config.schedules.is_empty() {
         None
@@ -1097,9 +1095,9 @@ impl ScanTrigger for MpscScanTrigger {
     ) -> Pin<Box<dyn Future<Output = Result<String, ScanTriggerError>> + Send + 'a>> {
         Box::pin(async move {
             let (reply, rx) = oneshot::channel();
-            // Phase 27: non-blocking submit so an external scheduler /
-            // webhook / CI loop sees a fast HTTP 429 instead of stalling
-            // on `send().await` when the dispatcher is saturated. The
+            // Non-blocking submit so an external scheduler / webhook /
+            // CI loop sees a fast HTTP 429 instead of stalling on
+            // `send().await` when the dispatcher is saturated. The
             // bound is set in `serve()`; raise it there if a real load
             // profile demands a deeper queue.
             self.tx.try_send(ScanRequest { project_id, repo, reply }).map_err(|err| match err {
@@ -1285,8 +1283,8 @@ async fn persist_run_results(store: &Store, bundle: &RunBundle<Diag>) -> anyhow:
 
 /// Serialise the static-pass `Diag.evidence` payload into the
 /// `findings.verdict_blob` column, stamping a typed `kind` discriminator
-/// so the API/UI can distinguish it from Phase-19 verifier output and
-/// the Phase-24 candidate/exploration blobs without sniffing fields.
+/// so the API/UI can distinguish it from payload-verifier output and
+/// the AI candidate/exploration blobs without sniffing fields.
 /// The frontend's `Evidence` parser already reads `source`/`sink`/
 /// `flow_steps`/`notes`/`source_excerpt`/`symbolic` directly off the
 /// top-level object, which mirrors the upstream `nyx scan` evidence

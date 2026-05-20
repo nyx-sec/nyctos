@@ -1718,3 +1718,110 @@ record_exploration_finding
   "rationale": "build_verifier_blob persists only {spec_id, vuln_payload_sha256, vuln_exit_code, benign_payload_sha256, benign_exit_code}. It drops the four fields that actually determine a VerifyVerdict: VerifyRun.oracle_fired, VerifyRun.timed_out, VerifyResult.replay_stable, VerifyResult.error_message. Concretely: a Confirmed verdict (oracle_fired=true, exit_code=0) is indistinguishable in the blob from a Refuted verdict (oracle_fired=false, exit_code=0); a flaky Confirmed-then-Refuted pair caught by ChainRunner's replay_stable_check is indistinguishable from a clean Confirmed (replay_stable not recorded); a runner crash mid-spawn writes NULL verifier_blob via the early-error branch (drive_verify_for_candidate :1806 passes Some(spec_id?? no — None, None)) — but the migration comment says NULL means 'pre-migration row, fall back to verdict_blob join'. Post-0003 the trace viewer cannot distinguish 'pre-migration legacy' from 'post-migration verifier crashed before producing a result'. Two operationally critical states collapse to one NULL marker, defeating the audit purpose of the column. Static pass missed because each individual field write is correct; the gap is what is *not* in the schema.",
   "suggested_payload_hint": "Drive any finding through drive_verify_for_candidate with a HarnessSpecInput whose `invoke` references an unset variable so `set -u` exits the shell before the oracle runs. Result: VerifyVerdict::Errored, verifier_blob populated with both sha256s + both exit_code=1 — operator reading the trace cannot tell whether the harness ran or whether the verifier crashed at spawn time."
 }
+
+
+---
+pass 21 (task=expl-demo): this-session working-tree diff = M src/cmd/mod.rs (one comment), M src/main.rs (~12 comment blocks de-phase-ified), M docs/SUMMARY.md (one toc entry), ?? docs/runs.md (new descriptive page).
+- src/main.rs diff: every hunk is a `// Phase NN: ...` -> `// ...` rewrite; zero Rust tokens move. No sink change.
+- src/cmd/mod.rs diff: one doc-comment edit. No sink change.
+- docs/runs.md: descriptive architectural prose. Path references checked — `crates/nyctos-types/src/event.rs`, `crates/nyx-agent-core/src/{run,store}/{mod,run,finding}.rs`, `crates/nyx-agent-core/src/run/workspace.rs` all resolve at HEAD. No contradictory recipe (cf. pass-13 cli.md), no perms-leaking install command (cf. pass-8 docs/triggers/webhook.md), no `pull_request_target` upsell (cf. pass-6 docs/ci/github-actions.md). The `triggered_by` enum value `PR` documented at runs.md:218 is plumbed by the existing GHA composite (pass-5 row already covers the input-substitution surface there).
+- one micro-correctness note, not raised as a security row: runs.md:213 says `available_parallelism failures fall back to 2 cores`. The dispatcher resolver at run/mod.rs:475 floors at 1, not 2, in practice — operator-visible documentation drift, not a sink.
+- rows 1-20 from prior passes re-walked against HEAD: STAND. No mitigations landed in this branch's working tree.
+
+quality-over-count: no new row this pass. Re-validation noted so the verifier audit log records the survey actually fired against the current diff rather than skipping silently.
+
+----- end session expl-demo (pass 21) -----
+
+
+pass 32 (task=expl-demo): re-survey after 7 deferred-session
+commits (7abcbfd..9c64ba7) since the last record-bearing pass.
+
+diff scope vs prior sentinel ancestor (9681024^..9c64ba7):
+- ai_pipeline.rs +124 (build_verifier_blob added, persist_verifier_trace
+  gains spec_id+result trailing args, short_token suffix on
+  payload/spec/chain/cand ids, three unit tests).
+- payload_runner.rs +57 (shell_literal rewrite covered by pass-19).
+- nyx_sandbox_shim.rs +50 (pre_exec PR_SET_PDEATHSIG block +
+  refused-exception stderr emission).
+- ids.rs +33 (short_token impl, pass-31 STAND).
+- store/trace.rs +24, schema.rs +2, migrations/0003_verifier_blob.sql
+  (column add, pass-20 row body).
+- nyx-agent-ai/src/tasks/exploration.rs +22 (em-dash -> semicolon
+  prose edits, no behavioural change).
+- frontend/* small comment/text edits.
+- working tree: src/main.rs + src/cmd/mod.rs comment-only edits
+  stripping "Phase NN:" prefixes from doc comments; docs/runs.md
+  added; docs/SUMMARY.md gains an entry. Zero security surface.
+
+re-validation (rows 1-30 carried forward, the three pass-1..3
+findings on router.rs, the pass-7 DNS_REBIND on main.rs:817, the
+pass-?? PATH_TRAVERSAL/SANDBOX_BYPASS/INFO_DISCLOSURE trio at
+router.rs:894/1955/974, the pass-19 VERIFIER_INTEGRITY shell
+truncation, and the pass-20 VERIFIER_FORENSIC_GAP):
+- pass-20 row re-checked against ai_pipeline.rs build_verifier_blob
+  at HEAD: still writes only {spec_id, vuln_payload_sha256,
+  vuln_exit_code, benign_payload_sha256, benign_exit_code}. The
+  early-error branch in drive_verify_for_candidate (now ai_pipeline.rs
+  :1807-1813) still calls persist_verifier_trace with
+  (None, None) for spec_id+result, so a runner crash still
+  writes NULL verifier_blob indistinguishable from a
+  pre-migration legacy row. STAND.
+- pass-19 shell-substitution byte loss: payload_runner.rs
+  shell_literal still uses `"$(printf '%b' '\NNN...')"`. STAND.
+- pass-27 PR_SET_PDEATHSIG behaviour ships at
+  nyx_sandbox_shim.rs:48-69 verbatim. STAND.
+- pass-31 short_token usage widened in this window: now also
+  used to suffix candidate_id (ai_pipeline.rs:1547),
+  PayloadRecord.id (:305), HarnessSpecRecord.id (:654),
+  ChainRecord.id (:1012). All four sites are *primary-key
+  disambiguators*, not exposed as authn/authz tokens — none
+  cross the trigger from the pass-31 quote ("Set-Cookie /
+  Bearer / X-* / URL path component"). Stays out of the
+  capability-token failure mode. STAND (no escalation).
+
+no record_exploration_finding emitted this pass.
+
+notes (pass 32):
+- sandbox_shim.rs new refused-exception stderr emission
+  (eprintln "nyx-sandbox-shim: exception refused {p.display()}: {e}")
+  reviewed and dismissed as a finding: the path source is
+  operator-configured allow_read/allow_write/allow_env or
+  HarnessSpec values that already cross sandbox-spawn
+  attestation boundaries; failure direction is fail-closed
+  (refused exception means *more* restriction, not less);
+  the captured stderr returns to the parent BirdcageSandbox
+  via SandboxOutcome.stderr but never parsed structurally,
+  so the line-injection concern (path containing '\n' to
+  spoof additional refusal lines) does not flip any verdict
+  or policy decision downstream. Quote for future-self: if
+  SandboxOutcome.stderr ever becomes a structured oracle
+  signal (e.g. parsed by the verifier to decide replay_stable
+  or fed back into the AI loop as context), revisit — the
+  newline-in-path channel becomes a verifier-integrity hook.
+- next-pass triggers (carry forward + sharpened):
+    (i)   non-cosmetic change to scheduler.rs (DOS), router.rs
+          (any new handler, any change to auth_layer / setup
+          allowlist), birdcage backend kill-path;
+    (ii)  any new file under crates/nyx-agent-api/src/ or
+          crates/nyx-agent-sandbox/src/backend/;
+    (iii) any change to nyx_sandbox_shim.rs pre_exec body
+          (additional prctl flags, signal mask changes) OR a
+          parser ever attaching to its stderr stream;
+    (iv)  any new usage of ids::short_token() OUTSIDE PK
+          disambiguator sites (trigger words: Set-Cookie,
+          Bearer, X-, URL path component, query param value);
+    (v)   any change to build_verifier_blob() — especially one
+          that adds a new field, which is the path to closing
+          pass-20 (oracle_fired/timed_out/replay_stable/
+          error_message landing) and would warrant a STAND ->
+          MITIGATED flip;
+    (vi)  any change to payload_runner.rs shell_literal or its
+          callers — anything that swaps $() command sub for a
+          file-redirected payload would close pass-19;
+    (vii) any new packaging/* unit, plist, or LaunchDaemon entry
+          (uid/euid/supplementary group changes flip the blast
+          radius math on pass-3 SANDBOX_BYPASS via /replay).
+- no http.probe issued: ALLOWED HOSTS empty per the task contract.
+- tool budget: ~7 of 24 calls used (ls workspace, sentinel
+  tail/wc, working-tree diff stat + content, log scan, commit-window
+  diff stat + spot-content). Stops here under quality-over-count.
