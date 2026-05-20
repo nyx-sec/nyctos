@@ -11,34 +11,6 @@ The shipping binary is `nyx-agent`; the rename to `nyctos` is queued
 as its own phase (see Naming below).
 <!-- /nyx: verbatim -->
 
-## Licensing
-
-Nyctos is **source-available** software, distributed under the PolyForm
-Small Business License 1.0.0. The PolyForm license is not OSI-approved,
-so Nyctos is not OSS. Do not describe it as such in public
-communication.
-
-- Free for personal use, research, hobby projects, OSS contribution, and
-  any organisation that qualifies as a Small Business under the license
-  (fewer than 100 staff and less than $1,000,000 USD annual revenue).
-- A commercial license is required for organisations above that
-  threshold. See `LICENSE.md` for the verbatim license text and contact
-  details.
-
-The upstream `nyx` core scanner is a separate project under
-GPL-3.0-or-later. That GPL-licensed scanner is the OSS component of the
-stack; the `nyx-agent` daemon in this repository is not.
-
-## Naming
-
-**Nyctos** (Greek genitive of `Nyx`, "of-the-night") is the product
-brand. The shipping crates, binary (`nyx-agent`), config
-(`nyctos.toml`), and state directory (`~/.local/share/nyctos/`)
-still carry their legacy names; the code rename to `nyctos` is queued
-as its own phase. The upstream dynamic-verification engine `nyx`
-(GPL-3.0-or-later) keeps its name. Full target surface at
-`.pitboss/nyctos-spec.md`.
-
 ## Status
 
 Pre-MVP. The daemon is functional end-to-end against the upstream
@@ -130,6 +102,34 @@ no FFI link against it. The `nyx` binary must be installed and discoverable:
 `nyx-agent doctor` reports the resolved path, the detected version, and the
 minimum supported version. It exits non-zero when the binary is missing or
 below the minimum.
+
+## Licensing
+
+Nyctos is **source-available** software, distributed under the PolyForm
+Small Business License 1.0.0. The PolyForm license is not OSI-approved,
+so Nyctos is not OSS. Do not describe it as such in public
+communication.
+
+- Free for personal use, research, hobby projects, OSS contribution, and
+  any organisation that qualifies as a Small Business under the license
+  (fewer than 100 staff and less than $1,000,000 USD annual revenue).
+- A commercial license is required for organisations above that
+  threshold. See `LICENSE.md` for the verbatim license text and contact
+  details.
+
+The upstream `nyx` core scanner is a separate project under
+GPL-3.0-or-later. That GPL-licensed scanner is the OSS component of the
+stack; the `nyx-agent` daemon in this repository is not.
+
+## Naming
+
+**Nyctos** (Greek genitive of `Nyx`, "of-the-night") is the product
+brand. The shipping crates, binary (`nyx-agent`), config
+(`nyctos.toml`), and state directory (`~/.local/share/nyctos/`)
+still carry their legacy names; the code rename to `nyctos` is queued
+as its own phase. The upstream dynamic-verification engine `nyx`
+(GPL-3.0-or-later) keeps its name. Full target surface at
+`.pitboss/nyctos-spec.md`.
 
 ## Contributing
 
