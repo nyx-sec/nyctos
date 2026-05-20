@@ -11,7 +11,7 @@
 //! `nyctos-core::store`; the binary turns a `Synthesised` outcome
 //! into a `PayloadRecord` at write time.
 
-use nyctos_types::agent::{AiError, Budget, BudgetKind, Prompt, Response};
+use nyctos_types::agent::{AgentTraceMetrics, AiError, Budget, BudgetKind, Prompt, Response};
 use nyctos_types::event::EventSink;
 use nyctos_types::payload::{
     PayloadSynthesisInput, PayloadSynthesisOutput, PAYLOAD_SYNTHESIS_PROMPT_VERSION,
@@ -48,11 +48,19 @@ pub enum PayloadSynthesisOutcome {
         /// Number of round trips that actually fired. `1` on first-pass
         /// success, `2` after a retry.
         attempts: u32,
+        /// Accumulated per-call observability across every attempt.
+        metrics: AgentTraceMetrics,
     },
     /// Both attempts failed validation. The caller flips the finding
     /// row to `status = Quarantine` and surfaces `reason` in the
     /// verdict blob so the operator sees why.
-    Quarantined { finding_id: String, reason: String, spent_usd_micros: i64, attempts: u32 },
+    Quarantined {
+        finding_id: String,
+        reason: String,
+        spent_usd_micros: i64,
+        attempts: u32,
+        metrics: AgentTraceMetrics,
+    },
 }
 
 /// Drive one PayloadSynthesis call for `input`.
@@ -73,6 +81,7 @@ pub async fn run<R: AiRuntime + ?Sized>(
     let prompt = build_prompt(SYSTEM_PROMPT_V1, &task_id, input);
     let resp1: Response = runtime.one_shot(prompt, budget(), sink.clone()).await?;
     let cost1 = resp1.cost_usd_micros;
+    let metrics1 = AgentTraceMetrics::from_response(&resp1);
     let first_err = match parse_output(&resp1.content) {
         Ok(output) => {
             return Ok(PayloadSynthesisOutcome::Synthesised {
@@ -83,6 +92,7 @@ pub async fn run<R: AiRuntime + ?Sized>(
                 prompt_version: resp1.prompt_version,
                 spent_usd_micros: cost1,
                 attempts: 1,
+                metrics: metrics1,
             });
         }
         Err(msg) => msg,
@@ -91,6 +101,7 @@ pub async fn run<R: AiRuntime + ?Sized>(
     let prompt2 = build_prompt(SYSTEM_PROMPT_V1_STRICTER, &task_id, input);
     let resp2: Response = runtime.one_shot(prompt2, budget(), sink).await?;
     let total_cost = cost1 + resp2.cost_usd_micros;
+    let metrics_total = metrics1.merge(AgentTraceMetrics::from_response(&resp2));
     match parse_output(&resp2.content) {
         Ok(output) => Ok(PayloadSynthesisOutcome::Synthesised {
             finding_id: input.finding_id.clone(),
@@ -100,6 +111,7 @@ pub async fn run<R: AiRuntime + ?Sized>(
             prompt_version: resp2.prompt_version,
             spent_usd_micros: total_cost,
             attempts: 2,
+            metrics: metrics_total,
         }),
         Err(second_err) => Ok(PayloadSynthesisOutcome::Quarantined {
             finding_id: input.finding_id.clone(),
@@ -108,6 +120,7 @@ pub async fn run<R: AiRuntime + ?Sized>(
             ),
             spent_usd_micros: total_cost,
             attempts: 2,
+            metrics: metrics_total,
         }),
     }
 }
@@ -308,6 +321,7 @@ mod tests {
                 prompt_version,
                 spent_usd_micros,
                 attempts,
+                metrics,
             } => {
                 assert_eq!(finding_id, "f-1");
                 assert_eq!(cap, "SQL_QUERY");
@@ -318,6 +332,9 @@ mod tests {
                 assert_eq!(prompt_version, PAYLOAD_SYNTHESIS_PROMPT_VERSION);
                 assert_eq!(spent_usd_micros, 2_500);
                 assert_eq!(attempts, 1);
+                assert_eq!(metrics.usage.input_tokens, 100);
+                assert_eq!(metrics.usage.output_tokens, 50);
+                assert_eq!(metrics.model.as_deref(), Some("scripted-model"));
             }
             other => panic!("expected Synthesised, got {other:?}"),
         }
@@ -374,11 +391,14 @@ mod tests {
                 reason,
                 spent_usd_micros,
                 attempts,
+                metrics,
             } => {
                 assert_eq!(finding_id, "f-1");
                 assert_eq!(attempts, 2);
                 assert_eq!(spent_usd_micros, 2_000);
                 assert!(reason.contains("failed twice"), "reason: {reason}");
+                assert_eq!(metrics.usage.input_tokens, 200);
+                assert_eq!(metrics.usage.output_tokens, 100);
             }
             other => panic!("expected Quarantined, got {other:?}"),
         }

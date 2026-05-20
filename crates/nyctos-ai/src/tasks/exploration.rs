@@ -36,7 +36,7 @@
 use std::time::Duration;
 
 use nyctos_types::agent::{
-    AgentResult, AgentTask, AiError, Budget, BudgetKind, ExtractedAgentResult,
+    AgentResult, AgentTask, AgentTraceMetrics, AiError, Budget, BudgetKind, ExtractedAgentResult,
 };
 use nyctos_types::event::{AgentEvent, AiEvent, EventSink};
 
@@ -228,6 +228,8 @@ pub enum ExplorationOutcome {
         /// a `[soft-cap]` warning frame on the event bus when this
         /// flipped.
         soft_cap_exceeded: bool,
+        /// Per-call observability lifted from the agent-loop result.
+        metrics: AgentTraceMetrics,
     },
     /// The driver refused to dispatch. `reason` carries the gating
     /// condition (escape-suite red, budget already exhausted).
@@ -310,6 +312,7 @@ pub async fn run<R: AiRuntime + ?Sized>(
         });
     }
 
+    let metrics = AgentTraceMetrics::from_agent_result(&result);
     Ok(ExplorationOutcome::Completed {
         findings,
         audit,
@@ -318,6 +321,7 @@ pub async fn run<R: AiRuntime + ?Sized>(
         spent_usd_micros: result.cost_usd_micros,
         prompt_version: result.prompt_version,
         soft_cap_exceeded,
+        metrics,
     })
 }
 
@@ -573,9 +577,11 @@ mod tests {
         AgentResult {
             prompt_version: EXPLORATION_PROMPT_VERSION.to_string(),
             task_id: String::new(),
+            model: "scripted-model".to_string(),
             final_message: "exploration complete".to_string(),
             turns: 3,
             usage: TokenUsage { input_tokens: 800, output_tokens: 400 },
+            cache: None,
             cost_usd_micros: 0,
             extracted,
         }
@@ -612,6 +618,7 @@ mod tests {
                 spent_usd_micros,
                 prompt_version,
                 soft_cap_exceeded,
+                metrics,
             } => {
                 assert_eq!(findings.len(), 1);
                 assert_eq!(findings[0].cap, "AUTH_BYPASS");
@@ -623,6 +630,9 @@ mod tests {
                 assert_eq!(spent_usd_micros, 250_000);
                 assert_eq!(prompt_version, EXPLORATION_PROMPT_VERSION);
                 assert!(!soft_cap_exceeded, "250_000 < soft cap of 500_000");
+                assert_eq!(metrics.usage.input_tokens, 800);
+                assert_eq!(metrics.usage.output_tokens, 400);
+                assert_eq!(metrics.model.as_deref(), Some("scripted-model"));
             }
             other => panic!("expected Completed, got {other:?}"),
         }

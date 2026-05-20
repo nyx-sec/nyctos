@@ -366,9 +366,11 @@ impl AiRuntime for ClaudeCodeAdapter {
         Ok(AgentResult {
             prompt_version: task.prompt_version,
             task_id: task.task_id,
+            model: self.default_model.clone(),
             final_message,
             turns,
             usage,
+            cache: None,
             cost_usd_micros,
             extracted,
         })

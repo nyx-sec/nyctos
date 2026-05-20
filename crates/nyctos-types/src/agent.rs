@@ -67,7 +67,7 @@ pub struct Response {
     pub cost_usd_micros: i64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct TokenUsage {
     pub input_tokens: u32,
     pub output_tokens: u32,
@@ -77,6 +77,57 @@ pub struct TokenUsage {
 pub struct CacheStats {
     pub cache_creation_tokens: u32,
     pub cache_read_tokens: u32,
+}
+
+/// Per-call observability bundle carried from each task's outcome
+/// envelope back to the binary's trace-row builder. Adapters populate
+/// `usage` / `cache` / `model` from the underlying `Response` or
+/// `AgentResult`; tasks accumulate across retry attempts via
+/// [`AgentTraceMetrics::merge`].
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct AgentTraceMetrics {
+    pub usage: TokenUsage,
+    pub cache: Option<CacheStats>,
+    pub model: Option<String>,
+}
+
+impl AgentTraceMetrics {
+    /// Build a metrics bundle from a single `one_shot` response.
+    pub fn from_response(resp: &Response) -> Self {
+        Self { usage: resp.usage, cache: resp.cache, model: Some(resp.model.clone()) }
+    }
+
+    /// Build a metrics bundle from an `agent_loop` result. `cache` is
+    /// `None` until the adapter learns to parse cache_* delta events.
+    pub fn from_agent_result(r: &AgentResult) -> Self {
+        let model = if r.model.is_empty() { None } else { Some(r.model.clone()) };
+        Self { usage: r.usage, cache: r.cache, model }
+    }
+
+    /// Saturating-merge another metrics bundle into self. Used to sum
+    /// across retry attempts in tasks that may issue two `one_shot`
+    /// calls. `model` and `cache` from `other` win when present.
+    pub fn merge(mut self, other: AgentTraceMetrics) -> Self {
+        self.usage.input_tokens = self.usage.input_tokens.saturating_add(other.usage.input_tokens);
+        self.usage.output_tokens =
+            self.usage.output_tokens.saturating_add(other.usage.output_tokens);
+        match (self.cache, other.cache) {
+            (Some(a), Some(b)) => {
+                self.cache = Some(CacheStats {
+                    cache_creation_tokens: a
+                        .cache_creation_tokens
+                        .saturating_add(b.cache_creation_tokens),
+                    cache_read_tokens: a.cache_read_tokens.saturating_add(b.cache_read_tokens),
+                });
+            }
+            (None, Some(b)) => self.cache = Some(b),
+            (a, None) => self.cache = a,
+        }
+        if other.model.is_some() {
+            self.model = other.model;
+        }
+        self
+    }
 }
 
 /// Per-call budget contract. The adapter checks `cap_usd_micros` against
@@ -142,9 +193,17 @@ pub struct AgentTask {
 pub struct AgentResult {
     pub prompt_version: String,
     pub task_id: String,
+    /// Model name as reported by the vendor. Empty when the adapter
+    /// cannot extract a per-call model id from the agent-loop stream.
+    #[serde(default)]
+    pub model: String,
     pub final_message: String,
     pub turns: u32,
     pub usage: TokenUsage,
+    /// Prompt-cache statistics. `None` when the adapter does not parse
+    /// per-turn cache deltas yet.
+    #[serde(default)]
+    pub cache: Option<CacheStats>,
     #[ts(type = "number")]
     pub cost_usd_micros: i64,
     /// Structured artefacts the adapter lifted out of the agent loop's

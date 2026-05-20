@@ -43,7 +43,7 @@ use nyctos_core::{
 use nyctos_nyx::Diag;
 use nyctos_sandbox::payload_runner::{HarnessSource, HarnessSpecInput, PayloadRun, PayloadRunner};
 use nyctos_sandbox::BackendKind;
-use nyctos_types::agent::{AiError, BudgetKind};
+use nyctos_types::agent::{AgentTraceMetrics, AiError, BudgetKind};
 use nyctos_types::chain::{
     ChainReasoningEdge, ChainReasoningInput, ChainReasoningNode, CHAIN_REASONING_DEFAULT_MAX,
     CHAIN_REASONING_PROMPT_VERSION, NODE_KIND_ENTRY, NODE_KIND_FRAMEWORK, NODE_KIND_SINK,
@@ -297,6 +297,7 @@ async fn apply_outcome(
             prompt_version,
             spent_usd_micros,
             attempts,
+            metrics,
         } => {
             let provenance = AttackProvenance::LlmSynthesised.as_str().to_string();
             let rec = PayloadRecord {
@@ -326,13 +327,20 @@ async fn apply_outcome(
                 spent_usd_micros,
                 started_at_ms,
                 finished_at,
+                Some(&metrics),
             );
             persist_trace_row(store, trace).await;
             report.synthesised += 1;
             report.spend_usd_micros += spent_usd_micros;
             report.total_attempts += u64::from(attempts);
         }
-        PayloadSynthesisOutcome::Quarantined { finding_id, reason, spent_usd_micros, attempts } => {
+        PayloadSynthesisOutcome::Quarantined {
+            finding_id,
+            reason,
+            spent_usd_micros,
+            attempts,
+            metrics,
+        } => {
             let blob = serde_json::json!({
                 "kind": "PayloadSynthesisQuarantined",
                 "task": "PayloadSynthesis",
@@ -349,6 +357,7 @@ async fn apply_outcome(
                 spent_usd_micros,
                 started_at_ms,
                 finished_at,
+                Some(&metrics),
             );
             persist_trace_row(store, trace).await;
             report.quarantined += 1;
@@ -388,12 +397,10 @@ static TRACE_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Build a fresh `AgentTraceRecord` describing one AI task call.
 ///
-/// `tokens_in` / `tokens_out` / `cache_*` default to `0` because the
-/// per-pass `*Outcome` envelopes do not surface them yet; widening the
-/// envelopes to carry per-call `TokenUsage` is tracked in the same
-/// deferred items that asked for this row in the first place. The
-/// trace row is still useful: the trace viewer surfaces task kind,
-/// prompt version, runtime, cost, and timing per finding.
+/// `metrics` carries the per-call `TokenUsage` + `CacheStats` + model
+/// each task's `*Outcome` envelope lifted out of the underlying
+/// `Response` / `AgentResult`. Pass `None` for deterministic callers
+/// (e.g. the payload verifier) that have no AI metrics to record.
 #[allow(clippy::too_many_arguments)]
 fn build_trace_row(
     task_kind: TaskKind,
@@ -404,23 +411,38 @@ fn build_trace_row(
     spent_usd_micros: i64,
     started_at_ms: i64,
     finished_at_ms: i64,
+    metrics: Option<&AgentTraceMetrics>,
 ) -> AgentTraceRecord {
     let seq = TRACE_SEQ.fetch_add(1, Ordering::Relaxed);
     let id = format!("trace-{}-{:x}-{:08x}", task_kind.as_str(), finished_at_ms, seq);
     let duration = (finished_at_ms - started_at_ms).max(0);
+    let (tokens_in, tokens_out, cache_hits, cache_misses, resolved_model) = match metrics {
+        Some(m) => {
+            let cache = m.cache.unwrap_or_default();
+            let model_str = m.model.clone().unwrap_or_else(|| model.to_string());
+            (
+                i64::from(m.usage.input_tokens),
+                i64::from(m.usage.output_tokens),
+                i64::from(cache.cache_read_tokens),
+                i64::from(cache.cache_creation_tokens),
+                model_str,
+            )
+        }
+        None => (0, 0, 0, 0, model.to_string()),
+    };
     AgentTraceRecord {
         id,
         finding_id,
         task_kind: task_kind.as_str().to_string(),
         runtime_name: runtime_name.to_string(),
-        model: model.to_string(),
+        model: resolved_model,
         prompt_version: Some(prompt_version.to_string()),
         conversation_jsonl_path: None,
-        tokens_in: 0,
-        tokens_out: 0,
+        tokens_in,
+        tokens_out,
         cost_usd_micros: spent_usd_micros,
-        cache_hits: 0,
-        cache_misses: 0,
+        cache_hits,
+        cache_misses,
         duration_ms: Some(duration),
         started_at: started_at_ms,
         finished_at: Some(finished_at_ms),
@@ -646,6 +668,7 @@ async fn apply_spec_outcome(
             prompt_version,
             spent_usd_micros,
             attempts,
+            metrics,
         } => {
             let provenance = AttackProvenance::LlmSynthesised.as_str().to_string();
             let rec = HarnessSpecRecord {
@@ -672,13 +695,20 @@ async fn apply_spec_outcome(
                 spent_usd_micros,
                 started_at_ms,
                 finished_at,
+                Some(&metrics),
             );
             persist_trace_row(store, trace).await;
             report.synthesised += 1;
             report.spend_usd_micros += spent_usd_micros;
             report.total_attempts += u64::from(attempts);
         }
-        SpecDerivationOutcome::Quarantined { finding_id, reason, spent_usd_micros, attempts } => {
+        SpecDerivationOutcome::Quarantined {
+            finding_id,
+            reason,
+            spent_usd_micros,
+            attempts,
+            metrics,
+        } => {
             let blob = serde_json::json!({
                 "kind": "SpecDerivationQuarantined",
                 "task": "SpecDerivation",
@@ -695,6 +725,7 @@ async fn apply_spec_outcome(
                 spent_usd_micros,
                 started_at_ms,
                 finished_at,
+                Some(&metrics),
             );
             persist_trace_row(store, trace).await;
             report.quarantined += 1;
@@ -970,6 +1001,7 @@ async fn apply_chain_outcome(
             prompt_version,
             spent_usd_micros,
             attempts,
+            metrics,
         } => {
             report.spend_usd_micros += spent_usd_micros;
             report.attempts += u64::from(attempts);
@@ -986,6 +1018,7 @@ async fn apply_chain_outcome(
                 spent_usd_micros,
                 started_at_ms,
                 finished_at,
+                Some(&metrics),
             );
             persist_trace_row(store, trace).await;
             for (rank, chain) in output.chains.iter().enumerate() {
@@ -1035,7 +1068,13 @@ async fn apply_chain_outcome(
                 }
             }
         }
-        ChainReasoningOutcome::NoChains { run_id: _, reason, spent_usd_micros, attempts } => {
+        ChainReasoningOutcome::NoChains {
+            run_id: _,
+            reason,
+            spent_usd_micros,
+            attempts,
+            metrics,
+        } => {
             tracing::info!(reason = %reason, "chain reasoning: no chains produced");
             let trace = build_trace_row(
                 TaskKind::ChainReasoning,
@@ -1046,6 +1085,7 @@ async fn apply_chain_outcome(
                 spent_usd_micros,
                 started_at_ms,
                 finished_at,
+                Some(&metrics),
             );
             persist_trace_row(store, trace).await;
             report.spend_usd_micros += spent_usd_micros;
@@ -1439,6 +1479,7 @@ async fn apply_novel_outcome(
             prompt_version,
             spent_usd_micros,
             attempts,
+            metrics,
         } => {
             report.spend_usd_micros += spent_usd_micros;
             report.attempts += u64::from(attempts);
@@ -1451,6 +1492,7 @@ async fn apply_novel_outcome(
                 spent_usd_micros,
                 started_at_ms,
                 finished_at,
+                Some(&metrics),
             );
             persist_trace_row(store, trace).await;
             let created_at = finished_at;
@@ -1490,6 +1532,7 @@ async fn apply_novel_outcome(
             reason,
             spent_usd_micros,
             attempts,
+            metrics,
         } => {
             tracing::info!(
                 batch = %batch_id,
@@ -1505,6 +1548,7 @@ async fn apply_novel_outcome(
                 spent_usd_micros,
                 started_at_ms,
                 finished_at,
+                Some(&metrics),
             );
             persist_trace_row(store, trace).await;
             report.spend_usd_micros += spent_usd_micros;
@@ -1723,6 +1767,7 @@ async fn persist_verifier_trace(
         0,
         started_at,
         finished_at,
+        None,
     );
     row.verifier_blob = build_verifier_blob(spec_id, result);
     persist_trace_row(store, row).await;
@@ -2311,6 +2356,7 @@ async fn apply_exploration_outcome(
             spent_usd_micros,
             prompt_version,
             soft_cap_exceeded,
+            metrics,
         } => {
             report.explorations_dispatched += 1;
             report.spend_usd_micros += spent_usd_micros;
@@ -2336,6 +2382,7 @@ async fn apply_exploration_outcome(
                 spent_usd_micros,
                 started_at_ms,
                 finished_at,
+                Some(&metrics),
             );
             persist_trace_row(store, parent_trace).await;
             for finding in findings {
@@ -2354,7 +2401,9 @@ async fn apply_exploration_outcome(
                         // Per-finding trace pointer so the trace viewer
                         // can render "this finding was produced by an
                         // Exploration call" without scanning the global
-                        // trace list.
+                        // trace list. Token/cache metrics live on the
+                        // parent row; the per-finding row stays at zero
+                        // so the totals page does not double-count.
                         let per_trace = build_trace_row(
                             TaskKind::Exploration,
                             Some(finding_id),
@@ -2364,6 +2413,7 @@ async fn apply_exploration_outcome(
                             0,
                             started_at_ms,
                             finished_at,
+                            None,
                         );
                         persist_trace_row(store, per_trace).await;
                     }
@@ -2940,6 +2990,7 @@ mod tests {
             prompt_version: nyctos_types::spec::SPEC_DERIVATION_PROMPT_VERSION.to_string(),
             spent_usd_micros: 3_500,
             attempts: 1,
+            metrics: AgentTraceMetrics::default(),
         };
         let mut report = SpecDerivationPassReport::default();
         apply_spec_outcome(&store, outcome, &mut report, "test-runtime", "test-model", 0)
@@ -2974,6 +3025,7 @@ mod tests {
             reason: "spec derivation failed twice (attempt 1: ...; attempt 2: ...)".to_string(),
             spent_usd_micros: 1_200,
             attempts: 2,
+            metrics: AgentTraceMetrics::default(),
         };
         let mut report = SpecDerivationPassReport::default();
         apply_spec_outcome(&store, outcome, &mut report, "test-runtime", "test-model", 0)
@@ -3181,6 +3233,7 @@ mod tests {
             prompt_version: nyctos_types::chain::CHAIN_REASONING_PROMPT_VERSION.to_string(),
             spent_usd_micros: 12_000,
             attempts: 1,
+            metrics: AgentTraceMetrics::default(),
         };
         let mut report = ChainReasoningPassReport::default();
         apply_chain_outcome(&store, &input, outcome, &mut report, "test-runtime", "test-model", 0)
@@ -3230,6 +3283,7 @@ mod tests {
             reason: "chain reasoning failed twice (...; ...)".to_string(),
             spent_usd_micros: 1_000,
             attempts: 2,
+            metrics: AgentTraceMetrics::default(),
         };
         let mut report = ChainReasoningPassReport::default();
         apply_chain_outcome(&store, &input, outcome, &mut report, "test-runtime", "test-model", 0)
@@ -4019,9 +4073,11 @@ mod tests {
         AgentResult {
             prompt_version: nyctos_ai::EXPLORATION_PROMPT_VERSION.to_string(),
             task_id: String::new(),
+            model: "scripted-model".to_string(),
             final_message: "ok".to_string(),
             turns: 1,
             usage: TokenUsage { input_tokens: 100, output_tokens: 50 },
+            cache: None,
             cost_usd_micros: 0,
             extracted: Vec::new(),
         }

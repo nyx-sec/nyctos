@@ -15,7 +15,7 @@
 
 use std::collections::HashSet;
 
-use nyctos_types::agent::{AiError, Budget, BudgetKind, Prompt, Response};
+use nyctos_types::agent::{AgentTraceMetrics, AiError, Budget, BudgetKind, Prompt, Response};
 use nyctos_types::event::EventSink;
 use nyctos_types::novel::{
     CandidateFinding, NovelFindingDiscoveryInput, NovelFindingDiscoveryOutput,
@@ -51,6 +51,7 @@ pub enum NovelFindingDiscoveryOutcome {
         prompt_version: String,
         spent_usd_micros: i64,
         attempts: u32,
+        metrics: AgentTraceMetrics,
     },
     /// Both attempts produced malformed output. The binary surfaces
     /// `reason` in the agent-trace store; nothing is persisted to the
@@ -62,6 +63,7 @@ pub enum NovelFindingDiscoveryOutcome {
         reason: String,
         spent_usd_micros: i64,
         attempts: u32,
+        metrics: AgentTraceMetrics,
     },
 }
 
@@ -84,6 +86,7 @@ pub async fn run<R: AiRuntime + ?Sized>(
     let prompt = build_prompt(SYSTEM_PROMPT_V1, &task_id, input);
     let resp1: Response = runtime.one_shot(prompt, budget(), sink.clone()).await?;
     let cost1 = resp1.cost_usd_micros;
+    let metrics1 = AgentTraceMetrics::from_response(&resp1);
     let first_err = match parse_and_validate(&resp1.content, &known_paths) {
         Ok(output) => {
             return Ok(NovelFindingDiscoveryOutcome::Discovered {
@@ -94,6 +97,7 @@ pub async fn run<R: AiRuntime + ?Sized>(
                 prompt_version: resp1.prompt_version,
                 spent_usd_micros: cost1,
                 attempts: 1,
+                metrics: metrics1,
             });
         }
         Err(msg) => msg,
@@ -102,6 +106,7 @@ pub async fn run<R: AiRuntime + ?Sized>(
     let prompt2 = build_prompt(SYSTEM_PROMPT_V1_STRICTER, &task_id, input);
     let resp2: Response = runtime.one_shot(prompt2, budget(), sink).await?;
     let total_cost = cost1 + resp2.cost_usd_micros;
+    let metrics_total = metrics1.merge(AgentTraceMetrics::from_response(&resp2));
     match parse_and_validate(&resp2.content, &known_paths) {
         Ok(output) => Ok(NovelFindingDiscoveryOutcome::Discovered {
             run_id: input.run_id.clone(),
@@ -111,6 +116,7 @@ pub async fn run<R: AiRuntime + ?Sized>(
             prompt_version: resp2.prompt_version,
             spent_usd_micros: total_cost,
             attempts: 2,
+            metrics: metrics_total,
         }),
         Err(second_err) => Ok(NovelFindingDiscoveryOutcome::NoCandidates {
             run_id: input.run_id.clone(),
@@ -121,6 +127,7 @@ pub async fn run<R: AiRuntime + ?Sized>(
             ),
             spent_usd_micros: total_cost,
             attempts: 2,
+            metrics: metrics_total,
         }),
     }
 }
@@ -389,6 +396,7 @@ mod tests {
                 prompt_version,
                 spent_usd_micros,
                 attempts,
+                metrics,
             } => {
                 assert_eq!(run_id, "run-N");
                 assert_eq!(repo, "repo-1");
@@ -402,6 +410,9 @@ mod tests {
                 assert_eq!(c.line, 6);
                 assert_eq!(c.cap, "SQL_QUERY");
                 assert!(!c.rationale.is_empty());
+                assert_eq!(metrics.usage.input_tokens, 500);
+                assert_eq!(metrics.usage.output_tokens, 200);
+                assert_eq!(metrics.model.as_deref(), Some("scripted-model"));
             }
             other => panic!("expected Discovered, got {other:?}"),
         }
@@ -531,6 +542,7 @@ mod tests {
                 reason,
                 spent_usd_micros,
                 attempts,
+                metrics,
             } => {
                 assert_eq!(run_id, "run-N");
                 assert_eq!(repo, "repo-1");
@@ -538,6 +550,8 @@ mod tests {
                 assert_eq!(attempts, 2);
                 assert_eq!(spent_usd_micros, 2_000);
                 assert!(reason.contains("failed twice"), "reason: {reason}");
+                assert_eq!(metrics.usage.input_tokens, 1_000);
+                assert_eq!(metrics.usage.output_tokens, 400);
             }
             other => panic!("expected NoCandidates, got {other:?}"),
         }

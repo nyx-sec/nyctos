@@ -16,7 +16,7 @@
 
 use std::collections::HashSet;
 
-use nyctos_types::agent::{AiError, Budget, BudgetKind, Prompt, Response};
+use nyctos_types::agent::{AgentTraceMetrics, AiError, Budget, BudgetKind, Prompt, Response};
 use nyctos_types::chain::{
     ChainCandidate, ChainReasoningInput, ChainReasoningOutput, CHAIN_REASONING_PROMPT_VERSION,
 };
@@ -46,11 +46,18 @@ pub enum ChainReasoningOutcome {
         prompt_version: String,
         spent_usd_micros: i64,
         attempts: u32,
+        metrics: AgentTraceMetrics,
     },
     /// Both attempts produced malformed or empty output. The binary
     /// surfaces `reason` in the agent-trace store; nothing is persisted
     /// to the `chains` table.
-    NoChains { run_id: String, reason: String, spent_usd_micros: i64, attempts: u32 },
+    NoChains {
+        run_id: String,
+        reason: String,
+        spent_usd_micros: i64,
+        attempts: u32,
+        metrics: AgentTraceMetrics,
+    },
 }
 
 /// Drive one ChainReasoning call for `input`.
@@ -73,6 +80,7 @@ pub async fn run<R: AiRuntime + ?Sized>(
     let prompt = build_prompt(SYSTEM_PROMPT_V1, &task_id, input);
     let resp1: Response = runtime.one_shot(prompt, budget(), sink.clone()).await?;
     let cost1 = resp1.cost_usd_micros;
+    let metrics1 = AgentTraceMetrics::from_response(&resp1);
     let first_err = match parse_and_validate(&resp1.content, &node_ids) {
         Ok(output) => {
             return Ok(ChainReasoningOutcome::Ranked {
@@ -81,6 +89,7 @@ pub async fn run<R: AiRuntime + ?Sized>(
                 prompt_version: resp1.prompt_version,
                 spent_usd_micros: cost1,
                 attempts: 1,
+                metrics: metrics1,
             });
         }
         Err(msg) => msg,
@@ -89,6 +98,7 @@ pub async fn run<R: AiRuntime + ?Sized>(
     let prompt2 = build_prompt(SYSTEM_PROMPT_V1_STRICTER, &task_id, input);
     let resp2: Response = runtime.one_shot(prompt2, budget(), sink).await?;
     let total_cost = cost1 + resp2.cost_usd_micros;
+    let metrics_total = metrics1.merge(AgentTraceMetrics::from_response(&resp2));
     match parse_and_validate(&resp2.content, &node_ids) {
         Ok(output) => Ok(ChainReasoningOutcome::Ranked {
             run_id: input.run_id.clone(),
@@ -96,6 +106,7 @@ pub async fn run<R: AiRuntime + ?Sized>(
             prompt_version: resp2.prompt_version,
             spent_usd_micros: total_cost,
             attempts: 2,
+            metrics: metrics_total,
         }),
         Err(second_err) => Ok(ChainReasoningOutcome::NoChains {
             run_id: input.run_id.clone(),
@@ -104,6 +115,7 @@ pub async fn run<R: AiRuntime + ?Sized>(
             ),
             spent_usd_micros: total_cost,
             attempts: 2,
+            metrics: metrics_total,
         }),
     }
 }
@@ -388,6 +400,7 @@ mod tests {
                 prompt_version,
                 spent_usd_micros,
                 attempts,
+                metrics,
             } => {
                 assert_eq!(run_id, "run-1");
                 assert_eq!(prompt_version, CHAIN_REASONING_PROMPT_VERSION);
@@ -398,6 +411,9 @@ mod tests {
                 assert_eq!(c.member_ids, vec!["a-entry".to_string(), "b-sink".to_string()]);
                 assert!(c.rationale.contains("repo-A"));
                 assert!(c.rationale.contains("repo-B"));
+                assert_eq!(metrics.usage.input_tokens, 400);
+                assert_eq!(metrics.usage.output_tokens, 200);
+                assert_eq!(metrics.model.as_deref(), Some("scripted-model"));
             }
             other => panic!("expected Ranked, got {other:?}"),
         }
@@ -450,11 +466,19 @@ mod tests {
         let (tx, _rx) = broadcast::channel::<AgentEvent>(8);
         let outcome = run(&rt, &two_repo_input(), tx, 5_000_000).await.expect("ok");
         match outcome {
-            ChainReasoningOutcome::NoChains { run_id, reason, spent_usd_micros, attempts } => {
+            ChainReasoningOutcome::NoChains {
+                run_id,
+                reason,
+                spent_usd_micros,
+                attempts,
+                metrics,
+            } => {
                 assert_eq!(run_id, "run-1");
                 assert_eq!(attempts, 2);
                 assert_eq!(spent_usd_micros, 2_000);
                 assert!(reason.contains("failed twice"), "reason: {reason}");
+                assert_eq!(metrics.usage.input_tokens, 800);
+                assert_eq!(metrics.usage.output_tokens, 400);
             }
             other => panic!("expected NoChains, got {other:?}"),
         }
