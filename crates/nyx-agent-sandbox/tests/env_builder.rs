@@ -2,10 +2,10 @@
 //!
 //! Two tests live here:
 //!
-//! 1. `prod_secret_blocks_run` — fully offline. Asserts that adding a
+//! 1. `prod_secret_blocks_run`: fully offline. Asserts that adding a
 //!    fake Stripe `sk_live_` to `test.env` halts the run with a clear
 //!    error message.
-//! 2. `two_service_compose_spins_up` — gated on `docker compose`
+//! 2. `two_service_compose_spins_up`: gated on `docker compose`
 //!    availability. Stages a fixture with two compose files, brings
 //!    the env up, asserts `docker ps` shows both containers, and tears
 //!    them down with `docker compose down --volumes`. Skips cleanly
@@ -56,7 +56,7 @@ async fn prod_secret_blocks_run() {
         RepoInput { name: "beta".into(), root: fixture.join("repo_b") },
     ];
     // Use a fake docker path so even on hosts where docker is installed
-    // the test cannot accidentally spin a real container — the secrets
+    // the test cannot accidentally spin a real container. The secrets
     // check must fail-closed before docker is invoked.
     let builder = EnvBuilder {
         docker_binary: PathBuf::from("/nonexistent/docker-blocked"),
@@ -134,7 +134,7 @@ async fn two_service_compose_spins_up() {
         Ok(e) => e,
         Err(err) => {
             // image pulls / network can fail on a poorly connected CI;
-            // surface the error but do not fail the suite — the
+            // surface the error but do not fail the suite. The
             // acceptance criterion is "spins up when docker is
             // reachable", not "spins up on every offline lane".
             eprintln!("SKIP: `docker compose up` failed: {err}");

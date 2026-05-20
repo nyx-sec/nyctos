@@ -453,7 +453,7 @@ async fn websocket_receives_repo_started_and_finished() {
     let events = srv.events.clone();
     let publisher = tokio::spawn(async move {
         // Tiny delay so the subscriber is attached before broadcast goes
-        // out — broadcast only delivers to receivers that exist at send
+        // out: broadcast only delivers to receivers that exist at send
         // time; the WS task subscribes on upgrade, which is in flight
         // when `connect_async` returns.
         tokio::time::sleep(Duration::from_millis(50)).await;

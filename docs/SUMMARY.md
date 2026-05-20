@@ -25,6 +25,12 @@ Both names appear in these pages for the reasons explained in
   directory: SQLite file, logs, repo workspaces, repro bundles,
   bearer token, plus permissions and override flags.
 
+## Architecture
+
+- [architecture.md](architecture.md): crate map, the subprocess
+  boundary to the GPL `nyx` scanner, the tokio + rayon process
+  model, and the broadcast event bus.
+
 ## Projects
 
 Nyctos groups one or more repos under a `Project`. Projects are the

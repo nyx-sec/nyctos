@@ -152,7 +152,7 @@ fn render_user_message(input: &NovelFindingDiscoveryInput) -> String {
     out.push_str(&format!("batch   = {}\n", input.batch_id));
     out.push('\n');
 
-    out.push_str("priors (already flagged by the static pass — do NOT rediscover):\n");
+    out.push_str("priors (already flagged by the static pass; do NOT rediscover):\n");
     if input.priors.is_empty() {
         out.push_str("- (none)\n");
     } else {

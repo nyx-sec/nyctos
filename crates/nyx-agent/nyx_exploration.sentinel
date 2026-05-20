@@ -1326,3 +1326,71 @@ notes (pass 27):
   pass-27 is rooted in the working-tree diff and the existing
   source-level reachability matrix (backend/birdcage.rs kill path,
   default_system_read_paths system-binary set), no network probe required.
+
+=================================================================
+PASS 28 — task=expl-demo (re-validation; no new sinks)
+working-tree diff (uncommitted on pitboss/grind/20260520T165504Z-25b8):
+  punctuation-only sweep across 26 files. `git diff HEAD` shows
+  exclusively em-dash → semicolon/period/colon substitutions inside
+  comments, doc-comments, format strings, and tracing event messages,
+  plus two rustfmt-shape line-wraps in nyx-agent-nyx/src/diag.rs
+  (UnsupportedReason / InconclusiveReason match-arms collapsed to a
+  single-line `if let Some(r) = …` and a one-line libc::prctl call
+  in nyx_sandbox_shim.rs:60). No identifier renames, no control-flow
+  changes, no new public surface, no new dependencies.
+new file this session: docs/architecture.md (211 lines, untracked).
+  Pure documentation: crate map, process model, subprocess boundary
+  to the GPL `nyx` scanner, event bus capacity = 256, sandbox
+  backend list. Surfaces no new sink and re-states invariants the
+  prior 27 passes already mined (broadcast Lagged behaviour, shim
+  binary spawn, /setup.json bearer fetch path).
+=================================================================
+
+no record_exploration_finding emitted this pass.
+
+re-validation summary (rows 1-27 against current HEAD + working tree):
+  - rows 1-27 all STAND in their prior STANDS / STANDS-FIXED /
+    STANDS-LATENT / STANDS-PARTIAL-FIX classifications. The
+    punctuation-only diff cannot move any prior row's verdict
+    because none of the touched bytes participate in a sink shape
+    (every replacement is inside a `//`, `///`, `//!`, `"…"` literal
+    used for a tracing event, or a panic-free format string).
+  - pass-27 PR_SET_PDEATHSIG row: the libc::prctl call site at
+    nyx_sandbox_shim.rs:60 was reformatted from 4 lines to 1 by
+    this diff; the (A) fork-vs-prctl race, (B) macOS half-fix,
+    (C) process-group kill carry-forwards are byte-identical in
+    behaviour and STAND unchanged.
+  - docs/architecture.md does not contradict any prior row.
+    Specifically: the file's claim that the broadcast channel has
+    "a fixed capacity of 256 frames" matches the constant in
+    serve() and does not weaken the pass-7 CSWSH or pass-19 Lagged
+    re-sync rows. The "/setup.json … bearer token" sentence
+    re-states the pre-setup window pass-1 row already covered.
+    No new doc-shaped CRED_EXPOSURE row needed beyond the
+    pass-8 launchd-plist docs row already on file.
+
+notes (pass 28):
+- the punctuation sweep is the kind of style-only refactor that
+  CAN regress a real bug when an em-dash sits inside a regex, a
+  shell argv, or a path. Spot-check confirmed all touched
+  em-dashes lived in human-readable strings (tracing event text,
+  rustdoc, panic-message format args); none crossed into a
+  shell, glob, regex, sql, or url builder. If a future sweep
+  touches em-dashes inside any of those sink shapes, re-walk the
+  affected file under the AI Exploration lens.
+- next-pass triggers: (i) a non-cosmetic change to scheduler.rs
+  (the iterator-walk DOS row's fix has not landed); (ii) any
+  change to backend/birdcage.rs's kill path (the carry-forward
+  fix-option-(2) close-out target); (iii) any new file under
+  crates/nyx-agent-api/src/ (always a fresh router surface to
+  mine); (iv) any new packaging/* unit or plist (priv-esc + cred
+  exposure are the dominant shapes there).
+- no http.probe this pass: ALLOWED HOSTS empty per task contract;
+  re-validation is source-only and the working-tree diff is
+  punctuation-only, so the re-walk required reading the diff
+  itself (not the surrounding sinks) to verify the rows still
+  stand.
+- tool budget: this pass consumed a small fraction of the 24-call
+  cap (workspace survey, sentinel read, working-tree diff inspect,
+  this append). Remaining budget unused — intentional under the
+  quality-over-count rubric of the task system prompt.

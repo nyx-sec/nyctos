@@ -23,14 +23,14 @@
 //!    hard cap fires. Operators can pick up the warning in the trace
 //!    viewer without halting an in-progress exploration.
 //!
-//! The crate stays vendor-neutral — it does not depend on
+//! The crate stays vendor-neutral. It does not depend on
 //! `nyx-agent-core::store` or `nyx-agent-sandbox`. The binary glue in
 //! `crates/nyx-agent/src/ai_pipeline.rs` wires:
 //!   * an escape-suite gate backed by the real Phase 18 probe binary,
 //!   * persistence of each [`ExplorationFinding`] as a `findings` row
 //!     with `finding_origin = AiExploration` and `status = Quarantine`
 //!     (the same dynamic-confirm gate Phase 17 candidates flow
-//!     through — Phase 19's verifier promotes them when a payload
+//!     through. Phase 19's verifier promotes them when a payload
 //!     + spec pair confirms).
 
 use std::time::Duration;
@@ -67,7 +67,7 @@ pub const DEFAULT_EXPLORATION_TOOL_NAMES: &[&str] =
 /// Configuration for one exploration run.
 #[derive(Debug, Clone)]
 pub struct ExplorationScope {
-    /// Run identifier — used as the budget-store key and the audit log
+    /// Run identifier; used as the budget-store key and the audit log
     /// stamp.
     pub run_id: String,
     /// Logical task identifier. Echoed back in every streamed event.
@@ -172,7 +172,7 @@ pub struct AuditEntry {
     /// captured in `summary` so the trail still survives.
     pub action: String,
     /// Short human-readable description of what the agent did. Built
-    /// off the extracted payload so it stays terse — the full input
+    /// off the extracted payload so it stays terse; the full input
     /// JSON lives in the upstream stream-json transcript.
     pub summary: String,
 }
@@ -187,7 +187,7 @@ pub struct ExplorationFinding {
     pub path: String,
     /// Optional 1-based line number when the finding pins to source.
     pub line: Option<u32>,
-    /// Capability tag — same taxonomy NovelFindingDiscovery uses.
+    /// Capability tag; same taxonomy NovelFindingDiscovery uses.
     pub cap: String,
     /// Short explanation. Required and non-empty.
     pub rationale: String,
@@ -255,7 +255,7 @@ pub async fn run<R: AiRuntime + ?Sized>(
         EscapeSuiteVerdict::Green => {}
         EscapeSuiteVerdict::Red { fixture, reason } => {
             let banner = format!(
-                "[escape-suite RED] {fixture}: {reason} — AI exploration driver refused to start"
+                "[escape-suite RED] {fixture}: {reason}; AI exploration driver refused to start"
             );
             let _ = sink.send(AgentEvent::Ai {
                 data: AiEvent::TokenReceived { task_id: scope.task_id.clone(), token: banner },
@@ -300,7 +300,7 @@ pub async fn run<R: AiRuntime + ?Sized>(
     let soft_cap_exceeded = result.cost_usd_micros >= scope.soft_cap_usd_micros;
     if soft_cap_exceeded {
         let warn = format!(
-            "[soft-cap] exploration spent {spent} usd-micros, soft cap {cap} — hard cap is {hard}",
+            "[soft-cap] exploration spent {spent} usd-micros, soft cap {cap}; hard cap is {hard}",
             spent = result.cost_usd_micros,
             cap = scope.soft_cap_usd_micros,
             hard = scope.run_cap_usd_micros,
@@ -323,18 +323,18 @@ pub async fn run<R: AiRuntime + ?Sized>(
 
 fn build_agent_task(scope: &ExplorationScope) -> AgentTask {
     let allowed = if scope.allowed_hosts.is_empty() {
-        "(none — refuse any HTTP probe)".to_string()
+        "(none; refuse any HTTP probe)".to_string()
     } else {
         scope.allowed_hosts.iter().map(|h| format!("- {h}")).collect::<Vec<_>>().join("\n")
     };
     let targets = if scope.target_endpoints.is_empty() {
-        "(none — survey the workspace before probing)".to_string()
+        "(none; survey the workspace before probing)".to_string()
     } else {
         scope
             .target_endpoints
             .iter()
             .map(|e| {
-                let desc = e.description.as_deref().map(|d| format!(" — {d}")).unwrap_or_default();
+                let desc = e.description.as_deref().map(|d| format!(": {d}")).unwrap_or_default();
                 format!("- `{m} {u}`{desc}", m = e.method, u = e.url)
             })
             .collect::<Vec<_>>()
@@ -660,7 +660,7 @@ mod tests {
             }
             other => panic!("expected Ai::TokenReceived banner, got {other:?}"),
         }
-        // No spend recorded — the agent loop never dispatched.
+        // No spend recorded: the agent loop never dispatched.
         assert_eq!(tracker.spent("run-expl", BudgetKind::AgentLoop), 0);
     }
 

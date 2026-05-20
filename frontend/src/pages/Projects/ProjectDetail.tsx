@@ -159,7 +159,7 @@ export function ProjectDetail() {
             </div>
             <div>
               <dt>Target base URL</dt>
-              <dd>{p.target_base_url ? <code>{p.target_base_url}</code> : "—"}</dd>
+              <dd>{p.target_base_url ? <code>{p.target_base_url}</code> : "-"}</dd>
             </div>
           </dl>
         </Card>
@@ -300,7 +300,7 @@ function RepoRow({ repo, live, onScan, onDelete, busy }: RepoRowProps) {
 }
 
 function formatLastScan(repo: RepoRecord): string {
-  if (!repo.last_scan_run_id) return "—";
+  if (!repo.last_scan_run_id) return "-";
   if (repo.last_scan_finished_at) {
     return new Date(repo.last_scan_finished_at).toLocaleString();
   }
@@ -318,7 +318,7 @@ function surfaceRunBanner(
   const data = ev.data;
   if (data.kind === "RunFinished") {
     setBanner(
-      `Run ${data.run_id} finished — ${data.succeeded} ok, ${data.inconclusive} inconclusive, ${data.failed} failed.`,
+      `Run ${data.run_id} finished: ${data.succeeded} ok, ${data.inconclusive} inconclusive, ${data.failed} failed.`,
     );
   }
 }

@@ -22,7 +22,7 @@ on stdout:
 <!-- nyx: verbatim -->
 ```
 ready on http://127.0.0.1:8765
-first launch detected — wizard at http://127.0.0.1:8765/setup
+first launch detected; wizard at http://127.0.0.1:8765/setup
 ```
 <!-- /nyx: verbatim -->
 
@@ -47,8 +47,8 @@ and closes the SQLite store.
 ## Create a project
 
 Nyctos groups one or more repos under a `Project`. Everything below
-— the wizard, the TOML, the scan command — operates per project, so
-a fresh deployment starts with a project row.
+(the wizard, the TOML, the scan command) operates per project, so a
+fresh deployment starts with a project row.
 
 The fastest path is the CLI:
 
@@ -64,7 +64,7 @@ you can attach repos via `nyx-agent project add-repo` (worked
 example below) or by hand-editing `nyctos.toml`.
 
 You can also create the project from the SPA after the first-launch
-wizard completes — the projects list lives at `/projects`.
+wizard completes. The projects list lives at `/projects`.
 
 ## Walk the first-launch wizard
 

@@ -372,7 +372,7 @@ mod tests {
         // Sunday is `0` or `7` in standard cron → `1` in cron crate.
         assert_eq!(expand_to_cron_crate("0 3 * * 0"), "0 0 3 * * 1");
         assert_eq!(expand_to_cron_crate("0 3 * * 7"), "0 0 3 * * 1");
-        // Range Mon-Fri (1-5) → Tue-Sat? No — Mon-Fri (1-5) maps to
+        // Range Mon-Fri (1-5) → Tue-Sat? No. Mon-Fri (1-5) maps to
         // cron-crate ords 2-6 which is the same Mon-Fri.
         assert_eq!(expand_to_cron_crate("0 3 * * 1-5"), "0 0 3 * * 2-6");
         // Step on a wildcard.
@@ -387,7 +387,7 @@ mod tests {
         // translate to `2-1` which the cron crate refuses. Now it
         // collapses to the full week.
         assert_eq!(expand_to_cron_crate("0 3 * * 1-7"), "0 0 3 * * 1-7");
-        // `0-7` covers every day too — `0` and `7` are both Sunday so
+        // `0-7` covers every day too: `0` and `7` are both Sunday so
         // the canonical set is {0,1,2,3,4,5,6} → `1-7`.
         assert_eq!(expand_to_cron_crate("0 3 * * 0-7"), "0 0 3 * * 1-7");
         // `0-6` (Sun-Sat) is the canonical "all days" expression and
@@ -501,7 +501,7 @@ mod tests {
             Scheduler::with_clock(&entries, Arc::clone(&trigger) as Arc<dyn ScanTrigger>, clock)
                 .unwrap();
         assert_eq!(sched.tick().await.len(), 1);
-        // Advance 30 seconds — still inside 03:00 — second tick must
+        // Advance 30 seconds (still inside 03:00); second tick must
         // observe last_fired_minute and skip.
         sched.clock.advance(chrono::Duration::seconds(30));
         assert!(sched.tick().await.is_empty());

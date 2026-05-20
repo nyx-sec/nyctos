@@ -435,8 +435,8 @@ struct GitHubAppRef {
 /// True when the comment was authored by a recognised bot identity
 /// (a GitHub App via `performed_via_github_app`, the default Actions
 /// bot, or any other `user.type == "Bot"` account). Used to filter
-/// out human-posted marker-shadowing comments before we PATCH them
-/// — a non-bot author cannot have written the agent's marker
+/// out human-posted marker-shadowing comments before we PATCH them.
+/// A non-bot author cannot have written the agent's marker
 /// legitimately, so picking up its id would trigger a 403 on update
 /// and silence the agent on that PR.
 fn comment_owned_by_known_bot(c: &CommentEnvelope) -> bool {
@@ -782,7 +782,7 @@ mod tests {
             vec![finding("abcd", "alpha", "src/evil`<img src=x>`.py", "High", "Verified", None)];
         let filtered = filter_for_pr(&report);
         let body = build_comment_body(&filtered, &report, None);
-        // Attacker payload must not leak as raw HTML/markdown — every
+        // Attacker payload must not leak as raw HTML/markdown. Every
         // appearance of `<img` should sit inside a code span (i.e. the
         // bytes immediately before it are backticks, not whitespace).
         assert!(body.contains("<img"));

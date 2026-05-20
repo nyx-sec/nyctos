@@ -12,7 +12,7 @@ export const DIFF_LABEL: Record<FindingDiffStatus, string> = {
   new: "new",
   regressed: "regressed",
   closed: "closed",
-  unchanged: "—",
+  unchanged: "-",
 };
 
 export const SEVERITY_TONE: Record<string, BadgeTone> = {

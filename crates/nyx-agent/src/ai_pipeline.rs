@@ -935,7 +935,7 @@ fn push_edge(
 /// Coarse role tag for a node. The static pass's flow_steps drive the
 /// `entry` decision; framework detection is a path-fragment heuristic;
 /// every remaining diag is a `sink`. The classification is advisory
-/// for the prompt — the model is free to override.
+/// for the prompt; the model is free to override.
 fn classify_node_kind(diag: &Diag) -> &'static str {
     let lower = diag.path.to_lowercase();
     if FRAMEWORK_PATH_FRAGMENTS.iter().any(|frag| lower.contains(frag)) {
@@ -2146,7 +2146,7 @@ pub async fn run_ai_exploration_pass(
     events: EventSink,
 ) -> anyhow::Result<AiExplorationPassReport> {
     // Phase 23 routes the exploration loop through Claude Code's
-    // agent loop adapter specifically — the Anthropic Messages
+    // agent loop adapter specifically; the Anthropic Messages
     // adapter does not support agent_loop. Future phases may add
     // additional agent-loop adapters; the dispatch picks Claude Code
     // when the configured runtime is `claude-code` OR when the
@@ -2252,7 +2252,7 @@ async fn apply_exploration_outcome(
                     repo = %repo,
                     fixture = %fixture,
                     reason = %reason,
-                    "ai exploration: escape suite RED — halting driver"
+                    "ai exploration: escape suite RED; halting driver"
                 );
                 report.halted_escape_suite_red += 1;
             }
@@ -2281,7 +2281,7 @@ async fn apply_exploration_outcome(
                 tracing::info!(
                     repo = %repo,
                     spent_usd_micros,
-                    "ai exploration: soft cap exceeded — operator warned, run continues"
+                    "ai exploration: soft cap exceeded; operator warned, run continues"
                 );
             }
             let now_ms = finished_at;
@@ -3429,7 +3429,7 @@ mod tests {
         // crosses the cap. With `files_per_batch = 1` and a two-file
         // workspace, the first call exhausts the cap, so the second
         // batch is marked halted instead of dispatched. The scripted
-        // runtime is queued with exactly one response — if the halt
+        // runtime is queued with exactly one response; if the halt
         // logic broke and a second one_shot fired, it would panic.
         let tmp_db = tempfile::tempdir().unwrap();
         let store = Store::open(tmp_db.path()).await.unwrap();
@@ -3674,7 +3674,7 @@ mod tests {
         let finding = seed_finding("run-B", "repo-B", "src/sink.sh", "rule-sqli");
         let fid = finding.id.clone();
         store.findings().upsert(&finding).await.unwrap();
-        // Both payloads are the benign control — neither trips the oracle.
+        // Both payloads are the benign control; neither trips the oracle.
         store.payloads().insert(&seed_payload(&fid, b"^alice$", b"^alice$")).await.unwrap();
         store.harness_specs().insert(&seed_spec("spec-B")).await.unwrap();
 

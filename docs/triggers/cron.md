@@ -3,7 +3,7 @@
 The daemon ships an in-process scheduler that wakes every 60 seconds,
 evaluates every `[[schedule]]` entry in `nyctos.toml`, and triggers
 a scan through the same path the SPA's "Scan now" button uses. There
-is no external `cron` process to wire up — the scheduler runs inside
+is no external `cron` process to wire up. The scheduler runs inside
 `nyx-agent serve`, so the daemon must be running for entries to fire.
 
 ## Config

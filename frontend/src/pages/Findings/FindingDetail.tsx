@@ -397,7 +397,7 @@ function AiReasoningSection({ finding }: AiReasoningSectionProps) {
       {open ? (
         <AiTraceViewer findingId={finding.id} />
       ) : (
-        <p className="finding-detail__muted">Collapsed — expand to read the per-turn trace.</p>
+        <p className="finding-detail__muted">Collapsed. Expand to read the per-turn trace.</p>
       )}
     </section>
   );

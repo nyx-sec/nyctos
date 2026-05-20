@@ -6,7 +6,7 @@
 //! these specs from LLM output; we vendor the schema here so the agent
 //! can validate the model's reply against the exact shape the verifier
 //! expects without taking a source-level dependency on the upstream
-//! scanner (which is GPL — see `LICENSE-GRANTS.md`).
+//! scanner (which is GPL; see `LICENSE-GRANTS.md`).
 //!
 //! The wire shape mirrors `nyx 0.7.x`'s harness JSON: a small required
 //! core (`schema_version`, `cap`, `lang`, `entry`, `invoke`, `oracle`)

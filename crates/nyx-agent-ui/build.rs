@@ -64,7 +64,7 @@ fn main() {
 fn build_real_spa(frontend_dir: &Path, crate_dist_dir: &Path) -> Result<(), String> {
     if !frontend_dir.join("package.json").is_file() {
         return Err(format!(
-            "missing {}/package.json — frontend not scaffolded",
+            "missing {}/package.json: frontend not scaffolded",
             frontend_dir.display(),
         ));
     }

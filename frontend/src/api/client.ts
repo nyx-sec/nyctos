@@ -1,6 +1,6 @@
 /* TanStack Query hooks covering the Phase 07 daemon surface.
  *
- * All hooks talk to `/api/v1/...` relative — Vite proxies that to
+ * All hooks talk to `/api/v1/...` relative; Vite proxies that to
  * `http://127.0.0.1:8765` in dev, and the daemon serves the same path
  * itself in release builds.
  */

@@ -81,7 +81,7 @@ fn pricing_for(model: &str) -> Pricing {
             cache_read_per_token_micros: 0,
         }
     } else {
-        // Opus / unrecognised — default to opus pricing so unknown
+        // Opus / unrecognised: default to opus pricing so unknown
         // models do not silently price as the cheapest tier.
         Pricing {
             input_per_token_micros: micros_per_token(15),

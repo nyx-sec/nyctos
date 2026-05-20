@@ -3,7 +3,7 @@
 //! Spawns the `claude` CLI as a subprocess so the rest of the agent
 //! does not have to embed Anthropic's tool-use loop. The adapter
 //! detects the binary on `PATH` at construction time and refuses to
-//! run if it is missing — callers fall back to the Anthropic adapter
+//! run if it is missing; callers fall back to the Anthropic adapter
 //! for `one_shot` work.
 //!
 //! Wire shape per the Phase-13 contract:
@@ -381,7 +381,7 @@ impl AiRuntime for ClaudeCodeAdapter {
 
 fn render_task_markdown(task: &AgentTask) -> String {
     let tools_block = if task.tools.is_empty() {
-        "(none — answer from context)".to_string()
+        "(none; answer from context)".to_string()
     } else {
         task.tools.iter().map(|t| format!("- {t}")).collect::<Vec<_>>().join("\n")
     };

@@ -184,8 +184,8 @@ async fn noop_harness_cold_start_under_50ms() {
     // sandbox-shim → birdcage::spawn → escape-attempt noop chain.
     // Take the minimum across a few samples so transient host
     // contention from the rest of the escape suite (which runs in
-    // parallel under `cargo test`) does not flake the threshold —
-    // the criterion is the achievable cold-start cost of the
+    // parallel under `cargo test`) does not flake the threshold.
+    // The criterion is the achievable cold-start cost of the
     // harness, not the worst observed wall time on a loaded box.
     let mut best = Duration::from_secs(1);
     for _ in 0..3 {

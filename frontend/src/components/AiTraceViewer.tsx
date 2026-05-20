@@ -115,12 +115,12 @@ function TraceRowCard({ row, index }: { row: AgentTraceRow; index: number }) {
           <Row label="Cost" value={`$${(row.cost_usd_micros / 1_000_000).toFixed(6)}`} />
           <Row
             label="Duration"
-            value={row.duration_ms !== null ? `${row.duration_ms} ms` : "—"}
+            value={row.duration_ms !== null ? `${row.duration_ms} ms` : "-"}
           />
           <Row label="Started" value={formatStamp(row.started_at)} />
           <Row
             label="Finished"
-            value={row.finished_at !== null ? formatStamp(row.finished_at) : "—"}
+            value={row.finished_at !== null ? formatStamp(row.finished_at) : "-"}
           />
           {row.conversation_jsonl_path && (
             <Row
@@ -153,7 +153,7 @@ function formatSubtitle(row: AgentTraceRow): string {
 }
 
 function formatStamp(ms: number): string {
-  if (!Number.isFinite(ms) || ms === 0) return "—";
+  if (!Number.isFinite(ms) || ms === 0) return "-";
   return new Date(ms).toLocaleString();
 }
 

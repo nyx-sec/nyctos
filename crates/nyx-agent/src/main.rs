@@ -1021,7 +1021,7 @@ async fn serve(
     print_startup_banner();
     println!("ready on http://{local_addr}");
     if !config_present {
-        println!("first launch detected — wizard at {startup_url}");
+        println!("first launch detected; wizard at {startup_url}");
     }
 
     let url = startup_url.clone();
@@ -1047,7 +1047,7 @@ async fn serve(
 
     // Phase 27: spawn the cron scheduler when at least one
     // `[[schedule]]` entry is configured. The watch channel is the
-    // shutdown signal — flipping it to `true` ends the loop. A
+    // shutdown signal: flipping it to `true` ends the loop. A
     // refused `[[schedule]]` config aborts startup so an operator who
     // fat-fingers a cron expression cannot run a daemon with the
     // trigger surface silently disabled.
@@ -1523,8 +1523,8 @@ async fn pr_comment_cmd(
 }
 
 /// Best-effort PR number recovery from the GitHub Actions environment.
-/// Honours `$GITHUB_REF` of the shape `refs/pull/<N>/{merge,head}` —
-/// the standard `pull_request` trigger sets it — and falls back to
+/// Honours `$GITHUB_REF` of the shape `refs/pull/<N>/{merge,head}`
+/// (the standard `pull_request` trigger sets it) and falls back to
 /// parsing `pull_request.number` from the JSON payload at
 /// `$GITHUB_EVENT_PATH` (the `workflow_dispatch` /
 /// `pull_request_review` triggers only expose the PR number there).

@@ -88,31 +88,23 @@ impl Diag {
     /// key carries a known reason; new reasons land as new
     /// `UnsupportedReason` variants without churning call sites.
     pub fn unsupported_reason(&self) -> Option<UnsupportedReason> {
-        if let Some(r) = self
-            .evidence_string("unsupported")
-            .as_deref()
-            .and_then(UnsupportedReason::from_str)
+        if let Some(r) =
+            self.evidence_string("unsupported").as_deref().and_then(UnsupportedReason::from_str)
         {
             return Some(r);
         }
-        self.evidence_string("reason")
-            .as_deref()
-            .and_then(UnsupportedReason::from_str)
+        self.evidence_string("reason").as_deref().and_then(UnsupportedReason::from_str)
     }
 
     /// Typed read of `evidence.inconclusive` with `evidence.reason` as
     /// the fallback. Mirror of `unsupported_reason`.
     pub fn inconclusive_reason(&self) -> Option<InconclusiveReason> {
-        if let Some(r) = self
-            .evidence_string("inconclusive")
-            .as_deref()
-            .and_then(InconclusiveReason::from_str)
+        if let Some(r) =
+            self.evidence_string("inconclusive").as_deref().and_then(InconclusiveReason::from_str)
         {
             return Some(r);
         }
-        self.evidence_string("reason")
-            .as_deref()
-            .and_then(InconclusiveReason::from_str)
+        self.evidence_string("reason").as_deref().and_then(InconclusiveReason::from_str)
     }
 
     /// True when the diag carries the `Unsupported(NoPayloadsForCap)`

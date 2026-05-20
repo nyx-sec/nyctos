@@ -96,7 +96,7 @@ export function LiveScanView() {
     // surfaces that limitation explicitly so the operator is not
     // surprised when in-flight repos still finish.
     appendLog(
-      "Daemon cancel endpoint not wired yet — in-flight repos will finish out. Phase 18 owns the kill switch.",
+      "Daemon cancel endpoint not wired yet. In-flight repos will finish out.",
       "warn",
     );
     setCancelling(false);
@@ -108,7 +108,7 @@ export function LiveScanView() {
         title={`Run ${runId}`}
         subtitle={
           summary.done
-            ? `Finished in ${summary.wallClockMs ?? "—"}ms · ${summary.succeeded ?? 0} ok / ${
+            ? `Finished in ${summary.wallClockMs ?? "-"}ms · ${summary.succeeded ?? 0} ok / ${
                 summary.inconclusive ?? 0
               } inconclusive / ${summary.failed ?? 0} failed`
             : `${finishedRepos}/${totalRepos || "?"} repos finished`
@@ -326,7 +326,7 @@ function describeRunEvent(data: RunEvent): string | undefined {
     case "RepoFailed":
       return `[${data.repo}] failed: ${data.message}`;
     case "RunFinished":
-      return `Run ${data.run_id} finished in ${data.wall_clock_ms}ms — ${data.succeeded} ok, ${data.inconclusive} inconclusive, ${data.failed} failed.`;
+      return `Run ${data.run_id} finished in ${data.wall_clock_ms}ms: ${data.succeeded} ok, ${data.inconclusive} inconclusive, ${data.failed} failed.`;
   }
 }
 

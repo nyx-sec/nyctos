@@ -206,17 +206,17 @@ function QuarantineDetail({
       <dl className="quarantine-detail__meta">
         <div>
           <dt>Origin</dt>
-          <dd>{item.finding_origin ?? "—"}</dd>
+          <dd>{item.finding_origin ?? "-"}</dd>
         </div>
         <div>
           <dt>Prompt</dt>
           <dd>
-            <code>{item.prompt_version ?? "—"}</code>
+            <code>{item.prompt_version ?? "-"}</code>
           </dd>
         </div>
         <div>
           <dt>Provenance</dt>
-          <dd>{item.attack_provenance ?? "—"}</dd>
+          <dd>{item.attack_provenance ?? "-"}</dd>
         </div>
         <div>
           <dt>Run</dt>
@@ -248,7 +248,7 @@ function shortId(id: string): string {
 
 /** Pull a `rationale` string out of a typed verdict blob, if present. */
 function extractRationale(blob: string | null): string {
-  if (!blob) return "—";
+  if (!blob) return "-";
   try {
     const parsed: unknown = JSON.parse(blob);
     if (parsed && typeof parsed === "object" && "rationale" in parsed) {
@@ -262,5 +262,5 @@ function extractRationale(blob: string | null): string {
   } catch {
     // not JSON; fall through
   }
-  return "—";
+  return "-";
 }

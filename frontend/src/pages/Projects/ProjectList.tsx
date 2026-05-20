@@ -95,9 +95,9 @@ function ProjectRow({ project }: { project: ProjectRecord }) {
           {project.name}
         </Link>
       </td>
-      <td className="repo-list__source">{project.description ?? "—"}</td>
+      <td className="repo-list__source">{project.description ?? "-"}</td>
       <td className="repo-list__source">
-        {project.target_base_url ? <code>{project.target_base_url}</code> : "—"}
+        {project.target_base_url ? <code>{project.target_base_url}</code> : "-"}
       </td>
       <td>
         <time className="repo-list__last-scan">
