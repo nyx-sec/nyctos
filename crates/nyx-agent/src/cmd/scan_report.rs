@@ -75,6 +75,43 @@ impl ScanReport {
         Ok(serde_json::from_slice(&bytes)?)
     }
 
+    /// Drop every row the PR-comment surface would not render. Mirrors
+    /// [`crate::cmd::pr_comment::filter_for_pr`]: keeps findings whose
+    /// `status == "Verified"` or that belong to a `cross_repo` chain;
+    /// keeps only `cross_repo` chains. Used by `scan --output
+    /// --output-only-pr-worthy` so the on-disk report stays small on
+    /// runs whose static-pass output dwarfs the verified set.
+    pub fn retain_pr_worthy(&mut self) {
+        let cross_repo_chains: HashSet<String> = self
+            .chains
+            .iter()
+            .filter(|c| c.cross_repo)
+            .map(|c| c.id.clone())
+            .collect();
+        let cross_repo_members: HashSet<String> = self
+            .chains
+            .iter()
+            .filter(|c| c.cross_repo)
+            .flat_map(|c| c.member_ids.iter().cloned())
+            .collect();
+        self.findings.retain(|f| {
+            let confirmed = f.status == "Verified";
+            let in_chain = f
+                .chain_id
+                .as_deref()
+                .map(|cid| cross_repo_chains.contains(cid))
+                .unwrap_or(false)
+                || cross_repo_members.contains(&f.id);
+            confirmed || in_chain
+        });
+        self.chains.retain(|c| c.cross_repo);
+
+        let mut repos: Vec<String> = self.findings.iter().map(|f| f.repo.clone()).collect();
+        repos.sort();
+        repos.dedup();
+        self.repos = repos;
+    }
+
     /// Serialise the report to `path` with stable, pretty-printed JSON.
     pub fn write(&self, path: &Path) -> Result<(), ScanReportError> {
         let json = serde_json::to_vec_pretty(self)?;
@@ -283,6 +320,59 @@ mod tests {
         let mapped = map_chain(raw);
         assert_eq!(mapped.member_ids, vec!["a", "b", "c"]);
         assert_eq!(mapped.rationale.as_deref(), Some("controller reaches sink"));
+    }
+
+    #[test]
+    fn retain_pr_worthy_keeps_confirmed_and_cross_repo_chain_rows() {
+        let mut report = ScanReport {
+            schema_version: REPORT_SCHEMA_VERSION,
+            run_id: "run-1".into(),
+            started_at: 0,
+            finished_at: None,
+            status: "Succeeded".into(),
+            triggered_by: "ci".into(),
+            repos: vec!["alpha".into(), "beta".into(), "gamma".into()],
+            since_ref: None,
+            findings: vec![
+                ReportFinding {
+                    status: "Verified".into(),
+                    ..sample_finding("f-confirmed", "alpha", "src/a.py")
+                },
+                ReportFinding {
+                    status: "Open".into(),
+                    ..sample_finding("f-open", "alpha", "src/b.py")
+                },
+                ReportFinding {
+                    status: "Open".into(),
+                    chain_id: Some("c-cross".into()),
+                    ..sample_finding("f-chain", "beta", "src/c.py")
+                },
+                ReportFinding {
+                    status: "Open".into(),
+                    ..sample_finding("f-orphan", "gamma", "src/d.py")
+                },
+            ],
+            chains: vec![
+                ReportChain {
+                    id: "c-cross".into(),
+                    cross_repo: true,
+                    member_ids: vec!["f-chain".into()],
+                    rationale: None,
+                },
+                ReportChain {
+                    id: "c-local".into(),
+                    cross_repo: false,
+                    member_ids: vec!["f-orphan".into()],
+                    rationale: None,
+                },
+            ],
+        };
+        report.retain_pr_worthy();
+        let ids: Vec<&str> = report.findings.iter().map(|f| f.id.as_str()).collect();
+        assert_eq!(ids, vec!["f-confirmed", "f-chain"]);
+        assert_eq!(report.chains.len(), 1);
+        assert_eq!(report.chains[0].id, "c-cross");
+        assert_eq!(report.repos, vec!["alpha", "beta"]);
     }
 
     #[test]

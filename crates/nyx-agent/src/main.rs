@@ -125,6 +125,13 @@ enum Command {
         /// `pr-comment --report` and by external dashboards.
         #[arg(long, value_name = "PATH")]
         output: Option<PathBuf>,
+        /// When `--output` is set, drop every row `pr-comment` would
+        /// not render before writing: keep only `Verified` findings and
+        /// the members of cross-repo chains. Bounds the on-disk report
+        /// for CI artefact size limits at the cost of losing the
+        /// local-only triage rows.
+        #[arg(long, requires = "output")]
+        output_only_pr_worthy: bool,
         /// Filter the report to findings whose `path` differs from
         /// `REF` (i.e. only paths the PR / branch touched). Computed
         /// per workspace via `git diff --name-only REF...HEAD`. When
@@ -257,7 +264,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         open_cmd: None,
     }) {
         Command::Doctor => doctor(&state_dir, &config_path, &log_cfg, &config).await,
-        Command::Scan { projects, repos, headless, output, since_ref } => {
+        Command::Scan { projects, repos, headless, output, output_only_pr_worthy, since_ref } => {
             nyctos_core::init_logging(&log_cfg)?;
             scan(
                 &state_dir,
@@ -266,6 +273,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 &repos,
                 "Manual",
                 output.as_deref(),
+                output_only_pr_worthy,
                 since_ref.as_deref(),
                 headless,
             )
@@ -411,6 +419,7 @@ async fn scan(
     requested_repos: &[String],
     triggered_by: &str,
     output_path: Option<&std::path::Path>,
+    output_only_pr_worthy: bool,
     since_ref: Option<&str>,
     headless: bool,
 ) -> anyhow::Result<ExitCode> {
@@ -459,6 +468,7 @@ async fn scan(
             events_tx.clone(),
             !headless,
             output_path,
+            output_only_pr_worthy,
             since_ref,
         )
         .await;
@@ -543,6 +553,7 @@ async fn drive_scan(
     events: EventSink,
     verbose: bool,
     output_path: Option<&std::path::Path>,
+    output_only_pr_worthy: bool,
     since_ref: Option<&str>,
 ) -> anyhow::Result<ScanReport> {
     let now_ms = now_epoch_ms();
@@ -873,16 +884,20 @@ async fn drive_scan(
             status: final_status,
             triggered_by: "Manual",
         };
-        let report =
+        let mut report =
             cmd::scan_report::build_report(store, &run.id, meta, since_ref, changed.as_ref())
                 .await?;
+        if output_only_pr_worthy {
+            report.retain_pr_worthy();
+        }
         report.write(path)?;
         if verbose {
             println!(
-                "scan: wrote report to {} ({} finding(s), {} chain(s))",
+                "scan: wrote report to {} ({} finding(s), {} chain(s){})",
                 path.display(),
                 report.findings.len(),
-                report.chains.len()
+                report.chains.len(),
+                if output_only_pr_worthy { ", pr-worthy filter" } else { "" },
             );
         }
     }
@@ -1183,6 +1198,7 @@ async fn run_scan_for_api(
                 events.clone(),
                 false,
                 None,
+                false,
                 None,
             )
             .await;

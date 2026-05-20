@@ -1,15 +1,16 @@
 //! docker-compose detection + super-compose merge.
 //!
 //! The env-builder ships a deliberately tight merge: top-level `services`,
-//! `volumes`, and `networks` are renamed `<repo_prefix>_<name>` so two
-//! repos that both declare a `db` service do not collide. Per-service
-//! `depends_on`, named-volume mounts, `networks` lists, and
+//! `volumes`, `networks`, `secrets`, and `configs` are renamed
+//! `<repo_prefix>_<name>` so two repos that both declare a `db` service
+//! (or a `db_password` secret) do not collide. Per-service `depends_on`,
+//! named-volume mounts, `networks` lists, `secrets` / `configs` refs, and
 //! `container_name` are rewritten to point at the namespaced names.
 //!
 //! Anything else (build args, env, ports, healthcheck, command, image,
-//! etc.) is passed through verbatim. Operators that want a deeper
-//! merge (link names, profiles, secrets, configs) get to write their
-//! own super-compose by hand for now.
+//! etc.) is passed through verbatim. Operators that want a deeper merge
+//! (link names, profiles) get to write their own super-compose by hand
+//! for now.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -164,6 +165,8 @@ pub fn merge(
     let mut services = Mapping::new();
     let mut volumes = Mapping::new();
     let mut networks = Mapping::new();
+    let mut secrets = Mapping::new();
+    let mut configs = Mapping::new();
     let mut service_names = Vec::new();
 
     for cf in files {
@@ -197,6 +200,18 @@ pub fn merge(
                 networks.insert(Value::String(format!("{prefix}_{name}")), v.clone());
             }
         }
+        if let Some(Value::Mapping(secs)) = map.get(Value::String("secrets".into())) {
+            for (k, v) in secs {
+                let Some(name) = k.as_str() else { continue };
+                secrets.insert(Value::String(format!("{prefix}_{name}")), v.clone());
+            }
+        }
+        if let Some(Value::Mapping(cfgs)) = map.get(Value::String("configs".into())) {
+            for (k, v) in cfgs {
+                let Some(name) = k.as_str() else { continue };
+                configs.insert(Value::String(format!("{prefix}_{name}")), v.clone());
+            }
+        }
     }
 
     let mut merged = Mapping::new();
@@ -206,6 +221,12 @@ pub fn merge(
     }
     if !networks.is_empty() {
         merged.insert(Value::String("networks".into()), Value::Mapping(networks));
+    }
+    if !secrets.is_empty() {
+        merged.insert(Value::String("secrets".into()), Value::Mapping(secrets));
+    }
+    if !configs.is_empty() {
+        merged.insert(Value::String("configs".into()), Value::Mapping(configs));
     }
     if let Some(url) = overrides.target_base_url {
         merged
@@ -252,6 +273,8 @@ fn rewrite_service(svc: &Value, prefix: &str) -> Value {
             Some("depends_on") => rewrite_depends_on(v, prefix),
             Some("volumes") => rewrite_volume_mounts(v, prefix),
             Some("networks") => rewrite_network_refs(v, prefix),
+            Some("secrets") => rewrite_named_refs(v, prefix),
+            Some("configs") => rewrite_named_refs(v, prefix),
             Some("container_name") => match v.as_str() {
                 Some(name) => Value::String(format!("{prefix}_{name}")),
                 None => v.clone(),
@@ -336,6 +359,40 @@ fn is_named_volume_ref(src: &str) -> bool {
         && !src.starts_with('.')
         && !src.starts_with('~')
         && !src.starts_with('$')
+}
+
+/// Rewrite a per-service `secrets:` or `configs:` reference list. The
+/// compose schema accepts two shapes per entry:
+///   * short-form bare name string `db_password`,
+///   * long-form mapping with a `source: <name>` key (plus optional
+///     `target` / `uid` / `gid` / `mode`).
+///
+/// Both shapes name a top-level entry by symbol, so the rewrite mirrors
+/// the namespacing applied to the top-level mappings.
+fn rewrite_named_refs(v: &Value, prefix: &str) -> Value {
+    let Value::Sequence(items) = v else {
+        return v.clone();
+    };
+    let new_items = items
+        .iter()
+        .map(|i| {
+            if let Some(name) = i.as_str() {
+                return Value::String(format!("{prefix}_{name}"));
+            }
+            if let Value::Mapping(m) = i {
+                let mut out = m.clone();
+                if let Some(Value::String(src)) = out.get(Value::String("source".into())).cloned() {
+                    out.insert(
+                        Value::String("source".into()),
+                        Value::String(format!("{prefix}_{src}")),
+                    );
+                }
+                return Value::Mapping(out);
+            }
+            i.clone()
+        })
+        .collect();
+    Value::Sequence(new_items)
 }
 
 fn rewrite_network_refs(v: &Value, prefix: &str) -> Value {
@@ -575,6 +632,87 @@ services:
         let doc: Value = serde_yaml::from_str(&raw).unwrap();
         assert!(doc.get("x-nyx-target-base-url").is_none());
         assert!(doc.get("x-nyx-env-config").is_none());
+    }
+
+    #[test]
+    fn merge_namespaces_secrets_and_configs_across_repos() {
+        let tmp = tempdir().unwrap();
+        let a = tmp.path().join("a");
+        let b = tmp.path().join("b");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(
+            a.join("docker-compose.yml"),
+            r#"
+services:
+  api:
+    image: alpine
+    secrets:
+      - db_password
+    configs:
+      - source: app_cfg
+        target: /etc/app.cfg
+secrets:
+  db_password:
+    file: ./pwd
+configs:
+  app_cfg:
+    file: ./app.cfg
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            b.join("docker-compose.yml"),
+            r#"
+services:
+  api:
+    image: alpine
+    secrets:
+      - db_password
+secrets:
+  db_password:
+    file: ./pwd
+"#,
+        )
+        .unwrap();
+
+        let files = vec![
+            ComposeFile { repo_name: "alpha".into(), path: a.join("docker-compose.yml") },
+            ComposeFile { repo_name: "beta".into(), path: b.join("docker-compose.yml") },
+        ];
+        let out = tmp.path().join("super.yml");
+        merge(&files, &out, &ProjectOverrides::default()).expect("merge ok");
+
+        let raw = std::fs::read_to_string(&out).unwrap();
+        let doc: Value = serde_yaml::from_str(&raw).unwrap();
+
+        let top_secrets = doc.get("secrets").and_then(|v| v.as_mapping()).unwrap();
+        assert!(top_secrets.contains_key(Value::String("alpha_db_password".into())));
+        assert!(top_secrets.contains_key(Value::String("beta_db_password".into())));
+        assert!(!top_secrets.contains_key(Value::String("db_password".into())));
+
+        let top_configs = doc.get("configs").and_then(|v| v.as_mapping()).unwrap();
+        assert!(top_configs.contains_key(Value::String("alpha_app_cfg".into())));
+
+        let svcs = doc.get("services").and_then(|v| v.as_mapping()).unwrap();
+        let alpha_api = svcs.get(Value::String("alpha_api".into())).unwrap();
+        let alpha_secrets = alpha_api.get("secrets").and_then(|v| v.as_sequence()).unwrap();
+        assert_eq!(alpha_secrets[0].as_str().unwrap(), "alpha_db_password");
+        let alpha_configs = alpha_api.get("configs").and_then(|v| v.as_sequence()).unwrap();
+        let cfg_entry = alpha_configs[0].as_mapping().unwrap();
+        assert_eq!(
+            cfg_entry.get(Value::String("source".into())).and_then(|v| v.as_str()),
+            Some("alpha_app_cfg"),
+        );
+        assert_eq!(
+            cfg_entry.get(Value::String("target".into())).and_then(|v| v.as_str()),
+            Some("/etc/app.cfg"),
+            "non-source fields must pass through",
+        );
+
+        let beta_api = svcs.get(Value::String("beta_api".into())).unwrap();
+        let beta_secrets = beta_api.get("secrets").and_then(|v| v.as_sequence()).unwrap();
+        assert_eq!(beta_secrets[0].as_str().unwrap(), "beta_db_password");
     }
 
     #[test]
