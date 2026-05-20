@@ -1,6 +1,7 @@
-//! Phase 27: cron-driven scan scheduler.
+//! Cron-driven scan scheduler.
 //!
-//! Wakes once every `tick_interval` (production: 60s, tests: a few
+//! Wakes once every `tick_interval` (resolved from
+//! `[performance].scheduler_tick_secs`, default 60s; tests use a few
 //! milliseconds), evaluates every `[[schedule]]` entry in the running
 //! config, and triggers a scan via the same [`ScanTrigger`] handle the
 //! HTTP API uses. The cron expression is the standard 5-field shape
@@ -36,9 +37,6 @@ use nyx_agent_api::{ScanTrigger, ScanTriggerError};
 use nyx_agent_core::ScheduleConfig;
 use tokio::sync::watch;
 use tracing::{debug, error, warn};
-
-/// Minimum interval between wake-ups in production.
-pub const DEFAULT_TICK_INTERVAL: Duration = Duration::from_secs(60);
 
 /// One parsed schedule entry. The `cron` crate's [`Schedule`] holds the
 /// parsed fields; `last_fired_minute` lets us debounce when wakes are

@@ -81,6 +81,14 @@ pub struct PerformanceConfig {
     /// continues. `None` -> 30 minutes.
     #[serde(default)]
     pub per_repo_timeout_secs: Option<u64>,
+    /// Cadence at which the cron scheduler wakes to evaluate
+    /// `[[schedule]]` entries. `None` -> 60 seconds (matches the
+    /// granularity of the standard 5-field cron expression).
+    /// Floored at 1 second by [`PerformanceConfig::scheduler_tick`].
+    /// Operators should only lower this when a sub-minute cron
+    /// granularity is required; tighter polling spends more CPU.
+    #[serde(default)]
+    pub scheduler_tick_secs: Option<u64>,
 }
 
 impl Default for PerformanceConfig {
@@ -90,6 +98,7 @@ impl Default for PerformanceConfig {
             scan_timeout_secs: 600,
             static_concurrency: None,
             per_repo_timeout_secs: None,
+            scheduler_tick_secs: None,
         }
     }
 }
@@ -106,6 +115,14 @@ impl PerformanceConfig {
     /// then derives the default from CPU count and repo count.
     pub fn static_concurrency_override(&self) -> Option<usize> {
         self.static_concurrency.map(|n| n.max(1))
+    }
+
+    /// Resolved scheduler wake cadence. Falls back to 60 seconds when
+    /// the operator has not set `[performance] scheduler_tick_secs`;
+    /// a configured `0` is floored to `1` so the loop cannot busy-wait.
+    pub fn scheduler_tick(&self) -> std::time::Duration {
+        let secs = self.scheduler_tick_secs.unwrap_or(60).max(1);
+        std::time::Duration::from_secs(secs)
     }
 }
 
@@ -421,6 +438,7 @@ mod tests {
                 scan_timeout_secs: 1200,
                 static_concurrency: Some(2),
                 per_repo_timeout_secs: Some(45),
+                scheduler_tick_secs: Some(10),
             },
             sandbox: SandboxConfig {
                 enabled: false,
@@ -653,5 +671,32 @@ mod tests {
             ..Config::default()
         };
         assert_eq!(cfg.performance.static_concurrency_override(), Some(1));
+    }
+
+    #[test]
+    fn performance_scheduler_tick_defaults_to_sixty_seconds() {
+        let cfg = Config::parse("", &PathBuf::from("<test>")).expect("parse");
+        assert!(cfg.performance.scheduler_tick_secs.is_none());
+        assert_eq!(cfg.performance.scheduler_tick(), std::time::Duration::from_secs(60));
+    }
+
+    #[test]
+    fn performance_scheduler_tick_roundtrips_through_toml() {
+        let raw = "[performance]\nscheduler_tick_secs = 5\n";
+        let cfg = Config::parse(raw, &PathBuf::from("<test>")).expect("parse");
+        assert_eq!(cfg.performance.scheduler_tick_secs, Some(5));
+        assert_eq!(cfg.performance.scheduler_tick(), std::time::Duration::from_secs(5));
+    }
+
+    #[test]
+    fn performance_scheduler_tick_zero_floors_to_one_second() {
+        let cfg = Config {
+            performance: PerformanceConfig {
+                scheduler_tick_secs: Some(0),
+                ..PerformanceConfig::default()
+            },
+            ..Config::default()
+        };
+        assert_eq!(cfg.performance.scheduler_tick(), std::time::Duration::from_secs(1));
     }
 }

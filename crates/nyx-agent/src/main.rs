@@ -1053,8 +1053,9 @@ async fn serve(
         let s = scheduler::Scheduler::from_config(&config.schedules, trigger.clone())
             .map_err(|err| anyhow::anyhow!("invalid [[schedule]] config: {err}"))?;
         let rx = scheduler_shutdown_rx.clone();
+        let tick = config.performance.scheduler_tick();
         Some(tokio::spawn(async move {
-            s.run(scheduler::DEFAULT_TICK_INTERVAL, rx).await;
+            s.run(tick, rx).await;
         }))
     };
 

@@ -51,6 +51,7 @@ fails the load rather than silently going to default.
 | `scan_timeout_secs`      | u64              | `600`   | Reserved for future use.                                          |
 | `static_concurrency`     | usize (optional) | unset   | Explicit fan-out for the static-pass. `None` lets the dispatcher compute `min(num_cpus / 2, len(repos))`. A configured `0` floors to `1`. |
 | `per_repo_timeout_secs`  | u64 (optional)   | unset   | Per-repo budget for the static-pass scan. `None` resolves to 30 minutes. A repo that exceeds the budget records `Inconclusive(StaticPassTimeout)` while the rest of the run continues. |
+| `scheduler_tick_secs`    | u64 (optional)   | unset   | Cadence at which the cron scheduler wakes to evaluate `[[schedule]]` entries. `None` resolves to 60 seconds; a configured `0` floors to `1`. Lower only when a sub-minute cron granularity is required; tighter polling spends more CPU. |
 
 ## `[sandbox]`
 

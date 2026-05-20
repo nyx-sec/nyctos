@@ -11,14 +11,46 @@
 //! merge (link names, profiles, secrets, configs) get to write their
 //! own super-compose by hand for now.
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
 use serde_yaml::{Mapping, Value};
 use thiserror::Error;
 
-/// Filenames docker compose recognises out of the box.
+/// Filenames docker compose recognises out of the box. Order is also
+/// the priority order used when two siblings live in the same directory.
 const CANDIDATE_FILES: &[&str] =
     &["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"];
+
+/// Maximum directory depth `detect` descends from the repo root when
+/// looking for a compose file. Root is depth 0. The walk is bounded so
+/// a misplaced `node_modules/` (which the skip set excludes anyway)
+/// cannot stall ingestion on a deep monorepo.
+const DETECT_MAX_DEPTH: usize = 3;
+
+/// Directory names skipped during the nested compose walk. Same shape
+/// as the static-pass source walker: hot vendor / build / cache dirs
+/// plus the `.git` worktree. Dotfile dirs are skipped via a separate
+/// `starts_with('.')` predicate so an operator who parks compose under
+/// `~/repo/.devops/` still gets picked up at the repo root level but
+/// not from nested dotdirs deeper in the tree.
+const DETECT_SKIP_DIRS: &[&str] = &[
+    "node_modules",
+    "target",
+    "vendor",
+    "_vendor",
+    "dist",
+    "build",
+    "out",
+    ".venv",
+    "venv",
+    "env",
+    ".next",
+    ".nuxt",
+    "site-packages",
+    "third_party",
+    "__pycache__",
+];
 
 /// A compose file located inside a connected repo.
 #[derive(Debug, Clone)]
@@ -69,14 +101,52 @@ pub enum ComposeError {
     Emit(#[source] serde_yaml::Error),
 }
 
-/// Find the canonical compose file for a single repo, if any. Walks the
-/// repo root only; nested compose files (e.g. under `infra/compose/`)
-/// are out of scope for the merge today.
+/// Find the canonical compose file for a single repo, if any. Walks
+/// the repo root first and then descends up to [`DETECT_MAX_DEPTH`]
+/// levels through non-hot, non-dot subdirectories so compose files
+/// parked under `infra/`, `docker/`, or `deploy/compose/` still get
+/// picked up. Hot vendor / build directories listed in
+/// [`DETECT_SKIP_DIRS`] are skipped to keep the walk bounded on
+/// monorepos.
+///
+/// Priority order:
+/// 1. Shallowest depth wins (root beats `infra/`, `infra/` beats
+///    `infra/compose/`).
+/// 2. Within a depth, the canonical filename order in
+///    [`CANDIDATE_FILES`] applies (so `docker-compose.yml` wins over
+///    `compose.yaml` parked next to it).
+/// 3. Within a depth, sibling directories are visited in lexicographic
+///    order so the choice is deterministic across hosts.
 pub fn detect(repo_root: &Path, repo_name: &str) -> Option<ComposeFile> {
-    for name in CANDIDATE_FILES {
-        let p = repo_root.join(name);
-        if p.is_file() {
-            return Some(ComposeFile { repo_name: repo_name.to_string(), path: p });
+    let mut queue: VecDeque<(PathBuf, usize)> = VecDeque::new();
+    queue.push_back((repo_root.to_path_buf(), 0));
+    while let Some((dir, depth)) = queue.pop_front() {
+        for name in CANDIDATE_FILES {
+            let candidate = dir.join(name);
+            if candidate.is_file() {
+                return Some(ComposeFile { repo_name: repo_name.to_string(), path: candidate });
+            }
+        }
+        if depth >= DETECT_MAX_DEPTH {
+            continue;
+        }
+        let mut children: Vec<PathBuf> = match std::fs::read_dir(&dir) {
+            Ok(rd) => rd
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false))
+                .map(|entry| entry.path())
+                .filter(|path| {
+                    let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+                        return false;
+                    };
+                    !name.starts_with('.') && !DETECT_SKIP_DIRS.contains(&name)
+                })
+                .collect(),
+            Err(_) => continue,
+        };
+        children.sort();
+        for child in children {
+            queue.push_back((child, depth + 1));
         }
     }
     None
@@ -313,6 +383,66 @@ mod tests {
     fn detect_returns_none_when_absent() {
         let tmp = tempdir().unwrap();
         assert!(detect(tmp.path(), "alpha").is_none());
+    }
+
+    #[test]
+    fn detect_finds_nested_compose_under_infra() {
+        let tmp = tempdir().unwrap();
+        let nested = tmp.path().join("infra").join("compose");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("docker-compose.yml"), "services: {}\n").unwrap();
+        let cf = detect(tmp.path(), "alpha").expect("found nested");
+        assert_eq!(cf.path, nested.join("docker-compose.yml"));
+    }
+
+    #[test]
+    fn detect_prefers_repo_root_over_nested() {
+        let tmp = tempdir().unwrap();
+        let nested = tmp.path().join("deploy");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(tmp.path().join("docker-compose.yml"), "services: {}\n").unwrap();
+        std::fs::write(nested.join("docker-compose.yml"), "services: {}\n").unwrap();
+        let cf = detect(tmp.path(), "alpha").expect("found");
+        assert_eq!(cf.path, tmp.path().join("docker-compose.yml"));
+    }
+
+    #[test]
+    fn detect_skips_hot_directories() {
+        let tmp = tempdir().unwrap();
+        let nm = tmp.path().join("node_modules").join("vendor-pkg");
+        std::fs::create_dir_all(&nm).unwrap();
+        std::fs::write(nm.join("docker-compose.yml"), "services: {}\n").unwrap();
+        assert!(detect(tmp.path(), "alpha").is_none(), "must not descend into node_modules");
+    }
+
+    #[test]
+    fn detect_skips_dot_directories() {
+        let tmp = tempdir().unwrap();
+        let dotdir = tmp.path().join(".cache");
+        std::fs::create_dir_all(&dotdir).unwrap();
+        std::fs::write(dotdir.join("docker-compose.yml"), "services: {}\n").unwrap();
+        assert!(detect(tmp.path(), "alpha").is_none(), "must not descend into dot dirs");
+    }
+
+    #[test]
+    fn detect_honours_max_depth() {
+        let tmp = tempdir().unwrap();
+        let too_deep = tmp.path().join("a").join("b").join("c").join("d");
+        std::fs::create_dir_all(&too_deep).unwrap();
+        std::fs::write(too_deep.join("docker-compose.yml"), "services: {}\n").unwrap();
+        assert!(
+            detect(tmp.path(), "alpha").is_none(),
+            "depth 4 files must not be picked up (max depth 3)",
+        );
+    }
+
+    #[test]
+    fn detect_picks_canonical_name_first() {
+        let tmp = tempdir().unwrap();
+        std::fs::write(tmp.path().join("docker-compose.yml"), "services: {}\n").unwrap();
+        std::fs::write(tmp.path().join("compose.yaml"), "services: {}\n").unwrap();
+        let cf = detect(tmp.path(), "alpha").expect("found");
+        assert_eq!(cf.path.file_name().unwrap(), "docker-compose.yml");
     }
 
     #[test]
