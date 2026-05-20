@@ -217,8 +217,12 @@ fn render_readme(finding: &FindingRecord, payloads: &[PayloadRecord]) -> String 
 }
 
 fn render_repro_script(finding: &FindingRecord, payload: Option<&PayloadRecord>) -> String {
-    let cap = payload.map(|p| p.cap.as_str()).unwrap_or(finding.cap.as_str());
-    let lang = payload.map(|p| p.lang.as_str()).unwrap_or("unknown");
+    let cap_raw = payload.map(|p| p.cap.as_str()).unwrap_or(finding.cap.as_str());
+    let lang_raw = payload.map(|p| p.lang.as_str()).unwrap_or("unknown");
+    let id = sanitize_for_shell_literal(&finding.id);
+    let cap = sanitize_for_shell_literal(cap_raw);
+    let lang = sanitize_for_shell_literal(lang_raw);
+    let rule = sanitize_for_shell_literal(&finding.rule);
     let bundle_dir = "$(cd \"$(dirname \"$0\")\" && pwd)";
     format!(
         "#!/usr/bin/env bash\n\
@@ -240,15 +244,38 @@ fn render_repro_script(finding: &FindingRecord, payload: Option<&PayloadRecord>)
          echo \"[repro] replay surface placeholder - wire the sandbox verifier here.\"\n\
          echo \"[repro] exit 0 means the script ran to completion; verifier wiring lands with the chain-lane runner.\"\n\
          exit 0\n",
-        id = finding.id,
+        id = id,
         cap = cap,
         lang = lang,
-        rule = finding.rule,
+        rule = rule,
         bundle_dir = bundle_dir,
         payload_bin = PAYLOAD_FILENAME,
         expected_verdict = EXPECTED_VERDICT_FILENAME,
         expected_trace = EXPECTED_TRACE_FILENAME,
     )
+}
+
+/// Whitelist-escape an AI-controlled or scanner-controlled field before
+/// inlining it into the repro shell script. Any byte outside the
+/// conservative `[A-Za-z0-9._:/-]` set collapses to `_`, and the result
+/// is truncated to `MAX_INTERP_LEN` bytes. The fields this guards
+/// (`finding.id`, `cap`, `lang`, `rule`) all live inside a `# comment`
+/// line and a double-quoted `echo`, so a newline / backtick / `$()`
+/// would otherwise break out and run arbitrary shell. The replacement
+/// is lossy on purpose: any legitimate identifier already fits the
+/// whitelist, and a sanitiser that preserved exotic bytes via escapes
+/// would re-introduce the parser ambiguity it set out to remove.
+fn sanitize_for_shell_literal(s: &str) -> String {
+    const MAX_INTERP_LEN: usize = 96;
+    let mut out = String::with_capacity(s.len().min(MAX_INTERP_LEN));
+    for b in s.bytes().take(MAX_INTERP_LEN) {
+        let ok = b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'/' | b'-');
+        out.push(if ok { b as char } else { '_' });
+    }
+    if out.is_empty() {
+        out.push('_');
+    }
+    out
 }
 
 fn render_expected_verdict(finding: &FindingRecord) -> String {
@@ -530,5 +557,48 @@ mod tests {
             v = v * 8 + (b - b'0') as u64;
         }
         v
+    }
+
+    #[test]
+    fn sanitize_for_shell_literal_collapses_dangerous_bytes() {
+        // Newline would break out of `# comment` and `echo "..."` lines.
+        assert_eq!(sanitize_for_shell_literal("safe-id_123"), "safe-id_123");
+        assert_eq!(sanitize_for_shell_literal("with\nnewline"), "with_newline");
+        assert_eq!(sanitize_for_shell_literal("`backtick`"), "_backtick_");
+        assert_eq!(sanitize_for_shell_literal("$(rm -rf ~)"), "__rm_-rf___");
+        assert_eq!(sanitize_for_shell_literal("\"quoted\""), "_quoted_");
+        assert_eq!(sanitize_for_shell_literal("a;b|c&d"), "a_b_c_d");
+        // Length is capped to keep the comment line readable.
+        let long = "a".repeat(200);
+        assert_eq!(sanitize_for_shell_literal(&long).len(), 96);
+        // Empty / all-illegal inputs collapse to a single underscore so
+        // the resulting `cap=` literal is never empty.
+        assert_eq!(sanitize_for_shell_literal(""), "_");
+        assert_eq!(sanitize_for_shell_literal("!!!"), "___");
+    }
+
+    #[test]
+    fn render_repro_script_escapes_injection_attempts() {
+        let mut finding = sample_finding("run-1", "repo", "src/a.py", "rule-1");
+        // The id field is set by the constructor (hash); replace with
+        // an attacker-controlled value to lock the defense-in-depth
+        // sanitisation of finding.id specifically.
+        finding.id = "fid\ninjected-comment\nrm -rf /".to_string();
+        finding.cap = "$(id)".to_string();
+        finding.rule = "rule\"; rm -rf /; #".to_string();
+        let mut payload = sample_payload("pid", &finding.id);
+        payload.cap = "OS_COMMAND`whoami`".to_string();
+        payload.lang = "py;exit".to_string();
+
+        let script = render_repro_script(&finding, Some(&payload));
+        for substr in ["rm -rf /", "$(id)", "`whoami`", "; #", "\"; ", "py;exit"] {
+            assert!(
+                !script.contains(substr),
+                "raw injection {substr:?} leaked into script: {script}"
+            );
+        }
+        // The sanitised forms (underscores) appear instead.
+        assert!(script.contains("cap=OS_COMMAND_whoami_"), "cap not sanitised: {script}");
+        assert!(script.contains("lang=py_exit"), "lang not sanitised: {script}");
     }
 }

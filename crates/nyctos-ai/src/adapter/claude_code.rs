@@ -31,8 +31,9 @@ use nyctos_types::agent::{
 };
 use nyctos_types::event::{AgentEvent, AiEvent, EventSink};
 use serde::Deserialize;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::Command;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{ChildStderr, Command};
+use tokio::task::JoinHandle;
 
 use crate::runtime::{AiRuntime, SharedBudgetTracker};
 
@@ -40,6 +41,13 @@ use crate::runtime::{AiRuntime, SharedBudgetTracker};
 /// absent so operators who installed the older alias still work.
 pub const DEFAULT_CLAUDE_BINARY: &str = "claude";
 const FALLBACK_CLAUDE_BINARY: &str = "claude-code";
+
+/// Upper bound on the number of stderr bytes the drain task retains.
+/// `claude --verbose` can write multi-megabyte transcripts; an
+/// unbounded buffer would let a runaway child OOM the daemon. The
+/// drain keeps the trailing window (most recent bytes) because the
+/// proximate failure reason is almost always at the end of the stream.
+const MAX_STDERR_CAPTURE_BYTES: usize = 64 * 1024;
 
 /// Path + version string captured at adapter-construction time. Surfaced
 /// by `nyx-agent doctor` so operators can confirm which binary the
@@ -207,12 +215,11 @@ impl AiRuntime for ClaudeCodeAdapter {
             .arg(task.max_turns.to_string())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            // Drop stderr to /dev/null: nothing in this adapter reads it,
-            // and `--verbose` can easily write more than the pipe buffer
-            // holds (typically 64 KiB on Linux). A piped-but-undrained
-            // stderr would block the child on write and deadlock the
-            // agent loop.
-            .stderr(Stdio::null())
+            // Pipe stderr so failure paths can surface the upstream reason.
+            // A sibling task drains the pipe into a bounded buffer
+            // (`MAX_STDERR_CAPTURE_BYTES`) in parallel with stdout, so
+            // `--verbose` output cannot block the child on a full pipe.
+            .stderr(Stdio::piped())
             // Ensure SIGKILL fires and the child is reaped if a future error
             // path drops `child` before `wait().await` runs. The timeout arm
             // below calls `kill().await` (which reaps), but `kill_on_drop`
@@ -233,6 +240,11 @@ impl AiRuntime for ClaudeCodeAdapter {
             .stdout
             .take()
             .ok_or_else(|| AiError::Transport("claude stdout missing".to_string()))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| AiError::Transport("claude stderr missing".to_string()))?;
+        let stderr_handle = spawn_stderr_drain(stderr);
         let mut reader = BufReader::new(stdout).lines();
 
         let mut turns: u32 = 0;
@@ -315,7 +327,8 @@ impl AiRuntime for ClaudeCodeAdapter {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
                 let _ = child.kill().await;
-                return Err(e);
+                let stderr_text = await_stderr_drain(stderr_handle).await;
+                return Err(annotate_with_stderr(e, &stderr_text));
             }
             Err(_) => {
                 let _ = child.kill().await;
@@ -325,18 +338,22 @@ impl AiRuntime for ClaudeCodeAdapter {
                         reason: HaltReason::OperatorCancelled,
                     },
                 });
-                return Err(AiError::Transport(format!(
-                    "claude agent_loop timed out after {}s",
-                    self.timeout.as_secs()
-                )));
+                let stderr_text = await_stderr_drain(stderr_handle).await;
+                let base = format!("claude agent_loop timed out after {}s", self.timeout.as_secs());
+                return Err(AiError::Transport(append_stderr(&base, &stderr_text)));
             }
         }
 
         let status =
             child.wait().await.map_err(|e| AiError::Transport(format!("wait claude: {e}")))?;
         if !status.success() {
-            return Err(AiError::UpstreamRefused(format!("claude exited {status}")));
+            let stderr_text = await_stderr_drain(stderr_handle).await;
+            let base = format!("claude exited {status}");
+            return Err(AiError::UpstreamRefused(append_stderr(&base, &stderr_text)));
         }
+        // Success: detach the drain. The child has exited so the pipe is
+        // closed; the task completes naturally and its buffer is dropped.
+        drop(stderr_handle);
 
         let spent_after =
             self.tracker.add_spend(&budget.run_id, budget.kind, cost_usd_micros).await?;
@@ -378,6 +395,54 @@ impl AiRuntime for ClaudeCodeAdapter {
 
     fn cost_estimate(&self, _prompt: &Prompt) -> Option<CostEstimate> {
         None
+    }
+}
+
+fn spawn_stderr_drain(mut stderr: ChildStderr) -> JoinHandle<Vec<u8>> {
+    tokio::spawn(async move {
+        let mut buf: Vec<u8> = Vec::with_capacity(1024);
+        let mut chunk = [0u8; 4096];
+        loop {
+            match stderr.read(&mut chunk).await {
+                Ok(0) => break,
+                Ok(n) => {
+                    buf.extend_from_slice(&chunk[..n]);
+                    if buf.len() > MAX_STDERR_CAPTURE_BYTES {
+                        let drop_n = buf.len() - MAX_STDERR_CAPTURE_BYTES;
+                        buf.drain(..drop_n);
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        buf
+    })
+}
+
+async fn await_stderr_drain(handle: JoinHandle<Vec<u8>>) -> String {
+    let bytes = match tokio::time::timeout(Duration::from_secs(1), handle).await {
+        Ok(Ok(b)) => b,
+        _ => return String::new(),
+    };
+    String::from_utf8_lossy(&bytes).trim().to_string()
+}
+
+fn append_stderr(base: &str, stderr_text: &str) -> String {
+    if stderr_text.is_empty() {
+        base.to_string()
+    } else {
+        format!("{base}: stderr: {stderr_text}")
+    }
+}
+
+fn annotate_with_stderr(err: AiError, stderr_text: &str) -> AiError {
+    if stderr_text.is_empty() {
+        return err;
+    }
+    match err {
+        AiError::Transport(msg) => AiError::Transport(append_stderr(&msg, stderr_text)),
+        AiError::UpstreamRefused(msg) => AiError::UpstreamRefused(append_stderr(&msg, stderr_text)),
+        other => other,
     }
 }
 
@@ -698,5 +763,86 @@ mod tests {
         assert!(md.contains("enumerate sinks"));
         assert!(md.contains("- fs.read"));
         assert!(md.contains("- record_payload"));
+    }
+
+    #[test]
+    fn append_stderr_skips_when_empty() {
+        assert_eq!(append_stderr("base", ""), "base");
+        assert_eq!(append_stderr("base", "boom"), "base: stderr: boom");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn agent_loop_surfaces_stderr_on_nonzero_exit() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script = dir.path().join("fake_claude");
+        let body = "#!/bin/sh\n\
+                    cat > /dev/null\n\
+                    printf 'API authentication failed: invalid bearer token\\n' >&2\n\
+                    exit 7\n";
+        tokio::fs::write(&script, body).await.expect("write script");
+        let mut perms = tokio::fs::metadata(&script).await.expect("meta").permissions();
+        perms.set_mode(0o755);
+        tokio::fs::set_permissions(&script, perms).await.expect("perms");
+
+        let tracker = Arc::new(InMemoryBudgetTracker::new()) as SharedBudgetTracker;
+        let adapter = ClaudeCodeAdapter::new(
+            ClaudeBinary { path: script, version: "test".to_string() },
+            tracker,
+        )
+        .with_timeout(Duration::from_secs(10));
+        let (tx, _rx) = broadcast::channel::<AgentEvent>(4);
+        let err = adapter
+            .agent_loop(sample_task(), budget(1_000_000), tx)
+            .await
+            .expect_err("expected upstream refused");
+        match err {
+            AiError::UpstreamRefused(msg) => {
+                assert!(msg.starts_with("claude exited"), "missing exit prefix: {msg}");
+                assert!(msg.contains("API authentication failed"), "stderr missing: {msg}");
+                assert!(msg.contains("invalid bearer token"), "trailing stderr trimmed: {msg}");
+            }
+            other => panic!("expected UpstreamRefused, got {other:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn agent_loop_surfaces_stderr_on_timeout() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script = dir.path().join("fake_claude_slow");
+        // Write to stderr before the stall so the drain task captures
+        // a line for sure before the adapter timeout fires. `exec sleep`
+        // avoids leaving an extra shell waiting on the sleep child.
+        let body = "#!/bin/sh\n\
+                    printf 'pre-stall diagnostic line\\n' >&2\n\
+                    exec sleep 30\n";
+        tokio::fs::write(&script, body).await.expect("write script");
+        let mut perms = tokio::fs::metadata(&script).await.expect("meta").permissions();
+        perms.set_mode(0o755);
+        tokio::fs::set_permissions(&script, perms).await.expect("perms");
+
+        let tracker = Arc::new(InMemoryBudgetTracker::new()) as SharedBudgetTracker;
+        let adapter = ClaudeCodeAdapter::new(
+            ClaudeBinary { path: script, version: "test".to_string() },
+            tracker,
+        )
+        .with_timeout(Duration::from_millis(2_000));
+        let (tx, _rx) = broadcast::channel::<AgentEvent>(4);
+        let err = adapter
+            .agent_loop(sample_task(), budget(1_000_000), tx)
+            .await
+            .expect_err("expected timeout");
+        match err {
+            AiError::Transport(msg) => {
+                assert!(msg.contains("timed out"), "missing timeout prefix: {msg}");
+                assert!(msg.contains("pre-stall diagnostic line"), "stderr missing: {msg}");
+            }
+            other => panic!("expected Transport timeout, got {other:?}"),
+        }
     }
 }
