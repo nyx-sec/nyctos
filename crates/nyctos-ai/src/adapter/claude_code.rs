@@ -30,6 +30,7 @@ use nyctos_types::agent::{
     HaltReason, Prompt, Response, TokenUsage,
 };
 use nyctos_types::event::{AgentEvent, AiEvent, EventSink};
+use semver::Version;
 use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{ChildStderr, Command};
@@ -41,6 +42,14 @@ use crate::runtime::{AiRuntime, SharedBudgetTracker};
 /// absent so operators who installed the older alias still work.
 pub const DEFAULT_CLAUDE_BINARY: &str = "claude";
 const FALLBACK_CLAUDE_BINARY: &str = "claude-code";
+
+/// Built-in minimum supported Claude Code version. The adapter's
+/// `--print --output-format stream-json --verbose --max-turns N` call
+/// shape and the `assistant` / `result` event types parsed in
+/// [`parse_stream_json`] have been stable since this release. Raise
+/// the floor when a load-bearing CLI flag or stream-json field
+/// shape change forces a hard cutover.
+pub const MINIMUM_CLAUDE_VERSION: &str = "1.0.0";
 
 /// Upper bound on the number of stderr bytes the drain task retains.
 /// `claude --verbose` can write multi-megabyte transcripts; an
@@ -93,7 +102,27 @@ pub async fn detect_claude_binary() -> Result<ClaudeBinary, AiError> {
     }
 
     let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let parsed = parse_claude_version(&version).ok_or_else(|| {
+        AiError::AdapterUnavailable(format!(
+            "claude-code version output `{version}` could not be parsed as semver"
+        ))
+    })?;
+    let floor = Version::parse(MINIMUM_CLAUDE_VERSION).expect("built-in floor parses");
+    if parsed < floor {
+        return Err(AiError::AdapterUnavailable(format!(
+            "claude-code v{parsed} below required minimum v{floor}"
+        )));
+    }
     Ok(ClaudeBinary { path, version })
+}
+
+/// Extract a `semver::Version` from the `claude --version` stdout. The
+/// CLI prints either `<X.Y.Z> (Claude Code)` or a bare `<X.Y.Z>` token;
+/// the parser accepts both shapes and returns `None` when no
+/// semver-shaped token is present.
+fn parse_claude_version(raw: &str) -> Option<Version> {
+    let candidate = raw.split_whitespace().next()?;
+    Version::parse(candidate).ok()
 }
 
 /// Claude Code agent-loop adapter.
@@ -599,6 +628,30 @@ mod tests {
             .await
             .expect_err("one_shot must be unsupported");
         assert!(matches!(err, AiError::UnsupportedMode("one_shot")));
+    }
+
+    #[test]
+    fn parse_claude_version_accepts_bare_semver() {
+        let v = parse_claude_version("1.2.3").expect("bare semver parses");
+        assert_eq!(v, Version::new(1, 2, 3));
+    }
+
+    #[test]
+    fn parse_claude_version_strips_claude_code_suffix() {
+        let v = parse_claude_version("2.0.5 (Claude Code)").expect("suffixed semver parses");
+        assert_eq!(v, Version::new(2, 0, 5));
+    }
+
+    #[test]
+    fn parse_claude_version_rejects_non_semver_output() {
+        assert!(parse_claude_version("").is_none());
+        assert!(parse_claude_version("not-a-version").is_none());
+        assert!(parse_claude_version("v1.2.3").is_none());
+    }
+
+    #[test]
+    fn minimum_claude_version_constant_parses() {
+        Version::parse(MINIMUM_CLAUDE_VERSION).expect("MINIMUM_CLAUDE_VERSION literal parses");
     }
 
     #[tokio::test]

@@ -2367,23 +2367,10 @@ async fn apply_exploration_outcome(
                 );
             }
             let now_ms = finished_at;
-            // Persist a parent agent_traces row keyed to no finding so
-            // operators can audit the call even when it surfaced zero
-            // findings; per-finding rows below link back via
-            // `finding_id` so the trace viewer can group calls under a
-            // single finding.
-            let parent_trace = build_trace_row(
-                TaskKind::Exploration,
-                None,
-                runtime_name,
-                runtime_model,
-                &prompt_version,
-                spent_usd_micros,
-                started_at_ms,
-                finished_at,
-                Some(&metrics),
-            );
-            persist_trace_row(store, parent_trace).await;
+            // Persist the proposed findings first, collecting the ids
+            // that survived. The split-cost step below needs the actual
+            // success count, not the proposal count.
+            let mut successful: Vec<String> = Vec::with_capacity(findings.len());
             for finding in findings {
                 match persist_exploration_finding(
                     store,
@@ -2397,24 +2384,7 @@ async fn apply_exploration_outcome(
                 {
                     Ok(finding_id) => {
                         report.findings_quarantined += 1;
-                        // Per-finding trace pointer so the trace viewer
-                        // can render "this finding was produced by an
-                        // Exploration call" without scanning the global
-                        // trace list. Token/cache metrics live on the
-                        // parent row; the per-finding row stays at zero
-                        // so the totals page does not double-count.
-                        let per_trace = build_trace_row(
-                            TaskKind::Exploration,
-                            Some(finding_id),
-                            runtime_name,
-                            runtime_model,
-                            &prompt_version,
-                            0,
-                            started_at_ms,
-                            finished_at,
-                            None,
-                        );
-                        persist_trace_row(store, per_trace).await;
+                        successful.push(finding_id);
                     }
                     Err(err) => {
                         tracing::warn!(
@@ -2424,6 +2394,48 @@ async fn apply_exploration_outcome(
                         );
                     }
                 }
+            }
+            // Split the call cost evenly across emitted findings so the
+            // AiTraceViewer's per-finding "Total $..." sums to a real
+            // share of the call cost instead of $0. When zero findings
+            // survived, keep the cost on the parent row so the run-card
+            // roll-up still observes the spend through its time-window
+            // join. Token/cache metrics always live on the parent.
+            let n_succ = successful.len() as i64;
+            let (parent_cost, per_finding_costs): (i64, Vec<i64>) = if n_succ == 0 {
+                (spent_usd_micros, Vec::new())
+            } else {
+                let base = spent_usd_micros / n_succ;
+                let leftover = spent_usd_micros - base * n_succ;
+                let costs: Vec<i64> =
+                    (0..n_succ).map(|i| if i < leftover { base + 1 } else { base }).collect();
+                (0, costs)
+            };
+            let parent_trace = build_trace_row(
+                TaskKind::Exploration,
+                None,
+                runtime_name,
+                runtime_model,
+                &prompt_version,
+                parent_cost,
+                started_at_ms,
+                finished_at,
+                Some(&metrics),
+            );
+            persist_trace_row(store, parent_trace).await;
+            for (finding_id, cost) in successful.into_iter().zip(per_finding_costs) {
+                let per_trace = build_trace_row(
+                    TaskKind::Exploration,
+                    Some(finding_id),
+                    runtime_name,
+                    runtime_model,
+                    &prompt_version,
+                    cost,
+                    started_at_ms,
+                    finished_at,
+                    None,
+                );
+                persist_trace_row(store, per_trace).await;
             }
         }
     }
@@ -4211,5 +4223,128 @@ mod tests {
             }
         }
         assert!(saw_banner, "expected escape-suite RED banner on the bus");
+    }
+
+    #[tokio::test]
+    async fn drive_ai_exploration_splits_cost_across_emitted_findings() {
+        // The Exploration call cost must be split across the
+        // per-finding `agent_traces` rows so the AiTraceViewer's
+        // per-finding "Total $..." sums to the proportional share of
+        // the call. The parent row (finding_id = NULL) keeps the
+        // token/cache metrics but carries cost = 0 to avoid double
+        // counting in any join that touches both.
+        let tmp_db = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp_db.path()).await.unwrap();
+        store.repos().upsert(&seed_repo("repo-split")).await.unwrap();
+        let mut run_row = seed_run("run-split");
+        run_row.id = "run-split".into();
+        store.runs().insert(&run_row).await.unwrap();
+
+        let workspace = tempfile::tempdir().unwrap();
+        let mut workspaces = HashMap::new();
+        workspaces.insert(
+            "repo-split".to_string(),
+            WorkspaceHandle::for_local_path_test("repo-split", workspace.path().to_path_buf()),
+        );
+
+        let mut result = empty_exploration_result();
+        for i in 0..3 {
+            result.extracted.push(nyctos_types::agent::ExtractedAgentResult::ExplorationFinding {
+                path: format!("<api:/api/admin/endpoint-{i}>"),
+                line: None,
+                cap: "AUTH_BYPASS".into(),
+                rationale: format!("Admin endpoint {i} accepts unauthenticated GET"),
+                endpoint: Some(format!("GET /api/admin/endpoint-{i}")),
+                suggested_payload_hint: None,
+            });
+        }
+
+        // 1_000_001 / 3 = 333_333 with leftover 2 — first two rows get
+        // 333_334, third gets 333_333. Total stays exact.
+        let cost = 1_000_001_i64;
+        let tracker = Arc::new(InMemoryBudgetTracker::new());
+        tracker.set_cap("run-split", BudgetKind::AgentLoop, 10_000_000);
+        let runtime = ScriptedExplorationRuntime::new(vec![Ok(result)], cost, tracker.clone());
+
+        let bundle = make_bundle("run-split", "repo-split", Vec::new());
+        let (tx, _rx) = tokio::sync::broadcast::channel(4);
+        let gate = StaticEscapeSuiteGate::green();
+
+        let report = drive_ai_exploration_pass(&runtime, &store, &bundle, &workspaces, &gate, tx)
+            .await
+            .unwrap();
+        assert_eq!(report.findings_quarantined, 3);
+        assert_eq!(report.spend_usd_micros, cost);
+
+        let parent_rows: Vec<_> = store
+            .agent_traces()
+            .list_by_task_kind("Exploration")
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|t| t.finding_id.is_none())
+            .collect();
+        assert_eq!(parent_rows.len(), 1, "expected one parent Exploration trace");
+        assert_eq!(parent_rows[0].cost_usd_micros, 0, "parent cost must be zero when findings split it");
+        assert_eq!(parent_rows[0].tokens_in, 100);
+        assert_eq!(parent_rows[0].tokens_out, 50);
+
+        let per_finding_rows: Vec<_> = store
+            .agent_traces()
+            .list_by_task_kind("Exploration")
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|t| t.finding_id.is_some())
+            .collect();
+        assert_eq!(per_finding_rows.len(), 3, "expected three per-finding rows");
+        let total: i64 = per_finding_rows.iter().map(|t| t.cost_usd_micros).sum();
+        assert_eq!(total, cost, "per-finding split must sum to the call cost");
+        // Token metrics stay on the parent so totals views do not
+        // double-count usage when joining both kinds of rows.
+        for row in &per_finding_rows {
+            assert_eq!(row.tokens_in, 0);
+            assert_eq!(row.tokens_out, 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn drive_ai_exploration_keeps_cost_on_parent_when_zero_findings_emitted() {
+        // When the call surfaces zero findings, the cost must stay on
+        // the parent row so the run-card spend roll-up still observes
+        // the spend through its time-window join.
+        let tmp_db = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp_db.path()).await.unwrap();
+        store.repos().upsert(&seed_repo("repo-empty")).await.unwrap();
+        let mut run_row = seed_run("run-empty");
+        run_row.id = "run-empty".into();
+        store.runs().insert(&run_row).await.unwrap();
+
+        let workspace = tempfile::tempdir().unwrap();
+        let mut workspaces = HashMap::new();
+        workspaces.insert(
+            "repo-empty".to_string(),
+            WorkspaceHandle::for_local_path_test("repo-empty", workspace.path().to_path_buf()),
+        );
+
+        let result = empty_exploration_result();
+        let cost = 250_000_i64;
+        let tracker = Arc::new(InMemoryBudgetTracker::new());
+        tracker.set_cap("run-empty", BudgetKind::AgentLoop, 10_000_000);
+        let runtime = ScriptedExplorationRuntime::new(vec![Ok(result)], cost, tracker.clone());
+
+        let bundle = make_bundle("run-empty", "repo-empty", Vec::new());
+        let (tx, _rx) = tokio::sync::broadcast::channel(4);
+        let gate = StaticEscapeSuiteGate::green();
+
+        let report = drive_ai_exploration_pass(&runtime, &store, &bundle, &workspaces, &gate, tx)
+            .await
+            .unwrap();
+        assert_eq!(report.findings_quarantined, 0);
+
+        let rows = store.agent_traces().list_by_task_kind("Exploration").await.unwrap();
+        assert_eq!(rows.len(), 1, "expected a single parent row, no per-finding rows");
+        assert!(rows[0].finding_id.is_none());
+        assert_eq!(rows[0].cost_usd_micros, cost);
     }
 }
