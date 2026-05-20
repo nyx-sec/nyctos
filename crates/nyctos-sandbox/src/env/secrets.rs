@@ -12,8 +12,10 @@
 //! The regex set is deliberately conservative; it favours false
 //! positives over false negatives. Operators that hit a false positive
 //! on a synthetic test value can rename it (e.g.
-//! `STRIPE_TEST_KEY=sk_test_...` instead of `sk_live_...`) rather than
-//! widening the regex.
+//! `STRIPE_TEST_KEY=sk_test_...` instead of `sk_live_...`) or list a
+//! tighter regex in `<state>/secrets/test.env.allow` (one regex per
+//! line, `#` for comments) to whitelist values matched verbatim by the
+//! allow regex on the offending line.
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -40,6 +42,13 @@ pub enum SecretsError {
          the credential (or replace it with a test-mode equivalent) and try again."
     )]
     ProdToken { path: PathBuf, line: usize, kind: &'static str },
+    #[error("malformed allowlist entry in {path} on line {line}: {source}")]
+    Allowlist {
+        path: PathBuf,
+        line: usize,
+        #[source]
+        source: regex::Error,
+    },
 }
 
 /// Parsed contents of a validated `test.env`. The runner forwards
@@ -54,6 +63,12 @@ pub struct SecretsBundle {
 /// Verify `<state_root>/secrets/test.env` exists and contains no
 /// prod-shaped credentials. Returns a [`SecretsBundle`] the caller can
 /// hand to `docker compose --env-file`.
+///
+/// An optional sibling `<state_root>/secrets/test.env.allow` may carry
+/// one regex per line; any line in `test.env` that matches a prod-token
+/// regex AND the allow regex covers the same byte range is permitted
+/// through. The allowlist file is optional - a missing file means an
+/// empty allowlist.
 pub fn check(state_root: &Path) -> Result<SecretsBundle, SecretsError> {
     let path = state_root.join("secrets").join("test.env");
     if !path.is_file() {
@@ -61,28 +76,70 @@ pub fn check(state_root: &Path) -> Result<SecretsBundle, SecretsError> {
     }
     let raw = std::fs::read_to_string(&path)
         .map_err(|source| SecretsError::Read { path: path.clone(), source })?;
-    scan(&path, &raw)
+    let allow_path = state_root.join("secrets").join("test.env.allow");
+    let allowlist = load_allowlist(&allow_path)?;
+    scan(&path, &raw, &allowlist)
 }
 
-fn scan(path: &Path, raw: &str) -> Result<SecretsBundle, SecretsError> {
+fn scan(path: &Path, raw: &str, allowlist: &[Regex]) -> Result<SecretsBundle, SecretsError> {
     let regexes = prod_token_regexes();
     let mut entries = Vec::new();
     for (idx, line) in raw.lines().enumerate() {
         let line_no = idx + 1;
         for (kind, re) in regexes {
-            if re.is_match(line) {
-                return Err(SecretsError::ProdToken {
-                    path: path.to_path_buf(),
-                    line: line_no,
-                    kind,
-                });
+            let Some(m) = re.find(line) else { continue };
+            if allowlist_covers(allowlist, line, m.range()) {
+                continue;
             }
+            return Err(SecretsError::ProdToken { path: path.to_path_buf(), line: line_no, kind });
         }
         if let Some((k, v)) = parse_env_line(line) {
             entries.push((k, v));
         }
     }
     Ok(SecretsBundle { path: path.to_path_buf(), entries })
+}
+
+/// Read `<state>/secrets/test.env.allow` if it exists. One regex per
+/// line; blank lines and `#`-prefixed comments are ignored. A missing
+/// file yields an empty list (no allowlist active).
+fn load_allowlist(path: &Path) -> Result<Vec<Regex>, SecretsError> {
+    if !path.is_file() {
+        return Ok(Vec::new());
+    }
+    let raw = std::fs::read_to_string(path)
+        .map_err(|source| SecretsError::Read { path: path.to_path_buf(), source })?;
+    let mut out = Vec::new();
+    for (idx, line) in raw.lines().enumerate() {
+        let line_no = idx + 1;
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let re = Regex::new(trimmed).map_err(|source| SecretsError::Allowlist {
+            path: path.to_path_buf(),
+            line: line_no,
+            source,
+        })?;
+        out.push(re);
+    }
+    Ok(out)
+}
+
+/// True when some allow regex matches a byte range on `line` that
+/// covers the prod-token match's byte range. Requiring containment
+/// (not just any match on the line) prevents an allowlist entry from
+/// laundering an unrelated prod token that happens to share a line
+/// with a synthetic value.
+fn allowlist_covers(allowlist: &[Regex], line: &str, prod_range: std::ops::Range<usize>) -> bool {
+    for allow in allowlist {
+        for am in allow.find_iter(line) {
+            if am.start() <= prod_range.start && am.end() >= prod_range.end {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn parse_env_line(line: &str) -> Option<(String, String)> {
@@ -147,6 +204,14 @@ mod tests {
         p
     }
 
+    fn write_allowlist(root: &Path, body: &str) -> PathBuf {
+        let secrets_dir = root.join("secrets");
+        std::fs::create_dir_all(&secrets_dir).unwrap();
+        let p = secrets_dir.join("test.env.allow");
+        std::fs::write(&p, body).unwrap();
+        p
+    }
+
     #[test]
     fn missing_file_is_fail_closed() {
         let tmp = tempdir().unwrap();
@@ -207,5 +272,55 @@ mod tests {
         let tmp = tempdir().unwrap();
         write_state(tmp.path(), "STRIPE_KEY=sk_test_abc123\n");
         check(tmp.path()).expect("sk_test_ is fine");
+    }
+
+    #[test]
+    fn allowlist_lets_synthetic_arn_through() {
+        let tmp = tempdir().unwrap();
+        write_state(tmp.path(), "ROLE=arn:aws:iam::000000000000:role/test-only\n");
+        write_allowlist(tmp.path(), "arn:aws:iam::000000000000:role/test-only\n");
+        check(tmp.path()).expect("allowlisted synthetic ARN must pass");
+    }
+
+    #[test]
+    fn allowlist_does_not_launder_unrelated_prod_token() {
+        let tmp = tempdir().unwrap();
+        // Allowlist covers a different substring on the line; the AWS
+        // ARN match is outside the allow range so it still blocks.
+        write_state(tmp.path(), "MIXED=sentinel arn:aws:iam::123456789012:role/prod-admin\n");
+        write_allowlist(tmp.path(), "sentinel\n");
+        let err = check(tmp.path()).unwrap_err();
+        assert!(matches!(err, SecretsError::ProdToken { .. }));
+    }
+
+    #[test]
+    fn allowlist_comments_and_blanks_are_ignored() {
+        let tmp = tempdir().unwrap();
+        write_state(tmp.path(), "ROLE=arn:aws:iam::000000000000:role/synthetic\n");
+        write_allowlist(
+            tmp.path(),
+            "# allow the localstack test ARNs\n\narn:aws:iam::000000000000:role/[a-z-]+\n",
+        );
+        check(tmp.path()).expect("commented allowlist must apply");
+    }
+
+    #[test]
+    fn allowlist_malformed_regex_is_surfaced() {
+        let tmp = tempdir().unwrap();
+        write_state(tmp.path(), "DB_USER=test\n");
+        // Unclosed character class.
+        write_allowlist(tmp.path(), "[unclosed\n");
+        let err = check(tmp.path()).unwrap_err();
+        let SecretsError::Allowlist { line, .. } = err else {
+            panic!("expected Allowlist error, got something else");
+        };
+        assert_eq!(line, 1);
+    }
+
+    #[test]
+    fn missing_allowlist_file_is_silently_skipped() {
+        let tmp = tempdir().unwrap();
+        write_state(tmp.path(), "DB_USER=test\n");
+        check(tmp.path()).expect("absent allowlist is fine");
     }
 }

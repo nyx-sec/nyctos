@@ -284,9 +284,13 @@ impl EnvBuilder {
     }
 }
 
-/// A live docker-compose env. Drop without calling [`RunningEnv::down`]
-/// only on error paths; the constructor stamps `running = true` and the
-/// destructor logs a warning if it sees a still-running env on drop.
+/// A live docker-compose env. Prefer [`RunningEnv::down`] for explicit
+/// teardown so the caller can observe failures; the [`Drop`] impl is a
+/// fallback that spawns a detached OS thread to run
+/// `docker compose down --volumes --remove-orphans` for operator-cancel
+/// and panic paths that bypass `down()`. The detached teardown is
+/// best-effort and capped at [`DOWN_TIMEOUT`] wall-clock; failures are
+/// logged via `tracing::warn!` but not surfaced to the caller.
 #[derive(Debug)]
 pub struct RunningEnv {
     docker_binary: PathBuf,
@@ -379,12 +383,76 @@ impl RunningEnv {
 
 impl Drop for RunningEnv {
     fn drop(&mut self) {
-        if self.running {
-            tracing::warn!(
-                project = %self.project_name,
-                "RunningEnv dropped without RunningEnv::down(); containers may leak"
-            );
+        if !self.running {
+            return;
         }
+        // Operator-cancel and panic paths bypass `RunningEnv::down`.
+        // Spawn a detached OS thread that runs a synchronous
+        // `docker compose down --volumes --remove-orphans` so containers
+        // do not leak past the dropped handle. Detached (not blocking)
+        // because Drop runs on an arbitrary thread - possibly a tokio
+        // worker we must not stall and possibly outside any runtime.
+        // Best effort: log and move on if the subprocess cannot spawn.
+        let docker_binary = self.docker_binary.clone();
+        let super_compose = self.super_compose.clone();
+        let secrets_path = self.secrets_path.clone();
+        let project_name = self.project_name.clone();
+        let _ = std::thread::Builder::new()
+            .name(format!("nyx-env-down-{project_name}"))
+            .spawn(move || {
+                let mut cmd = std::process::Command::new(&docker_binary);
+                cmd.arg("compose")
+                    .arg("--project-name")
+                    .arg(&project_name)
+                    .arg("-f")
+                    .arg(&super_compose)
+                    .arg("--env-file")
+                    .arg(&secrets_path)
+                    .arg("down")
+                    .arg("--volumes")
+                    .arg("--remove-orphans")
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null());
+                let mut child = match cmd.spawn() {
+                    Ok(c) => c,
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            project = %project_name,
+                            "docker compose down failed to spawn on RunningEnv drop; containers may leak"
+                        );
+                        return;
+                    }
+                };
+                let deadline = std::time::Instant::now() + DOWN_TIMEOUT;
+                loop {
+                    match child.try_wait() {
+                        Ok(Some(_)) => return,
+                        Ok(None) => {
+                            if std::time::Instant::now() >= deadline {
+                                let _ = child.kill();
+                                let _ = child.wait();
+                                tracing::warn!(
+                                    project = %project_name,
+                                    timeout_secs = DOWN_TIMEOUT.as_secs(),
+                                    "docker compose down timed out on RunningEnv drop; killed subprocess"
+                                );
+                                return;
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(100));
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                project = %project_name,
+                                "docker compose down wait errored on RunningEnv drop"
+                            );
+                            return;
+                        }
+                    }
+                }
+            });
     }
 }
 
