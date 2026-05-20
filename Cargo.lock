@@ -2009,6 +2009,7 @@ dependencies = [
  "nyctos-types",
  "nyx-agent-core",
  "regex",
+ "semver",
  "serde",
  "serde_json",
  "serde_yaml",

@@ -1825,3 +1825,225 @@ notes (pass 32):
 - tool budget: ~7 of 24 calls used (ls workspace, sentinel
   tail/wc, working-tree diff stat + content, log scan, commit-window
   diff stat + spot-content). Stops here under quality-over-count.
+
+---
+phase23.exploration.v1 task=expl-demo (re-entry against working-tree diff)
+focus: webhook dedup additions (HEAD: classify_event + DeliveryDedupCache),
+       env-builder compose merge (HEAD: refuse_if_project_in_use, MIN_COMPOSE_VERSION).
+findings below pin to lines in the working tree, not HEAD.
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyx-agent-api/src/webhook.rs",
+  "line": 393,
+  "cap": "AUTH_BYPASS",
+  "endpoint": "POST /webhook/git (replay protection bypass via delivery-id forgery)",
+  "rationale": "The new DeliveryDedupCache only keys on the upstream-provided X-GitHub-Delivery / X-Gitea-Delivery / etc. header. HMAC-SHA256 is computed over the request body only — no header is bound into the signature (verify_signature at :481-488), and the body itself carries no nonce or timestamp. Therefore an attacker who captures any one valid (body, signature) pair (TLS-MITM, proxy log, GHA-step echo, etc.) can replay the captured push event indefinitely by simply rotating X-GitHub-Delivery to a fresh UUID on each replay; the new dedup gate at :393 admits each replay as a fresh delivery. The branch filter at :447 is also satisfied because the body's `ref` is whatever the original push carried. Each replay re-fires ScanTrigger::trigger, costing repo clone + sandbox spin every time. Static pass missed because the replay primitive is the *header-not-bound-to-HMAC* gap; nothing about the dedup or HMAC code is individually wrong.",
+  "suggested_payload_hint": "Capture one legitimate POST /webhook/git (body B, sig S). Then loop: curl -X POST /webhook/git -H 'X-Hub-Signature-256: <S>' -H 'X-GitHub-Event: push' -H \"X-GitHub-Delivery: $(uuidgen)\" --data-binary @B — observe a fresh run_id per call."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyx-agent-sandbox/src/env/compose.rs",
+  "line": 245,
+  "cap": "SANDBOX_ESCAPE",
+  "endpoint": "<env-builder:EnvBuilder::up -> compose::merge -> rewrite_service>",
+  "rationale": "rewrite_service rewrites *only* `depends_on`, named-volume mounts (filtered by is_named_volume_ref at :333 — which lets ANY path-shaped src through verbatim), `networks`, and `container_name`. Every other key in a scanned repo's docker-compose.yml is `v.clone()`'d straight into the merged super-compose (the catch-all `_ => v.clone()` at :259). That means a malicious repo connected to a project can ship a docker-compose.yml carrying `privileged: true`, `cap_add: [SYS_ADMIN]`, `pid: host`, `network_mode: host`, `userns_mode: host`, or a bind-mount string like `volumes: [\"/:/host:rw\"]` (is_named_volume_ref returns false on any src containing `/`, so the mount is passed through untouched), and EnvBuilder::up at env/mod.rs:217 will `docker compose up -d --build` that super-compose against the operator's docker daemon. The chain-lane sandbox boundary collapses: the scanned-repo container runs privileged with host filesystem visibility, can drop a binary into /host/usr/local/bin, or with network_mode:host can reach the loopback /api/v1/* surface that bypasses Host-allowlist (cf. existing DNS_REBIND row). Static pass missed because there is no tainted *flow* — the gap is the absence of an allow-list filter over compose service keys.",
+  "suggested_payload_hint": "In a scanned repo, write docker-compose.yml: `services:\\n  pwn:\\n    image: alpine\\n    privileged: true\\n    network_mode: host\\n    pid: host\\n    volumes: [\\\"/:/host:rw\\\"]\\n    command: [\\\"sh\\\",\\\"-c\\\",\\\"echo OWNED > /host/tmp/nyx-escape && sleep 3600\\\"]`. Connect repo to a project, trigger scan; observe /tmp/nyx-escape on the operator host."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyx-agent-api/src/webhook.rs",
+  "line": 399,
+  "cap": "AUTH_BYPASS",
+  "endpoint": "POST /webhook/git (dedup poisoned-mutex fail-open)",
+  "rationale": "The dedup mutex lock-handling at :394-402 explicitly fails open: on Mutex::lock() returning Err(PoisonError), the handler logs a warning and treats the delivery as fresh. A Mutex is poisoned only by a panic-while-holding-the-guard, and DeliveryDedupCache::record (:161-173) does allocations (HashSet::insert, VecDeque::push_back) that can panic under allocator failure / OOM. Once a single panic poisons the lock, every subsequent webhook delivery — including outright replays — bypasses dedup for the lifetime of the process. The mutex is wrapped in Arc and shared across router rebuilds (per the doc comment at :252), so this is a sticky failure that survives config reload, not a transient race. Combined with the captured-(body,sig) replay primitive in the sibling finding, this turns one allocator hiccup into permanent replay-amplification. Static pass missed because the doc comment defends the choice as 'safe response'; the bug is a state-machine flaw — the safe-default is fail-closed once HMAC has already passed.",
+  "suggested_payload_hint": "Drive the daemon to OOM (parallel /webhook/git with 1 MiB bodies) until one record() panics; then observe that captured-body replays at the new delivery-id no longer get the `already processed` response even when re-using a previously-seen id."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyx-agent-api/src/webhook.rs",
+  "line": 162,
+  "cap": "DOS",
+  "endpoint": "POST /webhook/git (DeliveryDedupCache FIFO eviction lets known-id replays slip through)",
+  "rationale": "DeliveryDedupCache::record is documented as `LRU-ish` (:144) but the implementation is strict-FIFO: on a cache hit (:162-164) the existing id is NOT moved to the back of `order`, so the eviction order is purely arrival order. An attacker who has the shared secret (or who only needs replayability of a captured legitimate signature — see the sibling delivery-id-forgery row) can flush any target delivery-id out of the 1024-entry window by sending 1024 fresh deliveries; the originally-seen id rolls off the front, and the captured (body,sig) replay under that *same* delivery-id is then accepted as fresh. The cap has no time-decay either, so the cache holds 1024 entries until the process restarts — making the eviction window cheap to engineer. Static pass missed because the bug is a divergence between the doc comment and the FIFO `pop_front()` at :166, not a tainted flow.",
+  "suggested_payload_hint": "Replay 1024 distinct delivery-ids (any fresh UUID each) under valid (body, sig) — observe that the 1025th replay under the *original* captured id re-fires the scan because the dedup entry was evicted FIFO."
+}
+
+---
+exploration session-2 closing notes
+- 4 findings emitted; all pin to working-tree lines under the
+  HEAD-vs-working-tree diff (webhook.rs dedup additions,
+  env/compose.rs rewrite_service pass-through). New findings target
+  state-machine flaws and a sandbox-escape primitive, none
+  duplicating prior rows.
+- mitigations the working-tree diff DID close (no findings):
+    * webhook now rejects Ping / non-push events before scan
+      (closes a small TRIGGER_AMPLIFICATION sub-case at :334-359);
+    * webhook now refuses signed-but-refless bodies on Unknown
+      providers (:433-445);
+    * env-builder now refuses project_name collisions before
+      `up --build` (env/mod.rs:254-272).
+- carry-forward + sharpened next-pass triggers:
+    (viii) any new key in rewrite_service's match arms in
+           env/compose.rs (privileged / cap_add / network_mode
+           landing in the allow-list flips SANDBOX_ESCAPE to
+           MITIGATED);
+    (ix)   any change to webhook verify_signature that folds
+           the delivery-id or a timestamp into the HMAC input
+           (closes the captured-signature replay row);
+    (x)    any change to DeliveryDedupCache::record that
+           refreshes order on hit OR adds time-decay (closes
+           the FIFO-eviction row);
+    (xi)   any change to the poisoned-mutex branch at
+           webhook.rs:399 toward fail-closed (return 503 + log)
+           closes the dedup poisoned-mutex AUTH_BYPASS row.
+- tool budget after session-2: ~13 of 24 calls used (sentinel
+  tail/append, env diff, compose grep, router head, two crate
+  reads). Stops here under quality-over-count.
+
+---
+phase23.exploration.v1 task=expl-demo (session-3 re-entry against working-tree diff)
+focus: env-builder refuse_if_project_in_use canonicalization gap
+       (HEAD: env/mod.rs:251 + parse_compose_ls_names :414).
+finding below pins to a line in the working tree, not HEAD.
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyx-agent-sandbox/src/env/mod.rs",
+  "line": 268,
+  "cap": "SANDBOX_COLLISION",
+  "endpoint": "<env-builder:EnvBuilder::refuse_if_project_in_use -> names.iter().any(n == self.project_name)>",
+  "rationale": "The new project-name collision gate at :251-271 reads `docker compose ls --all --format json` (which returns names *as docker normalized them*: lowercased, with any of `.` / space / unicode separator / etc. collapsed per docker compose's project-name normalization rules) and compares each entry to `self.project_name` with raw string equality. `self.project_name` is `Project::name.clone()` taken verbatim from operator config (nyx-agent-core/src/project/mod.rs:35 — free-form String, no validator). So whenever the operator's `Project::name` is anything other than already-canonical (uppercase letters, embedded spaces, leading/trailing whitespace, or chars docker strips), the filter at :268 returns false on a *true* collision: docker shows the running project as `myproj`, our config holds `MyProj`, comparison fails, the gate waves the spin through, and `docker compose --project-name MyProj up -d --build` resolves to the same `myproj` namespace docker already runs — adopting another builder's containers, with `RunningEnv::down` later tearing both down. The gate's stated job per the doc-comment is exactly this scenario, so the bug is the canonicalization gap, not the gate's presence. Static pass missed because there is no tainted flow — both inputs to the `==` are *trusted*; the defect is the mismatch between docker's normalization and Rust's `String::eq`. Closes once the comparison normalizes both sides (lowercase + sanitise_filename-style char filter) or the gate switches to comparing on the docker-side normalized form before `up`.",
+  "suggested_payload_hint": "Operator A configures project `name = \"Demo-App\"`. EnvBuilder::up runs, docker creates compose project `demo-app`. Operator B configures `name = \"demo-app\"` (or pid-recycle path picks the lowercased form via a different code path) and runs EnvBuilder::up: refuse_if_project_in_use sees docker's `demo-app`, compares against `demo-app`, refuses. Now flip: A starts second, sees docker's `demo-app`, compares against `Demo-App` — mismatch, gate passes, second `up` lands on the same namespace; either builder's `down` tears down both."
+}
+
+---
+exploration session-3 closing notes
+- 1 finding emitted (SANDBOX_COLLISION via canonicalization gap).
+  Working-tree-only: pins to env/mod.rs:268 which is new code
+  in this branch's diff vs HEAD. No overlap with the
+  session-2 SANDBOX_ESCAPE row at compose.rs:245 — that one
+  is rewrite_service pass-through of privileged/host-mount
+  keys; this one is the *gate* meant to keep two builders out
+  of the same namespace, defeated by string-equality vs
+  docker's lowercasing/normalization.
+- considered and dismissed this pass:
+    * probe_compose_version uses std::process::Command::output()
+      with no timeout in the sync `discover()` entry path
+      (env/mod.rs:543). A wedged docker daemon hangs
+      EnvBuilder::discover forever, blocking scan startup.
+      Real, but lower-severity DOS than the collision gap and
+      gated by docker-daemon health (operator-side
+      blast-radius). Held for future pass; trigger on any change
+      to discover() that wraps probe_compose_version under a
+      tokio::time::timeout or under a docker-daemon liveness
+      probe — that closes this row.
+    * refuse_if_project_in_use TOCTOU between `ls` and `up`:
+      another concurrent EnvBuilder could create the same
+      project between the two subcommands. Docker has no
+      project-name lock primitive, so the race is intrinsic to
+      the `ls + up` shape. Out-of-band defense (file lock on
+      `<state>/locks/env-<project>.lock` around up/down) would
+      close. Held; trigger on any new locking primitive in
+      env/mod.rs or any wrapper that brackets up/down.
+- mitigations the working-tree diff DID close (no findings):
+    * webhook event-header check fast-paths Ping/Other before
+      body buffer (closes a small DOS sub-case around
+      worst-case body buffer for non-push events);
+    * compose version probe at MIN_COMPOSE_VERSION=2.20.0
+      rejects v1 docker-compose, removing a behavioural
+      ambiguity around ps-output shape (not a security row
+      directly but pre-empts a category of parse-failure
+      pivots).
+- carry-forward + sharpened next-pass triggers:
+    (xii)  any change to refuse_if_project_in_use that
+           normalises BOTH sides of the equality (lowercase +
+           docker char filter) OR moves the check to a
+           docker-managed lock — closes the SANDBOX_COLLISION
+           canonicalization row;
+    (xiii) any change to Project::name to add a validator that
+           enforces the docker-compose project-name grammar
+           (`^[a-z0-9][a-z0-9_-]*$`) at config-load time also
+           closes the row from the other direction;
+    (xiv)  any wrapper around probe_compose_version that adds
+           a wall-clock cap closes the held DOS row noted above.
+- tool budget after session-3: ~15 of 24 calls used (sentinel
+  tail+wc, two working-tree diffs, three env/mod.rs reads,
+  two greps, project/mod.rs read, sentinel append). Stops here
+  under quality-over-count.
+
+---
+phase23.exploration.v1 task=expl-demo (session-3, re-entry against working-tree diff)
+focus: env-builder project-collision gate added in working tree
+       (refuse_if_project_in_use at env/mod.rs:251-271,
+       new EnvError::ProjectInUse / LsFailed variants).
+working-tree diff vs HEAD verified: no change closes any
+session-2 carry-forward trigger (viii)-(xi); webhook
+verify_signature still body-only, DeliveryDedupCache::record
+still strict-FIFO with no time-decay, poisoned-mutex branch
+still returns true (fail-open). Sibling rows stand.
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyx-agent-sandbox/src/env/mod.rs",
+  "line": 268,
+  "cap": "CHECK_BYPASS",
+  "endpoint": "<env-builder:refuse_if_project_in_use>",
+  "rationale": "refuse_if_project_in_use compares `docker compose ls --all --format json` rows against `self.project_name` with a byte-exact `n == &self.project_name` test at :268. docker compose itself, however, normalises project names: the compose v2 spec restricts names to `^[a-z0-9][a-z0-9_-]*$` and the CLI silently lowercases an operator-supplied mixed-case `--project-name` before stamping it onto containers, so `ls` always reports the canonical lowercase form. self.project_name is taken verbatim from `project.name.clone()` at :175 with no normalisation (sanitise_filename at :187 is applied ONLY to the super-compose filename, not the field used for the collision check). Result: an operator (or attacker-controlled project config) whose `project.name` is `MyApp` will see `ls` return `myapp`, the byte-exact compare misses, refuse_if_project_in_use returns Ok, then `up --project-name MyApp` (compose normalises to `myapp`) adopts the existing `myapp` compose project — exactly the cross-builder collision the new gate was added to prevent. Same primitive on Unicode-NFC variants and on names with leading/trailing whitespace (compose trims; our compare does not). Static pass missed because the bug is a divergence between compose's name-canonicalisation rules and our local equality check, not a tainted-input flow.",
+  "suggested_payload_hint": "Pre-create a compose project: `docker compose --project-name nyx-env-1234 -f attacker.yml up -d`. Stop and edit operator config so `project.name = \"Nyx-Env-1234\"` (case-variant). Trigger an EnvBuilder::up; refuse_if_project_in_use compares `nyx-env-1234` vs `Nyx-Env-1234` → no match → up proceeds → compose normalises and adopts the attacker project's containers under our --project-name flag."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyx-agent-sandbox/src/env/mod.rs",
+  "line": 218,
+  "cap": "SANDBOX_ESCAPE",
+  "endpoint": "<env-builder:EnvBuilder::up orphan-adoption TOCTOU>",
+  "rationale": "Two compounding gaps in the new collision gate. (1) TOCTOU: refuse_if_project_in_use issues `docker compose ls` at :215, then EnvBuilder::up runs `compose up -d --build` at :218 with no atomic claim in between — there is no lock file, no advisory `docker compose create --no-start` to reserve the project, no retry of the ls after up. A co-tenant on the docker socket (anyone in the `docker` group, or any other process the operator runs) can win the gap by issuing `docker run -l com.docker.compose.project=<our_name> -l com.docker.compose.service=pwn --privileged --net=host --pid=host -v /:/host:rw alpine sleep infinity` between our ls and our up. (2) Missing --remove-orphans on up: `cmd.arg(\"up\").arg(\"-d\").arg(\"--build\")` at :218 omits --remove-orphans, so any container carrying matching compose labels but unknown to our super-compose survives the up (compose 2.x warns but keeps orphans by default). The pre-injected attacker container is then part of OUR project for the lifetime of the scan: it shares the compose-created default network with the scanned services, can ARP-spoof and intercept their traffic, and runs privileged on the operator host. Note the existing rewrite_service-passthrough row already buys SANDBOX_ESCAPE via a malicious *repo* compose; this new row buys the same primitive without needing a malicious repo, only docker-socket-adjacent co-tenancy and a predictable project name (`nyx-env-<pid>` per the doc comment at :211). RunningEnv::down at :356 uses `--remove-orphans --volumes`, which now also wipes any genuine adjacent operator workloads that happened to label-collide — turning the asymmetry into a co-tenant DOS primitive on teardown. Static pass missed because the gap is a missing CLI flag (--remove-orphans) plus an absent atomicity guarantee, neither of which is a tainted flow.",
+  "suggested_payload_hint": "Predict the operator's project_name (default pattern is `nyx-env-<pid>`; pid space is small). In a loop, watch `pgrep -f nyx-agent` and, the instant `docker compose ls` is issued by our process, race: `docker run -d -l com.docker.compose.project=nyx-env-${PID} -l com.docker.compose.service=pwn --privileged --net=host -v /:/host:rw alpine sh -c 'echo OWNED > /host/tmp/nyx-escape; sleep inf'`. Watch /tmp/nyx-escape on the operator host after the next scan starts."
+}
+
+---
+exploration session-3 closing notes
+- 2 findings emitted; both pin to env-builder working-tree
+  lines added by the new collision gate. Neither duplicates
+  prior rows.
+- mitigations the working-tree diff DID close (no findings):
+    * EnvBuilder::new now requires compose >= 2.20 via
+      probe_compose_version (:170), which closes a small
+      PS_PARSE_DOS sub-case where pre-2.20 compose emitted
+      a non-JSON ps shape parse_ps_json refused. Not a
+      security row on its own, just noted.
+- carry-forward + sharpened next-pass triggers (session-3 set):
+    (xii)  any change to refuse_if_project_in_use that
+           folds the same normalisation compose itself
+           applies (lowercase + trim, NFC) closes the
+           CHECK_BYPASS row;
+    (xiii) any change to EnvBuilder::up that adds
+           `--remove-orphans` to the `up` invocation OR
+           acquires an OS-level advisory lock keyed by
+           project_name across the ls/up boundary closes
+           the orphan-adoption SANDBOX_ESCAPE row;
+    (xiv)  any change that swaps the default project_name
+           pattern away from `nyx-env-<pid>` toward
+           cryptographic randomness (e.g. ids::token128)
+           materially narrows the same row's exploit window
+           even if --remove-orphans is not added.
+- session-2 carry-forward (viii)-(xi) all UNRESOLVED in the
+  working-tree diff. Sibling rows on webhook.rs (replay via
+  delivery-id forgery, FIFO eviction, poisoned-mutex
+  fail-open) and on env/compose.rs rewrite_service stand.
+- no http.probe issued: ALLOWED HOSTS empty per task contract.
+- tool budget: ~12 of 24 calls used (sentinel tail, working-tree
+  diff stat, four file/spot reads, two greps, sentinel append).
+  Stops here under quality-over-count.

@@ -24,12 +24,13 @@
 //! - Wrong branch → HTTP 200 with `triggered=false` so the upstream
 //!   git server records a successful delivery and stops retrying.
 
-use std::sync::Arc;
+use std::collections::{HashSet, VecDeque};
+use std::sync::{Arc, Mutex};
 
 use axum::body::{to_bytes, Body};
 use axum::extract::State;
 use axum::http::header::CONTENT_LENGTH;
-use axum::http::{Request, StatusCode};
+use axum::http::{HeaderMap, Request, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
 use hmac::{Hmac, Mac};
@@ -52,6 +53,29 @@ const SIGNATURE_PREFIX: &str = "sha256=";
 /// `sha256` produces a 32-byte digest, which encodes to 64 hex chars.
 const SIGNATURE_HEX_LEN: usize = 64;
 
+/// Headers we consult to identify the upstream event type. Order is
+/// the precedence used when more than one is present (which never
+/// happens in practice but stays deterministic if it does).
+const EVENT_HEADERS: &[&str] =
+    &["X-GitHub-Event", "X-Gitea-Event", "X-Forgejo-Event", "X-Gogs-Event", "X-Gitlab-Event"];
+
+/// Headers we consult for a delivery / replay id. Same provider order
+/// as [`EVENT_HEADERS`].
+const DELIVERY_HEADERS: &[&str] = &[
+    "X-GitHub-Delivery",
+    "X-Gitea-Delivery",
+    "X-Forgejo-Delivery",
+    "X-Gogs-Delivery",
+    "X-Gitlab-Event-UUID",
+];
+
+/// Bounded cap on the in-memory replay-dedup cache. Each entry is the
+/// raw delivery id string from the upstream provider (typically a
+/// UUID, ~36 bytes); 1024 entries caps memory at well under 100 KiB
+/// and covers the largest plausible burst window before older
+/// deliveries naturally roll off.
+pub const DELIVERY_DEDUP_CAP: usize = 1024;
+
 /// Quick syntactic check on the signature header. Refuses anything that
 /// is not `sha256=` + exactly 64 lowercase-or-uppercase hex chars. Lets
 /// the handler 401 a forged delivery without buffering the body or
@@ -60,6 +84,103 @@ fn signature_header_is_well_formed(header: &str) -> bool {
     let Some(rest) = header.trim().strip_prefix(SIGNATURE_PREFIX) else { return false };
     let rest = rest.trim();
     rest.len() == SIGNATURE_HEX_LEN && rest.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// What kind of event the upstream advertised. Read from the
+/// provider-specific event header; `Unknown` when no recognised header
+/// is present so the handler can fall through to the legacy
+/// best-effort path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EventKind {
+    /// A real push event we want to scan.
+    Push,
+    /// GitHub's webhook-creation ping. Should be accepted at the
+    /// transport layer (so the upstream marks the webhook healthy) but
+    /// never trigger a scan.
+    Ping,
+    /// Anything else the upstream named (issues / pull_request /
+    /// workflow_run / ...). Acknowledged 200 so the upstream stops
+    /// retrying, never triggers a scan.
+    Other(String),
+    /// No recognised event header was present. Conservative fallback
+    /// for unknown providers; the handler then requires a `ref`-shaped
+    /// JSON body before triggering a scan.
+    Unknown,
+}
+
+/// Read the provider-specific event header into an [`EventKind`].
+pub fn classify_event(headers: &HeaderMap) -> EventKind {
+    for name in EVENT_HEADERS {
+        let Some(raw) = headers.get(*name).and_then(|v| v.to_str().ok()) else { continue };
+        let value = raw.trim();
+        if value.is_empty() {
+            continue;
+        }
+        if value.eq_ignore_ascii_case("push") || value.eq_ignore_ascii_case("push hook") {
+            return EventKind::Push;
+        }
+        if value.eq_ignore_ascii_case("ping") {
+            return EventKind::Ping;
+        }
+        return EventKind::Other(value.to_string());
+    }
+    EventKind::Unknown
+}
+
+/// Read the provider-specific delivery id (if any). Returned trimmed
+/// so trailing whitespace from misbehaving clients does not split the
+/// dedup cache.
+pub fn delivery_id(headers: &HeaderMap) -> Option<String> {
+    for name in DELIVERY_HEADERS {
+        let Some(raw) = headers.get(*name).and_then(|v| v.to_str().ok()) else { continue };
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+    None
+}
+
+/// Bounded LRU-ish set of delivery ids we have already processed.
+/// Insertion is O(1) amortised: a `HashSet` answers membership, a
+/// `VecDeque` records arrival order so the oldest entry rolls off
+/// once the cap is reached. The cap is [`DELIVERY_DEDUP_CAP`].
+#[derive(Default)]
+pub struct DeliveryDedupCache {
+    seen: HashSet<String>,
+    order: VecDeque<String>,
+}
+
+impl DeliveryDedupCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record a delivery id. Returns `true` if the id is new, `false`
+    /// if it has already been seen within the cap window.
+    pub fn record(&mut self, id: &str) -> bool {
+        if self.seen.contains(id) {
+            return false;
+        }
+        if self.order.len() >= DELIVERY_DEDUP_CAP {
+            if let Some(old) = self.order.pop_front() {
+                self.seen.remove(&old);
+            }
+        }
+        self.seen.insert(id.to_string());
+        self.order.push_back(id.to_string());
+        true
+    }
+
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.order.len()
+    }
+
+    #[cfg(test)]
+    pub fn is_empty(&self) -> bool {
+        self.order.is_empty()
+    }
 }
 
 /// Pluggable resolver that turns the operator's
@@ -126,6 +247,24 @@ pub struct WebhookConfig {
     /// scans every enabled repo, matching the API's manual-trigger
     /// behaviour.
     pub repo: Option<String>,
+    /// Bounded set of delivery ids already processed, so a webhook-UI
+    /// redelivery (or a hostile replay of a captured-and-still-valid
+    /// HMAC body) does not retrigger the dispatcher. Shared across
+    /// clones of the config so a router rebuild keeps the cache hot.
+    pub dedup: Arc<Mutex<DeliveryDedupCache>>,
+}
+
+impl WebhookConfig {
+    /// Build a webhook config with a fresh dedup cache. Production +
+    /// tests use this so they do not have to spell the `dedup` field
+    /// in struct literals.
+    pub fn new(
+        secret: Arc<dyn WebhookSecretResolver>,
+        branch: Option<String>,
+        repo: Option<String>,
+    ) -> Self {
+        Self { secret, branch, repo, dedup: Arc::new(Mutex::new(DeliveryDedupCache::new())) }
+    }
 }
 
 /// Body shape we extract. Extra fields are tolerated.
@@ -186,6 +325,39 @@ pub async fn webhook_git(
         return Err(ApiError::Unauthorized);
     }
 
+    // Refuse non-push event types we can identify by header before
+    // buffering the body. A GitHub `ping` (sent on webhook creation),
+    // `issues`, `pull_request`, `workflow_run`, ... all carry valid
+    // HMAC over the body but must not trigger a scan. The transport
+    // status stays 200 so the upstream marks the delivery healthy and
+    // does not retry.
+    let event = classify_event(req.headers());
+    match &event {
+        EventKind::Push | EventKind::Unknown => {}
+        EventKind::Ping => {
+            return Ok((
+                StatusCode::OK,
+                Json(WebhookResponse {
+                    triggered: false,
+                    run_id: None,
+                    message: "ping event acknowledged".to_string(),
+                }),
+            )
+                .into_response());
+        }
+        EventKind::Other(name) => {
+            return Ok((
+                StatusCode::OK,
+                Json(WebhookResponse {
+                    triggered: false,
+                    run_id: None,
+                    message: format!("event `{name}` is not a push; ignored"),
+                }),
+            )
+                .into_response());
+        }
+    }
+
     // Reject oversized payloads on the advertised Content-Length before
     // buffering. `to_bytes` enforces the same cap (covering chunked
     // transfer encoding where Content-Length is absent), but the
@@ -203,13 +375,43 @@ pub async fn webhook_git(
         }
     }
 
-    let (_parts, body) = req.into_parts();
+    let (parts, body) = req.into_parts();
+    let headers = parts.headers;
     let body_bytes = to_bytes(body, MAX_WEBHOOK_BODY_BYTES).await.map_err(|e| {
         ApiError::PayloadTooLarge(format!("webhook body exceeded limit or failed to read: {e}"))
     })?;
 
     if !verify_signature(&secret, body_bytes.as_ref(), &sig_header) {
         return Err(ApiError::Unauthorized);
+    }
+
+    // Replay drop: only after HMAC verified, so a hostile sender
+    // without the secret cannot poison the cache by spraying random
+    // delivery ids. Providers that do not emit a delivery header
+    // skip dedup; the HMAC + push-event filter is the floor in that
+    // case.
+    if let Some(delivery) = delivery_id(&headers) {
+        let fresh = match cfg.dedup.lock() {
+            Ok(mut guard) => guard.record(&delivery),
+            // A poisoned mutex means a previous insert panicked. The
+            // safe response is to fail open (treat the delivery as
+            // new) rather than reject every subsequent request.
+            Err(poisoned) => {
+                tracing::warn!("webhook dedup cache poisoned: {poisoned}");
+                true
+            }
+        };
+        if !fresh {
+            return Ok((
+                StatusCode::OK,
+                Json(WebhookResponse {
+                    triggered: false,
+                    run_id: None,
+                    message: format!("delivery `{delivery}` already processed"),
+                }),
+            )
+                .into_response());
+        }
     }
 
     // Best-effort decode. A non-JSON body that still verified is
@@ -222,6 +424,25 @@ pub async fn webhook_git(
         .and_then(|p| p.ref_.as_deref())
         .and_then(|r| r.strip_prefix("refs/heads/"))
         .map(|s| s.to_string());
+
+    // A signed-but-refless body for an Unknown-event provider is not a
+    // push; refuse to trigger. (Push events for known providers were
+    // already classified above; this guard catches the legacy
+    // best-effort path so it stops accepting non-push deliveries
+    // whose provider did not set an event header.)
+    if matches!(event, EventKind::Unknown)
+        && parsed.as_ref().and_then(|p| p.ref_.as_deref()).is_none()
+    {
+        return Ok((
+            StatusCode::OK,
+            Json(WebhookResponse {
+                triggered: false,
+                run_id: None,
+                message: "payload carried no `ref`; not a push event".to_string(),
+            }),
+        )
+            .into_response());
+    }
 
     if let Some(want) = cfg.branch.as_deref() {
         match branch.as_deref() {
@@ -386,5 +607,100 @@ mod tests {
     fn signature_header_shape_rejects_non_hex_chars() {
         let header = format!("sha256={}", "z".repeat(SIGNATURE_HEX_LEN));
         assert!(!signature_header_is_well_formed(&header));
+    }
+
+    fn map(pairs: &[(&str, &str)]) -> HeaderMap {
+        let mut m = HeaderMap::new();
+        for (k, v) in pairs {
+            m.insert(
+                axum::http::HeaderName::from_bytes(k.as_bytes()).expect("header name"),
+                axum::http::HeaderValue::from_str(v).expect("header value"),
+            );
+        }
+        m
+    }
+
+    #[test]
+    fn classify_event_recognises_github_push() {
+        assert_eq!(classify_event(&map(&[("X-GitHub-Event", "push")])), EventKind::Push);
+    }
+
+    #[test]
+    fn classify_event_is_case_insensitive() {
+        assert_eq!(classify_event(&map(&[("X-GitHub-Event", "PuSh")])), EventKind::Push);
+    }
+
+    #[test]
+    fn classify_event_recognises_gitlab_push_hook() {
+        assert_eq!(classify_event(&map(&[("X-Gitlab-Event", "Push Hook")])), EventKind::Push);
+    }
+
+    #[test]
+    fn classify_event_recognises_ping() {
+        assert_eq!(classify_event(&map(&[("X-GitHub-Event", "ping")])), EventKind::Ping);
+    }
+
+    #[test]
+    fn classify_event_returns_other_for_unknown_event_name() {
+        match classify_event(&map(&[("X-GitHub-Event", "issues")])) {
+            EventKind::Other(name) => assert_eq!(name, "issues"),
+            other => panic!("expected Other(\"issues\"), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_event_returns_unknown_when_no_provider_header() {
+        assert_eq!(classify_event(&HeaderMap::new()), EventKind::Unknown);
+    }
+
+    #[test]
+    fn classify_event_ignores_empty_header_value() {
+        assert_eq!(classify_event(&map(&[("X-GitHub-Event", "")])), EventKind::Unknown);
+    }
+
+    #[test]
+    fn delivery_id_reads_github_header() {
+        let id = delivery_id(&map(&[("X-GitHub-Delivery", "abc-123")]));
+        assert_eq!(id.as_deref(), Some("abc-123"));
+    }
+
+    #[test]
+    fn delivery_id_reads_gitea_header_when_github_absent() {
+        let id = delivery_id(&map(&[("X-Gitea-Delivery", "xyz-789")]));
+        assert_eq!(id.as_deref(), Some("xyz-789"));
+    }
+
+    #[test]
+    fn delivery_id_is_none_when_no_header() {
+        assert!(delivery_id(&HeaderMap::new()).is_none());
+    }
+
+    #[test]
+    fn dedup_cache_records_new_id() {
+        let mut cache = DeliveryDedupCache::new();
+        assert!(cache.record("a"));
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn dedup_cache_drops_repeat() {
+        let mut cache = DeliveryDedupCache::new();
+        assert!(cache.record("a"));
+        assert!(!cache.record("a"), "second insert must report duplicate");
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn dedup_cache_evicts_oldest_at_cap() {
+        let mut cache = DeliveryDedupCache::new();
+        for i in 0..DELIVERY_DEDUP_CAP {
+            assert!(cache.record(&format!("d-{i}")));
+        }
+        assert_eq!(cache.len(), DELIVERY_DEDUP_CAP);
+        // Push one more; the oldest entry rolls off.
+        assert!(cache.record("d-new"));
+        assert_eq!(cache.len(), DELIVERY_DEDUP_CAP);
+        // The id we just evicted is now `record()`-able again.
+        assert!(cache.record("d-0"));
     }
 }

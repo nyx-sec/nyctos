@@ -976,11 +976,11 @@ async fn serve(
     if config.triggers.webhook_secret_ref.is_some() {
         let resolver =
             Arc::new(EnvSecretResolver { spec: config.triggers.webhook_secret_ref.clone() });
-        server_state = server_state.with_webhook(WebhookConfig {
-            secret: resolver,
-            branch: config.triggers.webhook_branch.clone(),
-            repo: None,
-        });
+        server_state = server_state.with_webhook(WebhookConfig::new(
+            resolver,
+            config.triggers.webhook_branch.clone(),
+            None,
+        ));
     }
 
     // Tap the broadcast channel and feed every event into the per-run
