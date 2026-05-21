@@ -1,0 +1,110 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT t.id AS \"id!\", t.finding_id,\n                   t.task_kind AS \"task_kind!\",\n                   t.runtime_name AS \"runtime_name!\",\n                   t.model AS \"model!\", t.prompt_version, t.conversation_jsonl_path,\n                   t.tokens_in       AS \"tokens_in!: i64\",\n                   t.tokens_out      AS \"tokens_out!: i64\",\n                   t.cost_usd_micros AS \"cost_usd_micros!: i64\",\n                   t.cache_hits      AS \"cache_hits!: i64\",\n                   t.cache_misses    AS \"cache_misses!: i64\",\n                   t.duration_ms,\n                   t.started_at      AS \"started_at!: i64\",\n                   t.finished_at,\n                   t.verifier_blob\n            FROM agent_traces t\n            JOIN candidate_findings c ON c.trace_id = t.id\n            WHERE c.id = ?\n            ORDER BY t.started_at\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "finding_id",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "task_kind!",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "runtime_name!",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "model!",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "prompt_version",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "conversation_jsonl_path",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "tokens_in!: i64",
+        "ordinal": 7,
+        "type_info": "Integer"
+      },
+      {
+        "name": "tokens_out!: i64",
+        "ordinal": 8,
+        "type_info": "Integer"
+      },
+      {
+        "name": "cost_usd_micros!: i64",
+        "ordinal": 9,
+        "type_info": "Integer"
+      },
+      {
+        "name": "cache_hits!: i64",
+        "ordinal": 10,
+        "type_info": "Integer"
+      },
+      {
+        "name": "cache_misses!: i64",
+        "ordinal": 11,
+        "type_info": "Integer"
+      },
+      {
+        "name": "duration_ms",
+        "ordinal": 12,
+        "type_info": "Integer"
+      },
+      {
+        "name": "started_at!: i64",
+        "ordinal": 13,
+        "type_info": "Integer"
+      },
+      {
+        "name": "finished_at",
+        "ordinal": 14,
+        "type_info": "Integer"
+      },
+      {
+        "name": "verifier_blob",
+        "ordinal": 15,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      true,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "1b64b4fd842b96a9948e35112c23a07bb080b94fc479e8cc8630dc562837f079"
+}

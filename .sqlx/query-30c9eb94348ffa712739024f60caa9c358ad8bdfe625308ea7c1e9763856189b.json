@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            INSERT INTO candidate_findings (\n                id, run_id, repo, path, line, cap, rule_hint, rationale,\n                suggested_payload_hint, status, prompt_version, trace_id\n            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 12
+    },
+    "nullable": []
+  },
+  "hash": "30c9eb94348ffa712739024f60caa9c358ad8bdfe625308ea7c1e9763856189b"
+}

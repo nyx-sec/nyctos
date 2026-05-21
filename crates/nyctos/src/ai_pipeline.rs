@@ -1593,6 +1593,7 @@ async fn apply_novel_outcome(
                 finished_at,
                 Some(&metrics),
             );
+            let trace_id = trace.id.clone();
             persist_trace_row(store, trace).await;
             let created_at = finished_at;
             for (idx, c) in output.candidates.iter().enumerate() {
@@ -1612,6 +1613,7 @@ async fn apply_novel_outcome(
                     // to confirm via PayloadSynthesis + dynamic verify.
                     status: nyctos_core::store::CandidateStatus::Pending.as_str().to_string(),
                     prompt_version: Some(prompt_version.clone()),
+                    trace_id: Some(trace_id.clone()),
                 };
                 match store.candidate_findings().insert(&rec).await {
                     Ok(()) => report.candidates_persisted += 1,
@@ -4094,6 +4096,18 @@ mod tests {
             Some(nyctos_types::novel::NOVEL_FINDING_DISCOVERY_PROMPT_VERSION)
         );
         assert!(row.rationale.as_deref().unwrap_or("").contains("list_admins"));
+
+        // The proposing AI call's trace row is back-linked on the
+        // candidate via `candidate_findings.trace_id` (migration
+        // `0005_candidate_trace_id.sql`). The quarantine UI's trace
+        // viewer reads this back-link so the operator can see the call
+        // that proposed a Pending candidate without joining on
+        // task_kind = NovelFindings alone.
+        let trace_id = row.trace_id.clone().expect("candidate must carry trace_id back-link");
+        let traces = store.agent_traces().list_for_candidate(&row.id).await.unwrap();
+        assert_eq!(traces.len(), 1, "back-linked trace must be reachable via list_for_candidate");
+        assert_eq!(traces[0].id, trace_id);
+        assert_eq!(traces[0].task_kind, TaskKind::NovelFindings.as_str());
     }
 
     #[tokio::test]
@@ -4398,6 +4412,7 @@ mod tests {
             prompt_version: Some(
                 nyctos_types::novel::NOVEL_FINDING_DISCOVERY_PROMPT_VERSION.to_string(),
             ),
+            trace_id: None,
         };
         store.candidate_findings().insert(&cand).await.unwrap();
         // Candidate promotion uses the built-in per-cap harness
@@ -4467,6 +4482,7 @@ mod tests {
             prompt_version: Some(
                 nyctos_types::novel::NOVEL_FINDING_DISCOVERY_PROMPT_VERSION.to_string(),
             ),
+            trace_id: None,
         };
         store.candidate_findings().insert(&cand).await.unwrap();
 
@@ -4523,6 +4539,7 @@ mod tests {
             prompt_version: Some(
                 nyctos_types::novel::NOVEL_FINDING_DISCOVERY_PROMPT_VERSION.to_string(),
             ),
+            trace_id: None,
         };
         store.candidate_findings().insert(&cand).await.unwrap();
 

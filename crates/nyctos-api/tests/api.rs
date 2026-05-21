@@ -574,6 +574,103 @@ async fn runs_findings_endpoint_applies_facet_filter_to_closed_rows() {
 }
 
 #[tokio::test]
+async fn traces_endpoint_resolves_candidate_id_via_back_link() {
+    // `/findings/:id/traces` dispatches on the `cand-` id prefix: a
+    // candidate-shaped id walks the `candidate_findings.trace_id`
+    // back-link added in migration 0005, while a finding id keeps
+    // the direct `agent_traces.finding_id` index. Without the
+    // dispatch the quarantine UI would always render "No AI calls
+    // recorded for this finding yet" for a Pending candidate.
+    use nyctos_core::store::{AgentTraceRecord, CandidateFindingRecord};
+
+    let srv = TestServer::start().await;
+    srv.store.repos().upsert(&sample_repo("repo-1")).await.expect("repo");
+    srv.store.runs().insert(&sample_run("run-N")).await.expect("run");
+
+    let trace = AgentTraceRecord {
+        id: "trace-novel-api".to_string(),
+        finding_id: None,
+        task_kind: "NovelFindings".to_string(),
+        runtime_name: "anthropic".to_string(),
+        model: "claude-opus-4-7".to_string(),
+        prompt_version: Some("novel.v1".to_string()),
+        conversation_jsonl_path: None,
+        tokens_in: 800,
+        tokens_out: 120,
+        cost_usd_micros: 9_500,
+        cache_hits: 0,
+        cache_misses: 1,
+        duration_ms: Some(400),
+        started_at: 4_000,
+        finished_at: Some(4_400),
+        verifier_blob: None,
+    };
+    srv.store.agent_traces().insert(&trace).await.expect("trace");
+
+    let cand = CandidateFindingRecord {
+        id: "cand-api-1".to_string(),
+        run_id: "run-N".to_string(),
+        repo: "repo-1".to_string(),
+        path: "app/handlers.py".to_string(),
+        line: Some(6),
+        cap: "SQL_QUERY".to_string(),
+        rule_hint: Some("py.sql.exec".to_string()),
+        rationale: Some("ai-noticed reuse of SQL-concat pattern".to_string()),
+        suggested_payload_hint: None,
+        status: "Pending".to_string(),
+        prompt_version: Some("novel.v1".to_string()),
+        trace_id: Some("trace-novel-api".to_string()),
+    };
+    srv.store.candidate_findings().insert(&cand).await.expect("cand");
+
+    let rows: Vec<Value> =
+        reqwest::get(format!("{}/api/v1/findings/cand-api-1/traces", srv.base()))
+            .await
+            .expect("get")
+            .json()
+            .await
+            .expect("json");
+    assert_eq!(rows.len(), 1, "candidate trace lookup must return the back-linked row");
+    assert_eq!(rows[0]["id"], "trace-novel-api");
+    assert_eq!(rows[0]["task_kind"], "NovelFindings");
+}
+
+#[tokio::test]
+async fn traces_endpoint_returns_empty_for_untraced_candidate() {
+    // A candidate persisted before migration 0005, or one that was
+    // never linked to a trace (legacy / non-AI), must still resolve
+    // its trace lookup as an empty list instead of a 404.
+    use nyctos_core::store::CandidateFindingRecord;
+
+    let srv = TestServer::start().await;
+    srv.store.repos().upsert(&sample_repo("repo-1")).await.expect("repo");
+    srv.store.runs().insert(&sample_run("run-N")).await.expect("run");
+    let cand = CandidateFindingRecord {
+        id: "cand-untraced".to_string(),
+        run_id: "run-N".to_string(),
+        repo: "repo-1".to_string(),
+        path: "src/a.py".to_string(),
+        line: None,
+        cap: "sqli".to_string(),
+        rule_hint: None,
+        rationale: None,
+        suggested_payload_hint: None,
+        status: "Pending".to_string(),
+        prompt_version: None,
+        trace_id: None,
+    };
+    srv.store.candidate_findings().insert(&cand).await.expect("cand");
+    let rows: Vec<Value> =
+        reqwest::get(format!("{}/api/v1/findings/cand-untraced/traces", srv.base()))
+            .await
+            .expect("get")
+            .json()
+            .await
+            .expect("json");
+    assert!(rows.is_empty(), "untraced candidate must return [], not 404");
+}
+
+#[tokio::test]
 async fn chains_endpoint_returns_row_or_404() {
     let srv = TestServer::start().await;
     srv.store.runs().insert(&sample_run("run-A")).await.expect("run");

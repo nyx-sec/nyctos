@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "\n            SELECT id AS \"id!\", run_id AS \"run_id!\", repo AS \"repo!\",\n                   path AS \"path!\", line,\n                   cap AS \"cap!\", rule_hint, rationale, suggested_payload_hint,\n                   status AS \"status!\", prompt_version\n            FROM candidate_findings WHERE id = ?\n            ",
+  "query": "\n            SELECT id AS \"id!\", run_id AS \"run_id!\", repo AS \"repo!\",\n                   path AS \"path!\", line,\n                   cap AS \"cap!\", rule_hint, rationale, suggested_payload_hint,\n                   status AS \"status!\", prompt_version, trace_id\n            FROM candidate_findings WHERE status = 'Pending'\n            ",
   "describe": {
     "columns": [
       {
@@ -57,10 +57,15 @@
         "name": "prompt_version",
         "ordinal": 10,
         "type_info": "Text"
+      },
+      {
+        "name": "trace_id",
+        "ordinal": 11,
+        "type_info": "Text"
       }
     ],
     "parameters": {
-      "Right": 1
+      "Right": 0
     },
     "nullable": [
       true,
@@ -73,8 +78,9 @@
       true,
       true,
       false,
+      true,
       true
     ]
   },
-  "hash": "db0521b4dc1549fa94b30b579bebf0f82849055c0766ae06147cd0cebe56325b"
+  "hash": "e4225217901d36e0ce8b3975315b3c8b562d385c3e06fe179fa2c11c9973900e"
 }

@@ -35,6 +35,12 @@ pub struct CandidateFindingRecord {
     pub suggested_payload_hint: Option<String>,
     pub status: String,
     pub prompt_version: Option<String>,
+    /// Back-link to the `agent_traces` row that produced this
+    /// candidate. NovelFindingDiscovery writes one trace per batch and
+    /// N candidates per batch, so the FK lives on candidate_findings
+    /// rather than agent_traces. `None` for candidates synthesised
+    /// outside the AI exploration path.
+    pub trace_id: Option<String>,
 }
 
 pub struct CandidateFindingStore<'a> {
@@ -51,8 +57,8 @@ impl<'a> CandidateFindingStore<'a> {
             r#"
             INSERT INTO candidate_findings (
                 id, run_id, repo, path, line, cap, rule_hint, rationale,
-                suggested_payload_hint, status, prompt_version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                suggested_payload_hint, status, prompt_version, trace_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
             c.id,
             c.run_id,
@@ -65,6 +71,7 @@ impl<'a> CandidateFindingStore<'a> {
             c.suggested_payload_hint,
             c.status,
             c.prompt_version,
+            c.trace_id,
         )
         .execute(self.pool)
         .await?;
@@ -78,7 +85,7 @@ impl<'a> CandidateFindingStore<'a> {
             SELECT id AS "id!", run_id AS "run_id!", repo AS "repo!",
                    path AS "path!", line,
                    cap AS "cap!", rule_hint, rationale, suggested_payload_hint,
-                   status AS "status!", prompt_version
+                   status AS "status!", prompt_version, trace_id
             FROM candidate_findings WHERE id = ?
             "#,
             id
@@ -95,7 +102,7 @@ impl<'a> CandidateFindingStore<'a> {
             SELECT id AS "id!", run_id AS "run_id!", repo AS "repo!",
                    path AS "path!", line,
                    cap AS "cap!", rule_hint, rationale, suggested_payload_hint,
-                   status AS "status!", prompt_version
+                   status AS "status!", prompt_version, trace_id
             FROM candidate_findings WHERE status = 'Pending'
             "#
         )
@@ -156,6 +163,50 @@ mod tests {
         s.candidate_findings().set_status("c", "Promoted").await.expect("set");
         let got = s.candidate_findings().get("c").await.expect("get").expect("row");
         assert_eq!(got.status, "Promoted");
+    }
+
+    #[tokio::test]
+    async fn trace_id_roundtrips_and_set_null_on_trace_delete() {
+        use crate::store::AgentTraceRecord;
+        let (_tmp, s) = fresh_store().await;
+        seed(&s).await;
+        // Persist the trace first so the FK target exists.
+        let trace = AgentTraceRecord {
+            id: "trace-cand-1".to_string(),
+            finding_id: None,
+            task_kind: "NovelFindings".to_string(),
+            runtime_name: "anthropic".to_string(),
+            model: "claude-opus-4-7".to_string(),
+            prompt_version: Some("novel.v1".to_string()),
+            conversation_jsonl_path: None,
+            tokens_in: 1_000,
+            tokens_out: 100,
+            cost_usd_micros: 5_000,
+            cache_hits: 0,
+            cache_misses: 1,
+            duration_ms: Some(800),
+            started_at: 1_000,
+            finished_at: Some(1_800),
+            verifier_blob: None,
+        };
+        s.agent_traces().insert(&trace).await.expect("trace");
+        let mut cand = sample_candidate("cand-traced", "run", "repo");
+        cand.trace_id = Some("trace-cand-1".to_string());
+        s.candidate_findings().insert(&cand).await.expect("insert");
+        let got = s.candidate_findings().get("cand-traced").await.expect("get").expect("row");
+        assert_eq!(got.trace_id.as_deref(), Some("trace-cand-1"));
+
+        // FK ON DELETE SET NULL: deleting the trace row leaves the
+        // candidate alive with a null back-link. The candidate-side
+        // store does not expose a trace-delete helper, so we punch the
+        // delete through the raw pool to exercise the cascade.
+        sqlx::query("DELETE FROM agent_traces WHERE id = ?")
+            .bind("trace-cand-1")
+            .execute(s.pool())
+            .await
+            .expect("delete trace");
+        let after = s.candidate_findings().get("cand-traced").await.expect("get").expect("row");
+        assert!(after.trace_id.is_none(), "trace delete must SET NULL on candidate back-link");
     }
 
     #[tokio::test]

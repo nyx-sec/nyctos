@@ -120,5 +120,6 @@ pub fn sample_candidate(id: &str, run_id: &str, repo: &str) -> CandidateFindingR
         suggested_payload_hint: None,
         status: "Pending".to_string(),
         prompt_version: Some("p:0003".to_string()),
+        trace_id: None,
     }
 }

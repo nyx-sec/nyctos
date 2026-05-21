@@ -155,6 +155,43 @@ impl<'a> AgentTraceStore<'a> {
         Ok(rows)
     }
 
+    /// Return every trace bound to the candidate finding by the
+    /// `candidate_findings.trace_id` back-link added in migration
+    /// `0005_candidate_trace_id.sql`. Empty when the candidate has no
+    /// trace bound (legacy candidates from before the back-link, or
+    /// candidates synthesised outside the AI exploration path).
+    pub async fn list_for_candidate(
+        &self,
+        candidate_id: &str,
+    ) -> Result<Vec<AgentTraceRecord>, StoreError> {
+        let rows = sqlx::query_as!(
+            AgentTraceRecord,
+            r#"
+            SELECT t.id AS "id!", t.finding_id,
+                   t.task_kind AS "task_kind!",
+                   t.runtime_name AS "runtime_name!",
+                   t.model AS "model!", t.prompt_version, t.conversation_jsonl_path,
+                   t.tokens_in       AS "tokens_in!: i64",
+                   t.tokens_out      AS "tokens_out!: i64",
+                   t.cost_usd_micros AS "cost_usd_micros!: i64",
+                   t.cache_hits      AS "cache_hits!: i64",
+                   t.cache_misses    AS "cache_misses!: i64",
+                   t.duration_ms,
+                   t.started_at      AS "started_at!: i64",
+                   t.finished_at,
+                   t.verifier_blob
+            FROM agent_traces t
+            JOIN candidate_findings c ON c.trace_id = t.id
+            WHERE c.id = ?
+            ORDER BY t.started_at
+            "#,
+            candidate_id
+        )
+        .fetch_all(self.pool)
+        .await?;
+        Ok(rows)
+    }
+
     pub async fn list_by_task_kind(&self, kind: &str) -> Result<Vec<AgentTraceRecord>, StoreError> {
         let rows = sqlx::query_as!(
             AgentTraceRecord,
@@ -258,6 +295,42 @@ mod tests {
         let got = s.agent_traces().list_by_task_kind("PayloadSynthesis").await.expect("list");
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].id, "b");
+    }
+
+    #[tokio::test]
+    async fn list_for_candidate_returns_joined_row() {
+        use crate::store::testutil::sample_candidate;
+        let (_tmp, s) = fresh_store().await;
+        s.repos().upsert(&sample_repo("repo")).await.expect("repo");
+        s.runs().insert(&sample_run("run")).await.expect("run");
+        // Persist the trace first so the candidate FK target exists.
+        let trace = sample_trace("trace-novel-1", None);
+        s.agent_traces().insert(&trace).await.expect("trace");
+        let mut cand = sample_candidate("cand-listfor", "run", "repo");
+        cand.trace_id = Some("trace-novel-1".to_string());
+        s.candidate_findings().insert(&cand).await.expect("cand");
+        // Unrelated trace + candidate that should not appear in the
+        // joined result.
+        let other = sample_trace("trace-other", None);
+        s.agent_traces().insert(&other).await.expect("other trace");
+        let mut other_cand = sample_candidate("cand-other", "run", "repo");
+        other_cand.trace_id = Some("trace-other".to_string());
+        s.candidate_findings().insert(&other_cand).await.expect("other cand");
+        let rows = s.agent_traces().list_for_candidate("cand-listfor").await.expect("list");
+        let ids: Vec<_> = rows.into_iter().map(|t| t.id).collect();
+        assert_eq!(ids, vec!["trace-novel-1".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn list_for_candidate_without_trace_id_returns_empty() {
+        use crate::store::testutil::sample_candidate;
+        let (_tmp, s) = fresh_store().await;
+        s.repos().upsert(&sample_repo("repo")).await.expect("repo");
+        s.runs().insert(&sample_run("run")).await.expect("run");
+        let cand = sample_candidate("cand-untraced", "run", "repo");
+        s.candidate_findings().insert(&cand).await.expect("cand");
+        let rows = s.agent_traces().list_for_candidate("cand-untraced").await.expect("list");
+        assert!(rows.is_empty(), "candidate with NULL trace_id must yield no joined rows");
     }
 
     #[tokio::test]
