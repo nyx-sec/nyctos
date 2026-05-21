@@ -28,7 +28,9 @@ use nyctos_types::{
         AgentEvent, AiEvent, BudgetEvent, FindingEvent, QuarantineEvent, RepoOutcomeTag,
         ReproEvent, RunEvent, SandboxEvent,
     },
+    finding::FindingRecord,
     repo::{GitAuth, Repo, RepoRecord, RepoSource},
+    run::RunRecord,
 };
 use ts_rs::TS;
 
@@ -113,7 +115,9 @@ fn render() -> String {
         decl_of::<RepoSource>(),
         decl_of::<Repo>(),
         decl_of::<RepoRecord>(),
+        decl_of::<RunRecord>(),
         decl_of::<ChainRecord>(),
+        decl_of::<FindingRecord>(),
     ];
 
     for decl in decls {

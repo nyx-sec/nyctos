@@ -7,8 +7,14 @@
 
 import { type QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import type { AgentEvent, ChainRecord, RepoRecord } from "./types.gen";
-export type { ChainRecord, RepoRecord };
+import type {
+  AgentEvent,
+  ChainRecord,
+  FindingRecord,
+  RepoRecord,
+  RunRecord,
+} from "./types.gen";
+export type { ChainRecord, FindingRecord, RepoRecord, RunRecord };
 
 const API_BASE = "/api/v1";
 
@@ -104,41 +110,6 @@ export interface PatchProjectRequest {
   description?: string | null;
   target_base_url?: string | null;
   env_config?: unknown;
-}
-
-export interface RunRecord {
-  id: string;
-  started_at_ms: number;
-  finished_at_ms: number | null;
-  status: string;
-  wall_clock_ms: number | null;
-  succeeded: number | null;
-  inconclusive: number | null;
-  failed: number | null;
-}
-
-export interface FindingRecord {
-  id: string;
-  run_id: string;
-  repo: string;
-  path: string;
-  line: number | null;
-  cap: string;
-  rule: string;
-  severity: string;
-  status: string;
-  finding_origin: string;
-  first_seen: number;
-  last_seen: number;
-  superseded_by: string | null;
-  triage_state: string;
-  triage_assigned_to: string | null;
-  verdict_blob: string | null;
-  repro_path: string | null;
-  attack_provenance: string | null;
-  prompt_version: string | null;
-  chain_id: string | null;
-  spec_id: string | null;
 }
 
 export type FindingDiffStatus = "new" | "regressed" | "closed" | "unchanged";

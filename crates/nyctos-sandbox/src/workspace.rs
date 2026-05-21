@@ -263,6 +263,91 @@ mod tests {
     // metadata reaches a sandboxed child; a backend that silently dropped
     // `.git` would surface as "git" calls inside the sandbox failing with
     // "not a git repository" instead of as a snapshot error.
+    // Pins the FICLONE reflink fast path on a btrfs volume. Ignored by
+    // default because the body requires CAP_SYS_ADMIN to run `losetup`,
+    // `mkfs.btrfs`, and `mount`; the only CI lane today is unprivileged.
+    // Run manually on a root shell or a self-hosted Linux runner that
+    // has btrfs-progs installed:
+    //
+    //     sudo -E cargo test -p nyctos-sandbox \
+    //         --test-threads=1 -- --ignored snapshot_uses_reflink_on_btrfs
+    //
+    // Setup tears down via a Drop guard so a panic on any assertion
+    // still releases the loop device and unmounts the filesystem.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires CAP_SYS_ADMIN (losetup/mkfs.btrfs/mount) and btrfs-progs"]
+    fn snapshot_uses_reflink_on_btrfs() {
+        use std::process::Command;
+
+        fn run(cmd: &mut Command) -> String {
+            let out = cmd.output().expect("spawn external tool");
+            assert!(
+                out.status.success(),
+                "{:?} failed: stdout={} stderr={}",
+                cmd,
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr),
+            );
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        }
+
+        struct LoopMount {
+            mountpoint: PathBuf,
+            loopdev: String,
+            backing: PathBuf,
+        }
+        impl Drop for LoopMount {
+            fn drop(&mut self) {
+                let _ = Command::new("umount").arg(&self.mountpoint).status();
+                let _ = Command::new("losetup").arg("-d").arg(&self.loopdev).status();
+                let _ = fs::remove_file(&self.backing);
+                let _ = fs::remove_dir(&self.mountpoint);
+            }
+        }
+
+        let scratch = tempdir().unwrap();
+        let backing = scratch.path().join("btrfs.img");
+        // 100 MiB sparse file is the minimum mkfs.btrfs accepts.
+        {
+            let f = fs::File::create(&backing).unwrap();
+            f.set_len(100 * 1024 * 1024).unwrap();
+        }
+
+        let loopdev = run(Command::new("losetup").arg("--show").arg("-f").arg(&backing));
+        let mountpoint = scratch.path().join("mnt");
+        fs::create_dir(&mountpoint).unwrap();
+        let _guard = LoopMount {
+            mountpoint: mountpoint.clone(),
+            loopdev: loopdev.clone(),
+            backing: backing.clone(),
+        };
+
+        run(Command::new("mkfs.btrfs").arg("-f").arg(&loopdev));
+        run(Command::new("mount").arg(&loopdev).arg(&mountpoint));
+
+        let src = mountpoint.join("src");
+        fs::create_dir(&src).unwrap();
+        fs::write(src.join("a.txt"), b"hello btrfs").unwrap();
+        fs::create_dir(src.join("sub")).unwrap();
+        fs::write(src.join("sub").join("b.txt"), b"world btrfs").unwrap();
+
+        let dst = mountpoint.join("snapshot");
+        let kind = snapshot(&src, &dst).expect("snapshot under btrfs mount");
+
+        assert_eq!(
+            kind,
+            SnapshotKind::Reflink,
+            "FICLONE must succeed on a btrfs volume; got {:?}",
+            kind,
+        );
+        assert_eq!(fs::read(dst.join("a.txt")).unwrap(), b"hello btrfs");
+        assert_eq!(
+            fs::read(dst.join("sub").join("b.txt")).unwrap(),
+            b"world btrfs",
+        );
+    }
+
     #[test]
     fn snapshot_preserves_dotgit_tree() {
         let scratch = tempdir().unwrap();

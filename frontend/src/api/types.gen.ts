@@ -159,5 +159,15 @@ export type RepoRecord = { name: string, project_id: string, source_kind: string
  */
 last_scan_finished_at: number | null, created_at: number, updated_at: number, };
 
+export type RunRecord = { id: string, started_at: number, finished_at: number | null, status: string, triggered_by: string, git_ref: string | null, parent_run_id: string | null, wall_clock_ms: number | null, total_ai_spend_usd_micros: number, };
+
 export type ChainRecord = { id: string, run_id: string, cross_repo: boolean, member_ids: string, rationale_blob: string | null, attack_provenance: string | null, prompt_version: string | null, };
+
+export type FindingRecord = { id: string, run_id: string, repo: string, path: string, line: number | null, cap: string, rule: string, severity: string, status: string, finding_origin: string, first_seen: number, last_seen: number, superseded_by: string | null, triage_state: string, triage_assigned_to: string | null, verdict_blob: string | null, repro_path: string | null, attack_provenance: string | null, prompt_version: string | null, chain_id: string | null, 
+/**
+ * Back-link to `harness_specs.id` populated by SpecDerivation.
+ * `None` for static-pass rows that never went through the AI
+ * spec pass.
+ */
+spec_id: string | null, };
 

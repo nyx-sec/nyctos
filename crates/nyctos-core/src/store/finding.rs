@@ -8,6 +8,8 @@ use sqlx::{QueryBuilder, Row, SqlitePool};
 
 use crate::store::StoreError;
 
+pub use nyctos_types::finding::FindingRecord;
+
 /// Smoothing prior baked into [`FindingStore::per_path_promotion_rate`].
 /// A path with only one observation must not get the full rate boost a
 /// path with 50 observations does; this denominator floor dampens
@@ -154,36 +156,6 @@ fn row_to_finding(row: sqlx::sqlite::SqliteRow) -> FindingRecord {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FindingRecord {
-    pub id: String,
-    pub run_id: String,
-    pub repo: String,
-    pub path: String,
-    pub line: Option<i64>,
-    pub cap: String,
-    pub rule: String,
-    pub severity: String,
-    pub status: String,
-    pub finding_origin: String,
-    pub first_seen: i64,
-    pub last_seen: i64,
-    pub superseded_by: Option<String>,
-    pub triage_state: String,
-    pub triage_assigned_to: Option<String>,
-    pub verdict_blob: Option<String>,
-    pub repro_path: Option<String>,
-    pub attack_provenance: Option<String>,
-    pub prompt_version: Option<String>,
-    pub chain_id: Option<String>,
-    /// Back-link to `harness_specs.id` populated by SpecDerivation.
-    /// `None` for static-pass rows that never went through the AI
-    /// spec pass. Written by `HarnessSpecStore::insert_with_finding_spec_link`
-    /// (and the historical `FindingStore::set_spec` helper); never
-    /// written by `upsert`, so a re-scan does not clobber an
-    /// existing AI-side spec back-link.
-    pub spec_id: Option<String>,
-}
 
 pub struct FindingStore<'a> {
     pool: &'a SqlitePool,

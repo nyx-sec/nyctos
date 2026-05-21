@@ -25,13 +25,14 @@ function wrap(children: ReactNode, route = "/chains") {
 function makeRun(overrides: Partial<RunRecord> = {}): RunRecord {
   return {
     id: "run-1",
-    started_at_ms: 1000,
-    finished_at_ms: 2000,
+    started_at: 1000,
+    finished_at: 2000,
     status: "Succeeded",
+    triggered_by: "Manual",
+    git_ref: null,
+    parent_run_id: null,
     wall_clock_ms: 1000,
-    succeeded: 1,
-    inconclusive: 0,
-    failed: 0,
+    total_ai_spend_usd_micros: 0,
     ...overrides,
   };
 }
