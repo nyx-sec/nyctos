@@ -41,6 +41,7 @@ use nyctos_core::{
     now_epoch_ms, parse_git_auth, AiRuntime, IngestError, SandboxBackend, ACCOUNT_AI_ANTHROPIC,
     ACCOUNT_AI_LOCAL_LLM,
 };
+use nyctos_types::api::HealthResponse;
 use nyctos_types::event::{AgentEvent, ReproEvent, RunEvent};
 use nyctos_types::project::{CreateProjectRequest, PatchProjectRequest, TriStateJson};
 use nyctos_types::repo::{CreateRepoRequest, PatchRepoRequest, TestRepoRequest, TestRepoResponse};
@@ -205,14 +206,11 @@ fn hex_digit(b: u8) -> Option<u8> {
     }
 }
 
-#[derive(Debug, Serialize)]
-struct Health {
-    status: &'static str,
-    version: &'static str,
-}
-
 async fn health() -> impl IntoResponse {
-    Json(Health { status: "ok", version: env!("CARGO_PKG_VERSION") })
+    Json(HealthResponse {
+        status: "ok".to_string(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+    })
 }
 
 // ---- /setup -----------------------------------------------------------------

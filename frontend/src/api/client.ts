@@ -13,6 +13,7 @@ import type {
   CreateProjectRequest,
   CreateRepoRequest,
   FindingRecord,
+  HealthResponse,
   PatchProjectRequest,
   PatchRepoRequest,
   ProjectRecord,
@@ -26,6 +27,7 @@ export type {
   CreateProjectRequest,
   CreateRepoRequest,
   FindingRecord,
+  HealthResponse,
   PatchProjectRequest,
   PatchRepoRequest,
   ProjectRecord,
@@ -180,11 +182,6 @@ export interface ReplayEvent {
 }
 
 export type RepoSourceKind = "git" | "local-path" | "github" | "gitlab" | "local";
-
-export interface HealthResponse {
-  status: "ok";
-  version: string;
-}
 
 // ---- setup wizard ----------------------------------------------------------
 

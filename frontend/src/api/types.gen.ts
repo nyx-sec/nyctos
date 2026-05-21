@@ -190,3 +190,5 @@ export type PatchProjectRequest = { description?: string | null, target_base_url
  */
 env_config: unknown, };
 
+export type HealthResponse = { status: string, version: string, };
+

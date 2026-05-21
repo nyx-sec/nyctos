@@ -3,6 +3,7 @@
 // populated by the phase that owns its surface area.
 
 pub mod agent;
+pub mod api;
 pub mod budget;
 pub mod chain;
 pub mod event;
