@@ -42,7 +42,7 @@ use nyctos_types::{
     run::RunRecord,
     trace::AgentTraceRecord,
 };
-use ts_rs::TS;
+use ts_rs::{Config, TS};
 
 fn main() -> ExitCode {
     let mut args = env::args().skip(1);
@@ -165,5 +165,5 @@ fn render() -> String {
 }
 
 fn decl_of<T: TS>() -> String {
-    <T as TS>::decl()
+    <T as TS>::decl(&Config::default())
 }

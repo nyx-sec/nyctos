@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -441,9 +441,9 @@ async fn scan(
                 store.close().await;
                 return Err(err);
             }
-        };
+    };
     if targets.is_empty() {
-        eprintln!("scan: no repositories selected; configure one in nyctos.toml");
+        eprintln!("scan: no repositories selected; add a repo in the web UI or nyctos.toml");
         store.close().await;
         return Ok(ExitCode::from(1));
     }
@@ -1213,7 +1213,7 @@ async fn run_scan_for_api(
     if targets.is_empty() {
         store.close().await;
         return Err(ScanTriggerError::Rejected(
-            "no repositories selected; configure one in nyctos.toml".to_string(),
+            "no repositories selected; add a repo in the web UI or nyctos.toml".to_string(),
         ));
     }
 
@@ -1401,70 +1401,116 @@ async fn finalise_run(
     Ok(())
 }
 
-/// Resolve the project rows + enabled repos a scan should walk.
+/// Resolve the project rows + repos a scan should walk.
 ///
-/// `requested_projects` filters the TOML's `[[project]]` blocks by name
-/// (empty = every configured project). `requested_repos` narrows within
-/// the selected projects (empty = every enabled repo in those projects).
-/// Each TOML project is looked up by name in the state DB; the row is
-/// created on the fly when missing so a freshly-installed daemon can
-/// scan without an explicit `project create` step.
+/// TOML projects remain supported for CLI/config-driven installs, but
+/// the daemon is also local-server-first: projects and repos created
+/// through the web UI live in the state DB and must be scannable even
+/// when they do not appear in `nyctos.toml`.
 async fn select_scan_targets(
     store: &Store,
     config: &Config,
     requested_projects: &[String],
     requested_repos: &[String],
 ) -> anyhow::Result<Vec<(Project, Vec<Repo>)>> {
-    let candidate_projects: Vec<&nyctos_core::ProjectConfig> = if requested_projects.is_empty() {
-        config.projects.iter().collect()
-    } else {
-        let mut out = Vec::with_capacity(requested_projects.len());
-        for name in requested_projects {
-            let cfg =
-                config.projects.iter().find(|p| &p.name == name).ok_or_else(|| {
-                    anyhow::anyhow!("project `{name}` not declared in nyctos.toml")
-                })?;
-            out.push(cfg);
-        }
-        out
-    };
+    let wants_project =
+        |name: &str| requested_projects.is_empty() || requested_projects.iter().any(|n| n == name);
+    let wants_repo =
+        |name: &str| requested_repos.is_empty() || requested_repos.iter().any(|n| n == name);
 
-    if !requested_repos.is_empty() {
-        for name in requested_repos {
-            let found =
-                candidate_projects.iter().flat_map(|p| p.repos.iter()).any(|r| &r.name == name);
-            if !found {
-                anyhow::bail!(
-                    "repo `{name}` not declared under the selected project(s) in nyctos.toml"
-                );
-            }
-        }
-    }
+    let mut out: Vec<(Project, Vec<Repo>)> = Vec::new();
+    let mut matched_projects: HashSet<String> = HashSet::new();
+    let mut seen_repos: HashSet<String> = HashSet::new();
+    let mut toml_project_names: HashSet<String> = HashSet::new();
 
-    let mut out: Vec<(Project, Vec<Repo>)> = Vec::with_capacity(candidate_projects.len());
-    for project_cfg in candidate_projects {
+    for project_cfg in config.projects.iter().filter(|p| wants_project(&p.name)) {
+        toml_project_names.insert(project_cfg.name.clone());
+        matched_projects.insert(project_cfg.name.clone());
         let rec = ensure_project_row(store, &project_cfg.name).await?;
         let project = project_from_record(rec);
         let project_id = project.id.clone();
         let mut repos: Vec<Repo> = Vec::new();
+        let mut toml_repo_names: HashSet<String> = HashSet::new();
         for r in &project_cfg.repos {
-            if !requested_repos.is_empty() && !requested_repos.iter().any(|n| n == &r.name) {
+            toml_repo_names.insert(r.name.clone());
+            if !wants_repo(&r.name) {
                 continue;
             }
+            seen_repos.insert(r.name.clone());
             if !r.enabled {
-                if requested_repos.iter().any(|n| n == &r.name) {
-                    anyhow::bail!("repo `{}` is declared but `enabled = false`", r.name);
-                }
-                continue;
+                anyhow::bail!("repo `{}` is declared but `enabled = false`", r.name);
             }
             repos.push(repo_from_config(r, project_id.clone())?);
+        }
+
+        for row in store.repos().list_by_project(project.id.as_str()).await? {
+            if toml_repo_names.contains(&row.name) || !wants_repo(&row.name) {
+                continue;
+            }
+            seen_repos.insert(row.name.clone());
+            repos.push(repo_from_record(&row)?);
+        }
+
+        if repos.is_empty() {
+            continue;
+        }
+        out.push((project, repos));
+    }
+
+    for rec in store.projects().list().await? {
+        if toml_project_names.contains(&rec.name) || !wants_project(&rec.name) {
+            continue;
+        }
+        matched_projects.insert(rec.name.clone());
+        let project = project_from_record(rec);
+        let mut repos: Vec<Repo> = Vec::new();
+        for row in store.repos().list_by_project(project.id.as_str()).await? {
+            if !wants_repo(&row.name) {
+                continue;
+            }
+            seen_repos.insert(row.name.clone());
+            repos.push(repo_from_record(&row)?);
         }
         if repos.is_empty() {
             continue;
         }
         out.push((project, repos));
     }
+
+    for name in requested_projects {
+        if !matched_projects.contains(name) {
+            anyhow::bail!("project `{name}` not declared in nyctos.toml or local project store");
+        }
+    }
+    for name in requested_repos {
+        if !seen_repos.contains(name) {
+            anyhow::bail!(
+                "repo `{name}` not declared under the selected project(s) in nyctos.toml or local project store"
+            );
+        }
+    }
+
     Ok(out)
+}
+
+fn repo_from_record(rec: &RepoRecord) -> anyhow::Result<Repo> {
+    let source = match rec.source_kind.as_str() {
+        "git" | "github" | "gitlab" => RepoSource::Git {
+            url: rec.source_url_or_path.clone(),
+            branch: rec.branch.clone(),
+            auth: rec.auth_ref.as_deref().map(nyctos_core::repo::parse_git_auth).transpose()?,
+        },
+        "local" | "local-path" => {
+            RepoSource::LocalPath { path: PathBuf::from(&rec.source_url_or_path) }
+        }
+        other => anyhow::bail!("repo `{}` has unknown source_kind `{other}`", rec.name),
+    };
+    Ok(Repo {
+        name: rec.name.clone(),
+        source,
+        i_own_this: rec.i_own_this,
+        project_id: ProjectId::new(rec.project_id.clone()),
+    })
 }
 
 /// Lookup-or-create a project row keyed by `name`. Mirrors the API's
@@ -2127,5 +2173,47 @@ mod tests {
         // Existing evidence.message wins over Diag.message so the upstream
         // payload remains authoritative.
         assert_eq!(parsed.get("message").and_then(|v| v.as_str()), Some("inner"));
+    }
+
+    #[tokio::test]
+    async fn scan_targets_include_db_only_project_repos() -> anyhow::Result<()> {
+        let state = tempfile::tempdir()?;
+        let repo_dir = tempfile::tempdir()?;
+        let store = Store::open(state.path()).await?;
+        let project =
+            store.projects().create("proj-prism", "PrismTrips", None, None, None, 1_000).await?;
+        store
+            .repos()
+            .upsert(&RepoRecord {
+                name: "website".to_string(),
+                project_id: project.id.clone(),
+                source_kind: "local-path".to_string(),
+                source_url_or_path: repo_dir.path().display().to_string(),
+                branch: None,
+                auth_ref: None,
+                i_own_this: true,
+                last_scan_run_id: None,
+                last_scan_finished_at: None,
+                created_at: 1_001,
+                updated_at: 1_001,
+            })
+            .await?;
+
+        let targets =
+            select_scan_targets(&store, &Config::default(), &[project.name.clone()], &[]).await?;
+
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].0.id.as_str(), project.id);
+        assert_eq!(targets[0].0.name, "PrismTrips");
+        assert_eq!(targets[0].1.len(), 1);
+        assert_eq!(targets[0].1[0].name, "website");
+        assert_eq!(targets[0].1[0].project_id.as_str(), project.id);
+        match &targets[0].1[0].source {
+            RepoSource::LocalPath { path } => assert_eq!(path, &repo_dir.path().to_path_buf()),
+            other => panic!("expected local path repo, got {other:?}"),
+        }
+
+        store.close().await;
+        Ok(())
     }
 }

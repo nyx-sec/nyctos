@@ -133,11 +133,11 @@ extracted: Array<ExtractedAgentResult>, };
 
 export type SandboxEvent = { "kind": "VerifierStarted", run_id: string, finding_id: string, repo: string, started_at_ms: number, } | { "kind": "VerifierFinished", run_id: string, finding_id: string, repo: string, verdict: string, replay_stable: boolean | null, elapsed_ms: number, };
 
-export type FindingEvent = Record<string, never>;
+export type FindingEvent = Record<symbol, never>;
 
-export type BudgetEvent = Record<string, never>;
+export type BudgetEvent = Record<symbol, never>;
 
-export type QuarantineEvent = Record<string, never>;
+export type QuarantineEvent = Record<symbol, never>;
 
 export type ReproEvent = { "kind": "ReplayStarted", finding_id: string, bundle_path: string, started_at_ms: number, } | { "kind": "ReplayStdout", finding_id: string, line: string, } | { "kind": "ReplayStderr", finding_id: string, line: string, } | { "kind": "ReplayError", finding_id: string, message: string, } | { "kind": "ReplayFinished", finding_id: string, status: string, exit_code: number, started_at_ms: number, finished_at_ms: number, duration_ms: number, };
 
@@ -188,7 +188,7 @@ export type PatchProjectRequest = { description?: string | null, target_base_url
  * Tri-state JSON value: omitted = no change, `null` = clear, value =
  * set. The body is re-serialized verbatim into `env_config_json`.
  */
-env_config: unknown, };
+env_config?: unknown, };
 
 export type HealthResponse = { status: string, version: string, };
 

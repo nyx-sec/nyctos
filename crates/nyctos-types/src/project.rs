@@ -90,16 +90,16 @@ pub struct CreateProjectRequest {
 /// [`TriStateJson`].
 #[derive(Debug, Deserialize, TS)]
 pub struct PatchProjectRequest {
-    #[serde(default, deserialize_with = "deserialize_double_option_string")]
+    #[serde(default, with = "double_option_string")]
     #[ts(optional, type = "string | null")]
     pub description: Option<Option<String>>,
-    #[serde(default, deserialize_with = "deserialize_double_option_string")]
+    #[serde(default, with = "double_option_string")]
     #[ts(optional, type = "string | null")]
     pub target_base_url: Option<Option<String>>,
     /// Tri-state JSON value: omitted = no change, `null` = clear, value =
     /// set. The body is re-serialized verbatim into `env_config_json`.
-    #[serde(default, deserialize_with = "deserialize_tri_state_json")]
-    #[ts(type = "unknown")]
+    #[serde(default, with = "tri_state_json")]
+    #[ts(optional, type = "unknown")]
     pub env_config: TriStateJson,
 }
 
@@ -125,11 +125,19 @@ where
     Option::<String>::deserialize(d).map(Some)
 }
 
-/// Lift a JSON value into [`TriStateJson`]: a missing key is treated
-/// the same as an explicit `null` (`TriStateJson::Null`); a present
-/// non-null value becomes `TriStateJson::Value(v)`. The caller pairs
-/// this with `#[serde(default)]` so `TriStateJson::Unset` is reached
-/// only when the deserializer never sees the field.
+pub(crate) mod double_option_string {
+    pub(crate) fn deserialize<'de, D>(d: D) -> Result<Option<Option<String>>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        super::deserialize_double_option_string(d)
+    }
+}
+
+/// Lift a JSON value into [`TriStateJson`]: `null` clears the value,
+/// while a present non-null value becomes `TriStateJson::Value(v)`.
+/// The caller pairs this with `#[serde(default)]` so an omitted field
+/// becomes `TriStateJson::Unset`.
 pub fn deserialize_tri_state_json<'de, D>(d: D) -> Result<TriStateJson, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -140,4 +148,13 @@ where
         Some(serde_json::Value::Null) => TriStateJson::Null,
         Some(v) => TriStateJson::Value(v),
     })
+}
+
+pub(crate) mod tri_state_json {
+    pub(crate) fn deserialize<'de, D>(d: D) -> Result<super::TriStateJson, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        super::deserialize_tri_state_json(d)
+    }
 }

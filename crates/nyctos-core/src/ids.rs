@@ -9,7 +9,7 @@ use rand::RngCore;
 /// instead of certainty.
 pub fn short_token() -> String {
     let mut buf = [0u8; 4];
-    rand::thread_rng().fill_bytes(&mut buf);
+    rand::rng().fill_bytes(&mut buf);
     hex::encode(buf)
 }
 

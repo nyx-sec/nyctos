@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::project::{deserialize_double_option_string, ProjectId};
+use crate::project::{double_option_string, ProjectId};
 
 /// In-memory descriptor of a configured repository.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -119,7 +119,7 @@ pub struct CreateRepoRequest {
 /// Request body for `PATCH /api/v1/projects/:project_id/repos/:name`.
 /// `branch` and `auth_ref` use tri-state semantics (omitted = no
 /// change, `null` = clear, value = set) paired with
-/// [`deserialize_double_option_string`]; `source_kind`,
+/// the shared double-option deserializer; `source_kind`,
 /// `source_url_or_path`, and `i_own_this` are plain `Option`s.
 #[derive(Debug, Deserialize, TS)]
 pub struct PatchRepoRequest {
@@ -129,10 +129,10 @@ pub struct PatchRepoRequest {
     #[serde(default)]
     #[ts(optional)]
     pub source_url_or_path: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_double_option_string")]
+    #[serde(default, with = "double_option_string")]
     #[ts(optional, type = "string | null")]
     pub branch: Option<Option<String>>,
-    #[serde(default, deserialize_with = "deserialize_double_option_string")]
+    #[serde(default, with = "double_option_string")]
     #[ts(optional, type = "string | null")]
     pub auth_ref: Option<Option<String>>,
     #[serde(default)]

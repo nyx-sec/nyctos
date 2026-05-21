@@ -60,37 +60,37 @@ pub fn build_router(state: ServerState) -> Router {
         .route("/api/v1/setup/doctor", post(setup_doctor))
         .route("/api/v1/projects", get(list_projects).post(create_project))
         .route(
-            "/api/v1/projects/:project_id",
+            "/api/v1/projects/{project_id}",
             get(get_project).patch(patch_project).delete(delete_project),
         )
         .route(
-            "/api/v1/projects/:project_id/repos",
+            "/api/v1/projects/{project_id}/repos",
             get(list_project_repos).post(create_project_repo),
         )
-        .route("/api/v1/projects/:project_id/repos/test", post(test_repo_connectivity))
+        .route("/api/v1/projects/{project_id}/repos/test", post(test_repo_connectivity))
         .route(
-            "/api/v1/projects/:project_id/repos/:name",
+            "/api/v1/projects/{project_id}/repos/{name}",
             get(get_project_repo).patch(patch_project_repo).delete(delete_project_repo),
         )
-        .route("/api/v1/projects/:project_id/scan", post(scan_project))
+        .route("/api/v1/projects/{project_id}/scan", post(scan_project))
         .route("/api/v1/runs", get(list_runs))
-        .route("/api/v1/runs/:id", get(get_run))
-        .route("/api/v1/runs/:id/findings", get(findings_for_run))
-        .route("/api/v1/runs/:id/summary", get(run_summary))
-        .route("/api/v1/runs/:id/summary.md", get(run_summary_markdown))
-        .route("/api/v1/runs/:id/summary.html", get(run_summary_html))
+        .route("/api/v1/runs/{id}", get(get_run))
+        .route("/api/v1/runs/{id}/findings", get(findings_for_run))
+        .route("/api/v1/runs/{id}/summary", get(run_summary))
+        .route("/api/v1/runs/{id}/summary.md", get(run_summary_markdown))
+        .route("/api/v1/runs/{id}/summary.html", get(run_summary_html))
         .route("/api/v1/findings", get(list_findings))
-        .route("/api/v1/findings/:id", get(get_finding))
-        .route("/api/v1/findings/:id/repro-bundle", post(create_repro_bundle))
-        .route("/api/v1/findings/:id/repro-bundle.tar", get(download_repro_bundle))
-        .route("/api/v1/findings/:id/replay", post(replay_repro_bundle))
+        .route("/api/v1/findings/{id}", get(get_finding))
+        .route("/api/v1/findings/{id}/repro-bundle", post(create_repro_bundle))
+        .route("/api/v1/findings/{id}/repro-bundle.tar", get(download_repro_bundle))
+        .route("/api/v1/findings/{id}/replay", post(replay_repro_bundle))
         .route("/api/v1/chains", get(list_chains))
-        .route("/api/v1/chains/:id", get(get_chain))
-        .route("/api/v1/findings/:id/traces", get(traces_for_finding))
-        .route("/api/v1/traces/:id", get(get_trace))
+        .route("/api/v1/chains/{id}", get(get_chain))
+        .route("/api/v1/findings/{id}/traces", get(traces_for_finding))
+        .route("/api/v1/traces/{id}", get(get_trace))
         .route("/api/v1/quarantine", get(list_quarantine))
-        .route("/api/v1/quarantine/:id/promote", post(promote_quarantine))
-        .route("/api/v1/quarantine/:id/dismiss", post(dismiss_quarantine))
+        .route("/api/v1/quarantine/{id}/promote", post(promote_quarantine))
+        .route("/api/v1/quarantine/{id}/dismiss", post(dismiss_quarantine))
         .route("/api/v1/events", get(events_ws))
         .route("/webhook/git", post(crate::webhook::webhook_git))
         .layer(middleware::from_fn_with_state(state.clone(), auth_layer))
@@ -980,8 +980,7 @@ async fn scan_project(
     // A `?repo=...` filter scopes the trigger to a single repo; the
     // dispatcher / config-resolver downstream is responsible for
     // rejecting unknown names so this handler stays a thin pass-through.
-    let run_id =
-        s.scan.trigger(ScanTriggerSource::Manual, Some(project_id), q.repo).await?;
+    let run_id = s.scan.trigger(ScanTriggerSource::Manual, Some(project_id), q.repo).await?;
     Ok(Json(ScanResponse { run_id }))
 }
 
@@ -1129,28 +1128,19 @@ async fn findings_for_run(
     let current_rows = s.store.findings().list_filtered(&filter).await?;
 
     let prior_membership: HashMap<String, String> = match prior_run_id.as_deref() {
-        Some(prior_id) => s
-            .store
-            .findings()
-            .list_run_membership(prior_id)
-            .await?
-            .into_iter()
-            .collect(),
+        Some(prior_id) => {
+            s.store.findings().list_run_membership(prior_id).await?.into_iter().collect()
+        }
         None => HashMap::new(),
     };
     let prior_known = !prior_membership.is_empty();
-    let current_ids: HashSet<String> =
-        current_rows.iter().map(|r| r.id.clone()).collect();
+    let current_ids: HashSet<String> = current_rows.iter().map(|r| r.id.clone()).collect();
 
     let mut items: Vec<FindingWithDiff> = current_rows
         .into_iter()
         .map(|record| {
-            let diff_status = classify_current_row(
-                &record,
-                &prior_membership,
-                prior_known,
-                started_at,
-            );
+            let diff_status =
+                classify_current_row(&record, &prior_membership, prior_known, started_at);
             FindingWithDiff { record, diff_status }
         })
         .collect();
@@ -1181,10 +1171,7 @@ async fn findings_for_run(
             if !row_passes_filter(&record, &q) {
                 continue;
             }
-            items.push(FindingWithDiff {
-                record,
-                diff_status: FindingDiffStatus::Closed,
-            });
+            items.push(FindingWithDiff { record, diff_status: FindingDiffStatus::Closed });
         }
     }
 
@@ -1621,7 +1608,7 @@ async fn handle_events_ws(
     for ev in replay {
         match serde_json::to_string(&ev) {
             Ok(payload) => {
-                if tx.send(Message::Text(payload)).await.is_err() {
+                if tx.send(Message::Text(payload.into())).await.is_err() {
                     return;
                 }
             }
@@ -1656,7 +1643,7 @@ async fn handle_events_ws(
                         }
                         match serde_json::to_string(&ev) {
                             Ok(payload) => {
-                                if tx.send(Message::Text(payload)).await.is_err() {
+                                if tx.send(Message::Text(payload.into())).await.is_err() {
                                     break;
                                 }
                             }
@@ -1670,7 +1657,7 @@ async fn handle_events_ws(
                             "kind": "Lagged",
                             "skipped": skipped,
                         });
-                        if tx.send(Message::Text(warning.to_string())).await.is_err() {
+                        if tx.send(Message::Text(warning.to_string().into())).await.is_err() {
                             break;
                         }
                     }
