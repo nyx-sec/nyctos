@@ -1,14 +1,15 @@
 //! Filesystem layout for the agent's persistent state.
 //!
-//! Creates `~/.local/share/nyctos/{runs,repos,findings,logs,cache}` on
-//! first use. On Unix the root directory and its subdirectories are
+//! Creates `~/.local/share/nyctos/{runs,repos,findings,logs,cache,bundles,secrets}`
+//! on first use. On Unix the root directory and its subdirectories are
 //! restricted to mode `0700` so other local users cannot read run state.
 
 use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
-const SUBDIRS: &[&str] = &["runs", "repos", "findings", "logs", "cache", "bundles"];
+const SUBDIRS: &[&str] =
+    &["runs", "repos", "findings", "logs", "cache", "bundles", "secrets"];
 
 #[derive(Debug, Error)]
 pub enum StateError {
@@ -84,6 +85,30 @@ impl StateDir {
     /// requests a repro bundle.
     pub fn bundles(&self) -> PathBuf {
         self.root.join("bundles")
+    }
+
+    /// Secrets directory at `<state>/secrets`, created with mode `0700`
+    /// by [`Self::ensure`]. The env-builder reads
+    /// `<state>/secrets/test.env` (and the optional `test.env.allow`
+    /// sibling) from this path. Surfaced as a single canonical accessor
+    /// so the wizard, doctor, and env-builder name the same location.
+    pub fn secrets(&self) -> PathBuf {
+        self.root.join("secrets")
+    }
+
+    /// Path of the env-builder test secrets file
+    /// (`<state>/secrets/test.env`). Absent until the operator drops a
+    /// file at this path; the env-builder fails closed when it is
+    /// missing.
+    pub fn secrets_test_env_path(&self) -> PathBuf {
+        self.secrets().join("test.env")
+    }
+
+    /// Path of the optional env-builder secrets allowlist
+    /// (`<state>/secrets/test.env.allow`). Absent on a fresh install;
+    /// the env-builder treats a missing file as an empty allowlist.
+    pub fn secrets_test_env_allow_path(&self) -> PathBuf {
+        self.secrets().join("test.env.allow")
     }
 
     /// Bearer-token file consumed by the API auth middleware. Stored
@@ -235,7 +260,26 @@ mod tests {
         assert_eq!(sd.logs(), Path::new("/var/state/logs"));
         assert_eq!(sd.cache(), Path::new("/var/state/cache"));
         assert_eq!(sd.bundles(), Path::new("/var/state/bundles"));
+        assert_eq!(sd.secrets(), Path::new("/var/state/secrets"));
+        assert_eq!(sd.secrets_test_env_path(), Path::new("/var/state/secrets/test.env"));
+        assert_eq!(
+            sd.secrets_test_env_allow_path(),
+            Path::new("/var/state/secrets/test.env.allow"),
+        );
         assert_eq!(sd.auth_token_path(), Path::new("/var/state/auth_token"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_creates_secrets_dir_at_0700() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tmp_root();
+        let sd = StateDir::at(tmp.path().join("nyctos"));
+        sd.ensure().expect("ensure");
+        let secrets = sd.secrets();
+        assert!(secrets.is_dir(), "secrets dir should exist at {}", secrets.display());
+        let mode = std::fs::metadata(&secrets).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "secrets dir mode {mode:o}");
     }
 
     #[test]
