@@ -122,6 +122,8 @@ nyx OK at /usr/local/bin/nyx (version 0.7.0, minimum 0.7.0)
 claude-code: available v1.0.0 at /usr/local/bin/claude
 sandbox chain lane -> birdcage (selected by host probe) [2 simultaneous, default]
 sandbox fast lane  -> process (selected by host probe) [8 simultaneous, default]
+webhook: secret resolved from `env:NYX_WEBHOOK_SECRET` (32 bytes)
+webhook caps: 8 simultaneous [default], 30/min per IP [default]
 ```
 
 Each line maps to a single check:
@@ -135,6 +137,8 @@ Each line maps to a single check:
 | `nyx OK` / `nyx FAIL` | The scanner binary is on `PATH` (or `[nyx].binary_path` resolved), and its `--version` is at or above `MINIMUM_NYX_VERSION`. |
 | `claude-code: available` / `unavailable` | Informational only. Doctor exits zero with claude-code missing. |
 | `sandbox chain lane` / `sandbox fast lane` | Backend that will service each lane plus its concurrency cap. The `default` / `configured` suffix shows whether the cap is the built-in value or an operator override via `[performance] chain_lane_concurrency` / `fast_lane_concurrency`. |
+| `webhook: secret resolved` / `webhook: disabled` | Whether `[triggers] webhook_secret_ref` resolved to a non-empty value. Only present when the secret ref is set; absent on a fresh install. |
+| `webhook caps` | Resolved per-handler concurrency cap and per-IP rate limit. The `default` / `configured` suffix mirrors the lane lines: built-in fallback vs. an operator override via `[triggers] webhook_max_concurrent` / `webhook_rate_limit_per_minute`. Only present when the webhook is enabled. |
 
 Doctor exits non-zero only when `nyx` is missing or under the minimum
 version. Every other check is informational.

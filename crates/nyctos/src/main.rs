@@ -1907,6 +1907,25 @@ fn report_webhook(config: &Config) {
             "webhook FAIL: `{spec}` did not resolve to a non-empty secret (check env var or literal)"
         ),
     }
+    let max_concurrent = config
+        .triggers
+        .webhook_max_concurrent_resolved(nyctos_api::DEFAULT_WEBHOOK_MAX_CONCURRENT);
+    let rate_per_minute = config
+        .triggers
+        .webhook_rate_limit_per_minute_resolved(nyctos_api::DEFAULT_WEBHOOK_RATE_LIMIT_PER_MINUTE);
+    let max_origin = if config.triggers.webhook_max_concurrent.is_some() {
+        "configured"
+    } else {
+        "default"
+    };
+    let rate_origin = if config.triggers.webhook_rate_limit_per_minute.is_some() {
+        "configured"
+    } else {
+        "default"
+    };
+    println!(
+        "webhook caps: {max_concurrent} simultaneous [{max_origin}], {rate_per_minute}/min per IP [{rate_origin}]"
+    );
 }
 
 struct DoctorScanTrigger;
