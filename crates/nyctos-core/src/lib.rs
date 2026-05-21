@@ -19,7 +19,10 @@ pub use config::{
 };
 pub use log_init::{init as init_logging, json_log_path, LogConfig, LogInitError};
 pub use project::{Project, ProjectId};
-pub use repo::{ingest, GitAuth, IngestError, IngestedRepo, Repo, RepoSource, SnapshotBackend};
+pub use repo::{
+    ingest, parse_git_auth, repo_from_config, GitAuth, IngestError, IngestedRepo, Repo, RepoSource,
+    SnapshotBackend,
+};
 pub use run::{
     mint_run_id, CrossRepoCallgraphStub, CrossRepoEdge, InconclusiveReason, RepoBundle,
     RepoOutcome, Run, RunBundle, RunCounts, RunDispatcher, ScanLane, ScanLaneError,

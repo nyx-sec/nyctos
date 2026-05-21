@@ -15,8 +15,8 @@ use nyctos_core::store::{
     RunRepoOutcomeRecord,
 };
 use nyctos_core::{
-    ingest, now_epoch_ms, Config, InconclusiveReason, IngestError, IngestedRepo, LogConfig,
-    Project, ProjectId, Repo, RepoOutcome, RepoSource, Run, RunBundle, RunDispatcher,
+    ingest, now_epoch_ms, repo_from_config, Config, InconclusiveReason, IngestError, IngestedRepo,
+    LogConfig, Project, ProjectId, Repo, RepoOutcome, RepoSource, Run, RunBundle, RunDispatcher,
     SandboxBackend, SecretStore, StateDir, Store, WorkspaceHandle,
 };
 use nyctos_nyx::{Diag, NyxError, NyxRunner, NyxScanLane, MINIMUM_NYX_VERSION};
@@ -1457,7 +1457,7 @@ async fn select_scan_targets(
                 }
                 continue;
             }
-            repos.push(Repo::from_config(r, project_id.clone())?);
+            repos.push(repo_from_config(r, project_id.clone())?);
         }
         if repos.is_empty() {
             continue;

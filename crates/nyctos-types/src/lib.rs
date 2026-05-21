@@ -9,6 +9,7 @@ pub mod event;
 pub mod finding;
 pub mod novel;
 pub mod payload;
+pub mod project;
 pub mod repo;
 pub mod run;
 pub mod spec;

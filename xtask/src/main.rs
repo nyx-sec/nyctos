@@ -27,6 +27,7 @@ use nyctos_types::{
         AgentEvent, AiEvent, BudgetEvent, FindingEvent, QuarantineEvent, RepoOutcomeTag,
         ReproEvent, RunEvent, SandboxEvent,
     },
+    repo::{GitAuth, Repo, RepoSource},
 };
 use ts_rs::TS;
 
@@ -107,6 +108,9 @@ fn render() -> String {
         decl_of::<QuarantineEvent>(),
         decl_of::<ReproEvent>(),
         decl_of::<AgentEvent>(),
+        decl_of::<GitAuth>(),
+        decl_of::<RepoSource>(),
+        decl_of::<Repo>(),
     ];
 
     for decl in decls {

@@ -38,7 +38,7 @@ use nyctos_core::store::{
     RepoRecord, RunRecord,
 };
 use nyctos_core::{
-    now_epoch_ms, AiRuntime, GitAuth, IngestError, SandboxBackend, ACCOUNT_AI_ANTHROPIC,
+    now_epoch_ms, parse_git_auth, AiRuntime, IngestError, SandboxBackend, ACCOUNT_AI_ANTHROPIC,
     ACCOUNT_AI_LOCAL_LLM,
 };
 use nyctos_types::event::{AgentEvent, ReproEvent, RunEvent};
@@ -872,7 +872,7 @@ fn validate_git_auth_ref(source_kind: &str, auth_ref: Option<&str>) -> Result<()
     let Some(raw) = auth_ref else {
         return Ok(());
     };
-    GitAuth::parse(raw).map_err(|err| match err {
+    parse_git_auth(raw).map_err(|err| match err {
         IngestError::AuthMalformed { raw } => ApiError::BadRequest(format!(
             "auth_ref `{raw}` is malformed; expected `ssh-key:<path>`, `token-env:<VAR>`, or \
              `gh-app:<id>`"

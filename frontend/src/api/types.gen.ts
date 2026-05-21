@@ -143,3 +143,9 @@ export type ReproEvent = { "kind": "ReplayStarted", finding_id: string, bundle_p
 
 export type AgentEvent = { "kind": "Run", data: RunEvent, } | { "kind": "Ai", data: AiEvent, } | { "kind": "Sandbox", data: SandboxEvent, } | { "kind": "Finding", data: FindingEvent, } | { "kind": "Budget", data: BudgetEvent, } | { "kind": "Quarantine", data: QuarantineEvent, } | { "kind": "Repro", data: ReproEvent, };
 
+export type GitAuth = { "SshKey": string } | { "TokenEnv": string } | { "GhApp": string };
+
+export type RepoSource = { "Git": { url: string, branch: string | null, auth: GitAuth | null, } } | { "LocalPath": { path: string, } };
+
+export type Repo = { name: string, source: RepoSource, i_own_this: boolean, project_id: string, };
+

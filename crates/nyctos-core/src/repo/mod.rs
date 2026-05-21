@@ -7,6 +7,11 @@
 //! <name>/`. See `docs/PROJECT_ENTITY_PLAN.md` for the migration
 //! that introduced the FK.
 //!
+//! The `Repo`, `RepoSource`, and `GitAuth` data shapes live in
+//! `nyctos-types::repo` so other workspace crates and the TS frontend
+//! can name them directly. This module hosts the ingestion-side parser,
+//! [`IngestError`], and the per-source backends.
+//!
 //! Two source kinds are supported:
 //!
 //! - [`RepoSource::Git`]: shallow clone or fetch into the
@@ -35,95 +40,48 @@ pub mod local;
 
 pub use git::{validate_token_scopes, GhScopeCheck};
 pub use local::SnapshotBackend;
+pub use nyctos_types::repo::{GitAuth, Repo, RepoSource};
 
-/// In-memory descriptor of a configured repository.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Repo {
-    pub name: String,
-    pub source: RepoSource,
-    pub i_own_this: bool,
-    pub project_id: ProjectId,
-}
-
-/// Source kind for a [`Repo`]. Mirrors the config shape but decodes the
-/// auth descriptor string into a typed [`GitAuth`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RepoSource {
-    Git { url: String, branch: Option<String>, auth: Option<GitAuth> },
-    LocalPath { path: PathBuf },
-}
-
-/// Auth descriptor for [`RepoSource::Git`]. Parsed from the config
-/// `auth = "<scheme>:<value>"` string.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum GitAuth {
-    /// SSH private-key file. Used as `GIT_SSH_COMMAND="ssh -i <path>"`.
-    SshKey(PathBuf),
-    /// Environment variable name that holds a personal access token.
-    /// The token is sourced from the env at ingestion time, never
-    /// persisted. Write-scoped tokens are refused.
-    TokenEnv(String),
-    /// GitHub App installation id. Token is minted at ingestion time via
-    /// the upstream GH App; the app's installation must carry read-only
-    /// scopes.
-    GhApp(String),
-}
-
-impl GitAuth {
-    /// Render this auth value back as the `<scheme>:<value>` descriptor
-    /// string that [`GitAuth::parse`] accepts. Used as a stable
-    /// identifier for the `repos.auth_ref` audit column (the raw token
-    /// or key bytes are never persisted; only the descriptor that
-    /// names where they came from).
-    pub fn descriptor(&self) -> String {
-        match self {
-            GitAuth::SshKey(p) => format!("ssh-key:{}", p.display()),
-            GitAuth::TokenEnv(var) => format!("token-env:{var}"),
-            GitAuth::GhApp(id) => format!("gh-app:{id}"),
+/// Parse a config auth descriptor of the form `<scheme>:<value>`.
+///
+/// Lives here (not in `nyctos-types`) because the error type belongs to
+/// the ingestion crate.
+pub fn parse_git_auth(raw: &str) -> Result<GitAuth, IngestError> {
+    let (scheme, value) =
+        raw.split_once(':').ok_or_else(|| IngestError::AuthMalformed { raw: raw.to_string() })?;
+    match scheme {
+        "ssh-key" => Ok(GitAuth::SshKey(PathBuf::from(value))),
+        "token-env" => {
+            if value.is_empty() {
+                return Err(IngestError::AuthMalformed { raw: raw.to_string() });
+            }
+            Ok(GitAuth::TokenEnv(value.to_string()))
         }
-    }
-
-    /// Parse a config auth descriptor of the form `<scheme>:<value>`.
-    pub fn parse(raw: &str) -> Result<Self, IngestError> {
-        let (scheme, value) = raw
-            .split_once(':')
-            .ok_or_else(|| IngestError::AuthMalformed { raw: raw.to_string() })?;
-        match scheme {
-            "ssh-key" => Ok(GitAuth::SshKey(PathBuf::from(value))),
-            "token-env" => {
-                if value.is_empty() {
-                    return Err(IngestError::AuthMalformed { raw: raw.to_string() });
-                }
-                Ok(GitAuth::TokenEnv(value.to_string()))
+        "gh-app" => {
+            if value.is_empty() {
+                return Err(IngestError::AuthMalformed { raw: raw.to_string() });
             }
-            "gh-app" => {
-                if value.is_empty() {
-                    return Err(IngestError::AuthMalformed { raw: raw.to_string() });
-                }
-                Ok(GitAuth::GhApp(value.to_string()))
-            }
-            other => Err(IngestError::AuthUnknownScheme { scheme: other.to_string() }),
+            Ok(GitAuth::GhApp(value.to_string()))
         }
+        other => Err(IngestError::AuthUnknownScheme { scheme: other.to_string() }),
     }
 }
 
-impl Repo {
-    /// Build a [`Repo`] from a [`RepoConfig`] entry under a project.
-    /// Does not perform any IO; ownership is checked at ingestion time
-    /// via [`ingest`].
-    pub fn from_config(cfg: &RepoConfig, project_id: ProjectId) -> Result<Self, IngestError> {
-        let source = match &cfg.source {
-            RepoSourceConfig::Git { url, branch, auth } => {
-                let auth = match auth.as_deref() {
-                    Some(raw) => Some(GitAuth::parse(raw)?),
-                    None => None,
-                };
-                RepoSource::Git { url: url.clone(), branch: branch.clone(), auth }
-            }
-            RepoSourceConfig::LocalPath { path } => RepoSource::LocalPath { path: path.clone() },
-        };
-        Ok(Repo { name: cfg.name.clone(), source, i_own_this: cfg.i_own_this, project_id })
-    }
+/// Build a [`Repo`] from a [`RepoConfig`] entry under a project.
+/// Does not perform any IO; ownership is checked at ingestion time
+/// via [`ingest`].
+pub fn repo_from_config(cfg: &RepoConfig, project_id: ProjectId) -> Result<Repo, IngestError> {
+    let source = match &cfg.source {
+        RepoSourceConfig::Git { url, branch, auth } => {
+            let auth = match auth.as_deref() {
+                Some(raw) => Some(parse_git_auth(raw)?),
+                None => None,
+            };
+            RepoSource::Git { url: url.clone(), branch: branch.clone(), auth }
+        }
+        RepoSourceConfig::LocalPath { path } => RepoSource::LocalPath { path: path.clone() },
+    };
+    Ok(Repo { name: cfg.name.clone(), source, i_own_this: cfg.i_own_this, project_id })
 }
 
 /// Errors returned from repo ingestion.
@@ -317,38 +275,38 @@ mod tests {
 
     #[test]
     fn auth_parse_ssh_key() {
-        let a = GitAuth::parse("ssh-key:/home/eli/.ssh/id_ed25519").expect("ok");
+        let a = parse_git_auth("ssh-key:/home/eli/.ssh/id_ed25519").expect("ok");
         assert_eq!(a, GitAuth::SshKey(PathBuf::from("/home/eli/.ssh/id_ed25519")));
     }
 
     #[test]
     fn auth_parse_token_env() {
-        let a = GitAuth::parse("token-env:GH_TOKEN").expect("ok");
+        let a = parse_git_auth("token-env:GH_TOKEN").expect("ok");
         assert_eq!(a, GitAuth::TokenEnv("GH_TOKEN".to_string()));
     }
 
     #[test]
     fn auth_parse_gh_app() {
-        let a = GitAuth::parse("gh-app:12345").expect("ok");
+        let a = parse_git_auth("gh-app:12345").expect("ok");
         assert_eq!(a, GitAuth::GhApp("12345".to_string()));
     }
 
     #[test]
     fn auth_parse_rejects_unknown_scheme() {
-        let err = GitAuth::parse("kerberos:realm").expect_err("must reject");
+        let err = parse_git_auth("kerberos:realm").expect_err("must reject");
         assert!(matches!(err, IngestError::AuthUnknownScheme { .. }));
     }
 
     #[test]
     fn auth_parse_rejects_missing_colon() {
-        let err = GitAuth::parse("token-env").expect_err("must reject");
+        let err = parse_git_auth("token-env").expect_err("must reject");
         assert!(matches!(err, IngestError::AuthMalformed { .. }));
     }
 
     #[test]
     fn auth_descriptor_round_trips() {
         for raw in ["ssh-key:/home/eli/.ssh/key", "token-env:GH_TOKEN", "gh-app:12345"] {
-            let parsed = GitAuth::parse(raw).expect("parse");
+            let parsed = parse_git_auth(raw).expect("parse");
             assert_eq!(parsed.descriptor(), raw, "descriptor must echo original config string");
         }
     }
@@ -356,11 +314,11 @@ mod tests {
     #[test]
     fn auth_parse_rejects_empty_value() {
         assert!(matches!(
-            GitAuth::parse("token-env:").expect_err("must reject"),
+            parse_git_auth("token-env:").expect_err("must reject"),
             IngestError::AuthMalformed { .. }
         ));
         assert!(matches!(
-            GitAuth::parse("gh-app:").expect_err("must reject"),
+            parse_git_auth("gh-app:").expect_err("must reject"),
             IngestError::AuthMalformed { .. }
         ));
     }
@@ -377,7 +335,7 @@ mod tests {
             },
             enabled: true,
         };
-        let r = Repo::from_config(&cfg, test_project_id()).expect("from_config");
+        let r = repo_from_config(&cfg, test_project_id()).expect("from_config");
         match r.source {
             RepoSource::Git { url, branch, auth } => {
                 assert_eq!(url, "git@github.com:org/billing.git");

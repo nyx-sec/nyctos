@@ -4,7 +4,7 @@
 //! - Subsequent runs: `git -C <dest> fetch --depth 1 origin <branch>` followed
 //!   by a hard reset to the fetched commit.
 //!
-//! Auth descriptors are decoded by [`super::GitAuth::parse`] and applied to
+//! Auth descriptors are decoded by [`super::parse_git_auth`] and applied to
 //! the spawned process:
 //!
 //! - `ssh-key:<path>` sets `GIT_SSH_COMMAND="ssh -i <path> -o IdentitiesOnly=yes"`.
