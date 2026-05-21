@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 
+pub use nyctos_types::run::RunRecord;
+
 use crate::store::StoreError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,19 +47,6 @@ impl TriggeredBy {
             TriggeredBy::Ui => "UI",
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RunRecord {
-    pub id: String,
-    pub started_at: i64,
-    pub finished_at: Option<i64>,
-    pub status: String,
-    pub triggered_by: String,
-    pub git_ref: Option<String>,
-    pub parent_run_id: Option<String>,
-    pub wall_clock_ms: Option<i64>,
-    pub total_ai_spend_usd_micros: i64,
 }
 
 pub struct RunStore<'a> {
