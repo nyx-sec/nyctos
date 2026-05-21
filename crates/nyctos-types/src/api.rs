@@ -195,3 +195,48 @@ pub struct RunFindingsResponse {
     pub prior_run_id: Option<String>,
     pub items: Vec<FindingWithDiff>,
 }
+
+/// Discriminator for [`QuarantineItem`] so the SPA can pick the right
+/// promote / dismiss path. `Finding` rows live in the `findings`
+/// table with `status = 'Quarantine'`; `Candidate` rows live in
+/// `candidate_findings` with `status = 'Pending'`. `snake_case`
+/// matches the FE's existing `QuarantineKind = "finding" | "candidate"`
+/// literal union so ts-rs renders the type as that exact union and
+/// the SPA's `KIND_TONE` / `KIND_LABEL` keyed records continue to
+/// work without casting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum QuarantineKind {
+    Finding,
+    Candidate,
+}
+
+/// Unified row the Quarantine page renders. Combines both sources of
+/// "AI-proposed, not yet dynamic-confirmed" rows so the operator sees
+/// one list: `findings` rows with `status = 'Quarantine'` (kind
+/// [`QuarantineKind::Finding`]) and `candidate_findings` rows with
+/// `status = 'Pending'` (kind [`QuarantineKind::Candidate`]).
+///
+/// `line` and `last_seen` carry `#[ts(type = "number | null")]` to
+/// override ts-rs's default `bigint | null` for `Option<i64>`; the FE
+/// reads both as `number | null`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct QuarantineItem {
+    pub kind: QuarantineKind,
+    pub id: String,
+    pub run_id: String,
+    pub repo: String,
+    pub path: String,
+    #[ts(type = "number | null")]
+    pub line: Option<i64>,
+    pub cap: String,
+    pub rule: Option<String>,
+    pub severity: Option<String>,
+    pub finding_origin: Option<String>,
+    pub prompt_version: Option<String>,
+    pub attack_provenance: Option<String>,
+    pub rationale: Option<String>,
+    pub verdict_blob: Option<String>,
+    #[ts(type = "number | null")]
+    pub last_seen: Option<i64>,
+}

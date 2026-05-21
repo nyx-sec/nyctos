@@ -43,7 +43,7 @@ use nyctos_core::{
 };
 use nyctos_types::api::{
     DoctorCheck, DoctorRequest, DoctorResponse, FindingDiffStatus, FindingWithDiff, HealthResponse,
-    RunFindingsResponse, SetupRequest, SetupStatusResponse,
+    QuarantineItem, QuarantineKind, RunFindingsResponse, SetupRequest, SetupStatusResponse,
 };
 use nyctos_types::event::{AgentEvent, ReproEvent, RunEvent};
 use nyctos_types::project::{CreateProjectRequest, PatchProjectRequest, TriStateJson};
@@ -1296,40 +1296,6 @@ async fn get_chain(
 }
 
 // ---- /quarantine ------------------------------------------------------------
-
-/// Discriminator for [`QuarantineItem`] so the SPA can pick the right
-/// promote / dismiss path. `Finding` rows live in the `findings`
-/// table with `status = 'Quarantine'`; `Candidate` rows live in
-/// `candidate_findings` with `status = 'Pending'`.
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum QuarantineKind {
-    Finding,
-    Candidate,
-}
-
-/// Unified row the Quarantine page renders. Combines both sources of
-/// "AI-proposed, not yet dynamic-confirmed" rows so the operator sees
-/// one list. A deferred "converge on a single quarantine path" item
-/// asks for the eventual fold; the API joins them today.
-#[derive(Debug, Clone, Serialize)]
-pub struct QuarantineItem {
-    pub kind: QuarantineKind,
-    pub id: String,
-    pub run_id: String,
-    pub repo: String,
-    pub path: String,
-    pub line: Option<i64>,
-    pub cap: String,
-    pub rule: Option<String>,
-    pub severity: Option<String>,
-    pub finding_origin: Option<String>,
-    pub prompt_version: Option<String>,
-    pub attack_provenance: Option<String>,
-    pub rationale: Option<String>,
-    pub verdict_blob: Option<String>,
-    pub last_seen: Option<i64>,
-}
 
 async fn list_quarantine(
     State(s): State<ServerState>,

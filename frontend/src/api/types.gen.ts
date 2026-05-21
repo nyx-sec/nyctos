@@ -273,3 +273,7 @@ spec_id: string | null, };
 
 export type RunFindingsResponse = { run_id: string, prior_run_id: string | null, items: Array<FindingWithDiff>, };
 
+export type QuarantineKind = "finding" | "candidate";
+
+export type QuarantineItem = { kind: QuarantineKind, id: string, run_id: string, repo: string, path: string, line: number | null, cap: string, rule: string | null, severity: string | null, finding_origin: string | null, prompt_version: string | null, attack_provenance: string | null, rationale: string | null, verdict_blob: string | null, last_seen: number | null, };
+

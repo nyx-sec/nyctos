@@ -22,6 +22,8 @@ import type {
   PatchProjectRequest,
   PatchRepoRequest,
   ProjectRecord,
+  QuarantineItem,
+  QuarantineKind,
   RepoRecord,
   RunFindingsResponse,
   RunRecord,
@@ -44,6 +46,8 @@ export type {
   PatchProjectRequest,
   PatchRepoRequest,
   ProjectRecord,
+  QuarantineItem,
+  QuarantineKind,
   RepoRecord,
   RunFindingsResponse,
   RunRecord,
@@ -118,32 +122,6 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 // already hoisted into `nyctos-types` are re-exported above via
 // `./types.gen`; the rest still live here until the DTO-drop deferred
 // item retires them.
-
-export type QuarantineKind = "finding" | "candidate";
-
-/**
- * Row shape returned by `GET /api/v1/quarantine`. Combines two
- * sources: `findings` rows with `status = 'Quarantine'` (the
- * `finding` kind) and `candidate_findings` rows with
- * `status = 'Pending'` (the `candidate` kind).
- */
-export interface QuarantineItem {
-  kind: QuarantineKind;
-  id: string;
-  run_id: string;
-  repo: string;
-  path: string;
-  line: number | null;
-  cap: string;
-  rule: string | null;
-  severity: string | null;
-  finding_origin: string | null;
-  prompt_version: string | null;
-  attack_provenance: string | null;
-  rationale: string | null;
-  verdict_blob: string | null;
-  last_seen: number | null;
-}
 
 export interface AgentTraceRow {
   id: string;
