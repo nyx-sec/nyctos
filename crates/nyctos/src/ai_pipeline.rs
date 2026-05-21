@@ -1069,6 +1069,21 @@ fn classify_node_kind(diag: &Diag) -> &'static str {
     NODE_KIND_SINK
 }
 
+/// Persist a `ChainReasoningOutcome` against the store. Writes a
+/// `chains` row (carrying the chain-level `attack_provenance` /
+/// `prompt_version` on the chain itself) and stamps `findings.chain_id`
+/// on every member via `set_chain`.
+///
+/// Provenance ladder: ChainReasoning is the lowest-priority writer for
+/// `findings.attack_provenance` / `findings.prompt_version` (below
+/// PayloadSynthesis and SpecDerivation) and intentionally does not
+/// touch those columns on member findings. ChainReasoning is a graph-
+/// level synthesis pass — it does not produce the payload the verifier
+/// executes, nor the harness spec the verifier wraps the payload in,
+/// so the chain's prompt version is not the canonical attribution for
+/// any individual member finding. Per-chain provenance is recorded on
+/// `chains.attack_provenance` / `chains.prompt_version` instead, where
+/// the UI can render it without colliding with the per-finding writers.
 async fn apply_chain_outcome(
     store: &Store,
     input: &ChainReasoningInput,

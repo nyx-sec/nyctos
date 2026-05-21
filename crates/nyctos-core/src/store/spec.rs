@@ -55,6 +55,17 @@ impl<'a> HarnessSpecStore<'a> {
     /// partial failure of the second write does not leave the
     /// `harness_specs` table with an orphan row whose back-link never
     /// landed on the finding.
+    ///
+    /// Provenance ladder: SpecDerivation sits BELOW PayloadSynthesis on
+    /// the `findings.attack_provenance` / `findings.prompt_version`
+    /// ladder. The verifier executes the payload (not the spec) to
+    /// produce the final verdict, so the payload-side provenance is the
+    /// canonical attribution. The COALESCE clauses below preserve any
+    /// existing stamp (typically written by PayloadSynthesis's
+    /// `insert_with_finding_provenance` earlier in the same run) and
+    /// only write the SpecDerivation values when those columns are
+    /// still NULL. `spec_id` is always written because it is a unique
+    /// back-link not shared with another writer.
     pub async fn insert_with_finding_spec_link(
         &self,
         rec: &HarnessSpecRecord,
@@ -78,7 +89,10 @@ impl<'a> HarnessSpecStore<'a> {
         .execute(&mut *tx)
         .await?;
         sqlx::query(
-            "UPDATE findings SET spec_id = ?, attack_provenance = ?, prompt_version = ? \
+            "UPDATE findings SET \
+               spec_id = ?, \
+               attack_provenance = COALESCE(attack_provenance, ?), \
+               prompt_version    = COALESCE(prompt_version, ?) \
              WHERE id = ?",
         )
         .bind(&rec.id)
@@ -164,6 +178,86 @@ mod tests {
         assert_eq!(sql.len(), 2);
         let osc = s.harness_specs().list_by_cap("OS_COMMAND").await.expect("list");
         assert_eq!(osc.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn insert_with_finding_spec_link_preserves_payload_synthesis_stamp() {
+        // Provenance ladder: PayloadSynthesis runs first, stamps the
+        // finding via `payloads().insert_with_finding_provenance(...)`.
+        // SpecDerivation runs second; it must write `spec_id` (back-link)
+        // but must NOT clobber the PayloadSynthesis stamp on
+        // `attack_provenance` / `prompt_version`. The verifier reads
+        // the payload (not the spec) to produce the final verdict, so
+        // the payload-side stamp is the canonical attribution.
+        use crate::store::testutil::{sample_finding, sample_payload, sample_repo, sample_run};
+        let (_tmp, s) = fresh_store().await;
+        s.repos().upsert(&sample_repo("repo-1")).await.expect("repo");
+        s.runs().insert(&sample_run("run-1")).await.expect("run");
+        let f = sample_finding("run-1", "repo-1", "src/a.rs", "rule-1");
+        s.findings().upsert(&f).await.expect("finding");
+
+        // PayloadSynthesis runs first: stamps PS provenance.
+        let p = sample_payload("p-1", &f.id);
+        s.payloads()
+            .insert_with_finding_provenance(&p, &f.id, "LlmSynthesised", "phase14.payload.v1")
+            .await
+            .expect("payload dual write");
+
+        // SpecDerivation runs second: stamps spec_id but must leave the
+        // PayloadSynthesis-written provenance columns alone.
+        let spec = sample_spec("spec-1");
+        s.harness_specs()
+            .insert_with_finding_spec_link(
+                &spec,
+                &f.id,
+                "LlmSynthesised",
+                "phase15.spec_derivation.v1",
+            )
+            .await
+            .expect("spec dual write");
+
+        let got = s.findings().get(&f.id).await.expect("get").expect("row");
+        assert_eq!(got.spec_id.as_deref(), Some("spec-1"), "spec back-link must land");
+        assert_eq!(
+            got.attack_provenance.as_deref(),
+            Some("LlmSynthesised"),
+            "PS provenance must survive SD writer",
+        );
+        assert_eq!(
+            got.prompt_version.as_deref(),
+            Some("phase14.payload.v1"),
+            "PS prompt_version must survive SD writer",
+        );
+    }
+
+    #[tokio::test]
+    async fn insert_with_finding_spec_link_stamps_when_provenance_columns_are_null() {
+        // Inverse of the ladder test above: when PayloadSynthesis has not
+        // run (provenance columns are NULL), SpecDerivation MUST stamp
+        // both columns. The COALESCE clauses must not regress to "never
+        // write".
+        use crate::store::testutil::{sample_finding, sample_repo, sample_run};
+        let (_tmp, s) = fresh_store().await;
+        s.repos().upsert(&sample_repo("repo-1")).await.expect("repo");
+        s.runs().insert(&sample_run("run-1")).await.expect("run");
+        let f = sample_finding("run-1", "repo-1", "src/a.rs", "rule-1");
+        s.findings().upsert(&f).await.expect("finding");
+
+        let spec = sample_spec("spec-only");
+        s.harness_specs()
+            .insert_with_finding_spec_link(
+                &spec,
+                &f.id,
+                "LlmSynthesised",
+                "phase15.spec_derivation.v1",
+            )
+            .await
+            .expect("spec dual write");
+
+        let got = s.findings().get(&f.id).await.expect("get").expect("row");
+        assert_eq!(got.spec_id.as_deref(), Some("spec-only"));
+        assert_eq!(got.attack_provenance.as_deref(), Some("LlmSynthesised"));
+        assert_eq!(got.prompt_version.as_deref(), Some("phase15.spec_derivation.v1"));
     }
 
     #[tokio::test]
