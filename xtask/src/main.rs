@@ -23,7 +23,10 @@ use nyctos_types::{
         AgentResult, AgentTask, Budget, BudgetKind, CacheStats, CostEstimate, ExtractedAgentResult,
         HaltReason, Prompt, Response, TokenUsage,
     },
-    api::{HealthResponse, SetupRequest, SetupStatusResponse},
+    api::{
+        BundleManifest, DoctorCheck, DoctorRequest, DoctorResponse, HealthResponse, SetupRequest,
+        SetupStatusResponse,
+    },
     chain::ChainRecord,
     event::{
         AgentEvent, AiEvent, BudgetEvent, FindingEvent, QuarantineEvent, RepoOutcomeTag,
@@ -133,6 +136,10 @@ fn render() -> String {
         decl_of::<HealthResponse>(),
         decl_of::<SetupStatusResponse>(),
         decl_of::<SetupRequest>(),
+        decl_of::<BundleManifest>(),
+        decl_of::<DoctorCheck>(),
+        decl_of::<DoctorResponse>(),
+        decl_of::<DoctorRequest>(),
     ];
 
     for decl in decls {

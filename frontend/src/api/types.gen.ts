@@ -244,3 +244,20 @@ sandbox_backend: string,
  */
 i_own_this: boolean, };
 
+export type BundleManifest = { finding_id: string, bundle_path: string, sha256: string, byte_size: number, artifacts: Array<string>, };
+
+export type DoctorCheck = { name: string, passed: boolean, message: string, };
+
+export type DoctorResponse = { checks: Array<DoctorCheck>, };
+
+export type DoctorRequest = { 
+/**
+ * AI runtime being verified. Doctor only inspects what the chosen
+ * runtime depends on (e.g. `claude-code` looks for the binary).
+ */
+ai_runtime: string, 
+/**
+ * Sandbox backend being verified.
+ */
+sandbox_backend: string, };
+

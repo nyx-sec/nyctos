@@ -7,6 +7,8 @@
 //! still lives next to its handler in `crates/nyctos-api/src/router.rs`;
 //! this module hosts only the wire shapes.
 
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -77,4 +79,61 @@ pub struct SetupRequest {
     /// to commit the config when this is `false`.
     #[serde(default)]
     pub i_own_this: bool,
+}
+
+/// Request body for `POST /api/v1/setup/doctor`. The wizard's
+/// "Run checks" step posts the operator's tentative runtime +
+/// backend selection; the daemon validates both against the closed
+/// enum sets (`parse_ai_runtime` / `parse_sandbox_backend`) at
+/// handler time and returns a [`DoctorResponse`] regardless of
+/// validation outcome (validation errors surface as `ApiError`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct DoctorRequest {
+    /// AI runtime being verified. Doctor only inspects what the chosen
+    /// runtime depends on (e.g. `claude-code` looks for the binary).
+    pub ai_runtime: String,
+    /// Sandbox backend being verified.
+    pub sandbox_backend: String,
+}
+
+/// One row in [`DoctorResponse::checks`]. `name` is a short identifier
+/// the UI can key on for icons (`state-dir`, `ai`, `sandbox`, ...);
+/// `message` is operator-facing remediation copy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct DoctorCheck {
+    pub name: String,
+    pub passed: bool,
+    pub message: String,
+}
+
+/// Response body for `POST /api/v1/setup/doctor`. Lightweight check
+/// pass invoked by the wizard's step 3 to surface problems before the
+/// operator commits a config. Reports a list of per-check results
+/// rather than a single pass/fail so the UI can render targeted
+/// remediation hints.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct DoctorResponse {
+    pub checks: Vec<DoctorCheck>,
+}
+
+/// Response body for `POST /api/v1/findings/:id/repro-bundle`. The
+/// daemon writes a per-finding tarball under `<state>/bundles/<id>.tar`
+/// and returns this index so the SPA can render the resulting path,
+/// hash, and artifact list. `bundle_path` carries the on-disk location
+/// as a `PathBuf` (serde serialises as a UTF-8 string on the wire,
+/// matching the FE's `bundle_path: string` shape); the canonical
+/// source of truth used to live in `nyctos_core::report::repro_bundle`
+/// and was lifted here so the `#[derive(TS)]` codegen path owns the
+/// FE shape. `byte_size` is the byte length of the produced tarball
+/// (annotated `#[ts(type = "number")]` so ts-rs renders `number`
+/// rather than its default `bigint` for `u64`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct BundleManifest {
+    pub finding_id: String,
+    #[ts(type = "string")]
+    pub bundle_path: PathBuf,
+    pub sha256: String,
+    #[ts(type = "number")]
+    pub byte_size: u64,
+    pub artifacts: Vec<String>,
 }

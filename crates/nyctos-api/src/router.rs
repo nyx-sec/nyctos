@@ -41,7 +41,9 @@ use nyctos_core::{
     now_epoch_ms, parse_git_auth, AiRuntime, IngestError, SandboxBackend, ACCOUNT_AI_ANTHROPIC,
     ACCOUNT_AI_LOCAL_LLM,
 };
-use nyctos_types::api::{HealthResponse, SetupRequest, SetupStatusResponse};
+use nyctos_types::api::{
+    DoctorCheck, DoctorRequest, DoctorResponse, HealthResponse, SetupRequest, SetupStatusResponse,
+};
 use nyctos_types::event::{AgentEvent, ReproEvent, RunEvent};
 use nyctos_types::project::{CreateProjectRequest, PatchProjectRequest, TriStateJson};
 use nyctos_types::repo::{CreateRepoRequest, PatchRepoRequest, TestRepoRequest, TestRepoResponse};
@@ -362,27 +364,6 @@ fn write_config_atomic(path: &std::path::Path, body: &str) -> std::io::Result<()
         std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
     }
     std::fs::rename(&tmp, path)
-}
-
-#[derive(Debug, Deserialize)]
-pub struct DoctorRequest {
-    /// AI runtime being verified. Doctor only inspects what the chosen
-    /// runtime depends on (e.g. `claude-code` looks for the binary).
-    pub ai_runtime: String,
-    /// Sandbox backend being verified.
-    pub sandbox_backend: String,
-}
-
-#[derive(Debug, Serialize, Clone)]
-pub struct DoctorCheck {
-    pub name: String,
-    pub passed: bool,
-    pub message: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct DoctorResponse {
-    pub checks: Vec<DoctorCheck>,
 }
 
 /// Lightweight check pass invoked by the wizard's step 3 to surface

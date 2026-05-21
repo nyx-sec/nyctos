@@ -9,9 +9,12 @@ import { type QueryClient, useMutation, useQuery, useQueryClient } from "@tansta
 import { useEffect, useRef, useState } from "react";
 import type {
   AgentEvent,
+  BundleManifest,
   ChainRecord,
   CreateProjectRequest,
   CreateRepoRequest,
+  DoctorCheck,
+  DoctorResponse,
   FindingRecord,
   HealthResponse,
   PatchProjectRequest,
@@ -25,9 +28,12 @@ import type {
   TestRepoResponse,
 } from "./types.gen";
 export type {
+  BundleManifest,
   ChainRecord,
   CreateProjectRequest,
   CreateRepoRequest,
+  DoctorCheck,
+  DoctorResponse,
   FindingRecord,
   HealthResponse,
   PatchProjectRequest,
@@ -163,14 +169,6 @@ export interface AgentTraceRow {
   finished_at: number | null;
 }
 
-export interface BundleManifest {
-  finding_id: string;
-  bundle_path: string;
-  sha256: string;
-  byte_size: number;
-  artifacts: string[];
-}
-
 /**
  * Streaming event surfaced by `POST /api/v1/findings/:id/replay`.
  *
@@ -204,16 +202,6 @@ export type SandboxBackendChoice =
   | "libkrun"
   | "firecracker"
   | "docker";
-
-export interface DoctorCheck {
-  name: string;
-  passed: boolean;
-  message: string;
-}
-
-export interface DoctorResponse {
-  checks: DoctorCheck[];
-}
 
 // ---- query keys ------------------------------------------------------------
 

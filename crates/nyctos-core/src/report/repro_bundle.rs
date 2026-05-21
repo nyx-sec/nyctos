@@ -28,8 +28,9 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+pub use nyctos_types::api::BundleManifest;
 
 use crate::store::{
     AgentTraceRecord, FindingRecord, PayloadRecord, ReproBundleRecord, ReproBundleStore, Store,
@@ -48,16 +49,6 @@ pub struct BundleArtifact {
     pub path: String,
     pub mode: u32,
     pub contents: Vec<u8>,
-}
-
-/// Bundle index returned by [`build_bundle`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BundleManifest {
-    pub finding_id: String,
-    pub bundle_path: PathBuf,
-    pub sha256: String,
-    pub byte_size: u64,
-    pub artifacts: Vec<String>,
 }
 
 #[derive(Debug, Error)]
