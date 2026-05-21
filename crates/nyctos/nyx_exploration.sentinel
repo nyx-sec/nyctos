@@ -204,3 +204,41 @@ session-appended 2026-05-20 expl-demo follow-up #5 (HEAD 7bae597 session-0016 re
 (e) **PR-comment deep-link** (cmd/pr_comment.rs:207-214). The new `[id]({base}/findings?run_id={run}&focus={id})` link interpolates the operator-supplied `ui_url` verbatim through `trim_url()` (no scheme allowlist, no `)` check) and concatenates URL-encoded `run_id` + `id`. The link text `id_text` is `code_safe(short_id(&row.id))`. Markdown-injection via `ui_url` containing `)` is operator-self-harm (CLI flag / config-driven); `javascript:` URLs are stripped by GitHub's CommonMark sanitiser at render time. The reflected `?focus=<finding-id>` on the SPA side flows into `params.get("focus")` → `useState` → `<FindingDetail id={selected} />` → `useFinding(id)` → `request<FindingRecord>('/findings/' + encodeURIComponent(id))`; the API gates on id existence (404 on miss), so reflected-XSS through DOM render of the id requires the id to round-trip through the API's allowlisted shape. No exploitable primitive; not emitted.
 
 Net session-0016: validator strengthened on PATCH side, AI candidate-aggregate added, finding spec_id back-link plumbed, source-of-truth for `runs.triggered_by` straightened out. None of these add or remove finding primitives. Inventory stays at 15.
+
+---
+session-appended 2026-05-20 expl-demo follow-up #6 (HEAD 9a16b78 session-0017 + uncommitted findings_for_run facet-filter plumbing). Re-anchor of all 15 prior findings vs current HEAD:
+
+  unchanged anchors (router.rs unless noted):
+    build_router :48; auth_layer :100-120; is_always_open :122;
+    check_query_token :142; constant_eq :155-164; submit_setup :293;
+    validate_git_auth_ref :867; delete_project_repo :906;
+    test_repo_connectivity :976; read_local_git_remote :1088;
+    scan_project :1132; webhook.rs webhook_git :421.
+
+  shifted +34 lines (insertion of RunFindingsQuery struct + Query param
+  signature around router.rs:1267-1314):
+    events_ws was :1696, now :1730 (findings #1, #5 update line).
+    create_repro_bundle was :1847, now :1881.
+    ensure_bundle_path_inside_root was :1908, now :1942.
+    extract_ustar was :2139, now :2173.
+
+Uncommitted diff inventory (no new primitives):
+  (a) `findings_for_run` (router.rs:1287) now accepts 7 optional facet
+      filters {repo, cap, origin, status, severity, triage_state, chain_id}.
+      All are bearer-gated on the existing route, pass through to
+      `FindingFilter`, and are bound via `QueryBuilder::push_bind`
+      (nyctos-core/src/store/finding.rs:315-346). No SQL injection.
+      `limit: None` matches the pre-existing `/api/v1/findings` posture;
+      the unbounded-read DoS angle is already noted in session-0016 (d)
+      and not promoted to a finding.
+  (b) Frontend `client.ts` adds `RunFindingsQuery` interface and routes
+      filters through `URLSearchParams` + `encodeURIComponent(runId)`.
+      Safe encoding; no new sink.
+  (c) `FindingList.tsx` replaces a client-side `matchesClientFilters`
+      filter with server-side filtering. Pure refactor; reduces the row
+      set the SPA receives (mildly improves an information-disclosure
+      surface, doesn't open one).
+  (d) `api.rs` and `Setup.test.tsx` are test-only additions covering
+      the new filter parameters; no production surface change.
+
+Inventory stays at 15.

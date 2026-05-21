@@ -15,6 +15,7 @@ import {
   type FindingRecord,
   type FindingWithDiff,
   type FindingsQuery,
+  type RunFindingsQuery,
 } from "@/api/client";
 import { FindingDetail } from "./FindingDetail";
 import {
@@ -53,25 +54,32 @@ export function FindingList() {
     return f;
   }, [params, runId]);
 
+  const runFilters: RunFindingsQuery = useMemo(() => {
+    const f: RunFindingsQuery = {};
+    for (const key of FILTER_KEYS) {
+      const v = filters[key];
+      if (v) f[key] = v;
+    }
+    return f;
+  }, [filters]);
+
   const repos = useAllRepos();
-  const runQuery = useRunFindings(runId);
+  const runQuery = useRunFindings(runId, runFilters);
   const listQuery = useFindings(runId ? {} : filters);
   const chainsQuery = useRunChains(runId);
 
-  // When run_id is set, render the diff-decorated rows. Apply the
-  // client-side facet filters (cap/origin/status/severity/repo) on top
-  // of the run findings so the operator can narrow within a single run
-  // without leaving the page.
+  // When run_id is set, the run-scoped endpoint already applies the
+  // facet filters server-side and stamps diff status against the prior
+  // run. The unscoped view falls back to a flat list.
   const rows: FindingWithDiff[] = useMemo(() => {
     if (runId) {
-      const items = runQuery.data?.items ?? [];
-      return items.filter((r) => matchesClientFilters(r, filters));
+      return runQuery.data?.items ?? [];
     }
     return (listQuery.data ?? []).map((r) => ({
       ...r,
       diff_status: "unchanged" as FindingDiffStatus,
     }));
-  }, [runId, runQuery.data, listQuery.data, filters]);
+  }, [runId, runQuery.data, listQuery.data]);
 
   const [groupByChain, setGroupByChain] = useState(false);
   const [selected, setSelected] = useState<string | null>(() => params.get("focus"));
@@ -224,15 +232,6 @@ export function FindingList() {
       {selected && <FindingDetail id={selected} onClose={() => selectFinding(null)} />}
     </div>
   );
-}
-
-function matchesClientFilters(row: FindingRecord, filters: FindingsQuery): boolean {
-  if (filters.repo && row.repo !== filters.repo) return false;
-  if (filters.cap && row.cap !== filters.cap) return false;
-  if (filters.origin && row.finding_origin !== filters.origin) return false;
-  if (filters.status && row.status !== filters.status) return false;
-  if (filters.severity && row.severity !== filters.severity) return false;
-  return true;
 }
 
 function uniqueValues<T extends FindingRecord>(rows: T[], key: keyof T): string[] {

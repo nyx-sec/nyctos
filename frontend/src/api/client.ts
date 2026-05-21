@@ -345,6 +345,16 @@ export interface FindingsQuery {
   include_quarantine?: boolean;
 }
 
+export interface RunFindingsQuery {
+  repo?: string;
+  cap?: string;
+  origin?: string;
+  status?: string;
+  severity?: string;
+  triage_state?: string;
+  chain_id?: string;
+}
+
 export const qk = {
   health: () => ["health"] as const,
   setupStatus: () => ["setup", "status"] as const,
@@ -368,7 +378,19 @@ export const qk = {
       params.include_quarantine ?? false,
     ] as const,
   finding: (id: string) => ["findings", id] as const,
-  runFindings: (run_id: string) => ["runs", run_id, "findings"] as const,
+  runFindings: (run_id: string, params: RunFindingsQuery = {}) =>
+    [
+      "runs",
+      run_id,
+      "findings",
+      params.repo ?? null,
+      params.cap ?? null,
+      params.origin ?? null,
+      params.status ?? null,
+      params.severity ?? null,
+      params.triage_state ?? null,
+      params.chain_id ?? null,
+    ] as const,
   chain: (id: string) => ["chains", id] as const,
   runChains: (run_id: string) => ["runs", run_id, "chains"] as const,
   quarantine: () => ["quarantine"] as const,
@@ -607,12 +629,30 @@ export function useFindings(params: FindingsQuery = {}) {
 /**
  * Findings produced by a single run, decorated with diff status
  * ("new", "regressed", "closed", "unchanged") computed server-side
- * against the prior run.
+ * against the prior run. Accepts the same facet filters as the
+ * top-level `/findings` endpoint (minus `run_id`, which is the path
+ * parameter, and `include_quarantine`, which is always false for the
+ * run-scoped view).
  */
-export function useRunFindings(runId: string | undefined) {
+export function useRunFindings(
+  runId: string | undefined,
+  filters: RunFindingsQuery = {},
+) {
   return useQuery({
-    queryKey: runId ? qk.runFindings(runId) : ["runs", "_disabled", "findings"],
-    queryFn: () => request<RunFindingsResponse>(`/runs/${encodeURIComponent(runId!)}/findings`),
+    queryKey: runId
+      ? qk.runFindings(runId, filters)
+      : ["runs", "_disabled", "findings"],
+    queryFn: () => {
+      const search = new URLSearchParams();
+      for (const [key, value] of Object.entries(filters)) {
+        if (value === undefined || value === null || value === "") continue;
+        search.set(key, String(value));
+      }
+      const qs = search.toString();
+      return request<RunFindingsResponse>(
+        `/runs/${encodeURIComponent(runId!)}/findings${qs ? `?${qs}` : ""}`,
+      );
+    },
     enabled: Boolean(runId),
   });
 }

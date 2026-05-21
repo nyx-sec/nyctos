@@ -1264,9 +1264,33 @@ pub struct RunFindingsResponse {
     pub items: Vec<FindingWithDiff>,
 }
 
+/// Composite filter for `GET /api/v1/runs/:id/findings`. Mirrors the
+/// `FindingsQuery` shape minus `run_id` (taken from the path) and
+/// `include_quarantine` (the run-scoped view always excludes
+/// quarantined rows; the dedicated `/quarantine` endpoint covers that
+/// surface).
+#[derive(Debug, Deserialize, Default)]
+pub struct RunFindingsQuery {
+    #[serde(default)]
+    pub repo: Option<String>,
+    #[serde(default)]
+    pub cap: Option<String>,
+    #[serde(default)]
+    pub origin: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub severity: Option<String>,
+    #[serde(default)]
+    pub triage_state: Option<String>,
+    #[serde(default)]
+    pub chain_id: Option<String>,
+}
+
 async fn findings_for_run(
     State(s): State<ServerState>,
     Path(run_id): Path<String>,
+    Query(q): Query<RunFindingsQuery>,
 ) -> Result<Json<RunFindingsResponse>, ApiError> {
     let run = s
         .store
@@ -1277,8 +1301,18 @@ async fn findings_for_run(
     let started_at = run.started_at;
     let prior_run_id = s.store.runs().prior_run_id(&run_id, started_at).await?;
 
-    let filter =
-        FindingFilter { run_id: Some(&run_id), include_quarantine: false, ..Default::default() };
+    let filter = FindingFilter {
+        run_id: Some(&run_id),
+        repo: q.repo.as_deref(),
+        cap: q.cap.as_deref(),
+        origin: q.origin.as_deref(),
+        status: q.status.as_deref(),
+        severity: q.severity.as_deref(),
+        triage_state: q.triage_state.as_deref(),
+        chain_id: q.chain_id.as_deref(),
+        include_quarantine: false,
+        limit: None,
+    };
     let rows = s.store.findings().list_filtered(&filter).await?;
     let items = rows
         .into_iter()

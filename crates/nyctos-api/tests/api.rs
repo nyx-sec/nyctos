@@ -365,6 +365,76 @@ async fn runs_findings_endpoint_marks_diff_status() {
 }
 
 #[tokio::test]
+async fn runs_findings_endpoint_applies_facet_filters_server_side() {
+    let srv = TestServer::start().await;
+    srv.store.repos().upsert(&sample_repo("repo-1")).await.expect("repo");
+    srv.store.repos().upsert(&sample_repo("repo-2")).await.expect("repo-2");
+    srv.store.runs().insert(&sample_run("run-A")).await.expect("run");
+
+    let mut taint = sample_finding("run-A", "repo-1", "src/a.rs", "taint");
+    taint.cap = "sqli".to_string();
+    taint.severity = "High".to_string();
+    taint.finding_origin = "Static".to_string();
+    let mut cmdi = sample_finding("run-A", "repo-2", "src/b.rs", "cmd");
+    cmdi.cap = "cmdi".to_string();
+    cmdi.severity = "Low".to_string();
+    cmdi.finding_origin = "AI".to_string();
+    srv.store.findings().upsert(&taint).await.expect("taint");
+    srv.store.findings().upsert(&cmdi).await.expect("cmdi");
+
+    // No filters: both rows.
+    let all: serde_json::Value =
+        reqwest::get(format!("{}/api/v1/runs/run-A/findings", srv.base()))
+            .await
+            .expect("get")
+            .json()
+            .await
+            .expect("json");
+    assert_eq!(all["items"].as_array().expect("items").len(), 2);
+
+    // Filter by cap.
+    let by_cap: serde_json::Value =
+        reqwest::get(format!("{}/api/v1/runs/run-A/findings?cap=sqli", srv.base()))
+            .await
+            .expect("get")
+            .json()
+            .await
+            .expect("json");
+    let items = by_cap["items"].as_array().expect("items array");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["id"], taint.id);
+    assert_eq!(items[0]["diff_status"], "new");
+
+    // Filter by repo + origin combined.
+    let by_repo_origin: serde_json::Value = reqwest::get(format!(
+        "{}/api/v1/runs/run-A/findings?repo=repo-2&origin=AI",
+        srv.base()
+    ))
+    .await
+    .expect("get")
+    .json()
+    .await
+    .expect("json");
+    let items = by_repo_origin["items"].as_array().expect("items array");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["id"], cmdi.id);
+
+    // A filter that matches nothing returns an empty items array but
+    // keeps the run_id / prior_run_id envelope.
+    let empty: serde_json::Value = reqwest::get(format!(
+        "{}/api/v1/runs/run-A/findings?severity=Critical",
+        srv.base()
+    ))
+    .await
+    .expect("get")
+    .json()
+    .await
+    .expect("json");
+    assert_eq!(empty["run_id"], "run-A");
+    assert_eq!(empty["items"].as_array().expect("items").len(), 0);
+}
+
+#[tokio::test]
 async fn chains_endpoint_returns_row_or_404() {
     let srv = TestServer::start().await;
     srv.store.runs().insert(&sample_run("run-A")).await.expect("run");
