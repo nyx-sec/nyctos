@@ -62,6 +62,13 @@ const WRITE_SCOPES: &[&str] = &[
     "codespace",
 ];
 
+/// Minimum git release we are willing to invoke. Lower releases carry
+/// known CVE exposures (e.g. CVE-2024-32002 path-attribute exploitation
+/// on clones that materialise symlinks during checkout) and should be
+/// refused at ingestion time. Bump in lockstep with upstream CVE
+/// announcements.
+pub(crate) const MINIMUM_GIT_VERSION: (u32, u32, u32) = (2, 45, 1);
+
 pub(super) async fn ingest_git(
     name: &str,
     url: &str,
@@ -69,6 +76,7 @@ pub(super) async fn ingest_git(
     auth: Option<&GitAuth>,
     per_repo_dir: &Path,
 ) -> Result<IngestedRepo, IngestError> {
+    assert_git_version_ok().await?;
     let dest = per_repo_dir.join("checkout");
     let token = match auth {
         Some(GitAuth::TokenEnv(var)) => {
@@ -236,6 +244,70 @@ async fn run_git(name: &str, mut cmd: Command) -> Result<(), IngestError> {
 fn normalise_remote(url: &str) -> String {
     let trimmed = url.trim().trim_end_matches('/').trim_end_matches(".git");
     trimmed.to_string()
+}
+
+/// Parse a `git --version` line into a `(major, minor, patch)` triple,
+/// tolerating vendor suffixes such as Apple Git's `(Apple Git-154)`
+/// tail or the `2.46.0.windows.1` extra segment shipped on Git for
+/// Windows. Returns `None` if the line does not begin with the
+/// canonical `git version ` prefix or if `major`/`minor` are not
+/// integers.
+pub(crate) fn parse_git_version(raw: &str) -> Option<(u32, u32, u32)> {
+    let body = raw.trim().strip_prefix("git version ")?;
+    let semver = body.split_whitespace().next()?;
+    let mut parts = semver.split('.');
+    let major: u32 = parts.next()?.parse().ok()?;
+    let minor: u32 = parts.next()?.parse().ok()?;
+    let patch = match parts.next() {
+        None => 0,
+        Some(raw_patch) => {
+            let digits: String = raw_patch.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if digits.is_empty() {
+                0
+            } else {
+                digits.parse().ok()?
+            }
+        }
+    };
+    Some((major, minor, patch))
+}
+
+/// Compare a parsed git version triple against [`MINIMUM_GIT_VERSION`].
+pub(crate) fn version_satisfies_minimum(found: (u32, u32, u32)) -> bool {
+    found >= MINIMUM_GIT_VERSION
+}
+
+/// Run `git --version`, parse the output, and refuse to proceed if the
+/// resolved binary is older than [`MINIMUM_GIT_VERSION`]. Called once
+/// at the top of [`ingest_git`] so vulnerable hosts fail fast rather
+/// than mid-clone.
+async fn assert_git_version_ok() -> Result<(), IngestError> {
+    let mut cmd = Command::new("git");
+    cmd.arg("--version");
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).stdin(Stdio::null());
+    let output = cmd.output().await.map_err(|e| IngestError::Io {
+        name: "<git --version>".to_string(),
+        path: PathBuf::from("<git>"),
+        source: e,
+    })?;
+    if !output.status.success() {
+        return Err(IngestError::Git {
+            name: "<git --version>".to_string(),
+            message: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        });
+    }
+    let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let parsed = parse_git_version(&raw)
+        .ok_or_else(|| IngestError::GitVersionUnparseable { raw: raw.clone() })?;
+    if !version_satisfies_minimum(parsed) {
+        let (mj, mn, p) = parsed;
+        let (rmj, rmn, rp) = MINIMUM_GIT_VERSION;
+        return Err(IngestError::GitVersionTooOld {
+            found: format!("{mj}.{mn}.{p}"),
+            required: format!("{rmj}.{rmn}.{rp}"),
+        });
+    }
+    Ok(())
 }
 
 /// Canonical GitHub API endpoint used to probe token scopes. Pulled out
@@ -465,6 +537,67 @@ mod tests {
         };
         let err = ingest(&lying, state.path(), "run-bad").await.expect_err("must fail");
         assert!(matches!(err, IngestError::Git { .. } | IngestError::RemoteMismatch { .. }));
+    }
+
+    #[test]
+    fn parse_git_version_handles_plain_triple() {
+        assert_eq!(parse_git_version("git version 2.45.1"), Some((2, 45, 1)));
+    }
+
+    #[test]
+    fn parse_git_version_handles_apple_git_suffix() {
+        assert_eq!(parse_git_version("git version 2.39.5 (Apple Git-154)"), Some((2, 39, 5)));
+    }
+
+    #[test]
+    fn parse_git_version_handles_windows_extra_segment() {
+        assert_eq!(parse_git_version("git version 2.46.0.windows.1"), Some((2, 46, 0)));
+    }
+
+    #[test]
+    fn parse_git_version_handles_missing_patch() {
+        assert_eq!(parse_git_version("git version 2.45"), Some((2, 45, 0)));
+    }
+
+    #[test]
+    fn parse_git_version_handles_patch_with_non_digit_tail() {
+        // Some downstream builds tag the patch segment with `-rc1` or
+        // `~ppa1`. Strip the suffix rather than refuse.
+        assert_eq!(parse_git_version("git version 2.45.1-rc1"), Some((2, 45, 1)));
+    }
+
+    #[test]
+    fn parse_git_version_rejects_missing_prefix() {
+        assert_eq!(parse_git_version("garbage 2.45.1"), None);
+    }
+
+    #[test]
+    fn parse_git_version_rejects_non_numeric_major() {
+        assert_eq!(parse_git_version("git version vNext"), None);
+    }
+
+    #[test]
+    fn version_satisfies_minimum_accepts_floor_exact() {
+        assert!(version_satisfies_minimum(MINIMUM_GIT_VERSION));
+    }
+
+    #[test]
+    fn version_satisfies_minimum_accepts_higher_patch() {
+        let (mj, mn, p) = MINIMUM_GIT_VERSION;
+        assert!(version_satisfies_minimum((mj, mn, p + 1)));
+    }
+
+    #[test]
+    fn version_satisfies_minimum_rejects_lower_minor() {
+        let (mj, mn, _) = MINIMUM_GIT_VERSION;
+        assert!(!version_satisfies_minimum((mj, mn.saturating_sub(1), 999)));
+    }
+
+    #[test]
+    fn version_satisfies_minimum_rejects_below_floor_patch() {
+        // CVE-2024-32002 was fixed in 2.45.1 — a 2.45.0 host must be
+        // refused even though the minor matches.
+        assert!(!version_satisfies_minimum((2, 45, 0)));
     }
 
     #[test]

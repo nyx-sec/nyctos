@@ -168,6 +168,19 @@ pub enum IngestError {
     AuthGhAppUnsupported,
 
     #[error(
+        "`git --version` output `{raw}` could not be parsed; refusing to clone with an unknown git \
+         release"
+    )]
+    GitVersionUnparseable { raw: String },
+
+    #[error(
+        "git release `{found}` is below the minimum required `{required}` (lower releases carry \
+         known CVE exposures such as CVE-2024-32002 path-attribute exploitation); install a newer \
+         git on `$PATH`"
+    )]
+    GitVersionTooOld { found: String, required: String },
+
+    #[error(
         "git remote URL on disk (`{actual}`) does not match the attested URL `{attested}` for \
          repo `{name}`"
     )]

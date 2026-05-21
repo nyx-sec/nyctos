@@ -3213,3 +3213,69 @@ pass 36 summary
   No fs writes outside nyx_exploration.sentinel (sentinel constraint
   honoured).
 
+=================================================================
+PASS 37 — task=expl-demo (working-tree diff:
+  crates/nyctos-core/src/repo/git.rs adds MINIMUM_GIT_VERSION
+  = (2,45,1), assert_git_version_ok() called from ingest_git,
+  parse_git_version / version_satisfies_minimum helpers + 11
+  unit tests; crates/nyctos-core/src/repo/mod.rs adds
+  IngestError::GitVersionUnparseable / GitVersionTooOld variants.)
+ALLOWED HOSTS empty → no HTTP probe. Static-survey only.
+Re-walked sentinel rows 1-36: no prior row covers the git-binary
+version-floor surface or its coverage gaps; emit 2 fresh rows.
+=================================================================
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyctos-api/src/router.rs",
+  "line": 991,
+  "cap": "AUTH_BYPASS",
+  "endpoint": "POST /api/v1/repos/test (source_kind=git)",
+  "rationale": "git_ls_remote_probe spawns `git ls-remote --exit-code <operator-supplied URL>` BEFORE any ingest path runs. The new MINIMUM_GIT_VERSION floor (git.rs:70) and its gate assert_git_version_ok() (git.rs:284) are wired only into ingest_git (git.rs:79) — the test-repo endpoint reaches the `git` binary on $PATH without traversing that gate. The CVE the comment cites (CVE-2024-32002) primarily fires on checkout, but later transport-side CVEs (e.g. CVE-2024-32004 partial-clone protocol smuggling, CVE-2025-x ls-remote-side advisories) apply to ls-remote against a hostile remote, and the daemon will gladly target an attacker-controlled URL on a host where the operator has a vulnerable git installed — exactly the population the floor is supposed to refuse. The gap is a coverage hole, not a sink: the gate exists, it is simply not applied at every entry point that calls `git`. Static pass missed because the rule that *would* flag this (\"every Command::new(\\\"git\\\") in the workspace must be preceded by assert_git_version_ok\") is a cross-file invariant the lint set does not encode; the row-1232/1660 IDOR rule shape (missing predicate) is the analogue here.",
+  "suggested_payload_hint": "Defence (root cause): hoist assert_git_version_ok into a module-private `git_command()` constructor that ALL call sites must use; make Command::new(\"git\") direct construction a lint-banned pattern (clippy::disallowed_methods + ALLOW_LIST = []) so git_ls_remote_probe (router.rs:991), the three doctest invocations in repo/mod.rs:385-410, and any future call site cannot bypass. Defence (point fix): call assert_git_version_ok().await? at the top of git_ls_remote_probe before spawn(). Repro: on a host with /usr/local/bin/git -> git 2.39.5 (Apple Git stock, below floor), POST /api/v1/repos/test {source_kind:'git', url:'https://attacker.example/evil.git'} — observe a successful (or transport-level failure) ls-remote response, confirming the daemon executed the vulnerable binary against the attacker URL despite the new floor being in place."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyctos-core/src/repo/git.rs",
+  "line": 70,
+  "cap": "STALE_FLOOR",
+  "endpoint": "<config:MINIMUM_GIT_VERSION>",
+  "rationale": "MINIMUM_GIT_VERSION is hard-coded to (2,45,1) — the May 2024 advisory line for CVE-2024-32002. The comment at git.rs:65-69 commits to bumping `in lockstep with upstream CVE announcements`, but the constant has no automated bump mechanism (no build.rs probe, no scheduled CI lint, no upstream-advisory feed in the repo) and today's date is 2026-05-20, i.e. ~24 months downstream. Multiple post-May-2024 git CVEs land in 2.45.2 / 2.45.3 / 2.46.x / 2.47.x (e.g. CVE-2024-32465 zip-archive credential-leak, CVE-2024-50349 / CVE-2024-52006 credential helper protocol injection on Windows, plus the 2025 ls-remote-side advisories), all of which a host on exactly 2.45.1 still ships unpatched. The floor therefore offers a false ceiling: operators read the comment, assume coverage, and the gate silently permits vulnerable releases. Heuristic novel-finding pass missed because the value of the tuple is internally consistent with its own tests (`version_satisfies_minimum_rejects_below_floor_patch` at git.rs:551 explicitly hard-codes 2.45.0 as the rejected case); the temporal-staleness axis is not a property any single-file lint can compute.",
+  "suggested_payload_hint": "Defence: (1) replace the hard-coded triple with a build-time probe that pulls the latest published `git --version --build-options` from a vendored CVE feed (e.g. https://lwn.net/Vulnerabilities/, or pin to the GitHub Advisory Database GHSA-* entries for `git-scm/git`) and refuses to build when MINIMUM_GIT_VERSION is more than N months behind the last advisory; (2) add a CI step that fails when (Utc::now() - LAST_BUMP_DATE) > 90 days, where LAST_BUMP_DATE is a sibling const; (3) until either lands, bump MINIMUM_GIT_VERSION to the highest published patch for each supported minor (e.g. 2.47.1 as of 2026-05) and document the bump cadence in CLAUDE.md. Repro: `git --version` on a 2.45.1 host (precisely the floor) returns 0 from version_satisfies_minimum and ingest_git proceeds, even though the binary lacks the post-May-2024 transport / archive fixes."
+}
+
+---
+pass 37 summary
+- 2 new findings on the working-tree diff in
+  crates/nyctos-core/src/repo/git.rs + repo/mod.rs:
+  - router.rs:991 AUTH_BYPASS (git_ls_remote_probe at the
+    POST /api/v1/repos/test endpoint reaches `git` without
+    traversing the new assert_git_version_ok gate — coverage
+    hole, distinct from any prior IDOR row).
+  - git.rs:70 STALE_FLOOR (MINIMUM_GIT_VERSION pinned at
+    May-2024 advisory floor, no automated bump path, false-
+    ceiling exposure for post-2.45.1 git CVEs).
+- Surveyed but did NOT emit (covered or low-signal):
+  - assert_git_version_ok lacks the apply_env hardening
+    (GIT_CONFIG_GLOBAL=/dev/null, GIT_TERMINAL_PROMPT=0).
+    `git --version` does not consult those config files for
+    its output and does not fire pager/hooks/credential
+    paths, so the missing hardening is not exploitable on
+    its own; flagged here for completeness but not emitted
+    as a row.
+  - TOCTOU on $PATH between assert_git_version_ok and the
+    subsequent clone/fetch Command::new(\"git\") — requires
+    an attacker who can already mutate $PATH or replace the
+    binary on disk, i.e. they own the host; no new primitive.
+  - parse_git_version strips non-digit patch tail, accepting
+    `2.45.1-rc1` as 2.45.1 — release candidates may lack the
+    final fix landing in the .1 release, but distros do not
+    typically ship -rc to production, so the false-allow
+    surface is small; not emitted.
+- Tool budget ~7 / 24 used (Bash x4, Read x2, Grep x1, Edit x1).
+  No HTTP probes (ALLOWED HOSTS empty per envelope).
+  No fs writes outside nyx_exploration.sentinel (sentinel
+  constraint honoured).
