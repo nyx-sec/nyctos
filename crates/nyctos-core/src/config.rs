@@ -240,6 +240,33 @@ pub struct AiConfig {
     /// `[ai.pricing.<model>]` blocks in `nyctos.toml`.
     #[serde(default)]
     pub pricing: HashMap<String, AiPricingOverride>,
+    /// Per-call cap forwarded into each PayloadSynthesis `Budget`. The
+    /// adapter checks the call against `min(per_call_cap, run_cap -
+    /// spent_so_far)`, so this knob lets an operator clamp a single
+    /// PayloadSynthesis call below the shared per-run bucket. `None`
+    /// falls back to [`AiConfig::DEFAULT_RUN_BUDGET_USD_MICROS`].
+    /// Configured via
+    /// `[ai] payload_synthesis_per_call_cap_usd_micros`.
+    #[serde(default)]
+    pub payload_synthesis_per_call_cap_usd_micros: Option<i64>,
+    /// Per-call cap forwarded into each SpecDerivation `Budget`. See
+    /// `payload_synthesis_per_call_cap_usd_micros` for semantics.
+    /// Configured via
+    /// `[ai] spec_derivation_per_call_cap_usd_micros`.
+    #[serde(default)]
+    pub spec_derivation_per_call_cap_usd_micros: Option<i64>,
+    /// Per-call cap forwarded into the single ChainReasoning `Budget`.
+    /// Same shape as the PayloadSynthesis / SpecDerivation knobs.
+    /// Configured via
+    /// `[ai] chain_reasoning_per_call_cap_usd_micros`.
+    #[serde(default)]
+    pub chain_reasoning_per_call_cap_usd_micros: Option<i64>,
+    /// Per-call cap forwarded into each NovelFindingDiscovery batch.
+    /// Same shape; defaults to the run cap so a single batch may use
+    /// the full bucket when no earlier pass has spent yet. Configured
+    /// via `[ai] novel_discovery_per_call_cap_usd_micros`.
+    #[serde(default)]
+    pub novel_discovery_per_call_cap_usd_micros: Option<i64>,
 }
 
 impl Default for AiConfig {
@@ -252,6 +279,10 @@ impl Default for AiConfig {
             max_concurrent_one_shot: default_max_concurrent_one_shot(),
             default_run_budget_usd_micros: None,
             pricing: HashMap::new(),
+            payload_synthesis_per_call_cap_usd_micros: None,
+            spec_derivation_per_call_cap_usd_micros: None,
+            chain_reasoning_per_call_cap_usd_micros: None,
+            novel_discovery_per_call_cap_usd_micros: None,
         }
     }
 }
@@ -291,6 +322,45 @@ impl AiConfig {
     /// default rather than disabling the cap.
     pub fn default_run_budget_usd_micros_resolved(&self) -> i64 {
         match self.default_run_budget_usd_micros {
+            Some(v) if v > 0 => v,
+            _ => Self::DEFAULT_RUN_BUDGET_USD_MICROS,
+        }
+    }
+
+    /// Resolved per-call cap for PayloadSynthesis. Falls back to the
+    /// built-in default when the operator did not set
+    /// `[ai] payload_synthesis_per_call_cap_usd_micros` or set a
+    /// non-positive value.
+    pub fn payload_synthesis_per_call_cap_usd_micros_resolved(&self) -> i64 {
+        match self.payload_synthesis_per_call_cap_usd_micros {
+            Some(v) if v > 0 => v,
+            _ => Self::DEFAULT_RUN_BUDGET_USD_MICROS,
+        }
+    }
+
+    /// Resolved per-call cap for SpecDerivation. Same fall-back rules
+    /// as `payload_synthesis_per_call_cap_usd_micros_resolved`.
+    pub fn spec_derivation_per_call_cap_usd_micros_resolved(&self) -> i64 {
+        match self.spec_derivation_per_call_cap_usd_micros {
+            Some(v) if v > 0 => v,
+            _ => Self::DEFAULT_RUN_BUDGET_USD_MICROS,
+        }
+    }
+
+    /// Resolved per-call cap for ChainReasoning. Same fall-back rules.
+    pub fn chain_reasoning_per_call_cap_usd_micros_resolved(&self) -> i64 {
+        match self.chain_reasoning_per_call_cap_usd_micros {
+            Some(v) if v > 0 => v,
+            _ => Self::DEFAULT_RUN_BUDGET_USD_MICROS,
+        }
+    }
+
+    /// Resolved per-call cap for NovelFindingDiscovery batches. Same
+    /// fall-back rules; the per-call cap defaults to the run cap so a
+    /// single batch may consume the entire bucket when no earlier pass
+    /// has spent yet.
+    pub fn novel_discovery_per_call_cap_usd_micros_resolved(&self) -> i64 {
+        match self.novel_discovery_per_call_cap_usd_micros {
             Some(v) if v > 0 => v,
             _ => Self::DEFAULT_RUN_BUDGET_USD_MICROS,
         }
@@ -581,6 +651,10 @@ mod tests {
                     );
                     m
                 },
+                payload_synthesis_per_call_cap_usd_micros: Some(2_500_000),
+                spec_derivation_per_call_cap_usd_micros: Some(1_500_000),
+                chain_reasoning_per_call_cap_usd_micros: Some(3_000_000),
+                novel_discovery_per_call_cap_usd_micros: Some(4_000_000),
             },
             ui: UiConfig { listen_addr: "0.0.0.0:9999".to_string(), open_browser: true },
             triggers: TriggersConfig {
@@ -892,6 +966,45 @@ mod tests {
                    garbage = true\n";
         let err = Config::parse(raw, &PathBuf::from("<test>")).expect_err("must reject");
         assert!(matches!(err, ConfigError::Parse { .. }));
+    }
+
+    #[test]
+    fn ai_per_call_caps_default_to_run_budget_constant() {
+        let cfg = Config::parse("", &PathBuf::from("<test>")).expect("parse");
+        assert!(cfg.ai.payload_synthesis_per_call_cap_usd_micros.is_none());
+        assert!(cfg.ai.spec_derivation_per_call_cap_usd_micros.is_none());
+        assert!(cfg.ai.chain_reasoning_per_call_cap_usd_micros.is_none());
+        assert!(cfg.ai.novel_discovery_per_call_cap_usd_micros.is_none());
+        let fallback = AiConfig::DEFAULT_RUN_BUDGET_USD_MICROS;
+        assert_eq!(cfg.ai.payload_synthesis_per_call_cap_usd_micros_resolved(), fallback);
+        assert_eq!(cfg.ai.spec_derivation_per_call_cap_usd_micros_resolved(), fallback);
+        assert_eq!(cfg.ai.chain_reasoning_per_call_cap_usd_micros_resolved(), fallback);
+        assert_eq!(cfg.ai.novel_discovery_per_call_cap_usd_micros_resolved(), fallback);
+    }
+
+    #[test]
+    fn ai_per_call_caps_parse_per_task_overrides() {
+        let raw = "[ai]\n\
+                   payload_synthesis_per_call_cap_usd_micros = 2500000\n\
+                   spec_derivation_per_call_cap_usd_micros = 1500000\n\
+                   chain_reasoning_per_call_cap_usd_micros = 3000000\n\
+                   novel_discovery_per_call_cap_usd_micros = 4000000\n";
+        let cfg = Config::parse(raw, &PathBuf::from("<test>")).expect("parse");
+        assert_eq!(cfg.ai.payload_synthesis_per_call_cap_usd_micros_resolved(), 2_500_000);
+        assert_eq!(cfg.ai.spec_derivation_per_call_cap_usd_micros_resolved(), 1_500_000);
+        assert_eq!(cfg.ai.chain_reasoning_per_call_cap_usd_micros_resolved(), 3_000_000);
+        assert_eq!(cfg.ai.novel_discovery_per_call_cap_usd_micros_resolved(), 4_000_000);
+    }
+
+    #[test]
+    fn ai_per_call_caps_non_positive_overrides_fall_back_to_default() {
+        let raw = "[ai]\n\
+                   payload_synthesis_per_call_cap_usd_micros = 0\n\
+                   spec_derivation_per_call_cap_usd_micros = -1\n";
+        let cfg = Config::parse(raw, &PathBuf::from("<test>")).expect("parse");
+        let fallback = AiConfig::DEFAULT_RUN_BUDGET_USD_MICROS;
+        assert_eq!(cfg.ai.payload_synthesis_per_call_cap_usd_micros_resolved(), fallback);
+        assert_eq!(cfg.ai.spec_derivation_per_call_cap_usd_micros_resolved(), fallback);
     }
 
     #[test]

@@ -84,6 +84,10 @@ fails the load rather than silently going to default.
 | `runtime`                          | enum             | `none`  | AI runtime selection. See below.                                                                         |
 | `max_concurrent_one_shot`          | u32              | `4`     | Cap on in-flight `one_shot` AI calls per run, shared across payload synthesis, spec derivation, and chain reasoning. `0` floors to `1` to avoid a deadlocked semaphore acquire. |
 | `default_run_budget_usd_micros`    | i64 (optional)   | unset   | Per-run AI budget cap in USD micros stamped on new `(run_id, kind)` rows. Falls back to `$5.00` (`5_000_000`) when unset or non-positive. |
+| `payload_synthesis_per_call_cap_usd_micros` | i64 (optional) | unset | Per-call cap forwarded into each PayloadSynthesis `Budget`. Clamps a single call below the shared per-run bucket. Falls back to `$5.00` (`5_000_000`) when unset or non-positive. |
+| `spec_derivation_per_call_cap_usd_micros`   | i64 (optional) | unset | Per-call cap for each SpecDerivation call. Same fall-back rules. |
+| `chain_reasoning_per_call_cap_usd_micros`   | i64 (optional) | unset | Per-call cap for the single ChainReasoning call. Same fall-back rules. |
+| `novel_discovery_per_call_cap_usd_micros`   | i64 (optional) | unset | Per-call cap for each NovelFindingDiscovery batch. Same fall-back rules. |
 
 `runtime` values (kebab-case):
 

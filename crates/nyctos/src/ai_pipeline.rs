@@ -59,18 +59,15 @@ use nyctos_types::spec::{SpecDerivationInput, SPEC_DERIVATION_PROMPT_VERSION};
 use nyctos_types::verify::{Oracle, VerifyResult, VerifyVerdict};
 use tokio::sync::Semaphore;
 
-/// Per-call cap forwarded into `Budget.cap_usd_micros` for every
-/// PayloadSynthesis call. The tracker-side cap (resolved per-run from
-/// `[ai] default_run_budget_usd_micros`, falling back to
-/// [`AiConfig::DEFAULT_RUN_BUDGET_USD_MICROS`]) is the authoritative
-/// bucket the adapter checks against; this per-call value is
-/// informational on the wire.
-const PAYLOAD_SYNTHESIS_PER_CALL_CAP_USD_MICROS: i64 = AiConfig::DEFAULT_RUN_BUDGET_USD_MICROS;
-
-/// Per-call cap for every SpecDerivation call. SpecDerivation reads
-/// three small excerpts and asks for a JSON spec - sizing matches
-/// PayloadSynthesis until per-task tuning shows otherwise.
-const SPEC_DERIVATION_PER_CALL_CAP_USD_MICROS: i64 = AiConfig::DEFAULT_RUN_BUDGET_USD_MICROS;
+// Per-call PayloadSynthesis / SpecDerivation caps now live on
+// `AiConfig` as
+// `[ai] payload_synthesis_per_call_cap_usd_micros` /
+// `[ai] spec_derivation_per_call_cap_usd_micros`. The tracker-side
+// cap (resolved per-run from `[ai] default_run_budget_usd_micros`,
+// falling back to `AiConfig::DEFAULT_RUN_BUDGET_USD_MICROS`) is the
+// authoritative bucket the adapter checks against; the per-call
+// value is informational on the wire and bounds a single call below
+// the run cap when the operator wants tighter clamps.
 
 /// Radius (in lines) of each excerpt the SpecDerivation prompt
 /// receives. The vendored `HarnessSpec` only needs a few lines around
@@ -222,6 +219,7 @@ pub async fn run_payload_synthesis_pass(
     tracing::info!(count = inputs.len(), "payload synthesis: fanning out");
 
     let semaphore = Arc::new(Semaphore::new(config.max_concurrent_one_shot_resolved()));
+    let per_call_cap = config.payload_synthesis_per_call_cap_usd_micros_resolved();
     let runtime_name = adapter.name();
     let runtime_model = adapter.default_model().to_string();
     let mut handles = Vec::with_capacity(inputs.len());
@@ -232,13 +230,7 @@ pub async fn run_payload_synthesis_pass(
         handles.push(tokio::spawn(async move {
             let permit = sem.acquire_owned().await.expect("semaphore closed");
             let started_at = now_epoch_ms();
-            let outcome = run_payload_synthesis(
-                rt.as_ref(),
-                &input,
-                sink,
-                PAYLOAD_SYNTHESIS_PER_CALL_CAP_USD_MICROS,
-            )
-            .await;
+            let outcome = run_payload_synthesis(rt.as_ref(), &input, sink, per_call_cap).await;
             drop(permit);
             outcome.map(|o| (started_at, o))
         }));
@@ -539,6 +531,7 @@ pub async fn run_spec_derivation_pass(
     tracing::info!(count = inputs.len(), "spec derivation: fanning out");
 
     let semaphore = Arc::new(Semaphore::new(config.max_concurrent_one_shot_resolved()));
+    let per_call_cap = config.spec_derivation_per_call_cap_usd_micros_resolved();
     let runtime_name = adapter.name();
     let runtime_model = adapter.default_model().to_string();
     let mut handles = Vec::with_capacity(inputs.len());
@@ -549,13 +542,7 @@ pub async fn run_spec_derivation_pass(
         handles.push(tokio::spawn(async move {
             let permit = sem.acquire_owned().await.expect("semaphore closed");
             let started_at = now_epoch_ms();
-            let outcome = run_spec_derivation(
-                rt.as_ref(),
-                &input,
-                sink,
-                SPEC_DERIVATION_PER_CALL_CAP_USD_MICROS,
-            )
-            .await;
+            let outcome = run_spec_derivation(rt.as_ref(), &input, sink, per_call_cap).await;
             drop(permit);
             outcome.map(|o| (started_at, o))
         }));
@@ -765,10 +752,9 @@ async fn apply_spec_outcome(
     Ok(())
 }
 
-/// Per-call cap for the ChainReasoning fan-out. Chain reasoning fires
-/// at most once per run; sizing matches the per-run default so the
-/// task can use the full budget when no other tasks have spent yet.
-const CHAIN_REASONING_PER_CALL_CAP_USD_MICROS: i64 = AiConfig::DEFAULT_RUN_BUDGET_USD_MICROS;
+// Per-call ChainReasoning cap now lives on `AiConfig` as
+// `[ai] chain_reasoning_per_call_cap_usd_micros`. Same shape as the
+// PayloadSynthesis / SpecDerivation knobs.
 
 /// Heuristic path fragments that mark a file as a vendored framework
 /// binding. The ChainReasoning prompt tags nodes whose source path
@@ -846,7 +832,7 @@ pub async fn run_chain_reasoning_pass(
         &adapter,
         &input,
         events,
-        CHAIN_REASONING_PER_CALL_CAP_USD_MICROS,
+        config.chain_reasoning_per_call_cap_usd_micros_resolved(),
     )
     .await
     {
@@ -1127,11 +1113,11 @@ async fn apply_chain_outcome(
 
 // ----- NovelFindingDiscovery ----------------------------------------------
 
-/// Per-call cap forwarded into each NovelFindingDiscovery `Budget`.
-/// Matches the per-run cap so a single batch may use the full bucket
-/// when no earlier task has spent yet. The pass halts further batches
-/// once the cumulative `(run_id, OneShot)` spend crosses the run cap.
-const NOVEL_DISCOVERY_PER_CALL_CAP_USD_MICROS: i64 = DEFAULT_NOVEL_DISCOVERY_RUN_CAP_USD_MICROS;
+// Per-call NovelFindingDiscovery cap now lives on `AiConfig` as
+// `[ai] novel_discovery_per_call_cap_usd_micros`. The pass halts
+// further batches once the cumulative `(run_id, OneShot)` spend
+// crosses the run cap; the per-call value bounds a single batch
+// below the run cap when the operator wants tighter clamps.
 
 /// Maximum bytes of source per file forwarded into the batch prompt.
 /// Files above this are truncated and the `truncated` flag is set so
@@ -1241,6 +1227,7 @@ pub async fn run_novel_finding_discovery_pass(
         workspaces,
         events,
         DEFAULT_NOVEL_DISCOVERY_RUN_CAP_USD_MICROS,
+        config.novel_discovery_per_call_cap_usd_micros_resolved(),
         DEFAULT_FILES_PER_BATCH,
     )
     .await
@@ -1260,6 +1247,7 @@ pub(crate) async fn drive_novel_finding_pass<R: AiRuntime + ?Sized>(
     workspaces: &HashMap<String, WorkspaceHandle>,
     events: EventSink,
     run_cap_usd_micros: i64,
+    per_call_cap_usd_micros: i64,
     files_per_batch: usize,
 ) -> anyhow::Result<NovelFindingDiscoveryPassReport> {
     let mut report = NovelFindingDiscoveryPassReport::default();
@@ -1305,21 +1293,17 @@ pub(crate) async fn drive_novel_finding_pass<R: AiRuntime + ?Sized>(
             }
             report.batches_dispatched += 1;
             let started_at = now_epoch_ms();
-            let outcome = match run_novel_findings(
-                runtime,
-                &input,
-                events.clone(),
-                NOVEL_DISCOVERY_PER_CALL_CAP_USD_MICROS,
-            )
-            .await
-            {
-                Ok(o) => o,
-                Err(err) => {
-                    tracing::warn!(error = %err, "novel finding discovery call failed");
-                    report.failed += 1;
-                    continue;
-                }
-            };
+            let outcome =
+                match run_novel_findings(runtime, &input, events.clone(), per_call_cap_usd_micros)
+                    .await
+                {
+                    Ok(o) => o,
+                    Err(err) => {
+                        tracing::warn!(error = %err, "novel finding discovery call failed");
+                        report.failed += 1;
+                        continue;
+                    }
+                };
             apply_novel_outcome(
                 store,
                 outcome,
@@ -3609,6 +3593,7 @@ mod tests {
             &workspaces,
             tx,
             5_000_000,
+            5_000_000,
             DEFAULT_FILES_PER_BATCH,
         )
         .await
@@ -3682,6 +3667,7 @@ mod tests {
             &bundle,
             &workspaces,
             tx,
+            cap,
             cap,
             1,
         )

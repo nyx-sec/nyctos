@@ -1036,6 +1036,189 @@ async fn repro_bundle_endpoint_builds_and_downloads() {
     h.abort();
 }
 
+/// Parse a captured SSE body into (event, data) pairs.
+///
+/// Each frame is two consecutive lines (`event: NAME\ndata: PAYLOAD`)
+/// terminated by a blank line. The axum/Sse keep-alive emits `:`
+/// comment lines on a periodic timer; the placeholder repro script
+/// completes well under that interval, so this parser only needs to
+/// handle real `event:` frames.
+fn parse_sse_frames(body: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for block in body.split("\n\n") {
+        let mut event: Option<String> = None;
+        let mut data: Vec<String> = Vec::new();
+        for line in block.lines() {
+            if let Some(rest) = line.strip_prefix("event:") {
+                event = Some(rest.trim().to_string());
+            } else if let Some(rest) = line.strip_prefix("data:") {
+                data.push(rest.trim_start().to_string());
+            }
+        }
+        if let Some(e) = event {
+            out.push((e, data.join("\n")));
+        }
+    }
+    out
+}
+
+#[tokio::test]
+async fn replay_endpoint_streams_repro_output() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = Store::open(tmp.path()).await.expect("open store");
+    let bundles_dir = tmp.path().join("bundles");
+    std::fs::create_dir_all(&bundles_dir).expect("mkdir bundles");
+
+    let (events, _rx) = broadcast::channel::<AgentEvent>(8);
+    let setup = SetupContext::new(
+        tmp.path().join("nyctos.toml"),
+        Config::default(),
+        true,
+        SecretStore::memory(),
+    );
+    let state = ServerState::new(
+        store.clone(),
+        events,
+        Arc::new(StubScanTrigger { run_id: "x".to_string() }) as Arc<dyn ScanTrigger>,
+        setup,
+        AuthConfig::default(),
+    )
+    .with_state_bundles_dir(bundles_dir.clone());
+
+    store.repos().upsert(&sample_repo("alpha")).await.expect("repo");
+    store.runs().insert(&sample_run("run-replay")).await.expect("run");
+    let f = sample_finding("run-replay", "alpha", "src/a.py", "rule-replay");
+    let fid = f.id.clone();
+    store.findings().upsert(&f).await.expect("finding");
+
+    let app = build_router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let h = tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    let base = format!("http://{addr}");
+    let client = reqwest::Client::new();
+
+    // Pre-build the bundle so `/replay` exercises only the replay path.
+    let post = client
+        .post(format!("{base}/api/v1/findings/{fid}/repro-bundle"))
+        .send()
+        .await
+        .expect("build bundle");
+    assert_eq!(post.status(), reqwest::StatusCode::OK);
+
+    let replay = client
+        .post(format!("{base}/api/v1/findings/{fid}/replay"))
+        .timeout(Duration::from_secs(60))
+        .send()
+        .await
+        .expect("replay request");
+    assert_eq!(replay.status(), reqwest::StatusCode::OK);
+    let ct = replay.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("");
+    assert!(ct.starts_with("text/event-stream"), "got content-type {ct}");
+    let body = replay.text().await.expect("body");
+    let frames = parse_sse_frames(&body);
+
+    let events_only: Vec<&str> = frames.iter().map(|(e, _)| e.as_str()).collect();
+    assert!(events_only.contains(&"start"), "expected start frame, got {events_only:?}");
+    assert!(events_only.contains(&"end"), "expected end frame, got {events_only:?}");
+    assert!(
+        events_only.contains(&"stdout"),
+        "expected at least one stdout frame, got {events_only:?}"
+    );
+
+    let start_data = frames
+        .iter()
+        .find(|(e, _)| e == "start")
+        .map(|(_, d)| d.as_str())
+        .expect("start frame data");
+    let start_json: Value = serde_json::from_str(start_data).expect("start json");
+    assert_eq!(start_json["finding_id"], fid);
+
+    let end_data =
+        frames.iter().find(|(e, _)| e == "end").map(|(_, d)| d.as_str()).expect("end frame data");
+    let end_json: Value = serde_json::from_str(end_data).expect("end json");
+    assert_eq!(end_json["status"], "Pass");
+    assert_eq!(end_json["exit_code"], 0);
+
+    let stdout_lines: Vec<&str> =
+        frames.iter().filter(|(e, _)| e == "stdout").map(|(_, d)| d.as_str()).collect();
+    assert!(
+        stdout_lines.iter().any(|line| line.contains("[repro] finding=")),
+        "expected `[repro] finding=` line in stdout frames: {stdout_lines:?}"
+    );
+
+    h.abort();
+}
+
+#[tokio::test]
+async fn replay_endpoint_refuses_on_sha_mismatch() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = Store::open(tmp.path()).await.expect("open store");
+    let bundles_dir = tmp.path().join("bundles");
+    std::fs::create_dir_all(&bundles_dir).expect("mkdir bundles");
+
+    let (events, _rx) = broadcast::channel::<AgentEvent>(8);
+    let setup = SetupContext::new(
+        tmp.path().join("nyctos.toml"),
+        Config::default(),
+        true,
+        SecretStore::memory(),
+    );
+    let state = ServerState::new(
+        store.clone(),
+        events,
+        Arc::new(StubScanTrigger { run_id: "x".to_string() }) as Arc<dyn ScanTrigger>,
+        setup,
+        AuthConfig::default(),
+    )
+    .with_state_bundles_dir(bundles_dir.clone());
+
+    store.repos().upsert(&sample_repo("alpha")).await.expect("repo");
+    store.runs().insert(&sample_run("run-mismatch")).await.expect("run");
+    let f = sample_finding("run-mismatch", "alpha", "src/a.py", "rule-mismatch");
+    let fid = f.id.clone();
+    store.findings().upsert(&f).await.expect("finding");
+
+    let app = build_router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let h = tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    let base = format!("http://{addr}");
+    let client = reqwest::Client::new();
+
+    let post = client
+        .post(format!("{base}/api/v1/findings/{fid}/repro-bundle"))
+        .send()
+        .await
+        .expect("build bundle");
+    assert_eq!(post.status(), reqwest::StatusCode::OK);
+    let manifest: Value = post.json().await.expect("manifest json");
+    let bundle_path = manifest["bundle_path"].as_str().expect("path").to_string();
+
+    // Substitute the on-disk tar bytes after `repro_bundles.sha256` was
+    // stamped. The replay handler must refuse to extract.
+    std::fs::write(&bundle_path, b"corrupted-bytes\n").expect("overwrite tar");
+
+    let replay = client
+        .post(format!("{base}/api/v1/findings/{fid}/replay"))
+        .timeout(Duration::from_secs(60))
+        .send()
+        .await
+        .expect("replay request");
+    assert_eq!(replay.status(), reqwest::StatusCode::INTERNAL_SERVER_ERROR);
+    let body = replay.text().await.expect("body");
+    assert!(
+        body.contains("bundle integrity check failed"),
+        "expected integrity check failure, got: {body}"
+    );
+
+    h.abort();
+}
+
 // ---- /webhook/git -----------------------------------------------------------
 
 async fn start_webhook_server(
