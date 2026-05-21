@@ -32,6 +32,7 @@ use serde::Serialize;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
+use crate::backend::apply_snapshot_from;
 use crate::backend::process::{drive_to_completion, RunningChild};
 use crate::{BackendKind, Sandbox, SandboxError, SandboxOpts, SandboxOutcome};
 
@@ -110,7 +111,7 @@ impl Sandbox for LibkrunSandbox {
         BackendKind::Libkrun
     }
 
-    async fn run(&mut self, opts: SandboxOpts) -> Result<(), SandboxError> {
+    async fn run(&mut self, mut opts: SandboxOpts) -> Result<(), SandboxError> {
         if !libkrun_host_supported() {
             return Err(SandboxError::BackendUnavailable {
                 backend: "libkrun",
@@ -123,6 +124,7 @@ impl Sandbox for LibkrunSandbox {
         if opts.argv.is_empty() {
             return Err(SandboxError::Config("argv is empty".into()));
         }
+        let scratch_snapshot = apply_snapshot_from(&mut opts)?;
         if !opts.workspace.exists() {
             return Err(SandboxError::Config(format!(
                 "workspace {} does not exist",
@@ -190,6 +192,7 @@ impl Sandbox for LibkrunSandbox {
             killed_by_operator: false,
             #[cfg(unix)]
             status_fd: None,
+            scratch_snapshot,
         });
         Ok(())
     }

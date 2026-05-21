@@ -24,6 +24,7 @@ use serde::Serialize;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
+use crate::backend::apply_snapshot_from;
 use crate::backend::process::{drive_to_completion, RunningChild};
 use crate::{BackendKind, Sandbox, SandboxError, SandboxOpts, SandboxOutcome};
 
@@ -128,7 +129,7 @@ impl Sandbox for FirecrackerSandbox {
         BackendKind::Firecracker
     }
 
-    async fn run(&mut self, opts: SandboxOpts) -> Result<(), SandboxError> {
+    async fn run(&mut self, mut opts: SandboxOpts) -> Result<(), SandboxError> {
         if !firecracker_host_supported() {
             return Err(SandboxError::BackendUnavailable {
                 backend: "firecracker",
@@ -141,6 +142,7 @@ impl Sandbox for FirecrackerSandbox {
         if opts.argv.is_empty() {
             return Err(SandboxError::Config("argv is empty".into()));
         }
+        let scratch_snapshot = apply_snapshot_from(&mut opts)?;
         if !opts.workspace.exists() {
             return Err(SandboxError::Config(format!(
                 "workspace {} does not exist",
@@ -212,6 +214,7 @@ impl Sandbox for FirecrackerSandbox {
             killed_by_operator: false,
             #[cfg(unix)]
             status_fd: None,
+            scratch_snapshot,
         });
         Ok(())
     }

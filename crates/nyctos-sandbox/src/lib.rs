@@ -287,6 +287,16 @@ pub struct SandboxOpts {
     /// not killed when its output exceeds the cap; further bytes are
     /// silently dropped.
     pub max_output_bytes: usize,
+    /// Snapshot the workspace from this source directory before
+    /// spawning. When set, the backend builds a fresh COW snapshot
+    /// of `snapshot_from` via [`workspace::snapshot`] under a private
+    /// tempdir and overrides [`SandboxOpts::workspace`] to point at
+    /// the new copy; the tempdir is reaped on
+    /// [`Sandbox::wait`]/[`Sandbox::kill`]. Lets a caller hand the
+    /// sandbox a clean COW view of a source tree without staging the
+    /// copy itself. Defaults to `None` (the sandbox uses
+    /// `workspace` directly).
+    pub snapshot_from: Option<PathBuf>,
 }
 
 impl SandboxOpts {
@@ -303,7 +313,20 @@ impl SandboxOpts {
             allow_read: Vec::new(),
             allow_write: Vec::new(),
             max_output_bytes: 1 << 20,
+            snapshot_from: None,
         }
+    }
+
+    /// Builder: snapshot `src` into a private COW tempdir at run time
+    /// and use it as the child's workspace. The tempdir is owned by
+    /// the backend's `RunningChild` and dropped (removed) when the
+    /// child is reaped. Calling [`SandboxOpts::workspace`] after this
+    /// is irrelevant; the backend overrides it with the snapshot
+    /// destination. Returns `self` so it composes with the other
+    /// `SandboxOpts` setters.
+    pub fn with_snapshot_from(mut self, src: PathBuf) -> Self {
+        self.snapshot_from = Some(src);
+        self
     }
 }
 

@@ -272,6 +272,24 @@ impl PayloadRunner {
             Err(err) => return Err(err.into()),
         };
 
+        // Surface birdcage exception refusals as a structured warn so
+        // operators see them in `nyctos doctor` logs / journalctl
+        // without having to grep shim stderr. A non-empty list means a
+        // declared allow_read / allow_write / allow_env / loopback
+        // exception did NOT take effect; the typical downstream
+        // symptom is a follow-on "permission denied" inside the
+        // sandboxee that otherwise looks like a harness bug.
+        if !outcome.refusals.is_empty() {
+            tracing::warn!(
+                target = "nyctos_sandbox::payload_runner",
+                finding_id = %run.finding_id,
+                label = %label,
+                backend = outcome.backend.as_str(),
+                refusals = ?outcome.refusals,
+                "sandbox exception refused during verify; declared exception did not take effect",
+            );
+        }
+
         let oracle_fired = match &run.oracle {
             Oracle::OutputContains { marker } => {
                 bytes_contains(&outcome.stdout, marker.as_bytes())

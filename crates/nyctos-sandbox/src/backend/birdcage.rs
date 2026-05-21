@@ -17,6 +17,7 @@ use std::time::Instant;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
+use crate::backend::apply_snapshot_from;
 use crate::backend::process::{drive_to_completion, RunningChild};
 use crate::shim::ShimConfig;
 use crate::{permits_loopback, BackendKind, Sandbox, SandboxError, SandboxOpts, SandboxOutcome};
@@ -52,7 +53,7 @@ impl Sandbox for BirdcageSandbox {
         BackendKind::Birdcage
     }
 
-    async fn run(&mut self, opts: SandboxOpts) -> Result<(), SandboxError> {
+    async fn run(&mut self, mut opts: SandboxOpts) -> Result<(), SandboxError> {
         if cfg!(not(any(target_os = "linux", target_os = "macos"))) {
             return Err(SandboxError::BackendUnavailable {
                 backend: "birdcage",
@@ -65,6 +66,7 @@ impl Sandbox for BirdcageSandbox {
         if opts.argv.is_empty() {
             return Err(SandboxError::Config("argv is empty".into()));
         }
+        let scratch_snapshot = apply_snapshot_from(&mut opts)?;
         if !opts.workspace.exists() {
             return Err(SandboxError::Config(format!(
                 "workspace {} does not exist",
@@ -193,6 +195,7 @@ impl Sandbox for BirdcageSandbox {
             killed_by_operator: false,
             #[cfg(unix)]
             status_fd: Some(status_read_fd),
+            scratch_snapshot,
         });
         Ok(())
     }

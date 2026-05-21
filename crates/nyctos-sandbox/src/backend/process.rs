@@ -7,11 +7,12 @@
 
 use std::time::Instant;
 
+use tempfile::TempDir;
 use tokio::io::AsyncReadExt;
 use tokio::process::Child;
 use tokio::time::timeout;
 
-use crate::backend::build_command;
+use crate::backend::{apply_snapshot_from, build_command};
 use crate::{BackendKind, Sandbox, SandboxError, SandboxOpts, SandboxOutcome, SandboxStatus};
 
 #[derive(Default)]
@@ -44,6 +45,16 @@ pub(crate) struct RunningChild {
     /// `ProcessSandbox`).
     #[cfg(unix)]
     pub(crate) status_fd: Option<std::os::fd::OwnedFd>,
+    /// Backing tempdir for a `SandboxOpts.snapshot_from` request.
+    /// Held until the child is reaped so the COW snapshot survives
+    /// the run; dropped (along with the snapshot directory) when the
+    /// outer `RunningChild` falls out of scope at the end of
+    /// `Sandbox::wait` or `Sandbox::kill`. `None` when the caller did
+    /// not request a snapshot. The field is intentionally only ever
+    /// written: its job is RAII over the snapshot directory, and the
+    /// drop happens at end-of-scope.
+    #[allow(dead_code)]
+    pub(crate) scratch_snapshot: Option<TempDir>,
 }
 
 impl ProcessSandbox {
@@ -57,13 +68,14 @@ impl Sandbox for ProcessSandbox {
         BackendKind::Process
     }
 
-    async fn run(&mut self, opts: SandboxOpts) -> Result<(), SandboxError> {
+    async fn run(&mut self, mut opts: SandboxOpts) -> Result<(), SandboxError> {
         if self.inner.is_some() {
             return Err(SandboxError::State("a child is already running"));
         }
         if opts.argv.is_empty() {
             return Err(SandboxError::Config("argv is empty".into()));
         }
+        let scratch_snapshot = apply_snapshot_from(&mut opts)?;
         if !opts.workspace.exists() {
             return Err(SandboxError::Config(format!(
                 "workspace {} does not exist",
@@ -80,6 +92,7 @@ impl Sandbox for ProcessSandbox {
             killed_by_operator: false,
             #[cfg(unix)]
             status_fd: None,
+            scratch_snapshot,
         });
         Ok(())
     }
@@ -238,6 +251,7 @@ mod tests {
             allow_read: Vec::new(),
             allow_write: Vec::new(),
             max_output_bytes: 1 << 16,
+            snapshot_from: None,
         }
     }
 
@@ -268,6 +282,54 @@ mod tests {
             matches!(outcome.status, SandboxStatus::Exited(0)),
             "expected Exited(0) on natural exit, got {:?}",
             outcome.status
+        );
+    }
+
+    // Acceptance for SandboxOpts::with_snapshot_from(...): the sandbox
+    // child runs against a fresh COW copy of the source workspace, and
+    // any writes the child makes do not bleed back into the source.
+    // This is the contract Phase 19's verifier and Phase 22's chain
+    // runner will lean on when they ask for a per-run / per-step
+    // snapshot.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn snapshot_from_isolates_writes_from_source() {
+        let scratch = tempdir().unwrap();
+        let src = scratch.path().join("src");
+        std::fs::create_dir(&src).unwrap();
+        std::fs::write(src.join("sentinel.txt"), b"original").unwrap();
+
+        // The workspace value is overridden by apply_snapshot_from;
+        // pass a placeholder so the SandboxOpts::new pre-condition is
+        // satisfied without staging a real directory.
+        let opts = SandboxOpts::new(
+            scratch.path().join("placeholder-ignored"),
+            vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "cat sentinel.txt && printf mutation > sentinel.txt".into(),
+            ],
+        )
+        .with_snapshot_from(src.clone());
+
+        let mut sb = ProcessSandbox::new();
+        sb.run(opts).await.expect("snapshot+run");
+        let outcome = sb.wait().await.expect("wait");
+
+        assert!(
+            matches!(outcome.status, SandboxStatus::Exited(0)),
+            "child must exit cleanly, got {:?} stderr={}",
+            outcome.status,
+            String::from_utf8_lossy(&outcome.stderr),
+        );
+        assert_eq!(
+            outcome.stdout, b"original",
+            "child must see the snapshotted sentinel content"
+        );
+        assert_eq!(
+            std::fs::read(src.join("sentinel.txt")).unwrap(),
+            b"original",
+            "source sentinel must NOT have been mutated by the sandboxed write"
         );
     }
 }
