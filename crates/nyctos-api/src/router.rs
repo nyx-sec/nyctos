@@ -41,7 +41,7 @@ use nyctos_core::{
     now_epoch_ms, parse_git_auth, AiRuntime, IngestError, SandboxBackend, ACCOUNT_AI_ANTHROPIC,
     ACCOUNT_AI_LOCAL_LLM,
 };
-use nyctos_types::api::HealthResponse;
+use nyctos_types::api::{HealthResponse, SetupRequest, SetupStatusResponse};
 use nyctos_types::event::{AgentEvent, ReproEvent, RunEvent};
 use nyctos_types::project::{CreateProjectRequest, PatchProjectRequest, TriStateJson};
 use nyctos_types::repo::{CreateRepoRequest, PatchRepoRequest, TestRepoRequest, TestRepoResponse};
@@ -215,19 +215,6 @@ async fn health() -> impl IntoResponse {
 
 // ---- /setup -----------------------------------------------------------------
 
-#[derive(Debug, Serialize)]
-struct SetupStatusResponse {
-    /// `true` once `nyctos.toml` is on disk.
-    complete: bool,
-    /// Path the wizard would write to. Surfaced so the UI can render
-    /// the operator's resolved location.
-    config_path: String,
-    /// Currently-configured AI runtime (matches `[ai].runtime`).
-    ai_runtime: String,
-    /// Currently-configured sandbox backend (matches `[sandbox].backend`).
-    sandbox_backend: String,
-}
-
 async fn setup_status(State(s): State<ServerState>) -> Result<Json<SetupStatusResponse>, ApiError> {
     let cfg = s.setup.config.read().await;
     Ok(Json(SetupStatusResponse {
@@ -256,33 +243,6 @@ fn sandbox_backend_label(b: SandboxBackend) -> &'static str {
         SandboxBackend::Firecracker => "firecracker",
         SandboxBackend::Docker => "docker",
     }
-}
-
-#[derive(Debug, Deserialize)]
-pub struct SetupRequest {
-    /// Operator-typed AI runtime: `none` | `anthropic` | `local-llm` |
-    /// `claude-code`. The wizard stashes the API key (when relevant)
-    /// out-of-band via `secrets`, not in the TOML.
-    pub ai_runtime: String,
-    /// Anthropic API key. Required when `ai_runtime = "anthropic"`.
-    /// Persisted to the OS keychain; never written to TOML or logs.
-    #[serde(default)]
-    pub anthropic_api_key: Option<String>,
-    /// Endpoint URL for `local-llm` runtime (OpenAI-compatible). Stored
-    /// in `[ai].api_base`.
-    #[serde(default)]
-    pub local_llm_url: Option<String>,
-    /// Optional bearer attached to `local-llm` requests; persisted to
-    /// the keychain.
-    #[serde(default)]
-    pub local_llm_token: Option<String>,
-    /// Sandbox backend: `auto` | `process` | `birdcage` | `libkrun`
-    /// | `firecracker` | `docker`.
-    pub sandbox_backend: String,
-    /// Operator-attested ownership of the install. The daemon refuses
-    /// to commit the config when this is `false`.
-    #[serde(default)]
-    pub i_own_this: bool,
 }
 
 #[derive(Debug, Serialize)]

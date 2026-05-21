@@ -192,3 +192,55 @@ env_config: unknown, };
 
 export type HealthResponse = { status: string, version: string, };
 
+export type SetupStatusResponse = { 
+/**
+ * `true` once `nyctos.toml` is on disk.
+ */
+complete: boolean, 
+/**
+ * Path the wizard would write to. Surfaced so the UI can render
+ * the operator's resolved location.
+ */
+config_path: string, 
+/**
+ * Currently-configured AI runtime (matches `[ai].runtime`).
+ */
+ai_runtime: string, 
+/**
+ * Currently-configured sandbox backend (matches `[sandbox].backend`).
+ */
+sandbox_backend: string, };
+
+export type SetupRequest = { 
+/**
+ * Operator-typed AI runtime: `none` | `anthropic` | `local-llm` |
+ * `claude-code`. The wizard stashes the API key (when relevant)
+ * out-of-band via `secrets`, not in the TOML.
+ */
+ai_runtime: string, 
+/**
+ * Anthropic API key. Required when `ai_runtime = "anthropic"`.
+ * Persisted to the OS keychain; never written to TOML or logs.
+ */
+anthropic_api_key?: string, 
+/**
+ * Endpoint URL for `local-llm` runtime (OpenAI-compatible). Stored
+ * in `[ai].api_base`.
+ */
+local_llm_url?: string, 
+/**
+ * Optional bearer attached to `local-llm` requests; persisted to
+ * the keychain.
+ */
+local_llm_token?: string, 
+/**
+ * Sandbox backend: `auto` | `process` | `birdcage` | `libkrun`
+ * | `firecracker` | `docker`.
+ */
+sandbox_backend: string, 
+/**
+ * Operator-attested ownership of the install. The daemon refuses
+ * to commit the config when this is `false`.
+ */
+i_own_this: boolean, };
+

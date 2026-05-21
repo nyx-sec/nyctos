@@ -19,6 +19,8 @@ import type {
   ProjectRecord,
   RepoRecord,
   RunRecord,
+  SetupRequest,
+  SetupStatusResponse,
   TestRepoRequest,
   TestRepoResponse,
 } from "./types.gen";
@@ -33,6 +35,8 @@ export type {
   ProjectRecord,
   RepoRecord,
   RunRecord,
+  SetupRequest,
+  SetupStatusResponse,
   TestRepoRequest,
   TestRepoResponse,
 };
@@ -184,6 +188,13 @@ export interface ReplayEvent {
 export type RepoSourceKind = "git" | "local-path" | "github" | "gitlab" | "local";
 
 // ---- setup wizard ----------------------------------------------------------
+//
+// `AiRuntimeChoice` / `SandboxBackendChoice` literal unions stay as
+// ergonomic FE aliases on top of the generated `SetupRequest` /
+// `SetupStatusResponse` shapes (whose `ai_runtime` / `sandbox_backend`
+// fields are `string` because the daemon's router validates against the
+// closed enum sets at handler time). Both unions are subtypes of
+// `string`, so existing call sites assign without casting.
 
 export type AiRuntimeChoice = "none" | "anthropic" | "local-llm" | "claude-code";
 export type SandboxBackendChoice =
@@ -193,22 +204,6 @@ export type SandboxBackendChoice =
   | "libkrun"
   | "firecracker"
   | "docker";
-
-export interface SetupStatusResponse {
-  complete: boolean;
-  config_path: string;
-  ai_runtime: AiRuntimeChoice;
-  sandbox_backend: SandboxBackendChoice;
-}
-
-export interface SetupRequest {
-  ai_runtime: AiRuntimeChoice;
-  anthropic_api_key?: string;
-  local_llm_url?: string;
-  local_llm_token?: string;
-  sandbox_backend: SandboxBackendChoice;
-  i_own_this: boolean;
-}
 
 export interface DoctorCheck {
   name: string;
