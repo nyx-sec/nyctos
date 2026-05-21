@@ -30,6 +30,18 @@ pub(crate) struct RunningChild {
     /// `Signaled(SIGKILL)` / shim's `128+SIGKILL` exit code. Lets a
     /// caller distinguish operator cancel from spontaneous death.
     pub(crate) killed_by_operator: bool,
+    /// Optional read end of the shim's out-of-band status pipe.
+    /// Backends that wrap their sandboxee in a helper shim
+    /// (`BirdcageSandbox`) cannot read the sandboxee's real
+    /// `ExitStatus` because the shim collapses signal-killed children
+    /// into the `128+signum` exit-code convention. The shim instead
+    /// writes a JSON `ShimStatus` frame to fd 3 and the backend hands
+    /// the read end here; `drive_to_completion` reads it after wait
+    /// and overrides `classify(status)` accordingly. `None` means
+    /// "use the kernel `ExitStatus` directly" (the unwrapped path
+    /// used by `ProcessSandbox`).
+    #[cfg(unix)]
+    pub(crate) status_fd: Option<std::os::fd::OwnedFd>,
 }
 
 impl ProcessSandbox {
@@ -64,6 +76,8 @@ impl Sandbox for ProcessSandbox {
             timeout: opts.timeout,
             max_output_bytes: opts.max_output_bytes,
             killed_by_operator: false,
+            #[cfg(unix)]
+            status_fd: None,
         });
         Ok(())
     }
@@ -123,10 +137,37 @@ pub(crate) async fn drive_to_completion(
     } else if state.killed_by_operator {
         SandboxStatus::Killed
     } else {
-        classify(status)
+        #[cfg(unix)]
+        {
+            read_status_fd(&mut state.status_fd).unwrap_or_else(|| classify(status))
+        }
+        #[cfg(not(unix))]
+        {
+            classify(status)
+        }
     };
 
     Ok(SandboxOutcome { backend, status: sandbox_status, stdout, stderr, duration })
+}
+
+#[cfg(unix)]
+fn read_status_fd(slot: &mut Option<std::os::fd::OwnedFd>) -> Option<SandboxStatus> {
+    use std::io::Read;
+
+    use crate::shim::ShimStatus;
+
+    let fd = slot.take()?;
+    let mut file = std::fs::File::from(fd);
+    let mut buf = Vec::with_capacity(64);
+    file.read_to_end(&mut buf).ok()?;
+    if buf.is_empty() {
+        return None;
+    }
+    let frame: ShimStatus = serde_json::from_slice(&buf).ok()?;
+    Some(match frame {
+        ShimStatus::Exited(c) => SandboxStatus::Exited(c),
+        ShimStatus::Signaled(s) => SandboxStatus::Signaled(s),
+    })
 }
 
 #[cfg(unix)]

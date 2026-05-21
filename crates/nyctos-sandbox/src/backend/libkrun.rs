@@ -188,6 +188,8 @@ impl Sandbox for LibkrunSandbox {
             timeout: opts.timeout,
             max_output_bytes: opts.max_output_bytes,
             killed_by_operator: false,
+            #[cfg(unix)]
+            status_fd: None,
         });
         Ok(())
     }

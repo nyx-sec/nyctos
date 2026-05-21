@@ -231,6 +231,37 @@ async fn kill_reaps_grandchild_sandboxee() {
 }
 
 #[tokio::test]
+async fn abort_sandboxee_surfaces_signaled_through_shim() {
+    // Acceptance: a sandboxee that dies from a signal (here SIGABRT
+    // via `std::process::abort()`) reaches the parent as
+    // `SandboxStatus::Signaled(SIGABRT)`. Before the out-of-band
+    // status pipe landed, the shim collapsed signal-killed children
+    // into the `128 + signum` exit-code convention, so the parent
+    // saw `Exited(134)` and could not distinguish a clean exit 134
+    // from a SIGABRT'd child.
+    let scratch = tempdir().unwrap();
+    let workspace = scratch.path().join("ws");
+    std::fs::create_dir(&workspace).unwrap();
+
+    // SIGABRT is signum 6 on every Unix the workspace ships on
+    // (POSIX; checked against `libc::SIGABRT` on linux + macos).
+    const SIGABRT: i32 = 6;
+
+    let opts = base_opts(&workspace, vec!["abort-self".into()]);
+    let outcome = run(opts).await;
+    match outcome.status {
+        SandboxStatus::Signaled(sig) => {
+            assert_eq!(sig, SIGABRT, "expected SIGABRT (signum 6); got {sig}");
+        }
+        other => panic!(
+            "expected Signaled(SIGABRT), got {:?} stderr={:?}",
+            other,
+            String::from_utf8_lossy(&outcome.stderr)
+        ),
+    }
+}
+
+#[tokio::test]
 async fn noop_harness_cold_start_under_50ms() {
     let scratch = tempdir().unwrap();
     let workspace = scratch.path().join("ws");

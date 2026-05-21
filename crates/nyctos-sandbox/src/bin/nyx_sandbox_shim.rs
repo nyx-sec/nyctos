@@ -71,17 +71,33 @@ fn run(cfg: ShimConfig) -> ExitCode {
     // init/launchd and the sandboxee keeps running after the kill path
     // returned. The pre_exec closure runs after fork in the child;
     // PR_SET_PDEATHSIG survives the subsequent exec.
-    #[cfg(target_os = "linux")]
+    //
+    // Same closure also closes fd 3 in the sandboxee when the parent
+    // wired up a status pipe: fd 3 is the shim's own write end for the
+    // out-of-band ShimStatus frame and must not be visible to the
+    // sandboxee (otherwise the sandboxee could forge its own exit
+    // classification).
+    let close_status_fd = cfg.write_status_fd;
+    #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
         unsafe {
-            cmd.pre_exec(|| {
-                // SAFETY: prctl is async-signal-safe; pre_exec requires
-                // we avoid the allocator and any non-async-signal-safe
-                // call, which a bare FFI prctl satisfies.
-                let ret = libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL as libc::c_ulong);
-                if ret == -1 {
-                    return Err(std::io::Error::last_os_error());
+            cmd.pre_exec(move || {
+                if close_status_fd {
+                    // SAFETY: close is async-signal-safe. EBADF (already
+                    // closed) is acceptable; we ignore the return code.
+                    libc::close(3);
+                }
+                #[cfg(target_os = "linux")]
+                {
+                    // SAFETY: prctl is async-signal-safe; pre_exec requires
+                    // we avoid the allocator and any non-async-signal-safe
+                    // call, which a bare FFI prctl satisfies.
+                    let ret =
+                        libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL as libc::c_ulong);
+                    if ret == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
                 }
                 Ok(())
             });
@@ -130,7 +146,12 @@ fn run(cfg: ShimConfig) -> ExitCode {
     };
 
     match child.wait() {
-        Ok(status) => exit_code_from(status),
+        Ok(status) => {
+            if cfg.write_status_fd {
+                write_status_frame_to_fd3(status);
+            }
+            exit_code_from(status)
+        }
         Err(e) => {
             eprintln!("nyx-sandbox-shim: wait failed: {e}");
             ExitCode::from(4)
@@ -162,3 +183,32 @@ fn exit_code_from(status: std::process::ExitStatus) -> ExitCode {
     let code = status.code().unwrap_or(1);
     ExitCode::from(code.clamp(0, 255) as u8)
 }
+
+#[cfg(unix)]
+fn write_status_frame_to_fd3(status: std::process::ExitStatus) {
+    use std::io::Write;
+    use std::os::fd::FromRawFd;
+    use std::os::unix::process::ExitStatusExt;
+
+    use nyctos_sandbox::shim::ShimStatus;
+
+    let frame = if let Some(sig) = status.signal() {
+        ShimStatus::Signaled(sig)
+    } else {
+        ShimStatus::Exited(status.code().unwrap_or(-1))
+    };
+    let json = match serde_json::to_vec(&frame) {
+        Ok(b) => b,
+        Err(_) => return,
+    };
+    // SAFETY: the parent (BirdcageSandbox::run) installs a pre_exec
+    // closure that dup2s the pipe's write end onto fd 3 before exec'ing
+    // this shim. If fd 3 is closed for any reason the write returns
+    // EBADF and the parent falls back to the legacy 128+signum convention.
+    let mut file = unsafe { std::fs::File::from_raw_fd(3) };
+    let _ = file.write_all(&json);
+    // file dropped here -> close(3) -> parent's read end EOFs.
+}
+
+#[cfg(not(unix))]
+fn write_status_frame_to_fd3(_status: std::process::ExitStatus) {}

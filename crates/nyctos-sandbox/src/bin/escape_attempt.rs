@@ -28,6 +28,7 @@ fn main() -> ExitCode {
         "fork-write-outside" => fork_write_outside(args.next()),
         "symlink-write" => symlink_write(args.next(), args.next()),
         "noop" => ExitCode::SUCCESS,
+        "abort-self" => abort_self(),
         "sleep-pidfile" => sleep_pidfile(args.next(), args.next()),
         other => {
             eprintln!("escape-attempt: unknown subcommand `{other}`");
@@ -145,6 +146,14 @@ fn fork_write_outside(path: Option<String>) -> ExitCode {
             ExitCode::from(1)
         }
     }
+}
+
+/// Exit by signal so the regression suite can assert
+/// `SandboxStatus::Signaled(SIGABRT)` reaches the parent through the
+/// shim's out-of-band status pipe. `std::process::abort()` raises
+/// SIGABRT on unix and does not return.
+fn abort_self() -> ExitCode {
+    std::process::abort();
 }
 
 fn sleep_pidfile(pidfile: Option<String>, secs: Option<String>) -> ExitCode {
