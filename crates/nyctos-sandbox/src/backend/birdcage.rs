@@ -19,7 +19,7 @@ use tokio::process::Command;
 
 use crate::backend::process::{drive_to_completion, RunningChild};
 use crate::shim::ShimConfig;
-use crate::{BackendKind, Sandbox, SandboxError, SandboxOpts, SandboxOutcome};
+use crate::{permits_loopback, BackendKind, Sandbox, SandboxError, SandboxOpts, SandboxOutcome};
 
 const SHIM_PATH_ENV: &str = "NYX_SANDBOX_SHIM";
 
@@ -76,6 +76,15 @@ impl Sandbox for BirdcageSandbox {
                 "nyx-sandbox-shim not found at {}",
                 self.shim_path.display()
             )));
+        }
+        if let Some(lane) = opts.lane {
+            if opts.allow_loopback && !permits_loopback(lane, BackendKind::Birdcage) {
+                return Err(SandboxError::Config(format!(
+                    "lane policy refuses allow_loopback on {} lane with birdcage backend; \
+                     birdcage cannot scope loopback any tighter than all-network-or-none",
+                    lane.as_str()
+                )));
+            }
         }
 
         let program = resolve_program(&opts.argv[0])?;
@@ -250,5 +259,46 @@ fn default_system_read_paths() -> &'static [&'static str] {
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         &[]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Lane;
+    use std::path::Path;
+    use tempfile::tempdir;
+
+    fn fast_lane_loopback_opts(workspace: &Path, shim_path: &Path) -> SandboxOpts {
+        let mut opts = SandboxOpts::new(workspace.to_path_buf(), vec!["/bin/true".into()]);
+        opts.allow_loopback = true;
+        opts.lane = Some(Lane::Fast);
+        // The lane gate fires before the shim path is exec'd; passing
+        // any path here just gets us past the shim-missing branch.
+        let _ = shim_path;
+        opts
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn fast_lane_birdcage_refuses_allow_loopback() {
+        let scratch = tempdir().expect("tempdir");
+        // Create a dummy shim file so the shim-not-found branch is
+        // skipped and we exercise the lane gate immediately after.
+        let shim = scratch.path().join("nyx-sandbox-shim-stub");
+        std::fs::write(&shim, b"#!/bin/sh\nexit 0\n").expect("write stub");
+        let mut sb = BirdcageSandbox::with_shim_path(shim.clone());
+        let opts = fast_lane_loopback_opts(scratch.path(), &shim);
+        let err = sb.run(opts).await.expect_err("fast-lane loopback must refuse");
+        match err {
+            SandboxError::Config(reason) => {
+                assert!(
+                    reason.contains("fast lane"),
+                    "reason must name the lane: {reason}"
+                );
+                assert!(reason.contains("loopback"), "reason must name the flag: {reason}");
+            }
+            other => panic!("expected Config, got {other:?}"),
+        }
     }
 }

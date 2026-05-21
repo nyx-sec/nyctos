@@ -181,6 +181,7 @@ mod tests {
             env: Vec::new(),
             timeout: Duration::from_secs(5),
             allow_loopback: false,
+            lane: None,
             allow_read: Vec::new(),
             allow_write: Vec::new(),
             max_output_bytes: 1 << 16,

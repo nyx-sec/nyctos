@@ -2827,3 +2827,57 @@ pass 21 summary
 - finding 2: symlink-following on test.env combined with a narrow regex set (no GCP/Azure/DATABASE_URL/AWS-session-token coverage) lets an operator-planted or attacker-planted symlink wave production credentials into every compose service.
 - finding 3: `re.find` returns first match only; an allowlist that covers the first occurrence of a kind silently launders all subsequent occurrences of the same kind on the same line.
 - tool budget ~13 / 24 used; halted on quality-over-count. No HTTP probes issued (ALLOWED HOSTS empty).
+
+---
+
+phase23.exploration.v1 task=expl-demo (re-invocation)
+survey-only; ALLOWED HOSTS empty; targeted uncommitted lane-policy diff in crates/nyctos-sandbox/
+budget ~6 / 24 used.
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyctos-sandbox/src/lib.rs",
+  "line": 138,
+  "cap": "SANDBOX_BYPASS",
+  "rationale": "permits_loopback() refuses only (Lane::Fast, BackendKind::Birdcage). On a Fast-lane run the auto_select ladder is [Birdcage, Process] (lib.rs:246) — if Birdcage probe fails (missing shim, unsupported kernel feature, CI runner without the helper) the selector silently falls through to ProcessSandbox, which has no network gate at all and never inspects opts.allow_loopback (grep confirms: the field appears nowhere in backend/process.rs outside Default). The new lane-policy gate even asserts permits_loopback(Lane::Fast, BackendKind::Process)==true (lib.rs:507) — i.e. it explicitly waves the fallback through. Net effect: the lane policy that the docstring (lib.rs:129-138) says hands the Fast-lane child 'a full egress channel it should never need' is a Maginot line — any caller that sets allow_loopback=true + Lane::Fast and runs on a host where birdcage probing fails gets unrestricted host loopback (and, since Process has no netns, full host network) with no error and no log. Static pass missed this because the bug is a missing enforcement edge in a sibling backend, not a tainted sink in any single function.",
+  "suggested_payload_hint": "On a host with birdcage uninstalled (or after `chmod -x` on the shim), construct SandboxOpts { lane: Some(Lane::Fast), allow_loopback: true, .. }, run via the public select_backend() + Sandbox::run() path, exec a curl/nc child against 127.0.0.1:<host-service>, confirm the request lands. Then verify the same opts under birdcage are rejected with SandboxError::Config — proving the policy enforces on one backend but not the documented fallback."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyctos-sandbox/src/lib.rs",
+  "line": 302,
+  "cap": "CHECK_BYPASS",
+  "rationale": "SandboxOpts::new() defaults `lane: None`, and the only enforcement site (backend/birdcage.rs:80) is `if let Some(lane) = opts.lane { ... }` — a None lane silently skips the gate. The field is pub, the struct is pub, and the Default-flavoured constructor is the documented entry point, so any in-tree or out-of-tree caller that constructs SandboxOpts and forgets the one-line `opts.lane = Some(Lane::Fast)` opts itself out of the policy with no compile-time or runtime signal. The diff itself shows the foot-gun in action: tests/escape.rs:37 and backend/birdcage.rs:273 both call SandboxOpts::new and never set .lane, so they exercise the un-gated path; only chain_runner.rs:359 and payload_runner.rs:240 happen to remember. Fail-open default on a security-relevant option is a classic state-machine flaw. Static pass cannot see this — the 'bug' is the absence of a `lane: Lane` non-optional field or a builder that forces the caller's hand. Recommend: make Lane mandatory (drop the Option), or invert the default (None => deny allow_loopback rather than wave it through).",
+  "suggested_payload_hint": "Add a unit test asserting that for every public SandboxOpts construction path in the crate, opts.lane.is_some() after construction. The test should fail today on at least two call sites (tests/escape.rs:37, backend/birdcage.rs test helper). Then attempt SandboxOpts { lane: None, allow_loopback: true } against BirdcageSandbox::run and confirm it is accepted — demonstrating the gate is bypassable by omission."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyctos-sandbox/src/lib.rs",
+  "line": 138,
+  "cap": "SANDBOX_BYPASS",
+  "endpoint": "permits_loopback(lane, backend) — fast-lane loopback policy",
+  "rationale": "The lane-loopback gate is birdcage-only. `permits_loopback` returns true for every (lane, backend) pair except (Fast, Birdcage); the unit test at lib.rs:507 even pins `permits_loopback(Lane::Fast, BackendKind::Process) == true`. `select_backend(Auto, Lane::Fast)` falls back to BackendKind::Process whenever birdcage probe fails (lib.rs:541 test asserts the Fast lane may legitimately land on Process). The Process backend has NO egress cage of any kind (backend/process.rs preamble: 'No isolation upgrade'), so a fast-lane caller that asks for `allow_loopback = true` and lands on Process gets full network silently. Defenders reading the new gate assume 'fast lane refuses loopback' is an invariant; in fact it is only enforced when the strong backend is present — exactly the configurations where loopback would have been kernel-scoped anyway. On macOS dev hosts (birdcage available) the gate fires; on a Linux box where birdcage init returns Unsupported (probe ladder lib.rs:419 has Process+Docker on the non-macOS, non-Linux arm; any future arm flip drops Birdcage) or in CI where `which birdcage-shim` fails, the gate is bypassed by downgrade. Either `permits_loopback` must also refuse `(Fast, Process)` (and `(Fast, Docker)`), or `select_backend` must refuse the Process fallback when the caller has `allow_loopback = true` on the Fast lane. Static pass missed because the bug is not a tainted sink — it's a policy ladder that gates one rung and leaves the weaker rungs open.",
+  "suggested_payload_hint": "On a host without birdcage (or with NYX_SANDBOX_SHIM unset so birdcage init errors): construct SandboxOpts with lane=Some(Lane::Fast), allow_loopback=true, then call select_backend(Auto, Lane::Fast) — assert sel.backend == Process and the subsequent ProcessSandbox.run accepts and gives the child curl 127.0.0.1:<operator-port>. Confirm the lane-policy gate never fires (no Config error)."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyctos-sandbox/src/backend/birdcage.rs",
+  "line": 80,
+  "cap": "CHECK_BYPASS",
+  "endpoint": "BirdcageSandbox::run — lane-policy gate is fail-open on missing annotation",
+  "rationale": "The new gate at birdcage.rs:80-88 is wrapped in `if let Some(lane) = opts.lane`. `SandboxOpts::new` (lib.rs:301) defaults `lane: None`, and `pub lane: Option<Lane>` is a public mut field, so any caller that forgets to set it skips the policy. Today only payload_runner.rs:240 and chain_runner.rs:359 annotate the lane; every other call site (tests/escape.rs:37 confirmed `SandboxOpts::new` with no lane set, plus any future internal helper / doctor probe / live-scan UI rerun / fuzzer / SDK consumer) gets `lane = None` and the gate silently passes. The doc-comment on the `lane` field calls this design 'lane-unannotated (the caller did not opt in to lane policy enforcement)' — an opt-in security policy is a policy that is off by default. A fast-lane caller need only forget the one-line annotation to regain `allow_loopback` on birdcage with all-network-or-none semantics. Worse, `lane` is `pub`, so a downstream crate or test helper can `opts.lane = None;` after a wrapper constructor sets it, intentionally or accidentally re-opening the gate. Fix: either make the field non-optional (`pub lane: Lane`) with a safe default (`Lane::Fast`) so the gate fires unless the caller actively requests Chain semantics, or default the `None` arm in the gate to `Lane::Fast` (fail-closed). Static pass missed because there is no tainted flow — the bug is a missing `else` branch.",
+  "suggested_payload_hint": "Construct `SandboxOpts { lane: None, allow_loopback: true, ..SandboxOpts::new(ws, argv) }`, run on BirdcageSandbox; assert the run is accepted (no SandboxError::Config) and birdcage's `allow_network = true` (birdcage.rs:109) gives the child egress despite the policy claiming the Fast lane refuses it."
+}
+
+pass 22 summary
+- 2 new findings on the new lane-loopback gate (dirty tree at session start: nyctos-sandbox/src/{lib.rs, backend/birdcage.rs, backend/process.rs, chain_runner.rs, payload_runner.rs}). Static pass + earlier 21 passes did not cover the gate because it landed in this branch's working tree.
+- finding 1: permits_loopback gates (Fast, Birdcage) but waves (Fast, Process) through; select_backend downgrades Fast to Process on platforms without birdcage, so the gate is bypassed by fallback.
+- finding 2: birdcage gate is wrapped in `if let Some(lane) = opts.lane`; SandboxOpts::new defaults lane=None, making the policy opt-in (fail-open) instead of fail-closed.
+- tool budget ~10 / 24 used; halted on quality-over-count. No HTTP probes issued (ALLOWED HOSTS empty).

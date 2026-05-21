@@ -126,6 +126,19 @@ impl Default for LaneConcurrency {
     }
 }
 
+/// Refuse `(Lane::Fast, BackendKind::Birdcage)` when a caller asks for
+/// `allow_loopback`. Birdcage cannot scope loopback any tighter than
+/// "all network or none" (the field-level note on [`SandboxOpts::allow_loopback`]
+/// covers this), so opening it on the fast lane hands the lightweight
+/// verifier child a full egress channel it should never need. Chain-lane
+/// tasks legitimately want loopback to reach env-builder services on the
+/// host. Every other lane/backend combination passes through unchanged;
+/// backends that can scope loopback at the kernel (libkrun, firecracker)
+/// are free to allow it on either lane.
+pub fn permits_loopback(lane: Lane, backend: BackendKind) -> bool {
+    !matches!((lane, backend), (Lane::Fast, BackendKind::Birdcage))
+}
+
 /// Which backend the selector chose, plus a human-readable reason the
 /// doctor / live-scan UI surfaces verbatim.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -258,6 +271,12 @@ pub struct SandboxOpts {
     /// Allow loopback network traffic. birdcage cannot scope further than
     /// "all network or none": when set, all egress is allowed.
     pub allow_loopback: bool,
+    /// Which scan lane spawned this child. `None` means lane-unannotated
+    /// (the caller did not opt in to lane policy enforcement). When set,
+    /// [`permits_loopback`] gates `allow_loopback` against the backend
+    /// at [`Sandbox::run`] time; the birdcage backend refuses
+    /// `(Lane::Fast, allow_loopback = true)` with [`SandboxError::Config`].
+    pub lane: Option<Lane>,
     /// Extra read-only paths visible to the sandboxed child (defaults
     /// like `/lib`, `/usr` are added by the backend).
     pub allow_read: Vec<PathBuf>,
@@ -280,6 +299,7 @@ impl SandboxOpts {
             env: Vec::new(),
             timeout: Duration::from_secs(30),
             allow_loopback: false,
+            lane: None,
             allow_read: Vec::new(),
             allow_write: Vec::new(),
             max_output_bytes: 1 << 20,
@@ -468,6 +488,31 @@ pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lane_policy_refuses_fast_birdcage_loopback() {
+        assert!(!permits_loopback(Lane::Fast, BackendKind::Birdcage));
+    }
+
+    #[test]
+    fn lane_policy_allows_chain_birdcage_loopback() {
+        assert!(permits_loopback(Lane::Chain, BackendKind::Birdcage));
+    }
+
+    #[test]
+    fn lane_policy_allows_fast_process_loopback() {
+        // Process backend has no egress cage, so the policy waves it
+        // through on either lane; the gate only fires for birdcage on
+        // the fast lane.
+        assert!(permits_loopback(Lane::Fast, BackendKind::Process));
+    }
+
+    #[test]
+    fn lane_policy_allows_fast_libkrun_and_firecracker_loopback() {
+        assert!(permits_loopback(Lane::Fast, BackendKind::Libkrun));
+        assert!(permits_loopback(Lane::Fast, BackendKind::Firecracker));
+        assert!(permits_loopback(Lane::Fast, BackendKind::Docker));
+    }
 
     #[test]
     fn lane_concurrency_defaults_match_plan() {

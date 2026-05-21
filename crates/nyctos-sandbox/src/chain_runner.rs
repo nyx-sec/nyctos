@@ -49,7 +49,9 @@ use crate::payload_runner::{
     bytes_contains, classify_status, pick_lang, render_synthesised, HarnessLang, HarnessSource,
     HarnessSpecInput, PayloadRunnerError,
 };
-use crate::{BackendKind, BirdcageSandbox, ProcessSandbox, Sandbox, SandboxError, SandboxOpts};
+use crate::{
+    BackendKind, BirdcageSandbox, Lane, ProcessSandbox, Sandbox, SandboxError, SandboxOpts,
+};
 
 /// Inline-payload ceiling. Mirrors the payload runner's limit so a
 /// chain step cannot smuggle a larger blob through the chain lane than
@@ -354,6 +356,7 @@ impl ChainRunner {
 
         let mut opts = SandboxOpts::new(run.workspace.clone(), lang.argv(&harness_rel));
         opts.timeout = self.per_step_timeout;
+        opts.lane = Some(Lane::Chain);
         opts.env.push(("NYX_PAYLOAD_PATH".to_string(), payload_name));
         opts.env.push((
             "NYX_PREV_OUTPUT".to_string(),

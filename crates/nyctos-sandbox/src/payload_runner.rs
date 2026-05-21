@@ -42,7 +42,8 @@ use nyctos_types::payload::AttackProvenance;
 use nyctos_types::verify::{Oracle, VerifyResult, VerifyRun, VerifyVerdict};
 
 use crate::{
-    BackendKind, BirdcageSandbox, ProcessSandbox, Sandbox, SandboxError, SandboxOpts, SandboxStatus,
+    BackendKind, BirdcageSandbox, Lane, ProcessSandbox, Sandbox, SandboxError, SandboxOpts,
+    SandboxStatus,
 };
 
 /// `@PAYLOAD` slot replaced by the literal payload bytes in the spec's
@@ -236,6 +237,7 @@ impl PayloadRunner {
 
         let mut opts = SandboxOpts::new(run.workspace.clone(), lang.argv(&harness_rel));
         opts.timeout = self.per_run_timeout;
+        opts.lane = Some(Lane::Fast);
         // Surface workspace-relative payload path so OnDisk harnesses
         // can locate it deterministically.
         opts.env.push((
