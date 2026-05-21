@@ -200,16 +200,13 @@ impl WebhookRateLimiter {
 
         // Evict oldest if at capacity AND ip is not already tracked.
         if !g.contains_key(&ip) && g.len() >= self.max_ips {
-            if let Some(victim) =
-                g.iter().min_by_key(|(_, b)| b.last_refill).map(|(k, _)| *k)
-            {
+            if let Some(victim) = g.iter().min_by_key(|(_, b)| b.last_refill).map(|(k, _)| *k) {
                 g.remove(&victim);
             }
         }
 
-        let bucket = g
-            .entry(ip)
-            .or_insert_with(|| TokenBucket { tokens: self.capacity, last_refill: now });
+        let bucket =
+            g.entry(ip).or_insert_with(|| TokenBucket { tokens: self.capacity, last_refill: now });
 
         // Clock can jump backwards on a leap-second / clock-drift
         // event; clamp the elapsed delta to zero so we don't add a

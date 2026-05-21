@@ -93,8 +93,7 @@ fn run(cfg: ShimConfig) -> ExitCode {
                     // SAFETY: prctl is async-signal-safe; pre_exec requires
                     // we avoid the allocator and any non-async-signal-safe
                     // call, which a bare FFI prctl satisfies.
-                    let ret =
-                        libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL as libc::c_ulong);
+                    let ret = libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL as libc::c_ulong);
                     if ret == -1 {
                         return Err(std::io::Error::last_os_error());
                     }

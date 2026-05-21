@@ -156,7 +156,6 @@ fn row_to_finding(row: sqlx::sqlite::SqliteRow) -> FindingRecord {
     }
 }
 
-
 pub struct FindingStore<'a> {
     pool: &'a SqlitePool,
 }
@@ -788,20 +787,26 @@ mod tests {
         assert_eq!(got.spec_id.as_deref(), Some("spec-1"));
 
         let active = s.findings().list_active_for_repo("repo-1").await.expect("active");
-        assert_eq!(active.iter().find(|r| r.id == f.id).and_then(|r| r.spec_id.as_deref()),
-                   Some("spec-1"));
+        assert_eq!(
+            active.iter().find(|r| r.id == f.id).and_then(|r| r.spec_id.as_deref()),
+            Some("spec-1")
+        );
 
         let by_run = s.findings().list_by_run("run-1").await.expect("by run");
-        assert_eq!(by_run.iter().find(|r| r.id == f.id).and_then(|r| r.spec_id.as_deref()),
-                   Some("spec-1"));
+        assert_eq!(
+            by_run.iter().find(|r| r.id == f.id).and_then(|r| r.spec_id.as_deref()),
+            Some("spec-1")
+        );
 
         let filtered = s
             .findings()
             .list_filtered(&FindingFilter { repo: Some("repo-1"), ..Default::default() })
             .await
             .expect("filtered");
-        assert_eq!(filtered.iter().find(|r| r.id == f.id).and_then(|r| r.spec_id.as_deref()),
-                   Some("spec-1"));
+        assert_eq!(
+            filtered.iter().find(|r| r.id == f.id).and_then(|r| r.spec_id.as_deref()),
+            Some("spec-1")
+        );
     }
 
     #[tokio::test]

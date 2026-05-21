@@ -210,9 +210,7 @@ fn capture_files(
 }
 
 #[cfg(unix)]
-fn read_report_fd(
-    slot: &mut Option<std::os::fd::OwnedFd>,
-) -> (Option<SandboxStatus>, Vec<String>) {
+fn read_report_fd(slot: &mut Option<std::os::fd::OwnedFd>) -> (Option<SandboxStatus>, Vec<String>) {
     use std::io::Read;
 
     use crate::shim::{ShimReport, ShimStatus};
@@ -400,10 +398,7 @@ mod tests {
             outcome.status,
             String::from_utf8_lossy(&outcome.stderr),
         );
-        assert_eq!(
-            outcome.stdout, b"original",
-            "child must see the snapshotted sentinel content"
-        );
+        assert_eq!(outcome.stdout, b"original", "child must see the snapshotted sentinel content");
         assert_eq!(
             std::fs::read(src.join("sentinel.txt")).unwrap(),
             b"original",

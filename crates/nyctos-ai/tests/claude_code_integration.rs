@@ -35,9 +35,7 @@ async fn agent_loop_round_trips_when_claude_on_path() {
         Ok(b) => b,
         Err(err) => {
             if strict {
-                panic!(
-                    "NYCTOS_REQUIRE_CLAUDE_CODE=1 but `claude` is not on PATH: {err}",
-                );
+                panic!("NYCTOS_REQUIRE_CLAUDE_CODE=1 but `claude` is not on PATH: {err}",);
             }
             eprintln!("skipping: `claude` not on PATH");
             return;

@@ -128,9 +128,7 @@ async fn two_service_compose_spins_up() {
     };
     if !docker_daemon_reachable(&docker).await {
         if strict {
-            panic!(
-                "NYCTOS_REQUIRE_DOCKER=1 but docker daemon unreachable (`docker info` failed)"
-            );
+            panic!("NYCTOS_REQUIRE_DOCKER=1 but docker daemon unreachable (`docker info` failed)");
         }
         eprintln!("SKIP: docker daemon unreachable (`docker info` failed); env-builder integration test bypassed.");
         return;

@@ -454,9 +454,7 @@ fn lang_from_shebang(line: &str) -> Option<String> {
     let first = tokens.next()?;
     let first_leaf = first.rsplit('/').next().unwrap_or(first);
     let leaf = if first_leaf == "env" {
-        tokens
-            .find(|tok| !tok.starts_with('-'))
-            .map(|tok| tok.rsplit('/').next().unwrap_or(tok))?
+        tokens.find(|tok| !tok.starts_with('-')).map(|tok| tok.rsplit('/').next().unwrap_or(tok))?
     } else {
         first_leaf
     };
@@ -2548,10 +2546,10 @@ pub async fn run_ai_exploration_pass(
     // and a Claude Code binary is
     // on PATH (since the Anthropic adapter cannot drive an agent
     // loop).
-    let run_cap_usd_micros = config
-        .exploration_run_cap_usd_micros_resolved(DEFAULT_EXPLORATION_RUN_CAP_USD_MICROS);
-    let soft_cap_usd_micros = config
-        .exploration_soft_cap_usd_micros_resolved(DEFAULT_EXPLORATION_SOFT_CAP_USD_MICROS);
+    let run_cap_usd_micros =
+        config.exploration_run_cap_usd_micros_resolved(DEFAULT_EXPLORATION_RUN_CAP_USD_MICROS);
+    let soft_cap_usd_micros =
+        config.exploration_soft_cap_usd_micros_resolved(DEFAULT_EXPLORATION_SOFT_CAP_USD_MICROS);
     let adapter = match ClaudeCodeAdapter::discover(make_exploration_tracker(
         store,
         run_cap_usd_micros,
@@ -2827,11 +2825,8 @@ fn write_exploration_audit_jsonl(
     let run_dir = traces_dir.join(run_id);
     std::fs::create_dir_all(&run_dir)?;
     let path = run_dir.join(format!("{task_id}.jsonl"));
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(&path)?;
+    let mut file =
+        std::fs::OpenOptions::new().write(true).create(true).truncate(true).open(&path)?;
     for entry in audit {
         let line = serde_json::to_string(entry).map_err(std::io::Error::other)?;
         file.write_all(line.as_bytes())?;
@@ -3536,21 +3531,16 @@ mod tests {
              cursor.execute('SELECT * FROM users WHERE n=' + q)\n",
         )
         .unwrap();
-        std::fs::write(
-            workspace.path().join("router.py"),
-            "def route(q):\n    handler(q)\n",
-        )
-        .unwrap();
+        std::fs::write(workspace.path().join("router.py"), "def route(q):\n    handler(q)\n")
+            .unwrap();
         let mut workspaces = HashMap::new();
         workspaces.insert(
             "repo-E2E".to_string(),
-            WorkspaceHandle::for_local_path_test(
-                "repo-E2E",
-                workspace.path().to_path_buf(),
-            ),
+            WorkspaceHandle::for_local_path_test("repo-E2E", workspace.path().to_path_buf()),
         );
 
-        let diag = diag_spec_failed("sink.py", 10, "SQL_QUERY", "rule-e2e-spec", &[("router.py", 2)]);
+        let diag =
+            diag_spec_failed("sink.py", 10, "SQL_QUERY", "rule-e2e-spec", &[("router.py", 2)]);
         let bundle = make_bundle("run-E2E", "repo-E2E", vec![diag]);
 
         let inputs = build_spec_inputs(&bundle, &workspaces);
@@ -3604,10 +3594,7 @@ mod tests {
             "findings.spec_id must back-link to the persisted harness_specs row"
         );
         assert_eq!(updated.attack_provenance.as_deref(), Some("LlmSynthesised"));
-        assert_eq!(
-            updated.prompt_version.as_deref(),
-            Some(SPEC_DERIVATION_PROMPT_VERSION)
-        );
+        assert_eq!(updated.prompt_version.as_deref(), Some(SPEC_DERIVATION_PROMPT_VERSION));
     }
 
     #[tokio::test]
@@ -3624,10 +3611,7 @@ mod tests {
         let seed = seed_finding("run-P", "repo-P", "sink.py", "rule-e2e-payload");
         let fid = seed.id.clone();
         store.findings().upsert(&seed).await.unwrap();
-        assert!(
-            seed.attack_provenance.is_none(),
-            "seed finding starts with no AI provenance"
-        );
+        assert!(seed.attack_provenance.is_none(), "seed finding starts with no AI provenance");
 
         // Workspace with a python file at line 10 to match seed_finding's
         // BLAKE3-keyed line.
@@ -3641,10 +3625,7 @@ mod tests {
         let mut workspaces = HashMap::new();
         workspaces.insert(
             "repo-P".to_string(),
-            WorkspaceHandle::for_local_path_test(
-                "repo-P",
-                workspace.path().to_path_buf(),
-            ),
+            WorkspaceHandle::for_local_path_test("repo-P", workspace.path().to_path_buf()),
         );
 
         let diag = diag_unsupported("sink.py", 10, "SQL_QUERY", "rule-e2e-payload");
@@ -4224,14 +4205,8 @@ mod tests {
         // table operates on the lowercased path, which does contain "ex" but not
         // "exec"; the path "misc/notes.py" alone scores 0 for keywords).
         rates.insert("misc/notes.py".to_string(), 1.0);
-        let inputs = build_novel_inputs_for_repo(
-            "run-N",
-            "repo-1",
-            tmp.path(),
-            &[],
-            1,
-            Some(&rates),
-        );
+        let inputs =
+            build_novel_inputs_for_repo("run-N", "repo-1", tmp.path(), &[], 1, Some(&rates));
         assert!(inputs.len() >= 2, "expected at least 2 batches; got {}", inputs.len());
         assert_eq!(
             inputs[0].files[0].path, "misc/notes.py",
@@ -4871,7 +4846,9 @@ mod tests {
             line: Some(57),
             cap: "XXE".to_string(),
             rule_hint: Some("py.expat.parse-userinput".to_string()),
-            rationale: Some("request body parsed via expat without entity-resolution lockdown".to_string()),
+            rationale: Some(
+                "request body parsed via expat without entity-resolution lockdown".to_string(),
+            ),
             suggested_payload_hint: Some(
                 "<?xml version=\"1.0\"?><!DOCTYPE r [<!ENTITY x \"TOP_SECRET_XXE\">]><r>&x;</r>"
                     .to_string(),
@@ -4940,9 +4917,7 @@ mod tests {
                 "request body passed to pickle.loads without a safe-allowlist Unpickler"
                     .to_string(),
             ),
-            suggested_payload_hint: Some(
-                "cbuiltins\nprint\n(VTOP_SECRET_PICKLE\ntR.".to_string(),
-            ),
+            suggested_payload_hint: Some("cbuiltins\nprint\n(VTOP_SECRET_PICKLE\ntR.".to_string()),
             status: "Pending".to_string(),
             prompt_version: Some(
                 nyctos_types::novel::NOVEL_FINDING_DISCOVERY_PROMPT_VERSION.to_string(),
@@ -5590,10 +5565,7 @@ mod tests {
         let mut workspaces = HashMap::new();
         workspaces.insert(
             "repo-audit".to_string(),
-            WorkspaceHandle::for_local_path_test(
-                "repo-audit",
-                workspace.path().to_path_buf(),
-            ),
+            WorkspaceHandle::for_local_path_test("repo-audit", workspace.path().to_path_buf()),
         );
 
         let mut result = empty_exploration_result();
@@ -5614,8 +5586,7 @@ mod tests {
 
         let tracker = Arc::new(InMemoryBudgetTracker::new());
         tracker.set_cap("run-audit", BudgetKind::AgentLoop, 10_000_000);
-        let runtime =
-            ScriptedExplorationRuntime::new(vec![Ok(result)], 100_000, tracker.clone());
+        let runtime = ScriptedExplorationRuntime::new(vec![Ok(result)], 100_000, tracker.clone());
 
         let bundle = make_bundle("run-audit", "repo-audit", Vec::new());
         let (tx, _rx) = tokio::sync::broadcast::channel(4);
@@ -5637,8 +5608,7 @@ mod tests {
         .unwrap();
         assert_eq!(report.findings_quarantined, 1);
 
-        let expected_path =
-            traces_root.path().join("run-audit").join("expl-repo-audit.jsonl");
+        let expected_path = traces_root.path().join("run-audit").join("expl-repo-audit.jsonl");
         assert!(expected_path.exists(), "expected {} to exist", expected_path.display());
 
         let body = std::fs::read_to_string(&expected_path).expect("read jsonl");

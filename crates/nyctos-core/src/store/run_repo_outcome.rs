@@ -141,12 +141,7 @@ mod tests {
         s.runs().insert(&sample_run("run-a")).await.expect("run");
         let rec = sample_outcome("run-a", "repo-1");
         s.run_repo_outcomes().upsert(&rec).await.expect("upsert");
-        let got = s
-            .run_repo_outcomes()
-            .get("run-a", "repo-1")
-            .await
-            .expect("get")
-            .expect("row");
+        let got = s.run_repo_outcomes().get("run-a", "repo-1").await.expect("get").expect("row");
         assert_eq!(got, rec);
     }
 
@@ -160,12 +155,7 @@ mod tests {
         rec.reason = Some("scanner crashed".to_string());
         rec.elapsed_ms = 9_999;
         s.run_repo_outcomes().upsert(&rec).await.expect("second");
-        let got = s
-            .run_repo_outcomes()
-            .get("run-a", "repo-1")
-            .await
-            .expect("get")
-            .expect("row");
+        let got = s.run_repo_outcomes().get("run-a", "repo-1").await.expect("get").expect("row");
         assert_eq!(got, rec);
     }
 
@@ -212,10 +202,7 @@ mod tests {
     async fn delete_run_cascades_to_outcomes() {
         let (_tmp, s) = fresh_store().await;
         s.runs().insert(&sample_run("doomed")).await.expect("run");
-        s.run_repo_outcomes()
-            .upsert(&sample_outcome("doomed", "repo-1"))
-            .await
-            .expect("upsert");
+        s.run_repo_outcomes().upsert(&sample_outcome("doomed", "repo-1")).await.expect("upsert");
         s.runs().delete("doomed").await.expect("delete");
         let got = s.run_repo_outcomes().list_for_run("doomed").await.expect("list");
         assert!(got.is_empty(), "FK cascade should have removed the outcome row");

@@ -657,10 +657,8 @@ mod tests {
             teardown: vec![],
         };
         let runner = PayloadRunner::default();
-        let oracle = Oracle::SinkProbe {
-            sentinel_path: "sentinel.flag".to_string(),
-            expect_contains: None,
-        };
+        let oracle =
+            Oracle::SinkProbe { sentinel_path: "sentinel.flag".to_string(), expect_contains: None };
         let result = runner
             .verify(PayloadRun {
                 finding_id: "f-isolation".to_string(),

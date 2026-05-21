@@ -383,13 +383,12 @@ async fn runs_findings_endpoint_applies_facet_filters_server_side() {
     srv.store.findings().upsert(&cmdi).await.expect("cmdi");
 
     // No filters: both rows.
-    let all: serde_json::Value =
-        reqwest::get(format!("{}/api/v1/runs/run-A/findings", srv.base()))
-            .await
-            .expect("get")
-            .json()
-            .await
-            .expect("json");
+    let all: serde_json::Value = reqwest::get(format!("{}/api/v1/runs/run-A/findings", srv.base()))
+        .await
+        .expect("get")
+        .json()
+        .await
+        .expect("json");
     assert_eq!(all["items"].as_array().expect("items").len(), 2);
 
     // Filter by cap.
@@ -406,30 +405,26 @@ async fn runs_findings_endpoint_applies_facet_filters_server_side() {
     assert_eq!(items[0]["diff_status"], "new");
 
     // Filter by repo + origin combined.
-    let by_repo_origin: serde_json::Value = reqwest::get(format!(
-        "{}/api/v1/runs/run-A/findings?repo=repo-2&origin=AI",
-        srv.base()
-    ))
-    .await
-    .expect("get")
-    .json()
-    .await
-    .expect("json");
+    let by_repo_origin: serde_json::Value =
+        reqwest::get(format!("{}/api/v1/runs/run-A/findings?repo=repo-2&origin=AI", srv.base()))
+            .await
+            .expect("get")
+            .json()
+            .await
+            .expect("json");
     let items = by_repo_origin["items"].as_array().expect("items array");
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["id"], cmdi.id);
 
     // A filter that matches nothing returns an empty items array but
     // keeps the run_id / prior_run_id envelope.
-    let empty: serde_json::Value = reqwest::get(format!(
-        "{}/api/v1/runs/run-A/findings?severity=Critical",
-        srv.base()
-    ))
-    .await
-    .expect("get")
-    .json()
-    .await
-    .expect("json");
+    let empty: serde_json::Value =
+        reqwest::get(format!("{}/api/v1/runs/run-A/findings?severity=Critical", srv.base()))
+            .await
+            .expect("get")
+            .json()
+            .await
+            .expect("json");
     assert_eq!(empty["run_id"], "run-A");
     assert_eq!(empty["items"].as_array().expect("items").len(), 0);
 }
@@ -560,15 +555,13 @@ async fn runs_findings_endpoint_applies_facet_filter_to_closed_rows() {
     let other_repo = sample_finding("run-prior", "repo-2", "src/a.rs", "rule-a");
     srv.store.findings().upsert(&other_repo).await.expect("other repo");
 
-    let body: serde_json::Value = reqwest::get(format!(
-        "{}/api/v1/runs/run-current/findings?repo=repo-1",
-        srv.base()
-    ))
-    .await
-    .expect("get")
-    .json()
-    .await
-    .expect("json");
+    let body: serde_json::Value =
+        reqwest::get(format!("{}/api/v1/runs/run-current/findings?repo=repo-1", srv.base()))
+            .await
+            .expect("get")
+            .json()
+            .await
+            .expect("json");
     let items = body["items"].as_array().expect("items array");
     assert!(items.is_empty(), "repo-2's closed finding must not leak under ?repo=repo-1");
 }
@@ -2210,11 +2203,7 @@ async fn webhook_rate_limit_refuses_burst_from_one_ip_with_429() {
         "fourth request must remain rate-limited"
     );
     let calls = trigger.calls.lock().await.clone();
-    assert_eq!(
-        calls.len(),
-        2,
-        "rate-limited requests must not reach the scan trigger",
-    );
+    assert_eq!(calls.len(), 2, "rate-limited requests must not reach the scan trigger",);
     h.abort();
 }
 
@@ -2273,10 +2262,7 @@ async fn webhook_concurrency_limit_refuses_overflow_with_429() {
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    assert!(
-        trigger.is_blocking().await,
-        "first request did not reach the trigger within 2s"
-    );
+    assert!(trigger.is_blocking().await, "first request did not reach the trigger within 2s");
 
     // Second request hits the saturated concurrency gate and is
     // refused with 429.

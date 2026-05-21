@@ -27,7 +27,11 @@ pub struct Repo {
 /// auth descriptor string into a typed [`GitAuth`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub enum RepoSource {
-    Git { url: String, branch: Option<String>, auth: Option<GitAuth> },
+    Git {
+        url: String,
+        branch: Option<String>,
+        auth: Option<GitAuth>,
+    },
     LocalPath {
         #[ts(type = "string")]
         path: PathBuf,

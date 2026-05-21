@@ -83,10 +83,8 @@ fn scan_project_round_trips_against_stub() {
         "expected project-scoped run summary, got: {stdout}"
     );
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime");
+    let rt =
+        tokio::runtime::Builder::new_current_thread().enable_all().build().expect("tokio runtime");
     rt.block_on(async {
         let store = nyctos_core::Store::open(state_root.path()).await.expect("open store");
         let runs = store.runs().list_by_status("Succeeded").await.expect("list runs");

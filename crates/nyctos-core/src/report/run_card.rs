@@ -386,10 +386,7 @@ pub fn render_markdown(card: &RunCard) -> String {
     ));
     out.push_str(&format!("- **Wall clock**: {} ms\n", card.wall_clock_ms.unwrap_or(0)));
     out.push_str(&format!("- **Total findings**: {}\n", card.total_findings));
-    out.push_str(&format!(
-        "- **Candidate findings**: {}\n\n",
-        card.candidate_findings_total
-    ));
+    out.push_str(&format!("- **Candidate findings**: {}\n\n", card.candidate_findings_total));
 
     push_markdown_split(&mut out, "Status", &card.by_status);
     push_markdown_split(&mut out, "Capability", &card.by_cap);
@@ -643,7 +640,10 @@ mod tests {
         assert_eq!(card.candidate_findings_total, 2);
         let by_cand: Vec<_> =
             card.by_candidate_status.iter().map(|s| (s.key.as_str(), s.count)).collect();
-        assert!(by_cand.contains(&("Pending", 1)), "by_candidate_status missing Pending: {by_cand:?}");
+        assert!(
+            by_cand.contains(&("Pending", 1)),
+            "by_candidate_status missing Pending: {by_cand:?}"
+        );
         assert!(
             by_cand.contains(&("Promoted", 1)),
             "by_candidate_status missing Promoted: {by_cand:?}"

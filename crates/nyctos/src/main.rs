@@ -441,7 +441,7 @@ async fn scan(
                 store.close().await;
                 return Err(err);
             }
-    };
+        };
     if targets.is_empty() {
         eprintln!("scan: no repositories selected; add a repo in the web UI or nyctos.toml");
         store.close().await;
@@ -1012,8 +1012,7 @@ async fn serve(
         let rate_per_minute = config.triggers.webhook_rate_limit_per_minute_resolved(
             nyctos_api::DEFAULT_WEBHOOK_RATE_LIMIT_PER_MINUTE,
         );
-        let concurrency =
-            Arc::new(nyctos_api::WebhookConcurrencyLimit::new(max_concurrent));
+        let concurrency = Arc::new(nyctos_api::WebhookConcurrencyLimit::new(max_concurrent));
         let rate_limit = Arc::new(nyctos_api::WebhookRateLimiter::per_minute(
             rate_per_minute,
             nyctos_api::DEFAULT_WEBHOOK_RATE_LIMIT_MAX_IPS,
@@ -1931,9 +1930,9 @@ async fn doctor(
 }
 
 fn report_ai(config: &Config) {
-    let soft_cap = config
-        .ai
-        .exploration_soft_cap_usd_micros_resolved(nyctos_ai::DEFAULT_EXPLORATION_SOFT_CAP_USD_MICROS);
+    let soft_cap = config.ai.exploration_soft_cap_usd_micros_resolved(
+        nyctos_ai::DEFAULT_EXPLORATION_SOFT_CAP_USD_MICROS,
+    );
     let run_cap = config
         .ai
         .exploration_run_cap_usd_micros_resolved(nyctos_ai::DEFAULT_EXPLORATION_RUN_CAP_USD_MICROS);
@@ -1996,17 +1995,13 @@ fn report_webhook(config: &Config) {
             "webhook FAIL: `{spec}` did not resolve to a non-empty secret (check env var or literal)"
         ),
     }
-    let max_concurrent = config
-        .triggers
-        .webhook_max_concurrent_resolved(nyctos_api::DEFAULT_WEBHOOK_MAX_CONCURRENT);
+    let max_concurrent =
+        config.triggers.webhook_max_concurrent_resolved(nyctos_api::DEFAULT_WEBHOOK_MAX_CONCURRENT);
     let rate_per_minute = config
         .triggers
         .webhook_rate_limit_per_minute_resolved(nyctos_api::DEFAULT_WEBHOOK_RATE_LIMIT_PER_MINUTE);
-    let max_origin = if config.triggers.webhook_max_concurrent.is_some() {
-        "configured"
-    } else {
-        "default"
-    };
+    let max_origin =
+        if config.triggers.webhook_max_concurrent.is_some() { "configured" } else { "default" };
     let rate_origin = if config.triggers.webhook_rate_limit_per_minute.is_some() {
         "configured"
     } else {

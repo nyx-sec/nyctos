@@ -28,9 +28,7 @@ const SCRATCH_SNAPSHOT_SUBDIR: &str = "workspace";
 /// the [`TempDir`] removes the snapshot. Returns `Ok(None)` when no
 /// snapshot was requested. Clears `opts.snapshot_from` on the way out
 /// so a re-entrant `run()` cannot double-snapshot the same opts.
-pub(crate) fn apply_snapshot_from(
-    opts: &mut SandboxOpts,
-) -> Result<Option<TempDir>, SandboxError> {
+pub(crate) fn apply_snapshot_from(opts: &mut SandboxOpts) -> Result<Option<TempDir>, SandboxError> {
     let Some(src) = opts.snapshot_from.take() else {
         return Ok(None);
     };
@@ -131,9 +129,8 @@ mod tests {
 
     #[test]
     fn apply_snapshot_from_refuses_missing_source() {
-        let mut opts =
-            SandboxOpts::new(PathBuf::from("/unused"), vec!["/bin/true".into()])
-                .with_snapshot_from(PathBuf::from("/nyx-snapshot-from-does-not-exist"));
+        let mut opts = SandboxOpts::new(PathBuf::from("/unused"), vec!["/bin/true".into()])
+            .with_snapshot_from(PathBuf::from("/nyx-snapshot-from-does-not-exist"));
         match apply_snapshot_from(&mut opts) {
             Err(SandboxError::Config(reason)) => {
                 assert!(reason.contains("snapshot_from"), "reason names the field: {reason}");
