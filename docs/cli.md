@@ -331,8 +331,11 @@ Output, in order:
 6. `claude-code`: detected version and path, or `unavailable (...)`
    when the binary is missing or below the minimum.
 7. Sandbox backend selection for the chain and fast lanes, with
-   the simultaneous-job caps from
-   `LaneConcurrency::defaults()`.
+   the simultaneous-job caps. Each line ends with `default` when
+   the cap is the built-in fallback (chain 2 / fast 8 from
+   `LaneConcurrency::defaults()`) and `configured` when the
+   operator set `[performance] chain_lane_concurrency` /
+   `fast_lane_concurrency` in `nyctos.toml`.
 
 The `doctor` subcommand exits non-zero only when the `nyx`
 discovery fails. `claude-code` and sandbox checks are

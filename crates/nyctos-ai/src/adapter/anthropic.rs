@@ -14,6 +14,7 @@
 //! `cache_creation_input_tokens` / `cache_read_input_tokens` fields
 //! the prompt-cache feature exposes.
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -54,41 +55,46 @@ const fn micros_per_token(per_mtok_dollars: i64) -> i64 {
     per_mtok_dollars
 }
 
-#[derive(Clone, Copy, Debug)]
-struct Pricing {
-    input_per_token_micros: i64,
-    output_per_token_micros: i64,
-    cache_write_per_token_micros: i64,
-    cache_read_per_token_micros: i64,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Pricing {
+    pub input_per_token_micros: i64,
+    pub output_per_token_micros: i64,
+    pub cache_write_per_token_micros: i64,
+    pub cache_read_per_token_micros: i64,
 }
 
-fn pricing_for(model: &str) -> Pricing {
+impl Pricing {
+    /// Build a `Pricing` from operator-friendly per-million-token USD
+    /// rates. The micros math is identical to [`micros_per_token`];
+    /// callers in `nyctos-core::config` use this to convert a parsed
+    /// `[ai.pricing.<model>]` block into the adapter's internal shape.
+    pub const fn from_per_mtok_usd(
+        input_per_mtok_usd: i64,
+        output_per_mtok_usd: i64,
+        cache_write_per_mtok_usd: i64,
+        cache_read_per_mtok_usd: i64,
+    ) -> Self {
+        Self {
+            input_per_token_micros: micros_per_token(input_per_mtok_usd),
+            output_per_token_micros: micros_per_token(output_per_mtok_usd),
+            cache_write_per_token_micros: micros_per_token(cache_write_per_mtok_usd),
+            cache_read_per_token_micros: micros_per_token(cache_read_per_mtok_usd),
+        }
+    }
+}
+
+fn builtin_pricing_for(model: &str) -> Pricing {
     // The match order matters: prefix matching catches versioned
     // suffixes like `claude-opus-4-7-20260101` returning the same
     // pricing as the alias.
     if model.starts_with("claude-haiku-4") {
-        Pricing {
-            input_per_token_micros: micros_per_token(1),
-            output_per_token_micros: micros_per_token(5),
-            cache_write_per_token_micros: micros_per_token(1),
-            cache_read_per_token_micros: 0,
-        }
+        Pricing::from_per_mtok_usd(1, 5, 1, 0)
     } else if model.starts_with("claude-sonnet-4") {
-        Pricing {
-            input_per_token_micros: micros_per_token(3),
-            output_per_token_micros: micros_per_token(15),
-            cache_write_per_token_micros: micros_per_token(3),
-            cache_read_per_token_micros: 0,
-        }
+        Pricing::from_per_mtok_usd(3, 15, 3, 0)
     } else {
         // Opus / unrecognised: default to opus pricing so unknown
         // models do not silently price as the cheapest tier.
-        Pricing {
-            input_per_token_micros: micros_per_token(15),
-            output_per_token_micros: micros_per_token(75),
-            cache_write_per_token_micros: micros_per_token(18),
-            cache_read_per_token_micros: micros_per_token(1),
-        }
+        Pricing::from_per_mtok_usd(15, 75, 18, 1)
     }
 }
 
@@ -99,6 +105,12 @@ pub struct AnthropicSdkAdapter {
     http: Client,
     tracker: SharedBudgetTracker,
     default_model: String,
+    /// Operator-supplied per-model price overrides. Keyed by exact
+    /// model id (the same string the Messages API receives in
+    /// `model:`). Lookup falls back to [`builtin_pricing_for`] when
+    /// no override matches. Empty in tests and on installs that
+    /// have not set `[ai.pricing.<model>]` in `nyctos.toml`.
+    pricing_overrides: HashMap<String, Pricing>,
 }
 
 impl AnthropicSdkAdapter {
@@ -115,6 +127,7 @@ impl AnthropicSdkAdapter {
                 .expect("reqwest client"),
             tracker,
             default_model: DEFAULT_SYNTHESIS_MODEL.to_string(),
+            pricing_overrides: HashMap::new(),
         }
     }
 
@@ -131,6 +144,27 @@ impl AnthropicSdkAdapter {
     pub fn with_default_model(mut self, model: impl Into<String>) -> Self {
         self.default_model = model.into();
         self
+    }
+
+    /// Replace the per-model pricing override table. Keys are exact
+    /// model ids (no prefix matching); values are operator-supplied
+    /// rates that win over [`builtin_pricing_for`] when they match.
+    /// Pass `HashMap::new()` (the default) to fall back to the
+    /// built-in table everywhere.
+    pub fn with_pricing_overrides(mut self, overrides: HashMap<String, Pricing>) -> Self {
+        self.pricing_overrides = overrides;
+        self
+    }
+
+    /// Resolved pricing for `model`. Operator overrides win on exact
+    /// match; otherwise [`builtin_pricing_for`] is consulted (which
+    /// prefix-matches on the model family so versioned suffixes like
+    /// `claude-opus-4-7-20260101` price identically to the alias).
+    fn pricing_for(&self, model: &str) -> Pricing {
+        if let Some(p) = self.pricing_overrides.get(model) {
+            return *p;
+        }
+        builtin_pricing_for(model)
     }
 }
 
@@ -166,7 +200,7 @@ impl AiRuntime for AnthropicSdkAdapter {
         sink: EventSink,
     ) -> Result<Response, AiError> {
         let model = prompt.model.clone().unwrap_or_else(|| self.default_model.clone());
-        let pricing = pricing_for(&model);
+        let pricing = self.pricing_for(&model);
 
         // Pre-call budget check: refuse outright if we already past cap.
         // The effective cap is the tighter of (a) the run-wide cap held
@@ -317,7 +351,7 @@ impl AiRuntime for AnthropicSdkAdapter {
 
     fn cost_estimate(&self, prompt: &Prompt) -> Option<CostEstimate> {
         let model = prompt.model.clone().unwrap_or_else(|| self.default_model.clone());
-        let p = pricing_for(&model);
+        let p = self.pricing_for(&model);
         // Input-token count is unknown without a tokenizer; estimate
         // 1 token per 4 chars (the rough Anthropic guideline). Output
         // upper bound is the requested `max_output_tokens`.
@@ -722,5 +756,58 @@ mod tests {
         assert!(!adapter.supports_agent_loop());
         assert!(adapter.supports_prompt_cache());
         assert!(!adapter.supports_deterministic_sampling());
+    }
+
+    #[test]
+    fn pricing_override_wins_over_builtin_table() {
+        let tracker = Arc::new(InMemoryBudgetTracker::new());
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            "claude-opus-4-7".to_string(),
+            Pricing::from_per_mtok_usd(12, 60, 15, 1),
+        );
+        let adapter = AnthropicSdkAdapter::new("k".to_string(), tracker)
+            .with_pricing_overrides(overrides);
+
+        let resolved = adapter.pricing_for("claude-opus-4-7");
+        assert_eq!(resolved.input_per_token_micros, 12);
+        assert_eq!(resolved.output_per_token_micros, 60);
+        assert_eq!(resolved.cache_write_per_token_micros, 15);
+        assert_eq!(resolved.cache_read_per_token_micros, 1);
+    }
+
+    #[test]
+    fn pricing_override_unmatched_model_falls_back_to_builtin() {
+        let tracker = Arc::new(InMemoryBudgetTracker::new());
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            "claude-opus-4-7-20260101".to_string(),
+            Pricing::from_per_mtok_usd(99, 99, 99, 99),
+        );
+        let adapter = AnthropicSdkAdapter::new("k".to_string(), tracker)
+            .with_pricing_overrides(overrides);
+
+        // Override is keyed by exact id; `claude-haiku-4-5` does not
+        // match, so the built-in haiku rate sheet wins.
+        let resolved = adapter.pricing_for("claude-haiku-4-5");
+        assert_eq!(resolved.input_per_token_micros, 1);
+        assert_eq!(resolved.output_per_token_micros, 5);
+        assert_eq!(resolved.cache_write_per_token_micros, 1);
+        assert_eq!(resolved.cache_read_per_token_micros, 0);
+    }
+
+    #[test]
+    fn empty_pricing_overrides_match_builtin_table_for_every_family() {
+        let tracker = Arc::new(InMemoryBudgetTracker::new());
+        let adapter = AnthropicSdkAdapter::new("k".to_string(), tracker);
+
+        let haiku = adapter.pricing_for("claude-haiku-4-5");
+        assert_eq!(haiku, Pricing::from_per_mtok_usd(1, 5, 1, 0));
+
+        let sonnet = adapter.pricing_for("claude-sonnet-4-6");
+        assert_eq!(sonnet, Pricing::from_per_mtok_usd(3, 15, 3, 0));
+
+        let opus = adapter.pricing_for("claude-opus-4-7");
+        assert_eq!(opus, Pricing::from_per_mtok_usd(15, 75, 18, 1));
     }
 }

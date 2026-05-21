@@ -4,6 +4,7 @@
 //! other read-only operations work in a fresh checkout with no config
 //! file on disk.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -89,6 +90,20 @@ pub struct PerformanceConfig {
     /// granularity is required; tighter polling spends more CPU.
     #[serde(default)]
     pub scheduler_tick_secs: Option<u64>,
+    /// Per-lane simultaneous-spinup cap for the chain lane. `None`
+    /// -> built-in default (2). Mirrors
+    /// `nyctos_sandbox::LaneConcurrency::DEFAULT_CHAIN`. A configured
+    /// `0` is floored to `1` by
+    /// [`PerformanceConfig::chain_lane_concurrency_resolved`].
+    #[serde(default)]
+    pub chain_lane_concurrency: Option<usize>,
+    /// Per-lane simultaneous-spinup cap for the fast lane. `None`
+    /// -> built-in default (8). Mirrors
+    /// `nyctos_sandbox::LaneConcurrency::DEFAULT_FAST`. A configured
+    /// `0` is floored to `1` by
+    /// [`PerformanceConfig::fast_lane_concurrency_resolved`].
+    #[serde(default)]
+    pub fast_lane_concurrency: Option<usize>,
 }
 
 impl Default for PerformanceConfig {
@@ -99,6 +114,8 @@ impl Default for PerformanceConfig {
             static_concurrency: None,
             per_repo_timeout_secs: None,
             scheduler_tick_secs: None,
+            chain_lane_concurrency: None,
+            fast_lane_concurrency: None,
         }
     }
 }
@@ -123,6 +140,36 @@ impl PerformanceConfig {
     pub fn scheduler_tick(&self) -> std::time::Duration {
         let secs = self.scheduler_tick_secs.unwrap_or(60).max(1);
         std::time::Duration::from_secs(secs)
+    }
+
+    /// Built-in fallback for the chain-lane simultaneous-spinup cap.
+    /// Mirrors `nyctos_sandbox::LaneConcurrency::DEFAULT_CHAIN`; kept
+    /// duplicated here so this crate has no reverse dep on the sandbox
+    /// crate. The two values must stay in sync.
+    pub const DEFAULT_CHAIN_LANE_CONCURRENCY: usize = 2;
+
+    /// Built-in fallback for the fast-lane simultaneous-spinup cap.
+    /// Mirrors `nyctos_sandbox::LaneConcurrency::DEFAULT_FAST`.
+    pub const DEFAULT_FAST_LANE_CONCURRENCY: usize = 8;
+
+    /// Resolved chain-lane spinup cap. Falls back to
+    /// [`Self::DEFAULT_CHAIN_LANE_CONCURRENCY`] when the operator has
+    /// not set `[performance] chain_lane_concurrency`; a configured
+    /// `0` is floored to `1` so the worker pool cannot deadlock.
+    pub fn chain_lane_concurrency_resolved(&self) -> usize {
+        self.chain_lane_concurrency
+            .map(|n| n.max(1))
+            .unwrap_or(Self::DEFAULT_CHAIN_LANE_CONCURRENCY)
+    }
+
+    /// Resolved fast-lane spinup cap. Falls back to
+    /// [`Self::DEFAULT_FAST_LANE_CONCURRENCY`] when the operator has
+    /// not set `[performance] fast_lane_concurrency`; a configured
+    /// `0` is floored to `1`.
+    pub fn fast_lane_concurrency_resolved(&self) -> usize {
+        self.fast_lane_concurrency
+            .map(|n| n.max(1))
+            .unwrap_or(Self::DEFAULT_FAST_LANE_CONCURRENCY)
     }
 }
 
@@ -186,6 +233,14 @@ pub struct AiConfig {
     /// `nyctos.toml`.
     #[serde(default)]
     pub default_run_budget_usd_micros: Option<i64>,
+    /// Optional per-model pricing overrides. Each entry maps an exact
+    /// Anthropic model id (e.g. `claude-opus-4-7-20260101`) to a
+    /// per-million-token USD rate sheet. The Anthropic adapter
+    /// consults this map first; unmatched models fall back to the
+    /// built-in pricing table. Configured via
+    /// `[ai.pricing.<model>]` blocks in `nyctos.toml`.
+    #[serde(default)]
+    pub pricing: HashMap<String, AiPricingOverride>,
 }
 
 impl Default for AiConfig {
@@ -197,8 +252,23 @@ impl Default for AiConfig {
             runtime: AiRuntime::default(),
             max_concurrent_one_shot: default_max_concurrent_one_shot(),
             default_run_budget_usd_micros: None,
+            pricing: HashMap::new(),
         }
     }
+}
+
+/// Operator-friendly pricing override for one Anthropic model. All
+/// fields are USD per million tokens; the adapter converts to
+/// micros-per-token at construction time. Cache fields default to
+/// zero so an override that only sets `input`/`output` keeps the
+/// no-cache pricing of the haiku/sonnet defaults.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AiPricingOverride {
+    pub input_per_mtok_usd: i64,
+    pub output_per_mtok_usd: i64,
+    pub cache_write_per_mtok_usd: i64,
+    pub cache_read_per_mtok_usd: i64,
 }
 
 fn default_max_concurrent_one_shot() -> u32 {
@@ -447,6 +517,8 @@ mod tests {
                 static_concurrency: Some(2),
                 per_repo_timeout_secs: Some(45),
                 scheduler_tick_secs: Some(10),
+                chain_lane_concurrency: Some(3),
+                fast_lane_concurrency: Some(12),
             },
             sandbox: SandboxConfig {
                 enabled: false,
@@ -460,6 +532,19 @@ mod tests {
                 runtime: AiRuntime::Anthropic,
                 max_concurrent_one_shot: 2,
                 default_run_budget_usd_micros: None,
+                pricing: {
+                    let mut m = HashMap::new();
+                    m.insert(
+                        "claude-opus-4-7-20260101".to_string(),
+                        AiPricingOverride {
+                            input_per_mtok_usd: 12,
+                            output_per_mtok_usd: 60,
+                            cache_write_per_mtok_usd: 15,
+                            cache_read_per_mtok_usd: 1,
+                        },
+                    );
+                    m
+                },
             },
             ui: UiConfig { listen_addr: "0.0.0.0:9999".to_string(), open_browser: true },
             triggers: TriggersConfig {
@@ -707,5 +792,85 @@ mod tests {
             ..Config::default()
         };
         assert_eq!(cfg.performance.scheduler_tick(), std::time::Duration::from_secs(1));
+    }
+
+    #[test]
+    fn performance_lane_concurrency_defaults_match_sandbox_constants() {
+        let cfg = Config::parse("", &PathBuf::from("<test>")).expect("parse");
+        assert!(cfg.performance.chain_lane_concurrency.is_none());
+        assert!(cfg.performance.fast_lane_concurrency.is_none());
+        assert_eq!(cfg.performance.chain_lane_concurrency_resolved(), 2);
+        assert_eq!(cfg.performance.fast_lane_concurrency_resolved(), 8);
+    }
+
+    #[test]
+    fn performance_lane_concurrency_roundtrips_through_toml() {
+        let raw = "[performance]\nchain_lane_concurrency = 4\nfast_lane_concurrency = 16\n";
+        let cfg = Config::parse(raw, &PathBuf::from("<test>")).expect("parse");
+        assert_eq!(cfg.performance.chain_lane_concurrency, Some(4));
+        assert_eq!(cfg.performance.fast_lane_concurrency, Some(16));
+        assert_eq!(cfg.performance.chain_lane_concurrency_resolved(), 4);
+        assert_eq!(cfg.performance.fast_lane_concurrency_resolved(), 16);
+    }
+
+    #[test]
+    fn ai_pricing_override_defaults_empty() {
+        let cfg = Config::parse("", &PathBuf::from("<test>")).expect("parse");
+        assert!(cfg.ai.pricing.is_empty());
+    }
+
+    #[test]
+    fn ai_pricing_override_parses_per_model_block() {
+        let raw = "[ai.pricing.\"claude-opus-4-7\"]\n\
+                   input_per_mtok_usd = 12\n\
+                   output_per_mtok_usd = 60\n\
+                   cache_write_per_mtok_usd = 15\n\
+                   cache_read_per_mtok_usd = 1\n";
+        let cfg = Config::parse(raw, &PathBuf::from("<test>")).expect("parse");
+        let entry = cfg
+            .ai
+            .pricing
+            .get("claude-opus-4-7")
+            .expect("override for claude-opus-4-7 must parse");
+        assert_eq!(entry.input_per_mtok_usd, 12);
+        assert_eq!(entry.output_per_mtok_usd, 60);
+        assert_eq!(entry.cache_write_per_mtok_usd, 15);
+        assert_eq!(entry.cache_read_per_mtok_usd, 1);
+    }
+
+    #[test]
+    fn ai_pricing_override_omitted_cache_fields_default_to_zero() {
+        let raw = "[ai.pricing.\"claude-haiku-4-5\"]\n\
+                   input_per_mtok_usd = 1\n\
+                   output_per_mtok_usd = 5\n";
+        let cfg = Config::parse(raw, &PathBuf::from("<test>")).expect("parse");
+        let entry = cfg.ai.pricing.get("claude-haiku-4-5").expect("override must parse");
+        assert_eq!(entry.input_per_mtok_usd, 1);
+        assert_eq!(entry.output_per_mtok_usd, 5);
+        assert_eq!(entry.cache_write_per_mtok_usd, 0);
+        assert_eq!(entry.cache_read_per_mtok_usd, 0);
+    }
+
+    #[test]
+    fn ai_pricing_override_unknown_field_rejected() {
+        let raw = "[ai.pricing.\"claude-haiku-4-5\"]\n\
+                   input_per_mtok_usd = 1\n\
+                   garbage = true\n";
+        let err = Config::parse(raw, &PathBuf::from("<test>")).expect_err("must reject");
+        assert!(matches!(err, ConfigError::Parse { .. }));
+    }
+
+    #[test]
+    fn performance_lane_concurrency_zero_floors_to_one() {
+        let cfg = Config {
+            performance: PerformanceConfig {
+                chain_lane_concurrency: Some(0),
+                fast_lane_concurrency: Some(0),
+                ..PerformanceConfig::default()
+            },
+            ..Config::default()
+        };
+        assert_eq!(cfg.performance.chain_lane_concurrency_resolved(), 1);
+        assert_eq!(cfg.performance.fast_lane_concurrency_resolved(), 1);
     }
 }

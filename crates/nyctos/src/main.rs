@@ -17,7 +17,7 @@ use nyctos_core::{
     Store, WorkspaceHandle,
 };
 use nyctos_nyx::{Diag, NyxError, NyxRunner, NyxScanLane, MINIMUM_NYX_VERSION};
-use nyctos_sandbox::{select_backend, BackendChoice, BackendKind, Lane, LaneConcurrency};
+use nyctos_sandbox::{select_backend, BackendChoice, BackendKind, Lane};
 use nyctos_types::event::{AgentEvent, EventSink, RunEvent};
 use semver::Version;
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -1903,18 +1903,25 @@ fn report_sandbox_backends(config: &Config) {
     };
     let chain = select_backend(choice, Lane::Chain);
     let fast = select_backend(choice, Lane::Fast);
-    let cap = LaneConcurrency::defaults();
+    let chain_cap = config.performance.chain_lane_concurrency_resolved();
+    let fast_cap = config.performance.fast_lane_concurrency_resolved();
+    let chain_origin =
+        if config.performance.chain_lane_concurrency.is_some() { "configured" } else { "default" };
+    let fast_origin =
+        if config.performance.fast_lane_concurrency.is_some() { "configured" } else { "default" };
     println!(
-        "sandbox chain lane -> {} ({}) [{} simultaneous]",
+        "sandbox chain lane -> {} ({}) [{} simultaneous, {}]",
         chain.backend.as_str(),
         chain.reason,
-        cap.chain
+        chain_cap,
+        chain_origin,
     );
     println!(
-        "sandbox fast lane  -> {} ({}) [{} simultaneous]",
+        "sandbox fast lane  -> {} ({}) [{} simultaneous, {}]",
         fast.backend.as_str(),
         fast.reason,
-        cap.fast
+        fast_cap,
+        fast_origin,
     );
 }
 

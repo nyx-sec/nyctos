@@ -12,7 +12,7 @@ pub mod runtime;
 pub mod tasks;
 
 pub use adapter::anthropic::{
-    AnthropicSdkAdapter, ANTHROPIC_VERSION, DEFAULT_BASE_URL, DEFAULT_RANKING_MODEL,
+    AnthropicSdkAdapter, Pricing, ANTHROPIC_VERSION, DEFAULT_BASE_URL, DEFAULT_RANKING_MODEL,
     DEFAULT_SYNTHESIS_MODEL,
 };
 pub use adapter::claude_code::{

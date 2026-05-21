@@ -28,8 +28,8 @@ use nyctos_ai::{
     run_payload_synthesis, run_spec_derivation, AiRuntime, AnthropicSdkAdapter, BudgetTracker,
     ChainReasoningOutcome, ClaudeCodeAdapter, EscapeSuiteGate, EscapeSuiteVerdict,
     ExplorationEndpoint, ExplorationFinding, ExplorationHaltReason, ExplorationOutcome,
-    ExplorationScope, NovelFindingDiscoveryOutcome, PayloadSynthesisOutcome, SharedBudgetTracker,
-    SpecDerivationOutcome, DEFAULT_EXPLORATION_RUN_CAP_USD_MICROS,
+    ExplorationScope, NovelFindingDiscoveryOutcome, PayloadSynthesisOutcome, Pricing,
+    SharedBudgetTracker, SpecDerivationOutcome, DEFAULT_EXPLORATION_RUN_CAP_USD_MICROS,
 };
 use nyctos_core::store::{
     AgentTraceRecord, CandidateFindingRecord, CandidateStatus, ChainRecord, FindingOrigin,
@@ -122,6 +122,30 @@ fn store_err(e: nyctos_core::StoreError) -> AiError {
     AiError::BudgetTracker(format!("{e}"))
 }
 
+/// Convert `[ai.pricing.<model>]` overrides from `AiConfig` into the
+/// `HashMap<String, Pricing>` shape the Anthropic adapter consumes.
+/// Operator-friendly per-million-token USD rates collapse to
+/// micros-per-token via [`Pricing::from_per_mtok_usd`]. Returns an
+/// empty map when the operator has not declared any overrides; the
+/// adapter then falls back to its built-in pricing table.
+fn pricing_overrides_from_config(config: &AiConfig) -> HashMap<String, Pricing> {
+    config
+        .pricing
+        .iter()
+        .map(|(model, override_)| {
+            (
+                model.clone(),
+                Pricing::from_per_mtok_usd(
+                    override_.input_per_mtok_usd,
+                    override_.output_per_mtok_usd,
+                    override_.cache_write_per_mtok_usd,
+                    override_.cache_read_per_mtok_usd,
+                ),
+            )
+        })
+        .collect()
+}
+
 #[async_trait]
 impl BudgetTracker for BudgetStoreTracker {
     async fn cap(&self, run_id: &str, kind: BudgetKind) -> Result<Option<i64>, AiError> {
@@ -186,7 +210,10 @@ pub async fn run_payload_synthesis_pass(
         store.clone(),
         config.default_run_budget_usd_micros_resolved(),
     ));
-    let adapter = Arc::new(AnthropicSdkAdapter::new(api_key, tracker.clone()));
+    let adapter = Arc::new(
+        AnthropicSdkAdapter::new(api_key, tracker.clone())
+            .with_pricing_overrides(pricing_overrides_from_config(config)),
+    );
 
     let inputs = build_inputs(bundle, workspaces);
     if inputs.is_empty() {
@@ -500,7 +527,10 @@ pub async fn run_spec_derivation_pass(
         store.clone(),
         config.default_run_budget_usd_micros_resolved(),
     ));
-    let adapter = Arc::new(AnthropicSdkAdapter::new(api_key, tracker.clone()));
+    let adapter = Arc::new(
+        AnthropicSdkAdapter::new(api_key, tracker.clone())
+            .with_pricing_overrides(pricing_overrides_from_config(config)),
+    );
 
     let inputs = build_spec_inputs(bundle, workspaces);
     if inputs.is_empty() {
@@ -806,7 +836,8 @@ pub async fn run_chain_reasoning_pass(
         store.clone(),
         config.default_run_budget_usd_micros_resolved(),
     ));
-    let adapter = AnthropicSdkAdapter::new(api_key, tracker.clone());
+    let adapter = AnthropicSdkAdapter::new(api_key, tracker.clone())
+        .with_pricing_overrides(pricing_overrides_from_config(config));
     let runtime_name = adapter.name();
     let runtime_model = adapter.default_model().to_string();
 
@@ -1199,7 +1230,8 @@ pub async fn run_novel_finding_discovery_pass(
         store.clone(),
         DEFAULT_NOVEL_DISCOVERY_RUN_CAP_USD_MICROS,
     ));
-    let adapter = AnthropicSdkAdapter::new(api_key, tracker.clone());
+    let adapter = AnthropicSdkAdapter::new(api_key, tracker.clone())
+        .with_pricing_overrides(pricing_overrides_from_config(config));
 
     drive_novel_finding_pass(
         &adapter,

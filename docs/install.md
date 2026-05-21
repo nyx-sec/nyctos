@@ -120,8 +120,8 @@ config not found at ./nyctos.toml (using defaults)
 db OK at /home/op/.local/share/nyctos/state.db (schema v1)
 nyx OK at /usr/local/bin/nyx (version 0.7.0, minimum 0.7.0)
 claude-code: available v1.0.0 at /usr/local/bin/claude
-sandbox chain lane -> birdcage (selected by host probe) [2 simultaneous]
-sandbox fast lane  -> process (selected by host probe) [8 simultaneous]
+sandbox chain lane -> birdcage (selected by host probe) [2 simultaneous, default]
+sandbox fast lane  -> process (selected by host probe) [8 simultaneous, default]
 ```
 
 Each line maps to a single check:
@@ -134,7 +134,7 @@ Each line maps to a single check:
 | `db OK ... schema v<N>` | SQLite opened and migrations are caught up. |
 | `nyx OK` / `nyx FAIL` | The scanner binary is on `PATH` (or `[nyx].binary_path` resolved), and its `--version` is at or above `MINIMUM_NYX_VERSION`. |
 | `claude-code: available` / `unavailable` | Informational only. Doctor exits zero with claude-code missing. |
-| `sandbox chain lane` / `sandbox fast lane` | Backend that will service each lane plus its concurrency cap. |
+| `sandbox chain lane` / `sandbox fast lane` | Backend that will service each lane plus its concurrency cap. The `default` / `configured` suffix shows whether the cap is the built-in value or an operator override via `[performance] chain_lane_concurrency` / `fast_lane_concurrency`. |
 
 Doctor exits non-zero only when `nyx` is missing or under the minimum
 version. Every other check is informational.
