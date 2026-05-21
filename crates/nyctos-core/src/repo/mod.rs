@@ -181,6 +181,19 @@ pub enum IngestError {
     GitVersionTooOld { found: String, required: String },
 
     #[error(
+        "no `git` binary found on `$PATH`; install git or set `NYCTOS_GIT_BINARY_ALLOWLIST=*` \
+         to bypass the path check"
+    )]
+    GitBinaryNotFound,
+
+    #[error(
+        "resolved git binary `{resolved:?}` is not on the trusted allowlist {allowlist:?}; set \
+         `NYCTOS_GIT_BINARY_ALLOWLIST` to a colon-separated (semicolon on Windows) list of \
+         trusted paths or `*` to disable the check"
+    )]
+    GitBinaryNotAllowed { resolved: PathBuf, allowlist: Vec<PathBuf> },
+
+    #[error(
         "git remote URL on disk (`{actual}`) does not match the attested URL `{attested}` for \
          repo `{name}`"
     )]

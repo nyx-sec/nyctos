@@ -76,7 +76,8 @@ pub(super) async fn ingest_git(
     auth: Option<&GitAuth>,
     per_repo_dir: &Path,
 ) -> Result<IngestedRepo, IngestError> {
-    assert_git_version_ok().await?;
+    let git_bin = assert_git_path_allowed()?;
+    assert_git_version_ok(&git_bin).await?;
     let dest = per_repo_dir.join("checkout");
     let token = match auth {
         Some(GitAuth::TokenEnv(var)) => {
@@ -99,12 +100,12 @@ pub(super) async fn ingest_git(
 
     let already_cloned = dest.join(".git").is_dir();
     if already_cloned {
-        fetch_existing(name, &dest, branch, auth, token.as_deref()).await?;
+        fetch_existing(&git_bin, name, &dest, branch, auth, token.as_deref()).await?;
     } else {
-        clone_fresh(name, url, &dest, branch, auth, token.as_deref()).await?;
+        clone_fresh(&git_bin, name, url, &dest, branch, auth, token.as_deref()).await?;
     }
 
-    let actual_remote = read_remote_url(name, &dest).await?;
+    let actual_remote = read_remote_url(&git_bin, name, &dest).await?;
     if normalise_remote(&actual_remote) != normalise_remote(url) {
         return Err(IngestError::RemoteMismatch {
             name: name.to_string(),
@@ -128,6 +129,7 @@ pub(super) async fn ingest_git(
 }
 
 async fn clone_fresh(
+    git_bin: &Path,
     name: &str,
     url: &str,
     dest: &Path,
@@ -144,7 +146,7 @@ async fn clone_fresh(
             source: e,
         })?;
     }
-    let mut cmd = Command::new("git");
+    let mut cmd = Command::new(git_bin);
     // Use top-level `-c` (ephemeral, applies to this invocation only) rather
     // than clone's `--config` (writes into the new repo's .git/config). The
     // latter would persist the bearer token to disk.
@@ -162,13 +164,14 @@ async fn clone_fresh(
 }
 
 async fn fetch_existing(
+    git_bin: &Path,
     name: &str,
     dest: &Path,
     branch: Option<&str>,
     auth: Option<&GitAuth>,
     token: Option<&str>,
 ) -> Result<(), IngestError> {
-    let mut fetch = Command::new("git");
+    let mut fetch = Command::new(git_bin);
     fetch.arg("-C").arg(dest);
     // `git fetch` does not accept `--config`; bearer-header config must come
     // via top-level `-c` BEFORE the subcommand. Re-supplied per invocation so
@@ -183,14 +186,14 @@ async fn fetch_existing(
     apply_env(&mut fetch, auth);
     run_git(name, fetch).await?;
 
-    let mut reset = Command::new("git");
+    let mut reset = Command::new(git_bin);
     reset.arg("-C").arg(dest).arg("reset").arg("--hard").arg("FETCH_HEAD");
     apply_env(&mut reset, auth);
     run_git(name, reset).await
 }
 
-async fn read_remote_url(name: &str, dest: &Path) -> Result<String, IngestError> {
-    let mut cmd = Command::new("git");
+async fn read_remote_url(git_bin: &Path, name: &str, dest: &Path) -> Result<String, IngestError> {
+    let mut cmd = Command::new(git_bin);
     cmd.arg("-C").arg(dest).arg("config").arg("--get").arg("remote.origin.url");
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).stdin(Stdio::null());
     let output = cmd.output().await.map_err(|e| IngestError::Io {
@@ -280,9 +283,11 @@ pub(crate) fn version_satisfies_minimum(found: (u32, u32, u32)) -> bool {
 /// Run `git --version`, parse the output, and refuse to proceed if the
 /// resolved binary is older than [`MINIMUM_GIT_VERSION`]. Called once
 /// at the top of [`ingest_git`] so vulnerable hosts fail fast rather
-/// than mid-clone.
-async fn assert_git_version_ok() -> Result<(), IngestError> {
-    let mut cmd = Command::new("git");
+/// than mid-clone. Takes the binary path resolved by
+/// [`assert_git_path_allowed`] so the version probe and the eventual
+/// clone/fetch invoke the same binary.
+async fn assert_git_version_ok(git_bin: &Path) -> Result<(), IngestError> {
+    let mut cmd = Command::new(git_bin);
     cmd.arg("--version");
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).stdin(Stdio::null());
     let output = cmd.output().await.map_err(|e| IngestError::Io {
@@ -308,6 +313,127 @@ async fn assert_git_version_ok() -> Result<(), IngestError> {
         });
     }
     Ok(())
+}
+
+/// Env var operators set to override the default trusted-path
+/// allowlist used by [`assert_git_path_allowed`]. Colon-separated on
+/// unix, semicolon-separated on Windows. The literal value `*`
+/// disables enforcement.
+pub(crate) const GIT_ALLOWLIST_ENV_VAR: &str = "NYCTOS_GIT_BINARY_ALLOWLIST";
+
+/// Sentinel value for [`GIT_ALLOWLIST_ENV_VAR`] that disables
+/// allowlist enforcement entirely. Useful in development when the
+/// host git lives outside the default vendor locations.
+const GIT_ALLOWLIST_BYPASS: &str = "*";
+
+/// Default trusted locations a vendor-shipped `git` is expected to
+/// live at, per platform. Matches the paths the CVE-version bullet
+/// called out as sensible defaults plus the standard Linux / Windows
+/// installer drops.
+pub(crate) fn default_git_allowlist() -> Vec<PathBuf> {
+    if cfg!(target_os = "macos") {
+        vec![
+            PathBuf::from("/usr/bin/git"),
+            PathBuf::from("/usr/local/bin/git"),
+            PathBuf::from("/opt/homebrew/bin/git"),
+            PathBuf::from("/opt/local/bin/git"),
+            PathBuf::from("/Library/Developer/CommandLineTools/usr/bin/git"),
+        ]
+    } else if cfg!(target_os = "windows") {
+        vec![
+            PathBuf::from(r"C:\Program Files\Git\cmd\git.exe"),
+            PathBuf::from(r"C:\Program Files\Git\bin\git.exe"),
+            PathBuf::from(r"C:\Program Files (x86)\Git\cmd\git.exe"),
+        ]
+    } else {
+        // Linux / *BSD / fallback. Distros typically install to
+        // /usr/bin/git; the libexec path is where some Linux
+        // distributions wire the actual binary.
+        vec![
+            PathBuf::from("/usr/bin/git"),
+            PathBuf::from("/usr/local/bin/git"),
+            PathBuf::from("/usr/libexec/git-core/git"),
+            PathBuf::from("/opt/git/bin/git"),
+        ]
+    }
+}
+
+/// Resolve the operator's configured allowlist. Returns `None` when
+/// the operator opted out via the sentinel `*` value; otherwise
+/// returns the parsed env-var list or [`default_git_allowlist`] if
+/// the env var is unset / empty.
+pub(crate) fn git_binary_allowlist() -> Option<Vec<PathBuf>> {
+    git_binary_allowlist_from_raw(std::env::var(GIT_ALLOWLIST_ENV_VAR).ok().as_deref())
+}
+
+/// Pure half of [`git_binary_allowlist`]: takes the raw env value
+/// (or `None` if unset) and returns the resolved allowlist. Split
+/// out so unit tests do not need to mutate process-wide env state.
+pub(crate) fn git_binary_allowlist_from_raw(raw: Option<&str>) -> Option<Vec<PathBuf>> {
+    match raw {
+        Some(s) if s.trim() == GIT_ALLOWLIST_BYPASS => None,
+        Some(s) if !s.trim().is_empty() => Some(std::env::split_paths(s).collect()),
+        _ => Some(default_git_allowlist()),
+    }
+}
+
+/// Walk `$PATH` and return the first executable named `git` (or
+/// `git.exe` on Windows). Returns `None` if no such entry exists; the
+/// caller surfaces a typed [`IngestError::GitBinaryNotFound`].
+pub(crate) fn resolve_git_on_path() -> Option<PathBuf> {
+    let exe_name = if cfg!(windows) { "git.exe" } else { "git" };
+    let path_var = std::env::var_os("PATH")?;
+    for entry in std::env::split_paths(&path_var) {
+        let candidate = entry.join(exe_name);
+        if is_executable_file(&candidate) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+#[cfg(unix)]
+fn is_executable_file(p: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    p.metadata().map(|m| m.is_file() && (m.permissions().mode() & 0o111) != 0).unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable_file(p: &Path) -> bool {
+    p.is_file()
+}
+
+/// Return true if `resolved` matches any allowlist entry. Both sides
+/// are compared after attempting to canonicalise symlinks; an entry
+/// that cannot be canonicalised is also matched lexically so a
+/// non-existent allowlist entry does not silently become a hard no.
+pub(crate) fn path_on_allowlist(resolved: &Path, allowlist: &[PathBuf]) -> bool {
+    let canonical_resolved = resolved.canonicalize().unwrap_or_else(|_| resolved.to_path_buf());
+    for entry in allowlist {
+        if entry == resolved {
+            return true;
+        }
+        if let Ok(canon) = entry.canonicalize() {
+            if canon == canonical_resolved {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Resolve the `git` binary on `$PATH`, refuse if it does not match
+/// the operator-configured allowlist (see [`git_binary_allowlist`]).
+/// Returns the resolved path so callers can hand it to subsequent
+/// `Command::new` invocations and avoid TOCTOU drift between the
+/// allowlist check and the eventual exec.
+pub(crate) fn assert_git_path_allowed() -> Result<PathBuf, IngestError> {
+    let resolved = resolve_git_on_path().ok_or(IngestError::GitBinaryNotFound)?;
+    match git_binary_allowlist() {
+        None => Ok(resolved),
+        Some(allowlist) if path_on_allowlist(&resolved, &allowlist) => Ok(resolved),
+        Some(allowlist) => Err(IngestError::GitBinaryNotAllowed { resolved, allowlist }),
+    }
 }
 
 /// Canonical GitHub API endpoint used to probe token scopes. Pulled out
@@ -606,6 +732,134 @@ mod tests {
             normalise_remote("https://github.com/org/repo.git"),
             normalise_remote("https://github.com/org/repo/")
         );
+    }
+
+    mod allowlist {
+        use super::*;
+
+        #[test]
+        fn default_allowlist_contains_platform_typical_paths() {
+            let defaults = default_git_allowlist();
+            assert!(!defaults.is_empty(), "default allowlist must be non-empty");
+            if cfg!(target_os = "macos") {
+                assert!(defaults.contains(&PathBuf::from("/usr/bin/git")));
+                assert!(defaults.contains(&PathBuf::from("/opt/homebrew/bin/git")));
+            } else if cfg!(target_os = "windows") {
+                assert!(defaults.iter().any(|p| p.ends_with("git.exe")));
+            } else {
+                assert!(defaults.contains(&PathBuf::from("/usr/bin/git")));
+            }
+        }
+
+        #[test]
+        fn bypass_sentinel_disables_enforcement() {
+            assert!(git_binary_allowlist_from_raw(Some("*")).is_none());
+            assert!(git_binary_allowlist_from_raw(Some("  *  ")).is_none());
+        }
+
+        #[test]
+        fn unset_env_yields_default_allowlist() {
+            let resolved = git_binary_allowlist_from_raw(None).expect("default");
+            assert_eq!(resolved, default_git_allowlist());
+        }
+
+        #[test]
+        fn empty_env_yields_default_allowlist() {
+            let resolved = git_binary_allowlist_from_raw(Some("")).expect("default");
+            assert_eq!(resolved, default_git_allowlist());
+            let resolved_ws = git_binary_allowlist_from_raw(Some("   ")).expect("default");
+            assert_eq!(resolved_ws, default_git_allowlist());
+        }
+
+        #[test]
+        fn explicit_env_overrides_default() {
+            let sep = if cfg!(windows) { ";" } else { ":" };
+            let raw = format!("/opt/custom/git{sep}/srv/bin/git");
+            let resolved = git_binary_allowlist_from_raw(Some(&raw)).expect("list");
+            assert_eq!(
+                resolved,
+                vec![PathBuf::from("/opt/custom/git"), PathBuf::from("/srv/bin/git")]
+            );
+        }
+
+        #[test]
+        fn path_on_allowlist_matches_lexical_entry() {
+            let allowlist = vec![PathBuf::from("/usr/bin/git"), PathBuf::from("/opt/other/git")];
+            assert!(path_on_allowlist(Path::new("/usr/bin/git"), &allowlist));
+        }
+
+        #[test]
+        fn path_on_allowlist_rejects_unlisted_entry() {
+            let allowlist = vec![PathBuf::from("/usr/bin/git")];
+            assert!(!path_on_allowlist(Path::new("/tmp/evil/git"), &allowlist));
+        }
+
+        #[test]
+        fn path_on_allowlist_matches_after_symlink_canonicalisation() {
+            // Build a tempdir layout where the allowlist names a
+            // symlink and the resolved path is the symlink target.
+            // Both should canonicalise to the same file.
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let real = tmp.path().join("real-git");
+            std::fs::write(&real, b"#!/bin/sh\nexit 0\n").expect("seed real");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::symlink;
+                let link = tmp.path().join("link-git");
+                symlink(&real, &link).expect("symlink");
+                let allowlist = vec![link.clone()];
+                assert!(path_on_allowlist(&real, &allowlist));
+                let allowlist_real = vec![real.clone()];
+                assert!(path_on_allowlist(&link, &allowlist_real));
+            }
+            #[cfg(not(unix))]
+            {
+                let allowlist = vec![real.clone()];
+                assert!(path_on_allowlist(&real, &allowlist));
+            }
+        }
+
+        #[test]
+        fn assert_git_path_allowed_accepts_listed_resolved_path() {
+            // Drive the public surface without env mutation: rely on
+            // the dev / CI host having git at a default vendor path.
+            // CI runners on macOS / Linux both install git at
+            // /usr/bin/git which the default allowlist covers.
+            let Some(resolved) = resolve_git_on_path() else {
+                eprintln!("skipping: git not on PATH");
+                return;
+            };
+            let allowlist = git_binary_allowlist_from_raw(None).expect("default list");
+            // If the resolved binary is not on the default list this
+            // is a packaging signal, not a test bug — surface it
+            // loudly under CI but skip otherwise so a homebrew /
+            // pyenv-style dev box does not red the suite.
+            if !path_on_allowlist(&resolved, &allowlist) {
+                if std::env::var("CI").is_ok() {
+                    panic!(
+                        "CI host's `{}` is not on the default allowlist {allowlist:?}; \
+                         widen `default_git_allowlist`",
+                        resolved.display()
+                    );
+                }
+                eprintln!(
+                    "skipping: resolved git `{}` not on default allowlist {:?}",
+                    resolved.display(),
+                    allowlist
+                );
+                return;
+            }
+            assert!(path_on_allowlist(&resolved, &allowlist));
+        }
+
+        #[test]
+        fn assert_git_path_allowed_refuses_when_resolved_path_is_off_list() {
+            // Pure surface test that does not touch env: exercise the
+            // refusal branch via the explicit helpers.
+            let resolved = PathBuf::from("/tmp/attacker/git");
+            let allowlist = vec![PathBuf::from("/usr/bin/git")];
+            assert!(!path_on_allowlist(&resolved, &allowlist));
+        }
     }
 
     mod scope_probe {
