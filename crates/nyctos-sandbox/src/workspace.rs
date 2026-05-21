@@ -207,11 +207,23 @@ mod tests {
 
         let dst = scratch.path().join("snapshot");
         let kind = snapshot(&src, &dst).unwrap();
-        // any backend is fine, but the operation must produce the tree.
-        let _ = kind;
 
         assert_eq!(fs::read(dst.join("a.txt")).unwrap(), b"hello");
         assert_eq!(fs::read(dst.join("sub").join("b.txt")).unwrap(), b"world");
+
+        // On macOS the snapshot root lives under `tempfile::tempdir()`,
+        // which is always an APFS volume on modern darwin. The
+        // `clonefile(2)` fast path must fire there; a regression that
+        // silently falls back to recursive `fs::copy` would be a
+        // performance cliff that this assertion catches.
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            kind,
+            SnapshotKind::Clonefile,
+            "macOS tempdir is APFS; clonefile(2) must succeed",
+        );
+        #[cfg(not(target_os = "macos"))]
+        let _ = kind;
     }
 
     #[test]
