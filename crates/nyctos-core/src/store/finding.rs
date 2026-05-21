@@ -186,6 +186,7 @@ impl<'a> FindingStore<'a> {
     }
 
     pub async fn upsert(&self, f: &FindingRecord) -> Result<(), StoreError> {
+        let mut tx = self.pool.begin().await?;
         sqlx::query!(
             r#"
             INSERT INTO findings (
@@ -230,9 +231,42 @@ impl<'a> FindingStore<'a> {
             f.prompt_version,
             f.chain_id,
         )
-        .execute(self.pool)
+        .execute(&mut *tx)
         .await?;
+        // Mirror the observation onto `run_findings` so the
+        // FindingDiffStatus classifier can compare current-run
+        // membership against prior runs. Runtime-checked SQL so the
+        // `.sqlx/` cache does not grow for a one-line dual-write.
+        sqlx::query(
+            "INSERT INTO run_findings (run_id, finding_id, status) \
+             VALUES (?, ?, ?) \
+             ON CONFLICT(run_id, finding_id) DO UPDATE SET status = excluded.status",
+        )
+        .bind(&f.run_id)
+        .bind(&f.id)
+        .bind(&f.status)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
         Ok(())
+    }
+
+    /// All `(finding_id, status)` pairs observed during `run_id`.
+    /// Backs the `FindingDiffStatus` classifier in the API layer.
+    /// Returns an empty vec when the run never observed any finding
+    /// (or predates the `run_findings` migration without any later
+    /// upserts touching the run).
+    pub async fn list_run_membership(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<(String, String)>, StoreError> {
+        let rows = sqlx::query_as::<_, (String, String)>(
+            "SELECT finding_id, status FROM run_findings WHERE run_id = ?",
+        )
+        .bind(run_id)
+        .fetch_all(self.pool)
+        .await?;
+        Ok(rows)
     }
 
     pub async fn get(&self, id: &str) -> Result<Option<FindingRecord>, StoreError> {
@@ -914,6 +948,63 @@ mod tests {
             got.verdict_blob.as_deref(),
             Some(r#"{"kind":"ManualPromote","from":"quarantine"}"#),
         );
+    }
+
+    #[tokio::test]
+    async fn upsert_dual_writes_run_findings_row() {
+        let (_tmp, s) = fresh_store().await;
+        seed(&s).await;
+        let f = sample_finding("run-1", "repo-1", "src/a.rs", "rule-1");
+        s.findings().upsert(&f).await.expect("insert");
+        let mem = s.findings().list_run_membership("run-1").await.expect("membership");
+        assert_eq!(mem.len(), 1);
+        assert_eq!(mem[0].0, f.id);
+        assert_eq!(mem[0].1, "Open");
+    }
+
+    #[tokio::test]
+    async fn upsert_updates_run_findings_status_on_status_change() {
+        let (_tmp, s) = fresh_store().await;
+        seed(&s).await;
+        let mut f = sample_finding("run-1", "repo-1", "src/a.rs", "rule-1");
+        s.findings().upsert(&f).await.expect("insert");
+        f.status = "Verified".to_string();
+        s.findings().upsert(&f).await.expect("re-upsert");
+        let mem = s.findings().list_run_membership("run-1").await.expect("membership");
+        assert_eq!(mem.len(), 1);
+        assert_eq!(mem[0].1, "Verified");
+    }
+
+    #[tokio::test]
+    async fn list_run_membership_scopes_to_run_id() {
+        let (_tmp, s) = fresh_store().await;
+        seed(&s).await;
+        s.runs().insert(&sample_run("run-2")).await.expect("run-2");
+        let f1 = sample_finding("run-1", "repo-1", "src/a.rs", "rule-a");
+        let f2 = sample_finding("run-2", "repo-1", "src/b.rs", "rule-b");
+        s.findings().upsert(&f1).await.expect("f1");
+        s.findings().upsert(&f2).await.expect("f2");
+
+        let mem1 = s.findings().list_run_membership("run-1").await.expect("mem1");
+        let ids1: Vec<&str> = mem1.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(ids1.len(), 1);
+        assert!(ids1.contains(&f1.id.as_str()));
+
+        let mem2 = s.findings().list_run_membership("run-2").await.expect("mem2");
+        let ids2: Vec<&str> = mem2.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(ids2.len(), 1);
+        assert!(ids2.contains(&f2.id.as_str()));
+    }
+
+    #[tokio::test]
+    async fn run_findings_cascade_clears_on_run_delete() {
+        let (_tmp, s) = fresh_store().await;
+        seed(&s).await;
+        let f = sample_finding("run-1", "repo-1", "src/a.rs", "rule-1");
+        s.findings().upsert(&f).await.expect("insert");
+        s.runs().delete("run-1").await.expect("delete run");
+        let mem = s.findings().list_run_membership("run-1").await.expect("membership");
+        assert!(mem.is_empty(), "FK cascade should empty run_findings on run delete");
     }
 
     #[tokio::test]

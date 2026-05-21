@@ -6,6 +6,7 @@
 //! single run; without the filter every `AgentEvent` lands on the
 //! socket.
 
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use axum::{
@@ -1234,10 +1235,21 @@ async fn get_finding(
 
 /// Diff status for one finding relative to a baseline run. Surfaced as
 /// the "new / regressed / closed" chips the findings browser renders.
-/// `Unchanged` means the finding existed and was Open in the prior run
-/// too. The `Regressed` and `Closed` shapes are reserved for when a
-/// per-run finding-membership history lands; today the API only emits
-/// `New` and `Unchanged`.
+///
+/// - `New`: not observed during the prior run.
+/// - `Regressed`: observed during both runs but the status differs
+///   (e.g. was `Closed` in prior, is `Open` now).
+/// - `Closed`: observed during the prior run, not observed during
+///   the current run. The row body is the finding's latest-known
+///   shape; the diff status flags that no observation landed under
+///   the current run.
+/// - `Unchanged`: observed during both runs with the same status.
+///
+/// Sourced from the `run_findings` join table seeded by migration
+/// `0004_run_findings.sql`. Runs whose membership predates the
+/// migration carry no rows in that table; the classifier degrades
+/// to `New` for them so the chip wallpapers an unknown-history run
+/// rather than mislabelling it `Unchanged`.
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum FindingDiffStatus {
@@ -1313,28 +1325,143 @@ async fn findings_for_run(
         include_quarantine: false,
         limit: None,
     };
-    let rows = s.store.findings().list_filtered(&filter).await?;
-    let items = rows
+    let current_rows = s.store.findings().list_filtered(&filter).await?;
+
+    let prior_membership: HashMap<String, String> = match prior_run_id.as_deref() {
+        Some(prior_id) => s
+            .store
+            .findings()
+            .list_run_membership(prior_id)
+            .await?
+            .into_iter()
+            .collect(),
+        None => HashMap::new(),
+    };
+    let prior_known = !prior_membership.is_empty();
+    let current_ids: HashSet<String> =
+        current_rows.iter().map(|r| r.id.clone()).collect();
+
+    let mut items: Vec<FindingWithDiff> = current_rows
         .into_iter()
         .map(|record| {
-            let diff_status = classify_diff(&record, started_at);
+            let diff_status = classify_current_row(
+                &record,
+                &prior_membership,
+                prior_known,
+                started_at,
+            );
             FindingWithDiff { record, diff_status }
         })
         .collect();
+
+    // Findings observed in the prior run but absent from the current
+    // run: surface as `Closed`. Their row body is the latest-known
+    // shape (fetched by id from `findings`), filtered by the same
+    // user-supplied facets so `?repo=X` does not bleed Closed rows
+    // from other repos.
+    if !prior_membership.is_empty() {
+        let closed_ids: Vec<&String> = prior_membership
+            .iter()
+            .filter_map(|(fid, prior_status)| {
+                if current_ids.contains(fid) {
+                    None
+                } else if prior_status.eq_ignore_ascii_case("Closed") {
+                    // Already closed in the prior run — not a regression.
+                    None
+                } else {
+                    Some(fid)
+                }
+            })
+            .collect();
+        for fid in closed_ids {
+            let Some(record) = s.store.findings().get(fid).await? else {
+                continue;
+            };
+            if !row_passes_filter(&record, &q) {
+                continue;
+            }
+            items.push(FindingWithDiff {
+                record,
+                diff_status: FindingDiffStatus::Closed,
+            });
+        }
+    }
+
     Ok(Json(RunFindingsResponse { run_id, prior_run_id, items }))
 }
 
-fn classify_diff(record: &FindingRecord, run_started_at: i64) -> FindingDiffStatus {
-    // `first_seen` is preserved across upserts, so a finding observed
-    // for the first time during this run carries a `first_seen` >=
-    // run.started_at. Everything else is `Unchanged` for now.
-    // `Regressed` and `Closed` need per-run membership history which
-    // lives behind a deferred schema migration.
+fn classify_current_row(
+    record: &FindingRecord,
+    prior_membership: &HashMap<String, String>,
+    prior_known: bool,
+    run_started_at: i64,
+) -> FindingDiffStatus {
+    if let Some(prior_status) = prior_membership.get(&record.id) {
+        if prior_status.eq_ignore_ascii_case(&record.status) {
+            return FindingDiffStatus::Unchanged;
+        }
+        return FindingDiffStatus::Regressed;
+    }
+    // No prior membership row for this finding.
+    if prior_known {
+        // The prior run produced `run_findings` rows; the absence is
+        // authoritative — this finding is new in the current run.
+        return FindingDiffStatus::New;
+    }
+    // Pre-migration prior run (or no prior run at all). Fall back to
+    // the legacy first-seen heuristic so freshly-observed rows still
+    // surface as `New` and older rows wallpaper as `Unchanged`.
     if record.first_seen >= run_started_at {
         FindingDiffStatus::New
     } else {
         FindingDiffStatus::Unchanged
     }
+}
+
+/// Same predicate `FindingStore::list_filtered` runs at the DB level,
+/// applied in-memory to a row fetched by id. Used for the `Closed`
+/// path where the row does not live in the current run's filtered
+/// projection. Mirrors every facet `RunFindingsQuery` accepts.
+fn row_passes_filter(record: &FindingRecord, q: &RunFindingsQuery) -> bool {
+    if record.status.eq_ignore_ascii_case("Quarantine") {
+        return false;
+    }
+    if let Some(repo) = q.repo.as_deref() {
+        if record.repo != repo {
+            return false;
+        }
+    }
+    if let Some(cap) = q.cap.as_deref() {
+        if record.cap != cap {
+            return false;
+        }
+    }
+    if let Some(origin) = q.origin.as_deref() {
+        if record.finding_origin != origin {
+            return false;
+        }
+    }
+    if let Some(status) = q.status.as_deref() {
+        if record.status != status {
+            return false;
+        }
+    }
+    if let Some(severity) = q.severity.as_deref() {
+        if record.severity != severity {
+            return false;
+        }
+    }
+    if let Some(triage) = q.triage_state.as_deref() {
+        if record.triage_state != triage {
+            return false;
+        }
+    }
+    if let Some(chain_id) = q.chain_id.as_deref() {
+        if record.chain_id.as_deref() != Some(chain_id) {
+            return false;
+        }
+    }
+    true
 }
 
 // ---- /chains ----------------------------------------------------------------

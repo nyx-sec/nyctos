@@ -284,6 +284,25 @@ separate `(run_id, BudgetKind::AgentLoop)` row with its own
 per-run hard cap (default `$10.00`). It does not draw from the
 OneShot pool.
 
+The `AgentLoop` bucket itself does not sub-bucket per adapter.
+Today only the Claude Code adapter consumes the bucket, so the
+question is academic. The shape that takes hold the moment a
+second `agent_loop`-capable adapter ships (an OpenAI assistant
+API path, a Bedrock agent path) is identical to the `OneShot`
+case: the bucket is the cap the operator pays for; the
+per-adapter accountability lives one layer down in the trace
+store. Every adapter call writes one `agent_traces` row with
+`runtime_name`, `model`, and `cost_usd_micros` columns, so an
+operator dashboard that needs "how much did Claude Code burn vs
+the OpenAI assistant during this run" sums `cost_usd_micros`
+grouped by `runtime_name` from `agent_traces` rather than asking
+the budget bucket to sub-bucket itself. Splitting
+`BudgetKind::AgentLoop` into `AgentLoop.claude_code` /
+`AgentLoop.openai` / etc. would touch every adapter and every
+tracker in tree without changing the realised behaviour for a
+run that finishes inside its cap; the per-adapter share is
+already recoverable from the trace store.
+
 ## Event stream
 
 Every model call publishes a fan-out of `AgentEvent::Ai { data:

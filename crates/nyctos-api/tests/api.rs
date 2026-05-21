@@ -435,6 +435,145 @@ async fn runs_findings_endpoint_applies_facet_filters_server_side() {
 }
 
 #[tokio::test]
+async fn runs_findings_endpoint_marks_regressed_when_status_differs_from_prior() {
+    // Prior run observed the finding with status=Closed; current run
+    // observes the same finding with status=Open → regressed.
+    let srv = TestServer::start().await;
+    srv.store.repos().upsert(&sample_repo("repo-1")).await.expect("repo");
+    let mut prior = sample_run("run-prior");
+    prior.started_at = 1_000;
+    srv.store.runs().insert(&prior).await.expect("prior");
+    let mut current = sample_run("run-current");
+    current.started_at = 5_000;
+    srv.store.runs().insert(&current).await.expect("current");
+
+    let mut prior_obs = sample_finding("run-prior", "repo-1", "src/a.rs", "rule-1");
+    prior_obs.status = "Closed".to_string();
+    srv.store.findings().upsert(&prior_obs).await.expect("prior obs");
+
+    let mut current_obs = sample_finding("run-current", "repo-1", "src/a.rs", "rule-1");
+    current_obs.status = "Open".to_string();
+    srv.store.findings().upsert(&current_obs).await.expect("current obs");
+
+    let body: serde_json::Value =
+        reqwest::get(format!("{}/api/v1/runs/run-current/findings", srv.base()))
+            .await
+            .expect("get")
+            .json()
+            .await
+            .expect("json");
+    assert_eq!(body["run_id"], "run-current");
+    assert_eq!(body["prior_run_id"], "run-prior");
+    let items = body["items"].as_array().expect("items array");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["diff_status"], "regressed");
+    assert_eq!(items[0]["id"], current_obs.id);
+}
+
+#[tokio::test]
+async fn runs_findings_endpoint_marks_unchanged_when_status_matches_prior() {
+    let srv = TestServer::start().await;
+    srv.store.repos().upsert(&sample_repo("repo-1")).await.expect("repo");
+    let mut prior = sample_run("run-prior");
+    prior.started_at = 1_000;
+    srv.store.runs().insert(&prior).await.expect("prior");
+    let mut current = sample_run("run-current");
+    current.started_at = 5_000;
+    srv.store.runs().insert(&current).await.expect("current");
+
+    let prior_obs = sample_finding("run-prior", "repo-1", "src/a.rs", "rule-1");
+    srv.store.findings().upsert(&prior_obs).await.expect("prior obs");
+    let current_obs = sample_finding("run-current", "repo-1", "src/a.rs", "rule-1");
+    srv.store.findings().upsert(&current_obs).await.expect("current obs");
+
+    let body: serde_json::Value =
+        reqwest::get(format!("{}/api/v1/runs/run-current/findings", srv.base()))
+            .await
+            .expect("get")
+            .json()
+            .await
+            .expect("json");
+    let items = body["items"].as_array().expect("items array");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["diff_status"], "unchanged");
+}
+
+#[tokio::test]
+async fn runs_findings_endpoint_surfaces_closed_rows_absent_from_current_run() {
+    // Prior run observed two findings with status=Open; current run
+    // only observes one of them. The absent one surfaces under
+    // diff_status="closed" with its latest-known row body (i.e. the
+    // prior observation, since no current observation overrode it).
+    let srv = TestServer::start().await;
+    srv.store.repos().upsert(&sample_repo("repo-1")).await.expect("repo");
+    let mut prior = sample_run("run-prior");
+    prior.started_at = 1_000;
+    srv.store.runs().insert(&prior).await.expect("prior");
+    let mut current = sample_run("run-current");
+    current.started_at = 5_000;
+    srv.store.runs().insert(&current).await.expect("current");
+
+    let still_open = sample_finding("run-prior", "repo-1", "src/a.rs", "rule-a");
+    let gone = sample_finding("run-prior", "repo-1", "src/b.rs", "rule-b");
+    srv.store.findings().upsert(&still_open).await.expect("a prior");
+    srv.store.findings().upsert(&gone).await.expect("b prior");
+
+    let current_obs = sample_finding("run-current", "repo-1", "src/a.rs", "rule-a");
+    srv.store.findings().upsert(&current_obs).await.expect("a current");
+
+    let body: serde_json::Value =
+        reqwest::get(format!("{}/api/v1/runs/run-current/findings", srv.base()))
+            .await
+            .expect("get")
+            .json()
+            .await
+            .expect("json");
+    let items = body["items"].as_array().expect("items array");
+    assert_eq!(items.len(), 2);
+    let by_id: std::collections::HashMap<String, String> = items
+        .iter()
+        .map(|i| {
+            (
+                i["id"].as_str().unwrap_or_default().to_string(),
+                i["diff_status"].as_str().unwrap_or_default().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(by_id.get(&current_obs.id).map(String::as_str), Some("unchanged"));
+    assert_eq!(by_id.get(&gone.id).map(String::as_str), Some("closed"));
+}
+
+#[tokio::test]
+async fn runs_findings_endpoint_applies_facet_filter_to_closed_rows() {
+    // Closed rows must respect the user-supplied repo facet so a
+    // ?repo=X filter does not bleed Closed rows from other repos.
+    let srv = TestServer::start().await;
+    srv.store.repos().upsert(&sample_repo("repo-1")).await.expect("repo-1");
+    srv.store.repos().upsert(&sample_repo("repo-2")).await.expect("repo-2");
+    let mut prior = sample_run("run-prior");
+    prior.started_at = 1_000;
+    srv.store.runs().insert(&prior).await.expect("prior");
+    let mut current = sample_run("run-current");
+    current.started_at = 5_000;
+    srv.store.runs().insert(&current).await.expect("current");
+
+    let other_repo = sample_finding("run-prior", "repo-2", "src/a.rs", "rule-a");
+    srv.store.findings().upsert(&other_repo).await.expect("other repo");
+
+    let body: serde_json::Value = reqwest::get(format!(
+        "{}/api/v1/runs/run-current/findings?repo=repo-1",
+        srv.base()
+    ))
+    .await
+    .expect("get")
+    .json()
+    .await
+    .expect("json");
+    let items = body["items"].as_array().expect("items array");
+    assert!(items.is_empty(), "repo-2's closed finding must not leak under ?repo=repo-1");
+}
+
+#[tokio::test]
 async fn chains_endpoint_returns_row_or_404() {
     let srv = TestServer::start().await;
     srv.store.runs().insert(&sample_run("run-A")).await.expect("run");
