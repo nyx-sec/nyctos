@@ -3,8 +3,9 @@
 //! deployable app. Scans, env-builder merges, and chain validation all
 //! hang off the project.
 
-use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
+
+pub use nyctos_types::project::ProjectRecord;
 
 use crate::store::StoreError;
 
@@ -14,17 +15,6 @@ use crate::store::StoreError;
 /// working through the nested-project rollout.
 pub const DEFAULT_PROJECT_ID: &str = "default-project";
 pub const DEFAULT_PROJECT_NAME: &str = "default";
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProjectRecord {
-    pub id: String,
-    pub name: String,
-    pub description: Option<String>,
-    pub target_base_url: Option<String>,
-    pub env_config_json: Option<String>,
-    pub created_at: i64,
-    pub updated_at: i64,
-}
 
 /// Tri-state for `PATCH` semantics on a nullable project field.
 #[derive(Debug, Clone, Default)]

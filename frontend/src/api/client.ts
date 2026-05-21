@@ -11,10 +11,11 @@ import type {
   AgentEvent,
   ChainRecord,
   FindingRecord,
+  ProjectRecord,
   RepoRecord,
   RunRecord,
 } from "./types.gen";
-export type { ChainRecord, FindingRecord, RepoRecord, RunRecord };
+export type { ChainRecord, FindingRecord, ProjectRecord, RepoRecord, RunRecord };
 
 const API_BASE = "/api/v1";
 
@@ -81,16 +82,6 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 // already hoisted into `nyctos-types` are re-exported above via
 // `./types.gen`; the rest still live here until the DTO-drop deferred
 // item retires them.
-
-export interface ProjectRecord {
-  id: string;
-  name: string;
-  description: string | null;
-  target_base_url: string | null;
-  env_config_json: string | null;
-  created_at: number;
-  updated_at: number;
-}
 
 export interface CreateProjectRequest {
   name: string;

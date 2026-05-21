@@ -171,3 +171,5 @@ export type FindingRecord = { id: string, run_id: string, repo: string, path: st
  */
 spec_id: string | null, };
 
+export type ProjectRecord = { id: string, name: string, description: string | null, target_base_url: string | null, env_config_json: string | null, created_at: number, updated_at: number, };
+
