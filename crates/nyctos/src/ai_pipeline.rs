@@ -283,7 +283,7 @@ pub fn build_inputs(
                 &diag.cap,
                 &diag.rule,
             );
-            let lang = infer_lang(&diag.path);
+            let lang = infer_lang_for_file(workspace.workspace(), &diag.path);
             let sink_ctx = diag.sink_ctx(workspace.workspace());
             out.push(PayloadSynthesisInput {
                 finding_id,
@@ -391,7 +391,8 @@ async fn apply_outcome(
 /// already supports); unknown extensions land as `unknown`.
 pub fn infer_lang(path: &str) -> String {
     let lower = path.to_lowercase();
-    let ext = lower.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
+    let basename = lower.rsplit_once('/').map(|(_, b)| b).unwrap_or(&lower);
+    let ext = basename.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
     let lang = match ext {
         "py" => "python",
         "js" | "mjs" | "cjs" => "javascript",
@@ -406,6 +407,74 @@ pub fn infer_lang(path: &str) -> String {
         _ => "unknown",
     };
     lang.to_string()
+}
+
+/// Per-file language inference that prefers the extension table but falls
+/// back to a shebang lookup when the file has no recognised extension.
+/// Handles the bin/foo + `#!/usr/bin/env python3` case the bare
+/// [`infer_lang`] cannot reach. Reads at most the first 256 bytes from
+/// disk; unreadable / non-existent files degrade to the extension result.
+pub fn infer_lang_for_file(workspace_root: &std::path::Path, rel_path: &str) -> String {
+    let from_ext = infer_lang(rel_path);
+    if from_ext != "unknown" {
+        return from_ext;
+    }
+    let basename = rel_path.rsplit_once('/').map(|(_, b)| b).unwrap_or(rel_path);
+    if basename.contains('.') {
+        return from_ext;
+    }
+    let mut buf = [0_u8; 256];
+    let abs = workspace_root.join(rel_path);
+    let Ok(mut file) = std::fs::File::open(&abs) else {
+        return from_ext;
+    };
+    use std::io::Read;
+    let Ok(read) = file.read(&mut buf) else {
+        return from_ext;
+    };
+    if read < 2 || &buf[..2] != b"#!" {
+        return from_ext;
+    }
+    let line_end = buf[..read].iter().position(|&b| b == b'\n').unwrap_or(read);
+    let line = String::from_utf8_lossy(&buf[..line_end]);
+    lang_from_shebang(&line).unwrap_or(from_ext)
+}
+
+/// Parse a shebang line (without the trailing newline) into one of the
+/// language tokens [`infer_lang`] can also return. Returns `None` when
+/// the interpreter name is unrecognised. Handles three common shapes:
+///   * `#!/usr/bin/python3 ...`         → basename of the first token
+///   * `#!/usr/bin/env python3 ...`     → first non-flag token after `env`
+///   * `#!/usr/bin/perl -w`             → ignore trailing flags
+fn lang_from_shebang(line: &str) -> Option<String> {
+    let lower = line.to_lowercase();
+    let trimmed = lower.trim_start_matches("#!").trim_start();
+    let mut tokens = trimmed.split_whitespace();
+    let first = tokens.next()?;
+    let first_leaf = first.rsplit('/').next().unwrap_or(first);
+    let leaf = if first_leaf == "env" {
+        tokens
+            .find(|tok| !tok.starts_with('-'))
+            .map(|tok| tok.rsplit('/').next().unwrap_or(tok))?
+    } else {
+        first_leaf
+    };
+    let lang = if leaf.starts_with("python") {
+        "python"
+    } else if leaf == "node" || leaf == "nodejs" {
+        "javascript"
+    } else if leaf == "deno" {
+        "typescript"
+    } else if leaf == "ruby" {
+        "ruby"
+    } else if leaf == "php" {
+        "php"
+    } else if leaf == "perl" {
+        "perl"
+    } else {
+        return None;
+    };
+    Some(lang.to_string())
 }
 
 /// Process-local sequence number so two trace rows minted in the same
@@ -604,7 +673,7 @@ pub fn build_spec_inputs(
                 &diag.cap,
                 &diag.rule,
             );
-            let lang = infer_lang(&diag.path);
+            let lang = infer_lang_for_file(workspace.workspace(), &diag.path);
             let sink_ctx = diag.sink_ctx(workspace.workspace());
             let excerpts = collect_spec_excerpts(workspace, diag, SPEC_DERIVATION_MAX_EXCERPTS);
             out.push(SpecDerivationInput {
@@ -2716,6 +2785,64 @@ mod tests {
         assert_eq!(infer_lang("src/bar.ts"), "typescript");
         assert_eq!(infer_lang("Main.JAVA"), "java");
         assert_eq!(infer_lang("noext"), "unknown");
+    }
+
+    #[test]
+    fn infer_lang_ignores_directory_dots_when_basename_has_no_extension() {
+        assert_eq!(infer_lang("path.with.dots/bin/foo"), "unknown");
+        assert_eq!(infer_lang("path.with.dots/bin/foo.py"), "python");
+    }
+
+    #[test]
+    fn infer_lang_for_file_reads_shebang_when_extensionless() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bin_dir = tmp.path().join("bin");
+        std::fs::create_dir(&bin_dir).unwrap();
+        std::fs::write(
+            bin_dir.join("ingest"),
+            "#!/usr/bin/env python3\nimport sys\nprint(sys.argv)\n",
+        )
+        .unwrap();
+
+        assert_eq!(infer_lang_for_file(tmp.path(), "bin/ingest"), "python");
+    }
+
+    #[test]
+    fn infer_lang_for_file_recognises_common_interpreters() {
+        let tmp = tempfile::tempdir().unwrap();
+        for (name, line, expected) in [
+            ("py3", "#!/usr/bin/python3", "python"),
+            ("node", "#!/usr/bin/env node", "javascript"),
+            ("deno", "#!/usr/bin/env deno", "typescript"),
+            ("rb", "#!/usr/bin/env ruby", "ruby"),
+            ("php", "#!/usr/bin/env php", "php"),
+            ("pl", "#!/usr/bin/perl -w", "perl"),
+        ] {
+            std::fs::write(tmp.path().join(name), format!("{line}\n# rest")).unwrap();
+            assert_eq!(infer_lang_for_file(tmp.path(), name), expected, "shebang `{line}`");
+        }
+    }
+
+    #[test]
+    fn infer_lang_for_file_does_not_overwrite_a_recognised_extension() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("foo.py"), "#!/usr/bin/env ruby\nputs 'x'\n").unwrap();
+        // The .py extension wins; we do not re-read the file when the
+        // extension table already produces a non-`unknown` answer.
+        assert_eq!(infer_lang_for_file(tmp.path(), "foo.py"), "python");
+    }
+
+    #[test]
+    fn infer_lang_for_file_returns_unknown_when_shebang_interp_is_unrecognised() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("oddball"), "#!/usr/bin/env mystery\n").unwrap();
+        assert_eq!(infer_lang_for_file(tmp.path(), "oddball"), "unknown");
+    }
+
+    #[test]
+    fn infer_lang_for_file_returns_unknown_when_file_is_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(infer_lang_for_file(tmp.path(), "ghost"), "unknown");
     }
 
     #[test]

@@ -17,6 +17,7 @@ import {
   type RepoRecord,
 } from "@/api/client";
 import { RepoAddModal } from "../Repos/RepoAddModal";
+import { RepoEditModal } from "../Repos/RepoEditModal";
 import { applyEvent, type RepoLiveState, type RepoLiveStatus } from "../Repos/repoStatus";
 
 type LiveMap = Record<string, RepoLiveState>;
@@ -39,6 +40,7 @@ export function ProjectDetail() {
   const [live, setLive] = useState<LiveMap>({});
   const [banner, setBanner] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
+  const [editTarget, setEditTarget] = useState<RepoRecord | null>(null);
   const [removeTarget, setRemoveTarget] = useState<RepoRecord | null>(null);
 
   useAgentEvents({
@@ -234,6 +236,7 @@ export function ProjectDetail() {
                       repo={repo}
                       live={live[repo.name] ?? { status: "Idle", runId: null }}
                       onScan={() => onScanOne(repo.name)}
+                      onEdit={() => setEditTarget(repo)}
                       onDelete={() => setRemoveTarget(repo)}
                       busy={triggerScan.isPending || deleteRepo.isPending}
                     />
@@ -252,6 +255,18 @@ export function ProjectDetail() {
           onAdded={(name) => {
             setShowAdd(false);
             setBanner(`Added ${name}. Trigger a scan when ready.`);
+          }}
+        />
+      )}
+
+      {editTarget && (
+        <RepoEditModal
+          projectId={projectId}
+          repo={editTarget}
+          onClose={() => setEditTarget(null)}
+          onSaved={(next) => {
+            setEditTarget(null);
+            setBanner(`Saved changes to ${next.name}.`);
           }}
         />
       )}
@@ -286,11 +301,12 @@ interface RepoRowProps {
   repo: RepoRecord;
   live: RepoLiveState;
   onScan: () => void;
+  onEdit: () => void;
   onDelete: () => void;
   busy: boolean;
 }
 
-function RepoRow({ repo, live, onScan, onDelete, busy }: RepoRowProps) {
+function RepoRow({ repo, live, onScan, onEdit, onDelete, busy }: RepoRowProps) {
   const kindTone: BadgeTone = repo.source_kind === "git" ? "info" : "accent";
   return (
     <tr>
@@ -318,6 +334,9 @@ function RepoRow({ repo, live, onScan, onDelete, busy }: RepoRowProps) {
       <td className="repo-list__col--actions">
         <Button size="sm" onClick={onScan} disabled={busy || live.status === "Running"}>
           Scan now
+        </Button>
+        <Button size="sm" variant="ghost" onClick={onEdit} disabled={busy}>
+          Edit
         </Button>
         <Button size="sm" variant="danger" onClick={onDelete} disabled={busy}>
           Remove
