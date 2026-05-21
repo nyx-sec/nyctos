@@ -163,6 +163,10 @@ export type CreateRepoRequest = { name: string, source_kind: string, source_url_
 
 export type PatchRepoRequest = { source_kind?: string, source_url_or_path?: string, branch?: string | null, auth_ref?: string | null, i_own_this?: boolean, };
 
+export type TestRepoRequest = { source_kind: string, source_url_or_path: string, branch?: string, };
+
+export type TestRepoResponse = { ok: boolean, message: string, on_disk_git_remote?: string, };
+
 export type RunRecord = { id: string, started_at: number, finished_at: number | null, status: string, triggered_by: string, git_ref: string | null, parent_run_id: string | null, wall_clock_ms: number | null, total_ai_spend_usd_micros: number, };
 
 export type ChainRecord = { id: string, run_id: string, cross_repo: boolean, member_ids: string, rationale_blob: string | null, attack_provenance: string | null, prompt_version: string | null, };

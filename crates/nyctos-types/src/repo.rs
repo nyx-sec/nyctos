@@ -139,3 +139,32 @@ pub struct PatchRepoRequest {
     #[ts(optional)]
     pub i_own_this: Option<bool>,
 }
+
+/// Request body for `POST /api/v1/projects/:project_id/repos/test`.
+/// Lightweight connectivity probe wired to the wizard's "test
+/// connectivity" button. `source_kind` carries the same closed string
+/// set as [`CreateRepoRequest`] (`git` / `github` / `gitlab` /
+/// `local-path` / `local`) and the router validates it at handler
+/// time; the wire shape leaves the field as `String` so the FE can
+/// share a narrower `RepoSourceKind` union alias on top.
+#[derive(Debug, Deserialize, TS)]
+pub struct TestRepoRequest {
+    pub source_kind: String,
+    pub source_url_or_path: String,
+    #[serde(default)]
+    #[ts(optional)]
+    pub branch: Option<String>,
+}
+
+/// Response body for `POST /api/v1/projects/:project_id/repos/test`.
+/// `on_disk_git_remote` is populated only for `local-path` probes that
+/// found a readable `.git/config` `origin` remote; omitted from the
+/// wire when absent (paired with `skip_serializing_if`).
+#[derive(Debug, Serialize, TS)]
+pub struct TestRepoResponse {
+    pub ok: bool,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub on_disk_git_remote: Option<String>,
+}

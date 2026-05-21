@@ -18,6 +18,8 @@ import type {
   ProjectRecord,
   RepoRecord,
   RunRecord,
+  TestRepoRequest,
+  TestRepoResponse,
 } from "./types.gen";
 export type {
   ChainRecord,
@@ -29,6 +31,8 @@ export type {
   ProjectRecord,
   RepoRecord,
   RunRecord,
+  TestRepoRequest,
+  TestRepoResponse,
 };
 
 const API_BASE = "/api/v1";
@@ -176,18 +180,6 @@ export interface ReplayEvent {
 }
 
 export type RepoSourceKind = "git" | "local-path" | "github" | "gitlab" | "local";
-
-export interface TestRepoRequest {
-  source_kind: RepoSourceKind;
-  source_url_or_path: string;
-  branch?: string;
-}
-
-export interface TestRepoResponse {
-  ok: boolean;
-  message: string;
-  on_disk_git_remote?: string;
-}
 
 export interface HealthResponse {
   status: "ok";

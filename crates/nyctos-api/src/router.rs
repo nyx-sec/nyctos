@@ -43,7 +43,7 @@ use nyctos_core::{
 };
 use nyctos_types::event::{AgentEvent, ReproEvent, RunEvent};
 use nyctos_types::project::{CreateProjectRequest, PatchProjectRequest, TriStateJson};
-use nyctos_types::repo::{CreateRepoRequest, PatchRepoRequest};
+use nyctos_types::repo::{CreateRepoRequest, PatchRepoRequest, TestRepoRequest, TestRepoResponse};
 
 use crate::state::{ApiError, ScanTriggerSource, ServerState};
 
@@ -869,25 +869,6 @@ async fn delete_project_repo(
 }
 
 // ---- /repos/test ------------------------------------------------------------
-
-#[derive(Debug, Deserialize)]
-pub struct TestRepoRequest {
-    pub source_kind: String,
-    pub source_url_or_path: String,
-    #[serde(default)]
-    pub branch: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct TestRepoResponse {
-    pub ok: bool,
-    pub message: String,
-    /// `true` only for `local-path` probes. `null` when the on-disk
-    /// `.git/config` either does not exist or carries no `origin`
-    /// remote.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub on_disk_git_remote: Option<String>,
-}
 
 /// Lightweight probe wired to the wizard's "test connectivity" button.
 /// Performs only a read-only side effect (`git ls-remote` for git

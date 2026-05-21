@@ -30,7 +30,10 @@ use nyctos_types::{
     },
     finding::FindingRecord,
     project::{CreateProjectRequest, PatchProjectRequest, ProjectRecord},
-    repo::{CreateRepoRequest, GitAuth, PatchRepoRequest, Repo, RepoRecord, RepoSource},
+    repo::{
+        CreateRepoRequest, GitAuth, PatchRepoRequest, Repo, RepoRecord, RepoSource,
+        TestRepoRequest, TestRepoResponse,
+    },
     run::RunRecord,
 };
 use ts_rs::TS;
@@ -118,6 +121,8 @@ fn render() -> String {
         decl_of::<RepoRecord>(),
         decl_of::<CreateRepoRequest>(),
         decl_of::<PatchRepoRequest>(),
+        decl_of::<TestRepoRequest>(),
+        decl_of::<TestRepoResponse>(),
         decl_of::<RunRecord>(),
         decl_of::<ChainRecord>(),
         decl_of::<FindingRecord>(),
