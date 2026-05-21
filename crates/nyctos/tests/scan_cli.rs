@@ -82,6 +82,23 @@ fn scan_project_round_trips_against_stub() {
         stdout.contains("scan: project demo-project run "),
         "expected project-scoped run summary, got: {stdout}"
     );
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    rt.block_on(async {
+        let store = nyctos_core::Store::open(state_root.path()).await.expect("open store");
+        let runs = store.runs().list_by_status("Succeeded").await.expect("list runs");
+        assert_eq!(runs.len(), 1, "expected one succeeded run, got {runs:?}");
+        let outcomes =
+            store.run_repo_outcomes().list_for_run(&runs[0].id).await.expect("list outcomes");
+        assert_eq!(outcomes.len(), 1, "expected one repo outcome row, got {outcomes:?}");
+        assert_eq!(outcomes[0].repo, "demo");
+        assert_eq!(outcomes[0].outcome, "Success");
+        assert!(outcomes[0].reason.is_none(), "Success outcomes carry no reason");
+        assert!(outcomes[0].elapsed_ms >= 0);
+    });
 }
 
 #[test]

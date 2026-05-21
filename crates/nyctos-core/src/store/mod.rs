@@ -27,6 +27,7 @@ pub mod project;
 pub mod repo;
 pub mod repro;
 pub mod run;
+pub mod run_repo_outcome;
 pub mod schedule;
 pub mod schema;
 pub mod spec;
@@ -52,6 +53,7 @@ pub use project::{
 pub use repo::{PatchOption, RepoPatch, RepoRecord, RepoStore, SourceKind};
 pub use repro::{ReproBundleRecord, ReproBundleStore};
 pub use run::{RunRecord, RunStatus, RunStore, TriggeredBy};
+pub use run_repo_outcome::{RepoOutcomeLabel, RunRepoOutcomeRecord, RunRepoOutcomeStore};
 pub use schedule::{ScheduleRecord, ScheduleStore};
 pub use schema::{schema_version, CURRENT_SCHEMA_VERSION, MIGRATOR};
 pub use spec::{HarnessSpecRecord, HarnessSpecStore};
@@ -218,6 +220,9 @@ impl Store {
     }
     pub fn runs(&self) -> RunStore<'_> {
         RunStore::new(&self.pool)
+    }
+    pub fn run_repo_outcomes(&self) -> RunRepoOutcomeStore<'_> {
+        RunRepoOutcomeStore::new(&self.pool)
     }
     pub fn findings(&self) -> FindingStore<'_> {
         FindingStore::new(&self.pool)

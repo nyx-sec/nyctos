@@ -10,11 +10,14 @@ use nyctos_api::{
     build_router, AuthConfig, EnvSecretResolver, ScanTrigger, ScanTriggerError, ScanTriggerSource,
     ServerState, SetupContext, WebhookConfig, WebhookSecretResolver,
 };
-use nyctos_core::store::{finding_id_hash, FindingRecord, ProjectRecord, RepoRecord, RunRecord};
+use nyctos_core::store::{
+    finding_id_hash, FindingRecord, ProjectRecord, RepoOutcomeLabel, RepoRecord, RunRecord,
+    RunRepoOutcomeRecord,
+};
 use nyctos_core::{
-    ingest, now_epoch_ms, Config, IngestError, IngestedRepo, LogConfig, Project, ProjectId, Repo,
-    RepoOutcome, RepoSource, Run, RunBundle, RunDispatcher, SandboxBackend, SecretStore, StateDir,
-    Store, WorkspaceHandle,
+    ingest, now_epoch_ms, Config, InconclusiveReason, IngestError, IngestedRepo, LogConfig,
+    Project, ProjectId, Repo, RepoOutcome, RepoSource, Run, RunBundle, RunDispatcher,
+    SandboxBackend, SecretStore, StateDir, Store, WorkspaceHandle,
 };
 use nyctos_nyx::{Diag, NyxError, NyxRunner, NyxScanLane, MINIMUM_NYX_VERSION};
 use nyctos_sandbox::{select_backend, BackendChoice, BackendKind, Lane};
@@ -1300,6 +1303,23 @@ async fn persist_run_results(store: &Store, bundle: &RunBundle<Diag>) -> anyhow:
     let now_ms = now_epoch_ms();
     for repo_bundle in &bundle.per_repo {
         store.repos().set_last_scan(&repo_bundle.repo, &bundle.run_id, now_ms).await?;
+        let (outcome_label, reason) = match &repo_bundle.outcome {
+            RepoOutcome::Success(_) => (RepoOutcomeLabel::Success, None),
+            RepoOutcome::Inconclusive(InconclusiveReason::StaticPassTimeout) => {
+                (RepoOutcomeLabel::Inconclusive, Some("StaticPassTimeout".to_string()))
+            }
+            RepoOutcome::Failed(msg) => (RepoOutcomeLabel::Failed, Some(msg.clone())),
+        };
+        store
+            .run_repo_outcomes()
+            .upsert(&RunRepoOutcomeRecord {
+                run_id: bundle.run_id.clone(),
+                repo: repo_bundle.repo.clone(),
+                outcome: outcome_label.as_str().to_string(),
+                reason,
+                elapsed_ms: repo_bundle.elapsed_ms,
+            })
+            .await?;
         if let RepoOutcome::Success(diags) = &repo_bundle.outcome {
             for diag in diags {
                 let line = i64::from(diag.line);
