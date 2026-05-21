@@ -20,7 +20,7 @@ use nyctos_api::{
 };
 use nyctos_core::store::{ChainRecord, FindingRecord, RepoRecord, RunRecord, DEFAULT_PROJECT_ID};
 use nyctos_core::{Config, SecretStore, Store};
-use nyctos_types::event::{AgentEvent, EventSink, RepoOutcomeTag, RunEvent};
+use nyctos_types::event::{AgentEvent, EventSink, RepoOutcomeTag, ReproEvent, RunEvent};
 
 struct StubScanTrigger {
     run_id: String,
@@ -1617,6 +1617,104 @@ async fn replay_endpoint_streams_repro_output() {
     assert!(
         stdout_lines.iter().any(|line| line.contains("[repro] finding=")),
         "expected `[repro] finding=` line in stdout frames: {stdout_lines:?}"
+    );
+
+    h.abort();
+}
+
+#[tokio::test]
+async fn replay_endpoint_broadcasts_repro_events_for_websocket_subscribers() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = Store::open(tmp.path()).await.expect("open store");
+    let bundles_dir = tmp.path().join("bundles");
+    std::fs::create_dir_all(&bundles_dir).expect("mkdir bundles");
+
+    let (events, mut rx) = broadcast::channel::<AgentEvent>(64);
+    let setup = SetupContext::new(
+        tmp.path().join("nyctos.toml"),
+        Config::default(),
+        true,
+        SecretStore::memory(),
+    );
+    let state = ServerState::new(
+        store.clone(),
+        events,
+        Arc::new(StubScanTrigger { run_id: "x".to_string() }) as Arc<dyn ScanTrigger>,
+        setup,
+        AuthConfig::default(),
+    )
+    .with_state_bundles_dir(bundles_dir.clone());
+
+    store.repos().upsert(&sample_repo("alpha")).await.expect("repo");
+    store.runs().insert(&sample_run("run-replay-ws")).await.expect("run");
+    let f = sample_finding("run-replay-ws", "alpha", "src/a.py", "rule-replay-ws");
+    let fid = f.id.clone();
+    store.findings().upsert(&f).await.expect("finding");
+
+    let app = build_router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let h = tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    let base = format!("http://{addr}");
+    let client = reqwest::Client::new();
+
+    let post = client
+        .post(format!("{base}/api/v1/findings/{fid}/repro-bundle"))
+        .send()
+        .await
+        .expect("build bundle");
+    assert_eq!(post.status(), reqwest::StatusCode::OK);
+
+    let replay = client
+        .post(format!("{base}/api/v1/findings/{fid}/replay"))
+        .timeout(Duration::from_secs(60))
+        .send()
+        .await
+        .expect("replay request");
+    assert_eq!(replay.status(), reqwest::StatusCode::OK);
+    // Drain the SSE body so the handler runs to completion and every
+    // broadcast frame is emitted before we collect on the receiver.
+    let _ = replay.text().await.expect("body");
+
+    let mut collected: Vec<ReproEvent> = Vec::new();
+    while let Ok(ev) = rx.try_recv() {
+        if let AgentEvent::Repro { data } = ev {
+            collected.push(data);
+        }
+    }
+
+    assert!(
+        collected.iter().any(|e| matches!(
+            e,
+            ReproEvent::ReplayStarted { finding_id, .. } if *finding_id == fid
+        )),
+        "expected ReplayStarted scoped to {fid}, got {collected:?}"
+    );
+    assert!(
+        collected.iter().any(|e| matches!(
+            e,
+            ReproEvent::ReplayStdout { finding_id, line }
+                if *finding_id == fid && line.contains("[repro] finding=")
+        )),
+        "expected ReplayStdout carrying the repro template, got {collected:?}"
+    );
+    assert!(
+        collected.iter().any(|e| matches!(
+            e,
+            ReproEvent::ReplayFinished {
+                finding_id,
+                status,
+                exit_code,
+                ..
+            } if *finding_id == fid && status == "Pass" && *exit_code == 0
+        )),
+        "expected ReplayFinished with Pass/0, got {collected:?}"
+    );
+    assert!(
+        !collected.iter().any(|e| matches!(e, ReproEvent::ReplayError { .. })),
+        "no ReplayError expected on the happy path, got {collected:?}"
     );
 
     h.abort();

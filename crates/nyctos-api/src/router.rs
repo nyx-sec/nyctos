@@ -41,7 +41,7 @@ use nyctos_core::{
     now_epoch_ms, AiRuntime, GitAuth, IngestError, SandboxBackend, ACCOUNT_AI_ANTHROPIC,
     ACCOUNT_AI_LOCAL_LLM,
 };
-use nyctos_types::event::{AgentEvent, RunEvent};
+use nyctos_types::event::{AgentEvent, ReproEvent, RunEvent};
 
 use crate::state::{ApiError, ScanTriggerSource, ServerState};
 
@@ -2167,12 +2167,21 @@ async fn replay_repro_bundle(
     let store = s.store.clone();
     let bundle_id_for_status = bundles.last().map(|r| r.id.clone());
     let finding_id = id.clone();
+    let events = s.events.clone();
+    let bundle_path_str = bundle_path.display().to_string();
     let stream = async_stream::stream! {
+        let _ = events.send(AgentEvent::Repro {
+            data: ReproEvent::ReplayStarted {
+                finding_id: finding_id.clone(),
+                bundle_path: bundle_path_str.clone(),
+                started_at_ms: started_at,
+            },
+        });
         yield Ok(SseEvent::default()
             .event("start")
             .data(serde_json::json!({
                 "finding_id": finding_id,
-                "bundle_path": bundle_path.display().to_string(),
+                "bundle_path": bundle_path_str,
                 "started_at_ms": started_at,
             }).to_string()));
 
@@ -2185,9 +2194,14 @@ async fn replay_repro_bundle(
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
-                yield Ok(SseEvent::default()
-                    .event("error")
-                    .data(format!("spawn bash: {e}")));
+                let msg = format!("spawn bash: {e}");
+                let _ = events.send(AgentEvent::Repro {
+                    data: ReproEvent::ReplayError {
+                        finding_id: finding_id.clone(),
+                        message: msg.clone(),
+                    },
+                });
+                yield Ok(SseEvent::default().event("error").data(msg));
                 yield Ok(SseEvent::default().event("end").data("error"));
                 return;
             }
@@ -2213,23 +2227,39 @@ async fn replay_repro_bundle(
             tokio::select! {
                 _ = tokio::time::sleep_until(deadline) => {
                     let _ = child.start_kill();
-                    yield Ok(SseEvent::default()
-                        .event("error")
-                        .data(format!(
-                            "replay exceeded {REPLAY_WALL_CLOCK_TIMEOUT_SECS}s wall-clock timeout; killed"
-                        )));
+                    let msg = format!(
+                        "replay exceeded {REPLAY_WALL_CLOCK_TIMEOUT_SECS}s wall-clock timeout; killed"
+                    );
+                    let _ = events.send(AgentEvent::Repro {
+                        data: ReproEvent::ReplayError {
+                            finding_id: finding_id.clone(),
+                            message: msg.clone(),
+                        },
+                    });
+                    yield Ok(SseEvent::default().event("error").data(msg));
                     timed_out = true;
                 }
                 line = stdout_lines.next_line(), if !stdout_done => {
                     match line {
                         Ok(Some(text)) => {
+                            let _ = events.send(AgentEvent::Repro {
+                                data: ReproEvent::ReplayStdout {
+                                    finding_id: finding_id.clone(),
+                                    line: text.clone(),
+                                },
+                            });
                             yield Ok(SseEvent::default().event("stdout").data(text));
                         }
                         Ok(None) => stdout_done = true,
                         Err(e) => {
-                            yield Ok(SseEvent::default()
-                                .event("error")
-                                .data(format!("stdout read: {e}")));
+                            let msg = format!("stdout read: {e}");
+                            let _ = events.send(AgentEvent::Repro {
+                                data: ReproEvent::ReplayError {
+                                    finding_id: finding_id.clone(),
+                                    message: msg.clone(),
+                                },
+                            });
+                            yield Ok(SseEvent::default().event("error").data(msg));
                             stdout_done = true;
                         }
                     }
@@ -2237,13 +2267,24 @@ async fn replay_repro_bundle(
                 line = stderr_lines.next_line(), if !stderr_done => {
                     match line {
                         Ok(Some(text)) => {
+                            let _ = events.send(AgentEvent::Repro {
+                                data: ReproEvent::ReplayStderr {
+                                    finding_id: finding_id.clone(),
+                                    line: text.clone(),
+                                },
+                            });
                             yield Ok(SseEvent::default().event("stderr").data(text));
                         }
                         Ok(None) => stderr_done = true,
                         Err(e) => {
-                            yield Ok(SseEvent::default()
-                                .event("error")
-                                .data(format!("stderr read: {e}")));
+                            let msg = format!("stderr read: {e}");
+                            let _ = events.send(AgentEvent::Repro {
+                                data: ReproEvent::ReplayError {
+                                    finding_id: finding_id.clone(),
+                                    message: msg.clone(),
+                                },
+                            });
+                            yield Ok(SseEvent::default().event("error").data(msg));
                             stderr_done = true;
                         }
                     }
@@ -2260,18 +2301,28 @@ async fn replay_repro_bundle(
         {
             Ok(Ok(status)) => status,
             Ok(Err(e)) => {
-                yield Ok(SseEvent::default()
-                    .event("error")
-                    .data(format!("wait: {e}")));
+                let msg = format!("wait: {e}");
+                let _ = events.send(AgentEvent::Repro {
+                    data: ReproEvent::ReplayError {
+                        finding_id: finding_id.clone(),
+                        message: msg.clone(),
+                    },
+                });
+                yield Ok(SseEvent::default().event("error").data(msg));
                 yield Ok(SseEvent::default().event("end").data("error"));
                 return;
             }
             Err(_) => {
-                yield Ok(SseEvent::default()
-                    .event("error")
-                    .data(format!(
-                        "child not reaped within {REPLAY_REAP_GRACE_SECS}s after kill"
-                    )));
+                let msg = format!(
+                    "child not reaped within {REPLAY_REAP_GRACE_SECS}s after kill"
+                );
+                let _ = events.send(AgentEvent::Repro {
+                    data: ReproEvent::ReplayError {
+                        finding_id: finding_id.clone(),
+                        message: msg.clone(),
+                    },
+                });
+                yield Ok(SseEvent::default().event("error").data(msg));
                 yield Ok(SseEvent::default().event("end").data("error"));
                 return;
             }
@@ -2290,6 +2341,16 @@ async fn replay_repro_bundle(
         }
         // Keep the extracted tempdir alive until after the child exits.
         drop(extract_root);
+        let _ = events.send(AgentEvent::Repro {
+            data: ReproEvent::ReplayFinished {
+                finding_id: finding_id.clone(),
+                status: verdict.to_string(),
+                exit_code,
+                started_at_ms: started_at,
+                finished_at_ms: finished_at,
+                duration_ms: finished_at - started_at,
+            },
+        });
         yield Ok(SseEvent::default()
             .event("end")
             .data(serde_json::json!({

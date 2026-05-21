@@ -227,8 +227,44 @@ pub struct BudgetEvent {}
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct QuarantineEvent {}
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
-pub struct ReproEvent {}
+/// Repro / replay lifecycle events. Mirrors the SSE frames emitted by
+/// `POST /api/v1/findings/:id/replay` so a WebSocket subscriber can
+/// keep rendering the replay log after the operator navigates away
+/// from the FindingDetail panel and the SSE connection drops.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind")]
+#[allow(clippy::enum_variant_names)]
+pub enum ReproEvent {
+    /// Replay just kicked off. Stamped with the resolved bundle path
+    /// so subscribers can correlate against `repro_bundles.path`.
+    ReplayStarted {
+        finding_id: String,
+        bundle_path: String,
+        #[ts(type = "number")]
+        started_at_ms: i64,
+    },
+    /// One line of replay stdout.
+    ReplayStdout { finding_id: String, line: String },
+    /// One line of replay stderr.
+    ReplayStderr { finding_id: String, line: String },
+    /// Out-of-band error (spawn / IO / timeout). `message` mirrors the
+    /// SSE `error` frame body verbatim.
+    ReplayError { finding_id: String, message: String },
+    /// Replay finished (clean exit or non-zero). `status` mirrors the
+    /// SSE `end` frame's status field (`"Pass"` / `"Fail"`).
+    ReplayFinished {
+        finding_id: String,
+        status: String,
+        #[ts(type = "number")]
+        exit_code: i32,
+        #[ts(type = "number")]
+        started_at_ms: i64,
+        #[ts(type = "number")]
+        finished_at_ms: i64,
+        #[ts(type = "number")]
+        duration_ms: i64,
+    },
+}
 
 pub type EventSink = broadcast::Sender<AgentEvent>;
 
