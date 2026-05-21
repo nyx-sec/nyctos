@@ -60,3 +60,14 @@ record_exploration_finding
   "rationale": "The /api/v1/events endpoint is structurally locked into the query-token auth branch because browsers cannot set the Authorization header on a WebSocket upgrade — the WebSocket constructor exposes no header API. Any UI or third-party client that opens this stream from a browser MUST embed the bearer in `?token=<bearer>` (router.rs:141), guaranteeing the secret hits TraceLayer's URI logging on every WS handshake. Unlike fetch() callers who can choose Authorization-header auth, WS clients have no opt-out. Compounded with finding #1 (no Origin check) this means: every UI session writes the bearer to logs, and any cross-origin page can replay it. Static pass missed this composition because it requires recognising both the WS browser-API constraint and the logging surface together.",
   "suggested_payload_hint": "open the operator UI, then `journalctl -u nyctos | grep -oE 'token=[A-Za-z0-9_-]+' | head` — first hit is the live bearer."
 }
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyctos-ai/src/adapter/anthropic.rs",
+  "line": 230,
+  "cap": "SSRF",
+  "endpoint": "POST {ai.api_base}/v1/messages (every AI call when ai.runtime = local-llm)",
+  "rationale": "AnthropicSdkAdapter constructs the upstream URL with `format!(\"{}/v1/messages\", self.base_url.trim_end_matches('/'))` (anthropic.rs:230). `base_url` flows straight from `cfg.ai.api_base`, which the wizard sets verbatim from SetupRequest.local_llm_url after only `.trim()` (router.rs:312-317, :349-352). No scheme allowlist, no host allowlist, no rejection of loopback / link-local / RFC1918. So `local_llm_url = \"http://169.254.169.254/latest/meta-data/iam/security-credentials/role-name\"` causes every subsequent AI invocation to POST `http://169.254.169.254/latest/meta-data/iam/security-credentials/role-name/v1/messages` from the daemon process — confirming reachability of EC2 IMDS, GCE metadata, or any internal service the daemon can dial. Even when the upstream returns a non-JSON body the SSRF primitive (connect + observe latency / status code) is intact via the AiError::UpstreamRefused string surfaced back through the events bus. Chains with sentinel finding #2 (pre-setup AUTH_BYPASS) for an unauthenticated remote SSRF; stands on its own post-setup as an operator-misconfig / social-engineering vector. Static pass missed it because base_url crosses a configuration boundary (TOML / wizard JSON → adapter struct) the dataflow analyzer treats as a fresh source, not as taint.",
+  "suggested_payload_hint": "POST /api/v1/setup body {\"ai_runtime\":\"local-llm\",\"local_llm_url\":\"http://169.254.169.254/latest/meta-data\",\"sandbox_backend\":\"auto\",\"i_own_this\":true}; trigger any /api/v1/runs that fans out to AI; observe AiEvent::Error carrying the IMDS body fragment."
+}

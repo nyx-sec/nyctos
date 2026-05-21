@@ -8,9 +8,13 @@
 //! the spawned process:
 //!
 //! - `ssh-key:<path>` sets `GIT_SSH_COMMAND="ssh -i <path> -o IdentitiesOnly=yes"`.
-//! - `token-env:<var>` injects an HTTPS bearer credential via
-//!   `http.extraheader=Authorization: Bearer <token>` after first asking the
-//!   GitHub API whether the token carries any write scope.
+//! - `token-env:<var>` injects an HTTPS bearer credential via runtime
+//!   config env vars (`GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_<N>` /
+//!   `GIT_CONFIG_VALUE_<N>`, available since git 2.31). The token lives
+//!   in the child process's environment, never in its argv, so it is
+//!   not visible in `/proc/<pid>/cmdline`. Scope is probed against the
+//!   GitHub API before any clone runs and write-scoped tokens are
+//!   refused.
 //! - `gh-app:<id>` returns an explicit unsupported error until a phase
 //!   wires up the App-installation token-mint dance.
 //!
@@ -147,19 +151,15 @@ async fn clone_fresh(
         })?;
     }
     let mut cmd = Command::new(git_bin);
-    // Use top-level `-c` (ephemeral, applies to this invocation only) rather
-    // than clone's `--config` (writes into the new repo's .git/config). The
-    // latter would persist the bearer token to disk.
-    if let Some(t) = token {
-        cmd.arg("-c").arg("credential.helper=");
-        cmd.arg("-c").arg(format!("http.extraheader=Authorization: Bearer {t}"));
-    }
     cmd.arg("clone").arg("--depth").arg("1").arg("--single-branch");
     if let Some(b) = branch {
         cmd.arg("--branch").arg(b);
     }
     cmd.arg(url).arg(dest);
     apply_env(&mut cmd, auth);
+    if let Some(t) = token {
+        apply_bearer_token_env(&mut cmd, t);
+    }
     run_git(name, cmd).await
 }
 
@@ -173,17 +173,13 @@ async fn fetch_existing(
 ) -> Result<(), IngestError> {
     let mut fetch = Command::new(git_bin);
     fetch.arg("-C").arg(dest);
-    // `git fetch` does not accept `--config`; bearer-header config must come
-    // via top-level `-c` BEFORE the subcommand. Re-supplied per invocation so
-    // the token never lands in the on-disk .git/config.
-    if let Some(t) = token {
-        fetch.arg("-c").arg("credential.helper=");
-        fetch.arg("-c").arg(format!("http.extraheader=Authorization: Bearer {t}"));
-    }
     fetch.arg("fetch").arg("--depth").arg("1").arg("origin");
     let target_branch = branch.unwrap_or("HEAD");
     fetch.arg(target_branch);
     apply_env(&mut fetch, auth);
+    if let Some(t) = token {
+        apply_bearer_token_env(&mut fetch, t);
+    }
     run_git(name, fetch).await?;
 
     let mut reset = Command::new(git_bin);
@@ -225,6 +221,33 @@ fn apply_env(cmd: &mut Command, auth: Option<&GitAuth>) {
     // must come from the descriptor, not the operator's keychain.
     cmd.env("GIT_CONFIG_GLOBAL", "/dev/null");
     cmd.env("GIT_CONFIG_SYSTEM", "/dev/null");
+}
+
+/// Inject the HTTPS bearer credential into the child git process via
+/// the `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_<N>` / `GIT_CONFIG_VALUE_<N>`
+/// env-driven runtime config (available since git 2.31; the workspace
+/// minimum is `MINIMUM_GIT_VERSION = 2.45.1`, well above the floor).
+///
+/// Why env instead of `git -c key=val ...`: the `-c` form leaves the
+/// bearer string in argv, where it shows up in `/proc/<pid>/cmdline`
+/// for the lifetime of the process and gets captured by every `ps` /
+/// `htop` snapshot. The env-var form lives in `/proc/<pid>/environ`,
+/// which is mode `0400` (only readable by the same uid) and is not
+/// surfaced by `ps`-style tooling.
+///
+/// Clears `credential.helper` at slot 0 so the system / user keychain
+/// helpers cannot smuggle a different credential in; slot 1 sets the
+/// `http.extraheader` bearer the same way the previous `-c` shape did.
+/// Two entries -> `GIT_CONFIG_COUNT=2`. The keys/values overwrite any
+/// inherited `GIT_CONFIG_*_0` / `_1` pairs the operator may have set in
+/// their shell env; remaining `_2+` pairs (if any) are ignored because
+/// git only reads up to `COUNT`.
+fn apply_bearer_token_env(cmd: &mut Command, token: &str) {
+    cmd.env("GIT_CONFIG_COUNT", "2");
+    cmd.env("GIT_CONFIG_KEY_0", "credential.helper");
+    cmd.env("GIT_CONFIG_VALUE_0", "");
+    cmd.env("GIT_CONFIG_KEY_1", "http.extraheader");
+    cmd.env("GIT_CONFIG_VALUE_1", format!("Authorization: Bearer {token}"));
 }
 
 async fn run_git(name: &str, mut cmd: Command) -> Result<(), IngestError> {
@@ -732,6 +755,121 @@ mod tests {
             normalise_remote("https://github.com/org/repo.git"),
             normalise_remote("https://github.com/org/repo/")
         );
+    }
+
+    mod bearer_token_env {
+        use super::*;
+        use std::ffi::OsStr;
+
+        fn collect_args(cmd: &Command) -> Vec<String> {
+            cmd.as_std().get_args().map(|a| a.to_string_lossy().into_owned()).collect()
+        }
+
+        fn collect_envs(cmd: &Command) -> std::collections::HashMap<String, Option<String>> {
+            cmd.as_std()
+                .get_envs()
+                .map(|(k, v)| {
+                    (
+                        k.to_string_lossy().into_owned(),
+                        v.map(|x: &OsStr| x.to_string_lossy().into_owned()),
+                    )
+                })
+                .collect()
+        }
+
+        const SECRET: &str = "ghp_test_secret_token_must_not_appear_in_argv_0123456789";
+
+        #[test]
+        fn token_lives_in_env_not_argv() {
+            let mut cmd = Command::new("git");
+            cmd.arg("clone").arg("https://example.com/x.git");
+            apply_bearer_token_env(&mut cmd, SECRET);
+
+            let args = collect_args(&cmd);
+            for a in &args {
+                assert!(
+                    !a.contains(SECRET),
+                    "bearer token leaked into argv arg `{a}` (full argv: {args:?})"
+                );
+                assert!(
+                    !a.contains("http.extraheader"),
+                    "extraheader config string leaked into argv arg `{a}`"
+                );
+            }
+
+            let envs = collect_envs(&cmd);
+            assert_eq!(envs.get("GIT_CONFIG_COUNT").and_then(|v| v.as_deref()), Some("2"));
+            assert_eq!(
+                envs.get("GIT_CONFIG_KEY_0").and_then(|v| v.as_deref()),
+                Some("credential.helper")
+            );
+            assert_eq!(envs.get("GIT_CONFIG_VALUE_0").and_then(|v| v.as_deref()), Some(""));
+            assert_eq!(
+                envs.get("GIT_CONFIG_KEY_1").and_then(|v| v.as_deref()),
+                Some("http.extraheader")
+            );
+            let bearer = envs
+                .get("GIT_CONFIG_VALUE_1")
+                .and_then(|v| v.as_deref())
+                .expect("bearer env var must be set");
+            assert_eq!(bearer, &format!("Authorization: Bearer {SECRET}"));
+        }
+
+        #[test]
+        fn helper_does_not_clobber_existing_unrelated_args() {
+            let mut cmd = Command::new("git");
+            cmd.arg("-C").arg("/tmp/x").arg("fetch").arg("origin").arg("HEAD");
+            apply_bearer_token_env(&mut cmd, SECRET);
+            let args = collect_args(&cmd);
+            assert_eq!(args, vec!["-C", "/tmp/x", "fetch", "origin", "HEAD"]);
+        }
+
+        #[tokio::test]
+        async fn git_honours_env_driven_extraheader() {
+            // End-to-end against the real host git: stand up a tiny
+            // HTTP listener that records the inbound `Authorization`
+            // header, point `git ls-remote` at it through the env-
+            // injected bearer, and assert the header arrived. Skips
+            // when git is not on PATH (matches the other tests in
+            // this mod).
+            if !have_git() {
+                eprintln!("skipping: git not on PATH");
+                return;
+            }
+            use std::io::{Read, Write};
+            use std::net::TcpListener;
+            use std::sync::mpsc;
+
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+            let port = listener.local_addr().expect("addr").port();
+            let (tx, rx) = mpsc::channel::<String>();
+            let server = std::thread::spawn(move || {
+                if let Ok((mut sock, _)) = listener.accept() {
+                    let mut buf = [0u8; 4096];
+                    let n = sock.read(&mut buf).unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let _ = tx.send(req);
+                    let _ = sock.write_all(
+                        b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    );
+                }
+            });
+
+            let mut cmd = Command::new("git");
+            cmd.arg("ls-remote").arg(format!("http://127.0.0.1:{port}/repo.git"));
+            apply_env(&mut cmd, None);
+            apply_bearer_token_env(&mut cmd, SECRET);
+            let _ = cmd.output().await;
+
+            let req = rx.recv_timeout(std::time::Duration::from_secs(5)).expect("request");
+            let _ = server.join();
+
+            let lower = req.to_lowercase();
+            assert!(
+                lower.contains("authorization: bearer ") && req.contains(SECRET),
+                "expected `Authorization: Bearer {SECRET}` header in request, got: {req}"
+            );
+        }
     }
 
     mod allowlist {

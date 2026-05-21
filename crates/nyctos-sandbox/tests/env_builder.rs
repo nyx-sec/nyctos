@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use nyctos_core::project::{Project, ProjectId};
-use nyctos_sandbox::env::{EnvBuilder, EnvError, RepoInput, SecretsError};
+use nyctos_sandbox::env::{EnvBuilder, EnvError, PullPolicy, RepoInput, SecretsError};
 use tempfile::tempdir;
 
 fn make_project(name: &str) -> Project {
@@ -67,6 +67,7 @@ async fn prod_secret_blocks_run() {
         env_config: None,
         repos,
         command_timeout: Duration::from_secs(5),
+        pull_policy: PullPolicy::default(),
     };
 
     let err = builder.up().await.expect_err("must reject prod secret");

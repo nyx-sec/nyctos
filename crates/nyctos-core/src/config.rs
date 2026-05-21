@@ -39,6 +39,7 @@ pub struct Config {
     pub triggers: TriggersConfig,
     pub nyx: NyxConfig,
     pub run: RunConfig,
+    pub env: EnvConfig,
     /// Projects own repos. Each `[[project]]` block declares one
     /// product (e.g. backend + frontend) and groups its repos under
     /// `[[project.repo]]`. The top-level `[[repo]]` shape is rejected;
@@ -341,6 +342,43 @@ pub struct NyxConfig {
     pub min_version: Option<String>,
 }
 
+/// `[env]` section: env-builder (docker-compose) knobs.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct EnvConfig {
+    /// Image-pull policy forwarded to `docker compose up --pull <policy>`.
+    /// `None` falls back to [`EnvPullPolicy::default`] (`Missing` — pull
+    /// only when the local store is missing the image), matching the
+    /// docker daemon's own default. Operators on a CI lane with a warm
+    /// image cache can set `[env] pull_policy = "never"` to skip the
+    /// per-spin-up pull RTT.
+    pub pull_policy: Option<EnvPullPolicy>,
+}
+
+impl EnvConfig {
+    /// Resolved image-pull policy: the operator override when set,
+    /// otherwise [`EnvPullPolicy::default`] (`Missing`).
+    pub fn pull_policy_resolved(&self) -> EnvPullPolicy {
+        self.pull_policy.unwrap_or_default()
+    }
+}
+
+/// Operator-friendly mirror of `nyctos_sandbox::env::PullPolicy`.
+/// Defined here so the `[env]` toml block parses without
+/// `nyctos-core` taking a reverse dep on the sandbox crate. The
+/// binary glue converts to the runtime type at the EnvBuilder seam.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum EnvPullPolicy {
+    /// Pull only when the local store does not have the image.
+    #[default]
+    Missing,
+    /// Re-pull on every spin-up.
+    Always,
+    /// Never pull; fail spin-up if the image is missing locally.
+    Never,
+}
+
 /// `[run]` section: verifier knobs.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -558,6 +596,7 @@ mod tests {
                 min_version: Some("0.2.0".to_string()),
             },
             run: RunConfig { replay_stable_check: true },
+            env: EnvConfig { pull_policy: Some(EnvPullPolicy::Never) },
             projects: vec![ProjectConfig {
                 name: "acme-app".to_string(),
                 description: Some("Acme web product".to_string()),
@@ -851,6 +890,40 @@ mod tests {
         let raw = "[ai.pricing.\"claude-haiku-4-5\"]\n\
                    input_per_mtok_usd = 1\n\
                    garbage = true\n";
+        let err = Config::parse(raw, &PathBuf::from("<test>")).expect_err("must reject");
+        assert!(matches!(err, ConfigError::Parse { .. }));
+    }
+
+    #[test]
+    fn env_pull_policy_defaults_to_missing() {
+        let cfg = Config::parse("", &PathBuf::from("<test>")).expect("parse");
+        assert!(cfg.env.pull_policy.is_none());
+        assert_eq!(cfg.env.pull_policy_resolved(), EnvPullPolicy::Missing);
+    }
+
+    #[test]
+    fn env_pull_policy_parses_kebab_case_variants() {
+        for (raw, expected) in [
+            ("[env]\npull_policy = \"missing\"\n", EnvPullPolicy::Missing),
+            ("[env]\npull_policy = \"always\"\n", EnvPullPolicy::Always),
+            ("[env]\npull_policy = \"never\"\n", EnvPullPolicy::Never),
+        ] {
+            let cfg = Config::parse(raw, &PathBuf::from("<test>")).expect("parse");
+            assert_eq!(cfg.env.pull_policy, Some(expected));
+            assert_eq!(cfg.env.pull_policy_resolved(), expected);
+        }
+    }
+
+    #[test]
+    fn env_pull_policy_unknown_value_rejected() {
+        let raw = "[env]\npull_policy = \"sometimes\"\n";
+        let err = Config::parse(raw, &PathBuf::from("<test>")).expect_err("must reject");
+        assert!(matches!(err, ConfigError::Parse { .. }));
+    }
+
+    #[test]
+    fn env_pull_policy_unknown_field_rejected() {
+        let raw = "[env]\nmystery = true\n";
         let err = Config::parse(raw, &PathBuf::from("<test>")).expect_err("must reject");
         assert!(matches!(err, ConfigError::Parse { .. }));
     }

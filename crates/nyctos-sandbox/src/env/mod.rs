@@ -54,6 +54,33 @@ pub struct ComposeVersion {
     pub parsed: semver::Version,
 }
 
+/// Image-pull policy forwarded to `docker compose up --pull <policy>`.
+/// `Missing` matches the docker daemon's default behaviour (pull only
+/// images that are not present locally). `Always` forces a re-pull on
+/// every spin-up; `Never` refuses to pull, useful on a CI lane whose
+/// image cache is guaranteed warm.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PullPolicy {
+    /// Pull only when the local store does not have the image.
+    #[default]
+    Missing,
+    /// Re-pull on every spin-up.
+    Always,
+    /// Never pull; fail the spin-up if the image is missing locally.
+    Never,
+}
+
+impl PullPolicy {
+    /// The literal token `docker compose --pull` accepts.
+    pub fn as_flag(&self) -> &'static str {
+        match self {
+            PullPolicy::Missing => "missing",
+            PullPolicy::Always => "always",
+            PullPolicy::Never => "never",
+        }
+    }
+}
+
 /// Failure modes that can block an env spin-up or tear-down.
 #[derive(Debug, Error)]
 pub enum EnvError {
@@ -150,6 +177,12 @@ pub struct EnvBuilder {
     /// Wall-clock cap on each docker subcommand. The `up --build` step
     /// can dominate spin-up latency; the default is generous.
     pub command_timeout: Duration,
+    /// Forwarded as `docker compose up --pull <policy>`. Operators can
+    /// flip this to [`PullPolicy::Never`] on a CI lane whose image
+    /// cache is guaranteed warm to skip the per-spin-up pull RTT, or
+    /// to [`PullPolicy::Always`] to force a re-pull. Default
+    /// [`PullPolicy::Missing`] matches docker's own default.
+    pub pull_policy: PullPolicy,
 }
 
 impl EnvBuilder {
@@ -177,6 +210,7 @@ impl EnvBuilder {
             env_config: project.env_config.clone(),
             repos,
             command_timeout: DEFAULT_DOCKER_TIMEOUT,
+            pull_policy: PullPolicy::default(),
         })
     }
 
@@ -215,7 +249,7 @@ impl EnvBuilder {
         self.refuse_if_project_in_use().await?;
 
         let mut cmd = self.compose_command(&super_compose, &secrets_bundle.path);
-        cmd.arg("up").arg("-d").arg("--build");
+        cmd.arg("up").arg("-d").arg("--build").arg("--pull").arg(self.pull_policy.as_flag());
         let outcome = run_command(cmd, self.command_timeout).await?;
         if !outcome.status_ok() {
             return Err(EnvError::UpFailed {
@@ -755,6 +789,18 @@ mod tests {
         let raw = br#"[{"Name":""},{"Name":"real"}]"#;
         let names = parse_compose_ls_names(raw).expect("parse");
         assert_eq!(names, vec!["real".to_string()]);
+    }
+
+    #[test]
+    fn pull_policy_default_matches_docker_default() {
+        assert_eq!(PullPolicy::default(), PullPolicy::Missing);
+    }
+
+    #[test]
+    fn pull_policy_flag_strings_match_docker_compose_grammar() {
+        assert_eq!(PullPolicy::Missing.as_flag(), "missing");
+        assert_eq!(PullPolicy::Always.as_flag(), "always");
+        assert_eq!(PullPolicy::Never.as_flag(), "never");
     }
 
     #[test]
