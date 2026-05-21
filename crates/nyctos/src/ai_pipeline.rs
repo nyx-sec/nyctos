@@ -2141,6 +2141,24 @@ fn builtin_harness_for_cap(cap: &str) -> Option<HarnessSpecInput> {
             invoke: "sh -c @PAYLOAD".to_string(),
             teardown: vec![],
         }),
+        "PATH_TRAVERSAL" => Some(HarnessSpecInput {
+            cap: cap.to_string(),
+            lang: "shell".to_string(),
+            // Stand up a `safe_dir/` the application "intends" to keep
+            // payload-supplied filenames inside, and stage an out-of-band
+            // secret (`oracle_secret.txt`) in the workspace root.
+            // `oracle_secret.txt` is reachable only by traversing out of
+            // `safe_dir/` (`safe_dir/../oracle_secret.txt`), so an
+            // AI-suggested payload that escapes the intended container
+            // leaks `TOP_SECRET_TRAV` to stdout and trips the oracle.
+            setup: vec![
+                "mkdir -p safe_dir".to_string(),
+                "printf 'workspace\\n' > safe_dir/innocent.txt".to_string(),
+                "printf 'TOP_SECRET_TRAV\\n' > oracle_secret.txt".to_string(),
+            ],
+            invoke: "cat -- safe_dir/@PAYLOAD 2>/dev/null || true".to_string(),
+            teardown: vec![],
+        }),
         _ => None,
     }
 }
@@ -2156,6 +2174,7 @@ fn builtin_oracle_for_cap(cap: &str) -> Oracle {
         "OS_COMMAND" | "CMDi" => {
             Oracle::SinkProbe { sentinel_path: OSCMD_SENTINEL.to_string(), expect_contains: None }
         }
+        "PATH_TRAVERSAL" => Oracle::OutputContains { marker: "TOP_SECRET_TRAV".to_string() },
         _ => Oracle::OutputContains { marker: "ORACLE_FIRED".to_string() },
     }
 }
@@ -2165,6 +2184,10 @@ fn builtin_benign_for_cap(cap: &str) -> &'static str {
         "SQL_QUERY" | "SQLi" => "^alice$",
         // POSIX shell no-op: parses, executes, no filesystem effect.
         "OS_COMMAND" | "CMDi" => ":",
+        // Workspace-local file the harness's `safe_dir/` actually
+        // contains; resolves to `safe_dir/innocent.txt` and leaks no
+        // secret marker.
+        "PATH_TRAVERSAL" => "innocent.txt",
         _ => "__nyx_benign_control__",
     }
 }
@@ -4716,6 +4739,72 @@ mod tests {
         assert_eq!(findings[0].cap, "CMDi");
     }
 
+    #[tokio::test]
+    async fn verifier_promotes_quarantined_candidate_for_path_traversal_cap() {
+        // PATH_TRAVERSAL candidate promotion: the built-in shell harness
+        // stages a `safe_dir/innocent.txt` (the application's intended
+        // container) plus an out-of-band `oracle_secret.txt` next to it.
+        // The vuln payload `../oracle_secret.txt` escapes `safe_dir/`,
+        // so the `cat -- safe_dir/<payload>` invocation leaks the
+        // `TOP_SECRET_TRAV` marker to stdout and trips the
+        // `OutputContains` oracle. The constant benign control
+        // (`innocent.txt`) reads the in-`safe_dir` file and emits
+        // "workspace", which the oracle does not match.
+        let (_ws_tmp, ws_handle) = ws_handle_for("repo-PT").await;
+        let mut workspaces = HashMap::new();
+        workspaces.insert("repo-PT".to_string(), ws_handle);
+
+        let tmp_db = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp_db.path()).await.unwrap();
+        store.repos().upsert(&seed_repo("repo-PT")).await.unwrap();
+        store.runs().insert(&seed_run("run-PT")).await.unwrap();
+
+        let cand = CandidateFindingRecord {
+            id: "cand-pt1".to_string(),
+            run_id: "run-PT".to_string(),
+            repo: "repo-PT".to_string(),
+            path: "app/serve_file.py".to_string(),
+            line: Some(42),
+            cap: "PATH_TRAVERSAL".to_string(),
+            rule_hint: Some("py.flask.send_file-userinput".to_string()),
+            rationale: Some(
+                "request filename concatenated into send_file path without normalisation"
+                    .to_string(),
+            ),
+            suggested_payload_hint: Some("../oracle_secret.txt".to_string()),
+            status: "Pending".to_string(),
+            prompt_version: Some(
+                nyctos_types::novel::NOVEL_FINDING_DISCOVERY_PROMPT_VERSION.to_string(),
+            ),
+            trace_id: None,
+        };
+        store.candidate_findings().insert(&cand).await.unwrap();
+
+        let (tx, _rx) = tokio::sync::broadcast::channel(4);
+        let report = run_payload_verification_pass(
+            &RunConfig::default(),
+            &SandboxConfig::default(),
+            &store,
+            &empty_bundle("run-PT"),
+            &workspaces,
+            tx,
+        )
+        .await
+        .unwrap();
+        assert_eq!(report.candidates_promoted, 1, "{report:?}");
+        assert_eq!(report.confirmed, 1);
+
+        let promoted = store.candidate_findings().get(&cand.id).await.unwrap().expect("row");
+        assert_eq!(promoted.status, "Promoted");
+
+        let findings = store.findings().list_by_run("run-PT").await.unwrap();
+        assert_eq!(findings.len(), 1);
+        let f = &findings[0];
+        assert_eq!(f.finding_origin, "AiExploration");
+        assert_eq!(f.status, "Verified");
+        assert_eq!(f.cap, "PATH_TRAVERSAL");
+    }
+
     #[test]
     fn builtin_harness_table_covers_known_caps_and_skips_unknown() {
         // Sentinel test against silent drift in the per-cap table that
@@ -4726,7 +4815,7 @@ mod tests {
         // must return `None` so the verifier skips it instead of
         // confirming on a generic template that has no chance of
         // matching the real sink.
-        for cap in ["SQL_QUERY", "SQLi", "OS_COMMAND", "CMDi"] {
+        for cap in ["SQL_QUERY", "SQLi", "OS_COMMAND", "CMDi", "PATH_TRAVERSAL"] {
             let spec = builtin_harness_for_cap(cap).expect(cap);
             assert_eq!(spec.cap, cap);
             assert_eq!(spec.lang, "shell");
@@ -4736,7 +4825,7 @@ mod tests {
             ));
             assert_ne!(builtin_benign_for_cap(cap), "__nyx_benign_control__");
         }
-        for cap in ["XSS", "SSRF", "XXE", "DESERIALISATION", "PATH_TRAVERSAL"] {
+        for cap in ["XSS", "SSRF", "XXE", "DESERIALISATION"] {
             assert!(
                 builtin_harness_for_cap(cap).is_none(),
                 "cap {cap} should fall through to the candidate-confirmation pipeline"
