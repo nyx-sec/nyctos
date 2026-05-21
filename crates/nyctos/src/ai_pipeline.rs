@@ -1922,7 +1922,10 @@ async fn drive_verify_for_candidate(
 /// verifier uses until the candidate-confirmation pipeline starts
 /// driving real spec-derivation on candidates. Returning `None` makes
 /// the verifier skip the candidate (it cannot construct a deterministic
-/// harness for a cap it does not recognise).
+/// harness for a cap it does not recognise). Caps that need a richer
+/// runtime than a single `sh -c` invocation (XSS / SSRF / XXE / ...)
+/// stay `None` until the candidate-confirmation pipeline lands real
+/// per-candidate spec derivation.
 fn builtin_harness_for_cap(cap: &str) -> Option<HarnessSpecInput> {
     match cap {
         "SQL_QUERY" | "SQLi" => Some(HarnessSpecInput {
@@ -1932,13 +1935,33 @@ fn builtin_harness_for_cap(cap: &str) -> Option<HarnessSpecInput> {
             invoke: "printf '%b\\n' \"$STORED\" | grep -E @PAYLOAD || true".to_string(),
             teardown: vec![],
         }),
+        "OS_COMMAND" | "CMDi" => Some(HarnessSpecInput {
+            cap: cap.to_string(),
+            lang: "shell".to_string(),
+            setup: vec![],
+            // Evaluate the payload as a shell command. The sentinel-file
+            // oracle (`OSCMD_SENTINEL`) fires when the payload performs
+            // an injection side effect (touches the flag file); the
+            // benign control is a shell no-op that leaves the workspace
+            // untouched.
+            invoke: "sh -c @PAYLOAD".to_string(),
+            teardown: vec![],
+        }),
         _ => None,
     }
 }
 
+/// Sentinel filename the `OS_COMMAND` / `CMDi` builtin harness probes
+/// to confirm an injection. Kept in sync with the `SinkProbe` oracle
+/// returned by [`builtin_oracle_for_cap`].
+const OSCMD_SENTINEL: &str = "nyx_oscmd.flag";
+
 fn builtin_oracle_for_cap(cap: &str) -> Oracle {
     match cap {
         "SQL_QUERY" | "SQLi" => Oracle::OutputContains { marker: "TOP_SECRET".to_string() },
+        "OS_COMMAND" | "CMDi" => {
+            Oracle::SinkProbe { sentinel_path: OSCMD_SENTINEL.to_string(), expect_contains: None }
+        }
         _ => Oracle::OutputContains { marker: "ORACLE_FIRED".to_string() },
     }
 }
@@ -1946,6 +1969,8 @@ fn builtin_oracle_for_cap(cap: &str) -> Oracle {
 fn builtin_benign_for_cap(cap: &str) -> &'static str {
     match cap {
         "SQL_QUERY" | "SQLi" => "^alice$",
+        // POSIX shell no-op: parses, executes, no filesystem effect.
+        "OS_COMMAND" | "CMDi" => ":",
         _ => "__nyx_benign_control__",
     }
 }
@@ -3947,6 +3972,142 @@ mod tests {
         assert_eq!(f.path, "app/handlers.sh");
         assert_eq!(f.line, Some(42));
         assert_eq!(f.cap, "SQL_QUERY");
+    }
+
+    #[tokio::test]
+    async fn verifier_promotes_quarantined_candidate_for_os_command_cap() {
+        // OS_COMMAND candidate promotion: the built-in shell harness
+        // evaluates the `suggested_payload_hint` as a shell command via
+        // `sh -c`. A vuln payload that creates the sentinel file trips
+        // `Oracle::SinkProbe`; the constant benign control (`:`) is a
+        // shell no-op that leaves the workspace untouched.
+        let (_ws_tmp, ws_handle) = ws_handle_for("repo-D").await;
+        let mut workspaces = HashMap::new();
+        workspaces.insert("repo-D".to_string(), ws_handle);
+
+        let tmp_db = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp_db.path()).await.unwrap();
+        store.repos().upsert(&seed_repo("repo-D")).await.unwrap();
+        store.runs().insert(&seed_run("run-D")).await.unwrap();
+
+        let cand = CandidateFindingRecord {
+            id: "cand-d1".to_string(),
+            run_id: "run-D".to_string(),
+            repo: "repo-D".to_string(),
+            path: "app/spawn.sh".to_string(),
+            line: Some(17),
+            cap: "OS_COMMAND".to_string(),
+            rule_hint: Some("sh.subprocess.shell-true".to_string()),
+            rationale: Some("user input flows into Popen(..., shell=True)".to_string()),
+            suggested_payload_hint: Some(": > nyx_oscmd.flag".to_string()),
+            status: "Pending".to_string(),
+            prompt_version: Some(
+                nyctos_types::novel::NOVEL_FINDING_DISCOVERY_PROMPT_VERSION.to_string(),
+            ),
+        };
+        store.candidate_findings().insert(&cand).await.unwrap();
+
+        let (tx, _rx) = tokio::sync::broadcast::channel(4);
+        let report = run_payload_verification_pass(
+            &RunConfig::default(),
+            &SandboxConfig::default(),
+            &store,
+            &empty_bundle("run-D"),
+            &workspaces,
+            tx,
+        )
+        .await
+        .unwrap();
+        assert_eq!(report.candidates_promoted, 1, "{report:?}");
+        assert_eq!(report.confirmed, 1);
+
+        let promoted = store.candidate_findings().get(&cand.id).await.unwrap().expect("row");
+        assert_eq!(promoted.status, "Promoted");
+
+        let findings = store.findings().list_by_run("run-D").await.unwrap();
+        assert_eq!(findings.len(), 1);
+        let f = &findings[0];
+        assert_eq!(f.finding_origin, "AiExploration");
+        assert_eq!(f.status, "Verified");
+        assert_eq!(f.cap, "OS_COMMAND");
+    }
+
+    #[tokio::test]
+    async fn verifier_promotes_quarantined_candidate_for_cmdi_cap() {
+        // `CMDi` shares the OS_COMMAND template / sentinel oracle. This
+        // test pins the alias so a future rename of the cap label does
+        // not silently downgrade `CMDi` candidates back to "skipped".
+        let (_ws_tmp, ws_handle) = ws_handle_for("repo-E").await;
+        let mut workspaces = HashMap::new();
+        workspaces.insert("repo-E".to_string(), ws_handle);
+
+        let tmp_db = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp_db.path()).await.unwrap();
+        store.repos().upsert(&seed_repo("repo-E")).await.unwrap();
+        store.runs().insert(&seed_run("run-E")).await.unwrap();
+
+        let cand = CandidateFindingRecord {
+            id: "cand-e1".to_string(),
+            run_id: "run-E".to_string(),
+            repo: "repo-E".to_string(),
+            path: "app/exec.js".to_string(),
+            line: Some(8),
+            cap: "CMDi".to_string(),
+            rule_hint: Some("js.child_process.exec".to_string()),
+            rationale: Some("user input concatenated into child_process.exec".to_string()),
+            suggested_payload_hint: Some("touch nyx_oscmd.flag".to_string()),
+            status: "Pending".to_string(),
+            prompt_version: Some(
+                nyctos_types::novel::NOVEL_FINDING_DISCOVERY_PROMPT_VERSION.to_string(),
+            ),
+        };
+        store.candidate_findings().insert(&cand).await.unwrap();
+
+        let (tx, _rx) = tokio::sync::broadcast::channel(4);
+        let report = run_payload_verification_pass(
+            &RunConfig::default(),
+            &SandboxConfig::default(),
+            &store,
+            &empty_bundle("run-E"),
+            &workspaces,
+            tx,
+        )
+        .await
+        .unwrap();
+        assert_eq!(report.candidates_promoted, 1, "{report:?}");
+        assert_eq!(report.confirmed, 1);
+
+        let findings = store.findings().list_by_run("run-E").await.unwrap();
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].cap, "CMDi");
+    }
+
+    #[test]
+    fn builtin_harness_table_covers_known_caps_and_skips_unknown() {
+        // Sentinel test against silent drift in the per-cap table that
+        // backs `drive_verify_for_candidate`. Every covered cap must
+        // also return a non-`OutputContains{ORACLE_FIRED}` (i.e.
+        // non-default) oracle and a benign control distinct from the
+        // catch-all marker; every unknown cap (XSS / SSRF / XXE / ...)
+        // must return `None` so the verifier skips it instead of
+        // confirming on a generic template that has no chance of
+        // matching the real sink.
+        for cap in ["SQL_QUERY", "SQLi", "OS_COMMAND", "CMDi"] {
+            let spec = builtin_harness_for_cap(cap).expect(cap);
+            assert_eq!(spec.cap, cap);
+            assert_eq!(spec.lang, "shell");
+            assert!(!matches!(
+                builtin_oracle_for_cap(cap),
+                Oracle::OutputContains { ref marker } if marker == "ORACLE_FIRED"
+            ));
+            assert_ne!(builtin_benign_for_cap(cap), "__nyx_benign_control__");
+        }
+        for cap in ["XSS", "SSRF", "XXE", "DESERIALISATION", "PATH_TRAVERSAL"] {
+            assert!(
+                builtin_harness_for_cap(cap).is_none(),
+                "cap {cap} should fall through to the candidate-confirmation pipeline"
+            );
+        }
     }
 
     #[tokio::test]
