@@ -2159,6 +2159,35 @@ fn builtin_harness_for_cap(cap: &str) -> Option<HarnessSpecInput> {
             invoke: "cat -- safe_dir/@PAYLOAD 2>/dev/null || true".to_string(),
             teardown: vec![],
         }),
+        "XXE" => Some(HarnessSpecInput {
+            cap: cap.to_string(),
+            lang: "python".to_string(),
+            // Drive expat directly so the harness exercises the
+            // DOCTYPE + ENTITY parse path that defines the XXE class.
+            // CharacterDataHandler captures element text so an
+            // entity-expanded marker reaches stdout; a malformed or
+            // entity-free payload simply prints nothing.
+            setup: vec![
+                "import xml.parsers.expat".to_string(),
+                "parser = xml.parsers.expat.ParserCreate()".to_string(),
+                "out = []".to_string(),
+                "parser.CharacterDataHandler = lambda d: out.append(d)".to_string(),
+            ],
+            invoke: "try:\n    parser.Parse(@PAYLOAD, True)\n    print(''.join(out))\nexcept Exception as e:\n    print('parse-error:', e)".to_string(),
+            teardown: vec![],
+        }),
+        "DESERIALISATION" => Some(HarnessSpecInput {
+            cap: cap.to_string(),
+            lang: "python".to_string(),
+            // Feed the payload bytes verbatim into `pickle.loads`. A
+            // protocol-0 pickle that REDUCEs `builtins.print` with the
+            // `TOP_SECRET_PICKLE` marker writes the marker to stdout
+            // during unpickling; a benign pickle (`b"N."` = NONE+STOP)
+            // returns `None` with no side effect.
+            setup: vec!["import pickle".to_string()],
+            invoke: "try:\n    pickle.loads(@PAYLOAD)\nexcept Exception as e:\n    print('deserialise-error:', e)".to_string(),
+            teardown: vec![],
+        }),
         _ => None,
     }
 }
@@ -2175,6 +2204,8 @@ fn builtin_oracle_for_cap(cap: &str) -> Oracle {
             Oracle::SinkProbe { sentinel_path: OSCMD_SENTINEL.to_string(), expect_contains: None }
         }
         "PATH_TRAVERSAL" => Oracle::OutputContains { marker: "TOP_SECRET_TRAV".to_string() },
+        "XXE" => Oracle::OutputContains { marker: "TOP_SECRET_XXE".to_string() },
+        "DESERIALISATION" => Oracle::OutputContains { marker: "TOP_SECRET_PICKLE".to_string() },
         _ => Oracle::OutputContains { marker: "ORACLE_FIRED".to_string() },
     }
 }
@@ -2188,6 +2219,13 @@ fn builtin_benign_for_cap(cap: &str) -> &'static str {
         // contains; resolves to `safe_dir/innocent.txt` and leaks no
         // secret marker.
         "PATH_TRAVERSAL" => "innocent.txt",
+        // Well-formed XML with no DOCTYPE / entities: expat parses it
+        // and CharacterDataHandler captures "workspace", which is
+        // distinct from the `TOP_SECRET_XXE` marker the oracle expects.
+        "XXE" => "<r>workspace</r>",
+        // Protocol-0 pickle of `None` (NONE + STOP): unpickles cleanly
+        // with no `__reduce__` side effect, so stdout stays empty.
+        "DESERIALISATION" => "N.",
         _ => "__nyx_benign_control__",
     }
 }
@@ -4805,27 +4843,167 @@ mod tests {
         assert_eq!(f.cap, "PATH_TRAVERSAL");
     }
 
+    #[tokio::test]
+    async fn verifier_promotes_quarantined_candidate_for_xxe_cap() {
+        // XXE candidate promotion: the built-in python harness drives
+        // expat directly. The vuln payload declares an internal general
+        // entity `x` whose value is the `TOP_SECRET_XXE` marker and
+        // expands it inside `<r>&x;</r>`; expat substitutes the entity
+        // at parse time and the CharacterDataHandler captures the
+        // marker text, which the `OutputContains` oracle matches. The
+        // benign control `<r>workspace</r>` parses cleanly with no
+        // entity declaration, so the captured text is "workspace" and
+        // the oracle does not fire.
+        let (_ws_tmp, ws_handle) = ws_handle_for("repo-XXE").await;
+        let mut workspaces = HashMap::new();
+        workspaces.insert("repo-XXE".to_string(), ws_handle);
+
+        let tmp_db = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp_db.path()).await.unwrap();
+        store.repos().upsert(&seed_repo("repo-XXE")).await.unwrap();
+        store.runs().insert(&seed_run("run-XXE")).await.unwrap();
+
+        let cand = CandidateFindingRecord {
+            id: "cand-xxe1".to_string(),
+            run_id: "run-XXE".to_string(),
+            repo: "repo-XXE".to_string(),
+            path: "app/parse_doc.py".to_string(),
+            line: Some(57),
+            cap: "XXE".to_string(),
+            rule_hint: Some("py.expat.parse-userinput".to_string()),
+            rationale: Some("request body parsed via expat without entity-resolution lockdown".to_string()),
+            suggested_payload_hint: Some(
+                "<?xml version=\"1.0\"?><!DOCTYPE r [<!ENTITY x \"TOP_SECRET_XXE\">]><r>&x;</r>"
+                    .to_string(),
+            ),
+            status: "Pending".to_string(),
+            prompt_version: Some(
+                nyctos_types::novel::NOVEL_FINDING_DISCOVERY_PROMPT_VERSION.to_string(),
+            ),
+            trace_id: None,
+        };
+        store.candidate_findings().insert(&cand).await.unwrap();
+
+        let (tx, _rx) = tokio::sync::broadcast::channel(4);
+        let report = run_payload_verification_pass(
+            &RunConfig::default(),
+            &SandboxConfig::default(),
+            &store,
+            &empty_bundle("run-XXE"),
+            &workspaces,
+            tx,
+        )
+        .await
+        .unwrap();
+        assert_eq!(report.candidates_promoted, 1, "{report:?}");
+        assert_eq!(report.confirmed, 1);
+
+        let promoted = store.candidate_findings().get(&cand.id).await.unwrap().expect("row");
+        assert_eq!(promoted.status, "Promoted");
+
+        let findings = store.findings().list_by_run("run-XXE").await.unwrap();
+        assert_eq!(findings.len(), 1);
+        let f = &findings[0];
+        assert_eq!(f.finding_origin, "AiExploration");
+        assert_eq!(f.status, "Verified");
+        assert_eq!(f.cap, "XXE");
+    }
+
+    #[tokio::test]
+    async fn verifier_promotes_quarantined_candidate_for_deserialisation_cap() {
+        // DESERIALISATION candidate promotion: the built-in python
+        // harness feeds the payload bytes verbatim into `pickle.loads`.
+        // The vuln payload is a protocol-0 pickle (`cbuiltins\nprint\n
+        // (VTOP_SECRET_PICKLE\ntR.`) that REDUCEs `builtins.print` with
+        // the `TOP_SECRET_PICKLE` marker; pickle.loads invokes the
+        // REDUCE during unpickling, writing the marker to stdout and
+        // tripping the oracle. The benign control `N.` (NONE + STOP)
+        // returns `None` with no side effect, so stdout stays empty.
+        let (_ws_tmp, ws_handle) = ws_handle_for("repo-PK").await;
+        let mut workspaces = HashMap::new();
+        workspaces.insert("repo-PK".to_string(), ws_handle);
+
+        let tmp_db = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp_db.path()).await.unwrap();
+        store.repos().upsert(&seed_repo("repo-PK")).await.unwrap();
+        store.runs().insert(&seed_run("run-PK")).await.unwrap();
+
+        let cand = CandidateFindingRecord {
+            id: "cand-pk1".to_string(),
+            run_id: "run-PK".to_string(),
+            repo: "repo-PK".to_string(),
+            path: "app/load_blob.py".to_string(),
+            line: Some(91),
+            cap: "DESERIALISATION".to_string(),
+            rule_hint: Some("py.pickle.loads-userinput".to_string()),
+            rationale: Some(
+                "request body passed to pickle.loads without a safe-allowlist Unpickler"
+                    .to_string(),
+            ),
+            suggested_payload_hint: Some(
+                "cbuiltins\nprint\n(VTOP_SECRET_PICKLE\ntR.".to_string(),
+            ),
+            status: "Pending".to_string(),
+            prompt_version: Some(
+                nyctos_types::novel::NOVEL_FINDING_DISCOVERY_PROMPT_VERSION.to_string(),
+            ),
+            trace_id: None,
+        };
+        store.candidate_findings().insert(&cand).await.unwrap();
+
+        let (tx, _rx) = tokio::sync::broadcast::channel(4);
+        let report = run_payload_verification_pass(
+            &RunConfig::default(),
+            &SandboxConfig::default(),
+            &store,
+            &empty_bundle("run-PK"),
+            &workspaces,
+            tx,
+        )
+        .await
+        .unwrap();
+        assert_eq!(report.candidates_promoted, 1, "{report:?}");
+        assert_eq!(report.confirmed, 1);
+
+        let promoted = store.candidate_findings().get(&cand.id).await.unwrap().expect("row");
+        assert_eq!(promoted.status, "Promoted");
+
+        let findings = store.findings().list_by_run("run-PK").await.unwrap();
+        assert_eq!(findings.len(), 1);
+        let f = &findings[0];
+        assert_eq!(f.finding_origin, "AiExploration");
+        assert_eq!(f.status, "Verified");
+        assert_eq!(f.cap, "DESERIALISATION");
+    }
+
     #[test]
     fn builtin_harness_table_covers_known_caps_and_skips_unknown() {
         // Sentinel test against silent drift in the per-cap table that
         // backs `drive_verify_for_candidate`. Every covered cap must
         // also return a non-`OutputContains{ORACLE_FIRED}` (i.e.
         // non-default) oracle and a benign control distinct from the
-        // catch-all marker; every unknown cap (XSS / SSRF / XXE / ...)
+        // catch-all marker; every uncovered cap (XSS / SSRF — both
+        // need infra we do not have: DOM runtime, loopback listener)
         // must return `None` so the verifier skips it instead of
         // confirming on a generic template that has no chance of
         // matching the real sink.
-        for cap in ["SQL_QUERY", "SQLi", "OS_COMMAND", "CMDi", "PATH_TRAVERSAL"] {
+        for cap in
+            ["SQL_QUERY", "SQLi", "OS_COMMAND", "CMDi", "PATH_TRAVERSAL", "XXE", "DESERIALISATION"]
+        {
             let spec = builtin_harness_for_cap(cap).expect(cap);
             assert_eq!(spec.cap, cap);
-            assert_eq!(spec.lang, "shell");
+            assert!(
+                matches!(spec.lang.as_str(), "shell" | "python"),
+                "cap {cap} lang {} unexpected",
+                spec.lang
+            );
             assert!(!matches!(
                 builtin_oracle_for_cap(cap),
                 Oracle::OutputContains { ref marker } if marker == "ORACLE_FIRED"
             ));
             assert_ne!(builtin_benign_for_cap(cap), "__nyx_benign_control__");
         }
-        for cap in ["XSS", "SSRF", "XXE", "DESERIALISATION"] {
+        for cap in ["XSS", "SSRF"] {
             assert!(
                 builtin_harness_for_cap(cap).is_none(),
                 "cap {cap} should fall through to the candidate-confirmation pipeline"
