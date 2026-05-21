@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SetupWizard } from "./index";
 
 interface RecordedCall {
@@ -26,9 +26,7 @@ function renderWizard() {
 
 function attestAndContinue() {
   fireEvent.click(
-    screen.getByLabelText(
-      /I confirm that I own or am authorised to scan every repository/i,
-    ),
+    screen.getByLabelText(/I confirm that I own or am authorised to scan every repository/i),
   );
   fireEvent.click(screen.getByRole("button", { name: "Continue" }));
 }
@@ -62,10 +60,10 @@ beforeEach(() => {
         });
       }
       if (url.endsWith("/setup") && method === "POST") {
-        return new Response(
-          JSON.stringify({ ok: true, config_path: "/tmp/nyctos.toml" }),
-          { status: 200, headers: { "content-type": "application/json" } },
-        );
+        return new Response(JSON.stringify({ ok: true, config_path: "/tmp/nyctos.toml" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
       }
       return new Response("{}", {
         status: 200,
@@ -86,9 +84,7 @@ describe("SetupWizard", () => {
     expect(cont).toBeDisabled();
 
     fireEvent.click(
-      screen.getByLabelText(
-        /I confirm that I own or am authorised to scan every repository/i,
-      ),
+      screen.getByLabelText(/I confirm that I own or am authorised to scan every repository/i),
     );
     expect(cont).toBeEnabled();
   });
@@ -121,9 +117,7 @@ describe("SetupWizard", () => {
     attestAndContinue();
     await screen.findByText("Pick an AI runtime");
 
-    fireEvent.click(
-      screen.getByRole("radio", { name: /Local OpenAI-compatible runtime/i }),
-    );
+    fireEvent.click(screen.getByRole("radio", { name: /Local OpenAI-compatible runtime/i }));
     const urlInput = await screen.findByLabelText("OpenAI-compatible URL");
     const tokenInput = screen.getByLabelText("Bearer token (optional)");
     expect(urlInput).toBeInTheDocument();
@@ -139,7 +133,11 @@ describe("SetupWizard", () => {
     doctorPayload = {
       checks: [
         { name: "claude on PATH", passed: true, message: "/usr/local/bin/claude" },
-        { name: "docker daemon", passed: false, message: "daemon not reachable on /var/run/docker.sock" },
+        {
+          name: "docker daemon",
+          passed: false,
+          message: "daemon not reachable on /var/run/docker.sock",
+        },
       ],
     };
     renderWizard();
@@ -160,9 +158,7 @@ describe("SetupWizard", () => {
 
     const failedRow = screen.getByText("docker daemon");
     expect(failedRow.closest("li")?.className).toMatch(/\bfail\b/);
-    expect(
-      screen.getByText("daemon not reachable on /var/run/docker.sock"),
-    ).toBeInTheDocument();
+    expect(screen.getByText("daemon not reachable on /var/run/docker.sock")).toBeInTheDocument();
   });
 
   it("posts the expected body to /setup when Finish setup is clicked", async () => {
@@ -183,9 +179,7 @@ describe("SetupWizard", () => {
 
     await waitFor(() => {
       expect(
-        recorded.find(
-          (c) => c.method === "POST" && c.url.endsWith("/setup") && c.body !== null,
-        ),
+        recorded.find((c) => c.method === "POST" && c.url.endsWith("/setup") && c.body !== null),
       ).toBeDefined();
     });
     const submit = recorded.find(

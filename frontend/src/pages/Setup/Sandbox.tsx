@@ -57,8 +57,8 @@ export function SandboxStep({
     <div className="setup-step__body">
       <h3>Pick a sandbox backend</h3>
       <p>
-        The sandbox isolates dynamic / repro runs from the host. The static pass
-        runs in-process regardless of backend choice.
+        The sandbox isolates dynamic / repro runs from the host. The static pass runs in-process
+        regardless of backend choice.
       </p>
       <div className="setup-choices">
         {CHOICES.map((choice) => (
@@ -94,16 +94,13 @@ export function SandboxStep({
         )}
         {doctorChecks.length === 0 ? (
           <p className="setup-hint">
-            Run the checks to verify that the runtime + backend you picked are
-            usable on this host before committing the config.
+            Run the checks to verify that the runtime + backend you picked are usable on this host
+            before committing the config.
           </p>
         ) : (
           <ul className="setup-doctor__list">
             {doctorChecks.map((check) => (
-              <li
-                key={check.name}
-                className={`setup-doctor__row${check.passed ? " ok" : " fail"}`}
-              >
+              <li key={check.name} className={`setup-doctor__row${check.passed ? " ok" : " fail"}`}>
                 <span aria-hidden="true">{check.passed ? "✓" : "✗"}</span>
                 <div>
                   <strong>{check.name}</strong>

@@ -1,11 +1,11 @@
 import { useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
+import { type AgentEventLike, useAgentEvents } from "@/api/client";
+import type { RunEvent } from "@/api/types.gen";
 import { Badge, type BadgeTone } from "@/components/Badge";
 import { Button } from "@/components/Button";
 import { Card } from "@/components/Card";
 import { Spinner } from "@/components/Spinner";
-import { useAgentEvents, type AgentEventLike } from "@/api/client";
-import type { RunEvent } from "@/api/types.gen";
 
 type RepoPhase = "queued" | "static" | "static-done" | "dynamic-done" | "finished" | "failed";
 
@@ -80,8 +80,9 @@ export function LiveScanView() {
   }, [repos]);
 
   const totalRepos = orderedRepos.length;
-  const finishedRepos = orderedRepos.filter((r) => r.phase === "finished" || r.phase === "failed")
-    .length;
+  const finishedRepos = orderedRepos.filter(
+    (r) => r.phase === "finished" || r.phase === "failed",
+  ).length;
 
   function appendLog(text: string, level: LogLine["level"] = "info") {
     setLogs((prev) => prev.concat({ ts: Date.now(), level, text }).slice(-500));
@@ -95,10 +96,7 @@ export function LiveScanView() {
     // expose a stop endpoint; the action is best-effort and the UI
     // surfaces that limitation explicitly so the operator is not
     // surprised when in-flight repos still finish.
-    appendLog(
-      "Daemon cancel endpoint not wired yet. In-flight repos will finish out.",
-      "warn",
-    );
+    appendLog("Daemon cancel endpoint not wired yet. In-flight repos will finish out.", "warn");
     setCancelling(false);
   }
 
@@ -148,10 +146,7 @@ export function LiveScanView() {
           ) : (
             <ol className="live-scan__log">
               {logs.slice(-200).map((line, idx) => (
-                <li
-                  key={idx}
-                  className={`live-scan__log-line live-scan__log-line--${line.level}`}
-                >
+                <li key={idx} className={`live-scan__log-line live-scan__log-line--${line.level}`}>
                   <time>{new Date(line.ts).toLocaleTimeString()}</time>
                   <span>{line.text}</span>
                 </li>
@@ -162,7 +157,8 @@ export function LiveScanView() {
 
         {summary.done && (
           <p className="live-scan__cta">
-            Run finished. <Link to={`/findings?run_id=${encodeURIComponent(runId)}`}>Open findings →</Link>
+            Run finished.{" "}
+            <Link to={`/findings?run_id=${encodeURIComponent(runId)}`}>Open findings →</Link>
           </p>
         )}
       </Card>
@@ -191,7 +187,13 @@ function RepoProgressRow({ repo }: RepoProgressRowProps) {
           <span className="live-scan__repo-elapsed">{repo.elapsedMs}ms</span>
         )}
       </div>
-      <div className="live-scan__bar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}>
+      <div
+        className="live-scan__bar"
+        role="progressbar"
+        aria-valuenow={pct}
+        aria-valuemin={0}
+        aria-valuemax={100}
+      >
         <div
           className={`live-scan__bar-fill live-scan__bar-fill--${repo.phase}`}
           style={{ width: `${pct}%` }}
@@ -244,7 +246,11 @@ function applyToRepos(ev: AgentEventLike, set: RepoSetter) {
     case "RepoStarted":
       set((prev) => ({
         ...prev,
-        [data.repo]: { ...(prev[data.repo] ?? { name: data.repo, phase: "queued" }), phase: "static", startedAt: data.started_at_ms },
+        [data.repo]: {
+          ...(prev[data.repo] ?? { name: data.repo, phase: "queued" }),
+          phase: "static",
+          startedAt: data.started_at_ms,
+        },
       }));
       return;
     case "RepoStaticDone":
@@ -298,7 +304,13 @@ function applyToRepos(ev: AgentEventLike, set: RepoSetter) {
 function applyToLogs(ev: AgentEventLike, set: LogSetter) {
   if (!("kind" in ev)) return;
   if (ev.kind === "Lagged") {
-    set((prev) => prev.concat({ ts: Date.now(), level: "warn", text: `[lagged] skipped ${ev.skipped} frame(s)` }));
+    set((prev) =>
+      prev.concat({
+        ts: Date.now(),
+        level: "warn",
+        text: `[lagged] skipped ${ev.skipped} frame(s)`,
+      }),
+    );
     return;
   }
   if (ev.kind !== "Run") return;

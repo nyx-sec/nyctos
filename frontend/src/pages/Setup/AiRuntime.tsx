@@ -34,8 +34,8 @@ export function AiRuntimeStep({ form, update }: Props) {
     <div className="setup-step__body">
       <h3>Pick an AI runtime</h3>
       <p>
-        The agent runs without an AI runtime; selecting one enables triage and
-        candidate generation in later phases. You can change this at any time.
+        The agent runs without an AI runtime; selecting one enables triage and candidate generation
+        in later phases. You can change this at any time.
       </p>
       <div className="setup-choices">
         {CHOICES.map((choice) => (
@@ -107,8 +107,8 @@ export function AiRuntimeStep({ form, update }: Props) {
       {form.aiRuntime === "claude-code" && (
         <div className="setup-field">
           <p>
-            The daemon will look for a <code>claude</code> binary on <code>$PATH</code> when
-            you reach the next step. No additional configuration is needed here.
+            The daemon will look for a <code>claude</code> binary on <code>$PATH</code> when you
+            reach the next step. No additional configuration is needed here.
           </p>
         </div>
       )}

@@ -1,6 +1,6 @@
-import { defineConfig } from "vite";
-import react from "@vitejs/plugin-react";
 import path from "node:path";
+import react from "@vitejs/plugin-react";
+import { defineConfig } from "vite";
 
 // Vite config mirrors nyx OSS: SPA build to `dist/`, dev proxy that
 // forwards `/api/...` and the `/api/v1/events` websocket to the local

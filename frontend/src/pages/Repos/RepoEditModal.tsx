@@ -1,14 +1,10 @@
+import { zodResolver } from "@hookform/resolvers/zod";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
+import { type PatchRepoRequest, type RepoRecord, usePatchProjectRepo } from "@/api/client";
 import { Button } from "@/components/Button";
 import { Spinner } from "@/components/Spinner";
-import {
-  usePatchProjectRepo,
-  type PatchRepoRequest,
-  type RepoRecord,
-} from "@/api/client";
 
 type Tab = "url" | "path";
 
@@ -28,8 +24,7 @@ function buildSchema(tab: Tab) {
   });
   if (tab === "url") {
     return base.refine(
-      (v) =>
-        v.auth_ref.trim().length === 0 || GIT_AUTH_PATTERN.test(v.auth_ref.trim()),
+      (v) => v.auth_ref.trim().length === 0 || GIT_AUTH_PATTERN.test(v.auth_ref.trim()),
       {
         path: ["auth_ref"],
         message: "Format `ssh-key:/path`, `token-env:NAME`, or `gh-app:<id>`",
@@ -115,20 +110,15 @@ export function RepoEditModal({ projectId, repo, onClose, onSaved }: Props) {
           <h2 id="repo-edit-title" className="modal__title">
             Edit repository
           </h2>
-          <button
-            type="button"
-            className="modal__close"
-            aria-label="Close"
-            onClick={onClose}
-          >
+          <button type="button" className="modal__close" aria-label="Close" onClick={onClose}>
             ×
           </button>
         </header>
 
         <div className="modal__body">
           <p className="setup-hint">
-            Editing <code>{repo.name}</code>. Name cannot be changed once a repo
-            is connected; remove and re-add to rename.
+            Editing <code>{repo.name}</code>. Name cannot be changed once a repo is connected;
+            remove and re-add to rename.
           </p>
 
           <div className="repo-add__tabs" role="tablist" aria-label="Source kind">
@@ -234,12 +224,7 @@ export function RepoEditModal({ projectId, repo, onClose, onSaved }: Props) {
           <Button type="button" variant="ghost" onClick={onClose}>
             Cancel
           </Button>
-          <Button
-            type="submit"
-            form="repo-edit-form"
-            variant="primary"
-            disabled={patch.isPending}
-          >
+          <Button type="submit" form="repo-edit-form" variant="primary" disabled={patch.isPending}>
             {patch.isPending ? <Spinner /> : "Save changes"}
           </Button>
         </footer>

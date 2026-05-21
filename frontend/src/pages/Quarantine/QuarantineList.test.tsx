@@ -1,9 +1,9 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { QuarantineList } from "./QuarantineList";
 import type { AgentTraceRow, QuarantineItem } from "@/api/client";
+import { QuarantineList } from "./QuarantineList";
 
 function jsonResponse(body: unknown, init: ResponseInit = { status: 200 }) {
   return new Response(JSON.stringify(body), {
@@ -52,9 +52,7 @@ describe("QuarantineList", () => {
 
     render(wrap(<QuarantineList />));
 
-    expect(
-      await screen.findByText("Nothing in quarantine"),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("Nothing in quarantine")).toBeInTheDocument();
     expect(screen.getByText("0 awaiting review")).toBeInTheDocument();
   });
 
@@ -77,9 +75,9 @@ describe("QuarantineList", () => {
     expect(screen.getByText("SQLi")).toBeInTheDocument();
     expect(screen.getByText("CMDi")).toBeInTheDocument();
     // Rationale is lifted from the row's rationale field (no JSON parse needed).
-    expect(
-      screen.getAllByText("Looks reachable from controller.").length,
-    ).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText("Looks reachable from controller.").length).toBeGreaterThanOrEqual(
+      2,
+    );
   });
 
   it("falls back to the verdict_blob rationale when row.rationale is null", async () => {
@@ -111,10 +109,7 @@ describe("QuarantineList", () => {
       if (url === "/api/v1/quarantine" && method === "GET") {
         return jsonResponse(items);
       }
-      if (
-        url === "/api/v1/quarantine/cand-promote/promote" &&
-        method === "POST"
-      ) {
+      if (url === "/api/v1/quarantine/cand-promote/promote" && method === "POST") {
         promoteCalls.push(url);
         return jsonResponse(items[0]);
       }
@@ -125,13 +120,9 @@ describe("QuarantineList", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Promote" }));
 
     await waitFor(() => {
-      expect(promoteCalls).toEqual([
-        "/api/v1/quarantine/cand-promote/promote",
-      ]);
+      expect(promoteCalls).toEqual(["/api/v1/quarantine/cand-promote/promote"]);
     });
-    expect(
-      await screen.findByText(/Promoted cand-promote into findings\./),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/Promoted cand-promote into findings\./)).toBeInTheDocument();
   });
 
   it("confirms before dismiss; cancel aborts the network call", async () => {
@@ -174,13 +165,9 @@ describe("QuarantineList", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Dismiss" }));
 
     await waitFor(() => {
-      expect(dismissCalls).toEqual([
-        "/api/v1/quarantine/f-dismiss/dismiss",
-      ]);
+      expect(dismissCalls).toEqual(["/api/v1/quarantine/f-dismiss/dismiss"]);
     });
-    expect(
-      await screen.findByText(/Dismissed f-dismiss\./),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/Dismissed f-dismiss\./)).toBeInTheDocument();
   });
 
   it("opens the detail card when a path link is clicked and renders the trace surface", async () => {
@@ -200,9 +187,7 @@ describe("QuarantineList", () => {
     fireEvent.click(await screen.findByText("src/sink.py:88"));
 
     // The card header lifts the kind and cap.
-    expect(
-      await screen.findByText("Candidate · SQLi"),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("Candidate · SQLi")).toBeInTheDocument();
     // The AiTraceViewer renders its empty state when traces are zero.
     expect(
       await screen.findByText("No AI calls recorded for this finding yet."),

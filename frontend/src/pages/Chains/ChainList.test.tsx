@@ -1,10 +1,10 @@
-import { ReactNode } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { ChainList } from "./ChainList";
+import { render, screen, waitFor } from "@testing-library/react";
+import { ReactNode } from "react";
+import { MemoryRouter } from "react-router-dom";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ChainRecord, RunRecord } from "@/api/client";
+import { ChainList } from "./ChainList";
 
 function jsonResponse(body: unknown, init: ResponseInit = { status: 200 }) {
   return new Response(JSON.stringify(body), {
@@ -76,16 +76,11 @@ describe("ChainList", () => {
     render(wrap(<ChainList />));
 
     await waitFor(() => {
-      expect(
-        screen.getByText(/Run run-newest — 1 chain, 1 cross-repo/),
-      ).toBeInTheDocument();
+      expect(screen.getByText(/Run run-newest — 1 chain, 1 cross-repo/)).toBeInTheDocument();
     });
     expect(screen.getByText("cross-repo")).toBeInTheDocument();
     expect(screen.getByText(/cross-repo auth bypass/)).toBeInTheDocument();
-    expect(fetchSpy).toHaveBeenCalledWith(
-      "/api/v1/runs?status=Succeeded",
-      expect.any(Object),
-    );
+    expect(fetchSpy).toHaveBeenCalledWith("/api/v1/runs?status=Succeeded", expect.any(Object));
   });
 
   it("renders the empty-state when the run has no chains", async () => {
@@ -114,24 +109,17 @@ describe("ChainList", () => {
 
     render(wrap(<ChainList />));
 
-    expect(
-      await screen.findByText("No completed runs yet"),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("No completed runs yet")).toBeInTheDocument();
   });
 
   it("uses the URL run_id when set and respects it over the most-recent fallback", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
       const url = typeof input === "string" ? input : (input as Request).url;
       if (url === "/api/v1/runs?status=Succeeded") {
-        return jsonResponse([
-          makeRun({ id: "run-newer" }),
-          makeRun({ id: "run-older" }),
-        ]);
+        return jsonResponse([makeRun({ id: "run-newer" }), makeRun({ id: "run-older" })]);
       }
       if (url === "/api/v1/chains?run_id=run-older") {
-        return jsonResponse([
-          makeChain({ id: "chain-pinned", run_id: "run-older" }),
-        ]);
+        return jsonResponse([makeChain({ id: "chain-pinned", run_id: "run-older" })]);
       }
       throw new Error(`unexpected url ${url}`);
     });
@@ -139,9 +127,7 @@ describe("ChainList", () => {
     render(wrap(<ChainList />, "/chains?run_id=run-older"));
 
     await waitFor(() => {
-      expect(
-        screen.getByText(/Run run-older — 1 chain/),
-      ).toBeInTheDocument();
+      expect(screen.getByText(/Run run-older — 1 chain/)).toBeInTheDocument();
     });
   });
 });

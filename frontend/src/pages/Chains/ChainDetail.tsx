@@ -1,16 +1,13 @@
 import { Link, useNavigate, useParams } from "react-router-dom";
+import { useChain, useFinding } from "@/api/client";
 import { Badge } from "@/components/Badge";
 import { Button } from "@/components/Button";
 import { Card } from "@/components/Card";
 import { EmptyState } from "@/components/EmptyState";
 import { Spinner } from "@/components/Spinner";
-import {
-  useChain,
-  useFinding,
-} from "@/api/client";
 import { extractChainRationale } from "@/pages/Findings/FindingList";
-import { parseMemberIds } from "./memberIds";
 import { shortChainId } from "./ChainList";
+import { parseMemberIds } from "./memberIds";
 
 export function ChainDetail() {
   const { chainId = "" } = useParams<{ chainId: string }>();

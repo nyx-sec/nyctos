@@ -1,16 +1,16 @@
+import { zodResolver } from "@hookform/resolvers/zod";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
+import {
+  type CreateRepoRequest,
+  type TestRepoResponse,
+  useCreateProjectRepo,
+  useTestProjectRepo,
+} from "@/api/client";
 import { Badge } from "@/components/Badge";
 import { Button } from "@/components/Button";
 import { Spinner } from "@/components/Spinner";
-import {
-  useCreateProjectRepo,
-  useTestProjectRepo,
-  type CreateRepoRequest,
-  type TestRepoResponse,
-} from "@/api/client";
 
 type Tab = "url" | "path";
 
@@ -31,10 +31,7 @@ function buildSchema(tab: Tab) {
       .string()
       .min(1, "Name is required")
       .max(64)
-      .regex(
-        NAME_PATTERN,
-        "Letters, numbers, dot, dash, underscore (max 64 chars)",
-      ),
+      .regex(NAME_PATTERN, "Letters, numbers, dot, dash, underscore (max 64 chars)"),
     source_url_or_path: z.string().min(1, "Required"),
     branch: z.string(),
     auth_ref: z.string(),
@@ -44,8 +41,7 @@ function buildSchema(tab: Tab) {
   });
   if (tab === "url") {
     return base.refine(
-      (v) =>
-        v.auth_ref.trim().length === 0 || GIT_AUTH_PATTERN.test(v.auth_ref.trim()),
+      (v) => v.auth_ref.trim().length === 0 || GIT_AUTH_PATTERN.test(v.auth_ref.trim()),
       {
         path: ["auth_ref"],
         message: "Format `ssh-key:/path`, `token-env:NAME`, or `gh-app:<id>`",
@@ -153,12 +149,7 @@ export function RepoAddModal({ projectId, onClose, onAdded }: Props) {
           <h2 id="repo-add-title" className="modal__title">
             Add repository
           </h2>
-          <button
-            type="button"
-            className="modal__close"
-            aria-label="Close"
-            onClick={onClose}
-          >
+          <button type="button" className="modal__close" aria-label="Close" onClick={onClose}>
             ×
           </button>
         </header>
@@ -231,8 +222,8 @@ export function RepoAddModal({ projectId, onClose, onAdded }: Props) {
                   />
                   <p className="setup-hint">
                     Format: <code>ssh-key:/path</code>, <code>token-env:NAME</code>, or{" "}
-                    <code>gh-app:&lt;id&gt;</code>. The descriptor is stored; secrets
-                    stay in the env var or keychain.
+                    <code>gh-app:&lt;id&gt;</code>. The descriptor is stored; secrets stay in the
+                    env var or keychain.
                   </p>
                   <FieldError msg={formState.errors.auth_ref?.message} />
                 </div>
@@ -259,8 +250,8 @@ export function RepoAddModal({ projectId, onClose, onAdded }: Props) {
               <div>
                 <strong>I own this repository</strong>
                 <p className="setup-hint">
-                  Required before the daemon will accept the entry. Attesting
-                  ownership tells the agent it is safe to scan source you control.
+                  Required before the daemon will accept the entry. Attesting ownership tells the
+                  agent it is safe to scan source you control.
                 </p>
                 <FieldError msg={formState.errors.i_own_this?.message} />
               </div>
@@ -306,12 +297,7 @@ export function RepoAddModal({ projectId, onClose, onAdded }: Props) {
           <Button type="button" variant="ghost" onClick={onClose}>
             Cancel
           </Button>
-          <Button
-            type="submit"
-            form="repo-add-form"
-            variant="primary"
-            disabled={create.isPending}
-          >
+          <Button type="submit" form="repo-add-form" variant="primary" disabled={create.isPending}>
             {create.isPending ? <Spinner /> : "Add repo"}
           </Button>
         </footer>

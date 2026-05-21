@@ -1,4 +1,6 @@
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { useSetupStatus } from "@/api/client";
+import { useAdvancedMode } from "@/api/preferences";
 import { AppLayout } from "@/components/AppLayout";
 import { Card } from "@/components/Card";
 import { Spinner } from "@/components/Spinner";
@@ -10,8 +12,6 @@ import { QuarantineList } from "@/pages/Quarantine";
 import { LiveScanView } from "@/pages/Runs";
 import { Settings } from "@/pages/Settings";
 import { SetupWizard } from "@/pages/Setup";
-import { useSetupStatus } from "@/api/client";
-import { useAdvancedMode } from "@/api/preferences";
 
 export function App() {
   const status = useSetupStatus();

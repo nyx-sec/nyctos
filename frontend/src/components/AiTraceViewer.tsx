@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
+import { type AgentTraceRow, useFindingTraces } from "@/api/client";
 import { Badge } from "./Badge";
 import { Spinner } from "./Spinner";
-import { useFindingTraces, type AgentTraceRow } from "@/api/client";
 
 export interface AiTraceViewerProps {
   /**
@@ -58,8 +58,7 @@ export function AiTraceViewer({ findingId }: AiTraceViewerProps) {
       <header className="ai-trace-viewer__header">
         <h3 className="ai-trace-viewer__title">AI conversation</h3>
         <p className="ai-trace-viewer__subtitle">
-          {rows.length} turn{rows.length === 1 ? "" : "s"} ·{" "}
-          <CostInline rows={rows} />
+          {rows.length} turn{rows.length === 1 ? "" : "s"} · <CostInline rows={rows} />
         </p>
       </header>
       <ol className="ai-trace-viewer__list">
@@ -102,31 +101,19 @@ function TraceRowCard({ row, index }: { row: AgentTraceRow; index: number }) {
           <Row label="Trace id" value={<code>{row.id}</code>} />
           <Row label="Runtime" value={row.runtime_name} />
           <Row label="Model" value={row.model || <em>unspecified</em>} />
-          <Row
-            label="Prompt version"
-            value={row.prompt_version ?? <em>unknown</em>}
-          />
+          <Row label="Prompt version" value={row.prompt_version ?? <em>unknown</em>} />
           <Row label="Tokens in" value={String(row.tokens_in)} />
           <Row label="Tokens out" value={String(row.tokens_out)} />
-          <Row
-            label="Cache hits / misses"
-            value={`${row.cache_hits} / ${row.cache_misses}`}
-          />
+          <Row label="Cache hits / misses" value={`${row.cache_hits} / ${row.cache_misses}`} />
           <Row label="Cost" value={`$${(row.cost_usd_micros / 1_000_000).toFixed(6)}`} />
-          <Row
-            label="Duration"
-            value={row.duration_ms !== null ? `${row.duration_ms} ms` : "-"}
-          />
+          <Row label="Duration" value={row.duration_ms !== null ? `${row.duration_ms} ms` : "-"} />
           <Row label="Started" value={formatStamp(row.started_at)} />
           <Row
             label="Finished"
             value={row.finished_at !== null ? formatStamp(row.finished_at) : "-"}
           />
           {row.conversation_jsonl_path && (
-            <Row
-              label="JSONL log"
-              value={<code>{row.conversation_jsonl_path}</code>}
-            />
+            <Row label="JSONL log" value={<code>{row.conversation_jsonl_path}</code>} />
           )}
         </dl>
       )}
@@ -145,10 +132,7 @@ function Row({ label, value }: { label: string; value: React.ReactNode }) {
 
 function formatSubtitle(row: AgentTraceRow): string {
   const cost = `$${(row.cost_usd_micros / 1_000_000).toFixed(6)}`;
-  const dur =
-    row.duration_ms !== null && row.duration_ms > 0
-      ? ` · ${row.duration_ms}ms`
-      : "";
+  const dur = row.duration_ms !== null && row.duration_ms > 0 ? ` · ${row.duration_ms}ms` : "";
   return `${row.runtime_name} · ${cost}${dur}`;
 }
 
@@ -157,9 +141,7 @@ function formatStamp(ms: number): string {
   return new Date(ms).toLocaleString();
 }
 
-function toneForTaskKind(
-  kind: string,
-): "info" | "warning" | "success" | "neutral" | "accent" {
+function toneForTaskKind(kind: string): "info" | "warning" | "success" | "neutral" | "accent" {
   switch (kind) {
     case "PayloadSynthesis":
       return "info";

@@ -1,10 +1,10 @@
+import { zodResolver } from "@hookform/resolvers/zod";
 import { useEffect, useRef } from "react";
 import { useForm } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
+import { type CreateProjectRequest, useCreateProject } from "@/api/client";
 import { Button } from "@/components/Button";
 import { Spinner } from "@/components/Spinner";
-import { useCreateProject, type CreateProjectRequest } from "@/api/client";
 
 interface FormValues {
   name: string;
@@ -19,10 +19,7 @@ const schema = z.object({
     .string()
     .min(1, "Name is required")
     .max(64)
-    .regex(
-      NAME_PATTERN,
-      "Letters, numbers, dot, dash, underscore (max 64 chars)",
-    ),
+    .regex(NAME_PATTERN, "Letters, numbers, dot, dash, underscore (max 64 chars)"),
   description: z.string().max(512),
   target_base_url: z
     .string()
@@ -83,12 +80,7 @@ export function ProjectAddModal({ onClose, onAdded }: Props) {
           <h2 id="project-add-title" className="modal__title">
             New project
           </h2>
-          <button
-            type="button"
-            className="modal__close"
-            aria-label="Close"
-            onClick={onClose}
-          >
+          <button type="button" className="modal__close" aria-label="Close" onClick={onClose}>
             ×
           </button>
         </header>
@@ -140,8 +132,8 @@ export function ProjectAddModal({ onClose, onAdded }: Props) {
                 {...register("target_base_url")}
               />
               <p className="setup-hint">
-                Used by the sandbox env-builder to point chains at the right
-                origin when the project spans multiple repos.
+                Used by the sandbox env-builder to point chains at the right origin when the project
+                spans multiple repos.
               </p>
               <FieldError msg={formState.errors.target_base_url?.message} />
             </div>

@@ -1,15 +1,9 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { renderHook, waitFor, act } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-import {
-  ApiError,
-  getAuthToken,
-  useAgentEvents,
-  useAllRepos,
-  useTriggerScan,
-} from "./client";
+import { ApiError, getAuthToken, useAgentEvents, useAllRepos, useTriggerScan } from "./client";
 
 function makeWrapper() {
   const qc = new QueryClient({
@@ -120,9 +114,9 @@ describe("useTriggerScan", () => {
   });
 
   it("POSTs to the project scan endpoint and surfaces the new run id", async () => {
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse({ run_id: "run-1" }),
-    );
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse({ run_id: "run-1" }));
 
     const { Wrapper } = makeWrapper();
     const { result } = renderHook(() => useTriggerScan("proj-a"), { wrapper: Wrapper });
@@ -139,9 +133,9 @@ describe("useTriggerScan", () => {
   });
 
   it("forwards the optional repo filter as a query param", async () => {
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse({ run_id: "run-2" }),
-    );
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse({ run_id: "run-2" }));
 
     const { Wrapper } = makeWrapper();
     const { result } = renderHook(() => useTriggerScan("proj-b"), { wrapper: Wrapper });

@@ -1,16 +1,16 @@
-import { NavLink } from "react-router-dom";
 import type { FC } from "react";
+import { NavLink } from "react-router-dom";
+import { useAdvancedMode } from "@/api/preferences";
 import {
   ChainsIcon,
   FindingsIcon,
+  type IconProps,
   QuarantineIcon,
   ReposIcon,
   RunsIcon,
   SettingsIcon,
   SetupIcon,
-  type IconProps,
 } from "./icons/Icons";
-import { useAdvancedMode } from "@/api/preferences";
 
 interface NavItem {
   to: string;

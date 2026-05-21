@@ -18,8 +18,7 @@ export function CodeExcerpt({ lines, className, ...rest }: CodeExcerptProps) {
         <div
           key={line.lineno}
           className={
-            "code-excerpt__line" +
-            (line.highlight ? " code-excerpt__line--highlight" : "")
+            "code-excerpt__line" + (line.highlight ? " code-excerpt__line--highlight" : "")
           }
         >
           <span className="code-excerpt__lineno">{line.lineno}</span>

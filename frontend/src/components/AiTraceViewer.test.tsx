@@ -1,9 +1,9 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { AiTraceViewer } from "./AiTraceViewer";
 import type { AgentTraceRow } from "@/api/client";
+import { AiTraceViewer } from "./AiTraceViewer";
 
 function jsonResponse(body: unknown, init: ResponseInit = { status: 200 }) {
   return new Response(JSON.stringify(body), {
@@ -104,15 +104,11 @@ describe("AiTraceViewer", () => {
     expect(screen.getByText("Cache hits / misses")).toBeInTheDocument();
     expect(screen.getByText("1 / 0")).toBeInTheDocument();
     // JSONL path row stamps the captured location.
-    expect(
-      screen.getByText("/var/state/traces/run-1/t1.jsonl"),
-    ).toBeInTheDocument();
+    expect(screen.getByText("/var/state/traces/run-1/t1.jsonl")).toBeInTheDocument();
   });
 
   it("surfaces an unspecified model with an italic placeholder", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse([makeRow({ model: "" })]),
-    );
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse([makeRow({ model: "" })]));
 
     render(wrap(<AiTraceViewer findingId="f-1" />));
 
@@ -130,8 +126,6 @@ describe("AiTraceViewer", () => {
 
     render(wrap(<AiTraceViewer findingId="f-1" />));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      /Failed to load trace/,
-    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(/Failed to load trace/);
   });
 });

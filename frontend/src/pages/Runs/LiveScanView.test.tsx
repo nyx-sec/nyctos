@@ -1,8 +1,8 @@
-import { ReactNode } from "react";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { act, render, screen, waitFor } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, render, screen, waitFor } from "@testing-library/react";
+import { ReactNode } from "react";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { LiveScanView } from "./LiveScanView";
 
 // Minimal WebSocket double. Mirrors the FakeWebSocket helper in
@@ -210,9 +210,7 @@ describe("LiveScanView", () => {
     );
 
     expect(await screen.findByText("Failed")).toBeInTheDocument();
-    expect(
-      screen.getByText("static-pass timeout after 600000ms"),
-    ).toBeInTheDocument();
+    expect(screen.getByText("static-pass timeout after 600000ms")).toBeInTheDocument();
     // Failed runs emit an error-level log line in the stream.
     expect(
       screen.getByText(/\[gamma\] failed: static-pass timeout after 600000ms/),
@@ -225,8 +223,6 @@ describe("LiveScanView", () => {
     const ws = FakeWebSocket.instances[0];
 
     act(() => ws.emit({ kind: "Lagged", skipped: 7 }));
-    expect(
-      await screen.findByText(/\[lagged\] skipped 7 frame\(s\)/),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/\[lagged\] skipped 7 frame\(s\)/)).toBeInTheDocument();
   });
 });

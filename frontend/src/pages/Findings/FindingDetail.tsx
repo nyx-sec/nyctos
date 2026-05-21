@@ -1,18 +1,18 @@
 import { useMemo, useRef, useState } from "react";
-import { Badge } from "@/components/Badge";
-import { Button } from "@/components/Button";
-import { CodeExcerpt, type CodeExcerptLine } from "@/components/CodeExcerpt";
-import { Spinner } from "@/components/Spinner";
-import { AiTraceViewer } from "@/components/AiTraceViewer";
 import {
+  type BundleManifest,
+  type FindingRecord,
+  type ReplayEvent,
   reproBundleDownloadUrl,
   startReplayStream,
   useBuildReproBundle,
   useFinding,
-  type BundleManifest,
-  type FindingRecord,
-  type ReplayEvent,
 } from "@/api/client";
+import { AiTraceViewer } from "@/components/AiTraceViewer";
+import { Badge } from "@/components/Badge";
+import { Button } from "@/components/Button";
+import { CodeExcerpt, type CodeExcerptLine } from "@/components/CodeExcerpt";
+import { Spinner } from "@/components/Spinner";
 import { ORIGIN_TONE, SEVERITY_TONE, STATUS_TONE } from "./diff";
 
 export interface FindingDetailProps {
@@ -42,11 +42,7 @@ export function FindingDetail({ id, onClose }: FindingDetailProps) {
   const evidence = useMemo(() => parseEvidence(finding.data), [finding.data]);
 
   return (
-    <aside
-      className="finding-detail"
-      role="complementary"
-      aria-label="Finding detail"
-    >
+    <aside className="finding-detail" aria-label="Finding detail">
       <header className="finding-detail__header">
         <div>
           <h2 className="finding-detail__title">Finding</h2>
@@ -97,9 +93,7 @@ function FindingDetailBody({ finding, evidence }: BodyProps) {
           <span className="finding-detail__repo">{finding.repo}</span>
           {" / "}
           <span className="finding-detail__path">{finding.path}</span>
-          {finding.line !== null && (
-            <span className="finding-detail__line"> :{finding.line}</span>
-          )}
+          {finding.line !== null && <span className="finding-detail__line"> :{finding.line}</span>}
         </p>
         {evidence?.message && <p className="finding-detail__msg">{evidence.message}</p>}
       </section>
@@ -157,9 +151,7 @@ function ReproBundleSection({ finding }: ReproBundleSectionProps) {
   const build = useBuildReproBundle();
   const [manifest, setManifest] = useState<BundleManifest | null>(null);
   const [replayLines, setReplayLines] = useState<ReplayEvent[]>([]);
-  const [replayStatus, setReplayStatus] = useState<
-    "idle" | "running" | "done" | "error"
-  >("idle");
+  const [replayStatus, setReplayStatus] = useState<"idle" | "running" | "done" | "error">("idle");
   const stopRef = useRef<(() => void) | null>(null);
 
   const downloadUrl = reproBundleDownloadUrl(finding.id);
@@ -197,11 +189,7 @@ function ReproBundleSection({ finding }: ReproBundleSectionProps) {
         <Button size="sm" onClick={onBuild} disabled={build.isPending}>
           {build.isPending ? "Building…" : manifest ? "Rebuild bundle" : "Build bundle"}
         </Button>
-        <a
-          className="btn btn--sm"
-          href={downloadUrl}
-          download={`${finding.id}.tar`}
-        >
+        <a className="btn btn--sm" href={downloadUrl} download={`${finding.id}.tar`}>
           Download repro bundle
         </a>
         <Button
@@ -242,7 +230,10 @@ function ReproBundleSection({ finding }: ReproBundleSectionProps) {
       {replayLines.length > 0 && (
         <pre className="finding-detail__replay-log" aria-live="polite">
           {replayLines.map((ev, idx) => (
-            <span key={idx} className={`finding-detail__replay-line finding-detail__replay-line--${ev.kind}`}>
+            <span
+              key={idx}
+              className={`finding-detail__replay-line finding-detail__replay-line--${ev.kind}`}
+            >
               [{ev.kind}] {ev.data}
               {"\n"}
             </span>
@@ -251,9 +242,9 @@ function ReproBundleSection({ finding }: ReproBundleSectionProps) {
       )}
       {replayStatus === "idle" && replayLines.length === 0 && (
         <p className="finding-detail__muted">
-          Build a bundle, then replay it locally on this host. The daemon
-          spawns <code>bash repro.sh</code> in a sandboxed tempdir and
-          streams stdout / stderr back into this panel.
+          Build a bundle, then replay it locally on this host. The daemon spawns{" "}
+          <code>bash repro.sh</code> in a sandboxed tempdir and streams stdout / stderr back into
+          this panel.
         </p>
       )}
     </section>
@@ -340,9 +331,7 @@ function FlowStepsBlock({ steps }: FlowStepsBlockProps) {
                 onClick={() => copyTarget(target)}
               >
                 <span className="finding-detail__flow-path">{step.path}</span>
-                {step.line && (
-                  <span className="finding-detail__flow-line"> :{step.line}</span>
-                )}
+                {step.line && <span className="finding-detail__flow-line"> :{step.line}</span>}
                 {step.message && (
                   <span className="finding-detail__flow-msg"> · {step.message}</span>
                 )}
@@ -351,11 +340,7 @@ function FlowStepsBlock({ steps }: FlowStepsBlockProps) {
           );
         })}
       </ol>
-      <div
-        className="finding-detail__flow-toast"
-        role="status"
-        aria-live="polite"
-      >
+      <div className="finding-detail__flow-toast" role="status" aria-live="polite">
         {copied ? `Copied ${copied} to clipboard.` : ""}
       </div>
     </section>

@@ -1,16 +1,16 @@
 import { useMemo, useState } from "react";
+import {
+  type QuarantineItem,
+  useDismissQuarantine,
+  usePromoteQuarantine,
+  useQuarantine,
+} from "@/api/client";
+import { AiTraceViewer } from "@/components/AiTraceViewer";
 import { Badge, type BadgeTone } from "@/components/Badge";
 import { Button } from "@/components/Button";
 import { Card } from "@/components/Card";
 import { EmptyState } from "@/components/EmptyState";
 import { Spinner } from "@/components/Spinner";
-import { AiTraceViewer } from "@/components/AiTraceViewer";
-import {
-  useDismissQuarantine,
-  usePromoteQuarantine,
-  useQuarantine,
-  type QuarantineItem,
-} from "@/api/client";
 
 const KIND_TONE: Record<QuarantineItem["kind"], BadgeTone> = {
   finding: "warning",
@@ -148,10 +148,7 @@ export function QuarantineList() {
                         {row.rationale ?? extractRationale(row.verdict_blob)}
                       </td>
                       <td className="quarantine-page__actions">
-                        <Button
-                          onClick={() => onPromote(row)}
-                          disabled={promote.isPending}
-                        >
+                        <Button onClick={() => onPromote(row)} disabled={promote.isPending}>
                           Promote
                         </Button>
                         <Button
@@ -176,9 +173,7 @@ export function QuarantineList() {
           <QuarantineDetail item={selected} onClose={() => setSelectedId(null)} />
         ) : (
           <Card title="Trace viewer">
-            <p className="quarantine-page__hint">
-              Select a row above to inspect the scan trace.
-            </p>
+            <p className="quarantine-page__hint">Select a row above to inspect the scan trace.</p>
           </Card>
         )}
       </aside>
@@ -186,13 +181,7 @@ export function QuarantineList() {
   );
 }
 
-function QuarantineDetail({
-  item,
-  onClose,
-}: {
-  item: QuarantineItem;
-  onClose: () => void;
-}) {
+function QuarantineDetail({ item, onClose }: { item: QuarantineItem; onClose: () => void }) {
   return (
     <Card
       title={`${KIND_LABEL[item.kind]} · ${item.cap}`}

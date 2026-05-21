@@ -1,10 +1,10 @@
-import { ReactNode } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { ChainDetail } from "./ChainDetail";
+import { render, screen, waitFor } from "@testing-library/react";
+import { ReactNode } from "react";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ChainRecord, FindingRecord } from "@/api/client";
+import { ChainDetail } from "./ChainDetail";
 
 function jsonResponse(body: unknown, init: ResponseInit = { status: 200 }) {
   return new Response(JSON.stringify(body), {
@@ -127,9 +127,7 @@ describe("ChainDetail", () => {
 
     render(wrap(<ChainDetail />, "/chains/chain-bare"));
 
-    expect(
-      await screen.findByText(/No rationale text recorded/),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/No rationale text recorded/)).toBeInTheDocument();
     expect(screen.getByText("Members (0)")).toBeInTheDocument();
     expect(screen.getByText("single-repo")).toBeInTheDocument();
     expect(screen.getByText("No member findings")).toBeInTheDocument();
@@ -155,9 +153,7 @@ describe("ChainDetail", () => {
     await waitFor(() => {
       expect(screen.getByText("src/controller.py:12")).toBeInTheDocument();
     });
-    const links = screen
-      .getAllByRole("link")
-      .map((node) => node.getAttribute("href"));
+    const links = screen.getAllByRole("link").map((node) => node.getAttribute("href"));
     expect(links).toEqual(
       expect.arrayContaining([
         "/findings?run_id=run-1&focus=f-controller",
@@ -173,9 +169,7 @@ describe("ChainDetail", () => {
 
     render(wrap(<ChainDetail />, "/chains/chain-missing"));
 
-    expect(
-      await screen.findByRole("alert", { name: undefined }),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole("alert", { name: undefined })).toBeInTheDocument();
     expect(screen.getByText(/Failed to load chain/)).toBeInTheDocument();
   });
 });

@@ -1,10 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ChainRecord } from "@/api/client";
-import {
-  buildChainSummaryIndex,
-  chainLabelFor,
-  extractChainRationale,
-} from "./FindingList";
+import { buildChainSummaryIndex, chainLabelFor, extractChainRationale } from "./FindingList";
 
 function makeChain(overrides: Partial<ChainRecord> = {}): ChainRecord {
   return {
@@ -56,9 +52,7 @@ describe("FindingList chain summary helpers", () => {
   });
 
   it("chainLabelFor falls back to a shortened id when no summary is loaded", () => {
-    expect(chainLabelFor("chain-abcdef0123456789", undefined)).toBe(
-      "Chain abcdef012345…",
-    );
+    expect(chainLabelFor("chain-abcdef0123456789", undefined)).toBe("Chain abcdef012345…");
   });
 
   it("chainLabelFor appends a cross-repo tag and the rationale preview when available", () => {
@@ -67,9 +61,7 @@ describe("FindingList chain summary helpers", () => {
         rationale: "controller in repo-a reaches sink in repo-b",
         crossRepo: true,
       }),
-    ).toBe(
-      "Chain abcd (cross-repo) — controller in repo-a reaches sink in repo-b",
-    );
+    ).toBe("Chain abcd (cross-repo) — controller in repo-a reaches sink in repo-b");
   });
 
   it("chainLabelFor truncates a long rationale to the preview window", () => {

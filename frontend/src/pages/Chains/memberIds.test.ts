@@ -3,11 +3,7 @@ import { parseMemberIds } from "./memberIds";
 
 describe("parseMemberIds", () => {
   it("parses a JSON string array verbatim", () => {
-    expect(parseMemberIds('["f-a","f-b","f-c"]')).toEqual([
-      "f-a",
-      "f-b",
-      "f-c",
-    ]);
+    expect(parseMemberIds('["f-a","f-b","f-c"]')).toEqual(["f-a", "f-b", "f-c"]);
   });
 
   it("returns an empty array for null / empty input", () => {

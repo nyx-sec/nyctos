@@ -1,35 +1,26 @@
 import { useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
+import {
+  type ChainRecord,
+  type FindingDiffStatus,
+  type FindingRecord,
+  type FindingsQuery,
+  type FindingWithDiff,
+  type RunFindingsQuery,
+  useAllRepos,
+  useFindings,
+  useRunChains,
+  useRunFindings,
+} from "@/api/client";
 import { Badge } from "@/components/Badge";
 import { Button } from "@/components/Button";
 import { Card } from "@/components/Card";
 import { EmptyState } from "@/components/EmptyState";
 import { Spinner } from "@/components/Spinner";
-import {
-  useAllRepos,
-  useFindings,
-  useRunChains,
-  useRunFindings,
-  type ChainRecord,
-  type FindingDiffStatus,
-  type FindingRecord,
-  type FindingWithDiff,
-  type FindingsQuery,
-  type RunFindingsQuery,
-} from "@/api/client";
+import { DIFF_LABEL, DIFF_TONE, ORIGIN_TONE, SEVERITY_TONE, STATUS_TONE } from "./diff";
 import { FindingDetail } from "./FindingDetail";
-import {
-  DIFF_LABEL,
-  DIFF_TONE,
-  ORIGIN_TONE,
-  SEVERITY_TONE,
-  STATUS_TONE,
-} from "./diff";
 
-type FilterKey = keyof Pick<
-  FindingsQuery,
-  "repo" | "cap" | "origin" | "status" | "severity"
->;
+type FilterKey = keyof Pick<FindingsQuery, "repo" | "cap" | "origin" | "status" | "severity">;
 
 const FILTER_KEYS: FilterKey[] = ["repo", "cap", "origin", "status", "severity"];
 
@@ -95,10 +86,7 @@ export function FindingList() {
   const isLoading = runId ? runQuery.isPending : listQuery.isPending;
   const error = runId ? runQuery.error : listQuery.error;
 
-  const repoOptions = useMemo(
-    () => (repos.data ?? []).map((r) => r.name),
-    [repos.data],
-  );
+  const repoOptions = useMemo(() => (repos.data ?? []).map((r) => r.name), [repos.data]);
   const capOptions = useMemo(() => uniqueValues(rows, "cap"), [rows]);
 
   function setFilter(key: FilterKey, value: string | undefined) {
@@ -122,7 +110,7 @@ export function FindingList() {
     () => groupRowsByChain(rows, groupByChain, chainSummaries),
     [rows, groupByChain, chainSummaries],
   );
-  const priorRunId = runId ? runQuery.data?.prior_run_id ?? null : null;
+  const priorRunId = runId ? (runQuery.data?.prior_run_id ?? null) : null;
   const resultSummary = isLoading
     ? "Loading findings..."
     : runId
@@ -301,9 +289,7 @@ export function extractChainRationale(blob: string | null): string | null {
   return blob.length > 0 ? blob : null;
 }
 
-export function buildChainSummaryIndex(
-  chains: ChainRecord[],
-): Map<string, ChainSummary> {
+export function buildChainSummaryIndex(chains: ChainRecord[]): Map<string, ChainSummary> {
   const map = new Map<string, ChainSummary>();
   for (const chain of chains) {
     map.set(chain.id, {
@@ -319,10 +305,7 @@ function shortChainId(id: string): string {
   return stripped.length > 12 ? `${stripped.slice(0, 12)}…` : stripped;
 }
 
-export function chainLabelFor(
-  chainId: string,
-  summary: ChainSummary | undefined,
-): string {
+export function chainLabelFor(chainId: string, summary: ChainSummary | undefined): string {
   const base = `Chain ${shortChainId(chainId)}`;
   if (!summary) return base;
   const tag = summary.crossRepo ? " (cross-repo)" : "";
@@ -340,9 +323,7 @@ function groupRowsByChain(
   chainSummaries: Map<string, ChainSummary>,
 ): ChainGroup[] {
   if (!groupByChain) {
-    return [
-      { key: "_all", label: "", rationale: null, crossRepo: false, items: rows },
-    ];
+    return [{ key: "_all", label: "", rationale: null, crossRepo: false, items: rows }];
   }
   const groups = new Map<string, FindingWithDiff[]>();
   for (const row of rows) {

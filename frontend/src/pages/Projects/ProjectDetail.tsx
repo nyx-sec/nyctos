@@ -1,21 +1,21 @@
 import { useMemo, useState } from "react";
-import { useNavigate, useParams, Link } from "react-router-dom";
-import { Badge, type BadgeTone } from "@/components/Badge";
-import { Button } from "@/components/Button";
-import { Card } from "@/components/Card";
-import { ConfirmModal } from "@/components/ConfirmModal";
-import { EmptyState } from "@/components/EmptyState";
-import { Spinner } from "@/components/Spinner";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import {
+  type AgentEventLike,
+  type RepoRecord,
   useAgentEvents,
   useDeleteProject,
   useDeleteProjectRepo,
   useProject,
   useProjectRepos,
   useTriggerScan,
-  type AgentEventLike,
-  type RepoRecord,
 } from "@/api/client";
+import { Badge, type BadgeTone } from "@/components/Badge";
+import { Button } from "@/components/Button";
+import { Card } from "@/components/Card";
+import { ConfirmModal } from "@/components/ConfirmModal";
+import { EmptyState } from "@/components/EmptyState";
+import { Spinner } from "@/components/Spinner";
 import { RepoAddModal } from "../Repos/RepoAddModal";
 import { RepoEditModal } from "../Repos/RepoEditModal";
 import { applyEvent, type RepoLiveState, type RepoLiveStatus } from "../Repos/repoStatus";
@@ -277,9 +277,8 @@ export function ProjectDetail() {
           body={
             <>
               <p>
-                The daemon will delete the workspace directory for this repo
-                and forget the connection. Findings and run history under it
-                are retained.
+                The daemon will delete the workspace directory for this repo and forget the
+                connection. Findings and run history under it are retained.
               </p>
               <p className="repo-list__source">
                 Source: <code>{removeTarget.source_url_or_path}</code>
@@ -357,10 +356,7 @@ function formatLastScan(repo: RepoRecord): string {
   return repo.last_scan_run_id;
 }
 
-function surfaceRunBanner(
-  ev: AgentEventLike,
-  setBanner: (s: string | null) => void,
-) {
+function surfaceRunBanner(ev: AgentEventLike, setBanner: (s: string | null) => void) {
   if (!("kind" in ev) || ev.kind !== "Run") return;
   const data = ev.data;
   if (data.kind === "RunFinished") {

@@ -1,8 +1,5 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Card } from "@/components/Card";
-import { Button } from "@/components/Button";
-import { Spinner } from "@/components/Spinner";
 import {
   AiRuntimeChoice,
   SandboxBackendChoice,
@@ -10,9 +7,12 @@ import {
   useSetupStatus,
   useSubmitSetup,
 } from "@/api/client";
-import { WelcomeStep } from "./Welcome";
+import { Button } from "@/components/Button";
+import { Card } from "@/components/Card";
+import { Spinner } from "@/components/Spinner";
 import { AiRuntimeStep } from "./AiRuntime";
 import { SandboxStep } from "./Sandbox";
+import { WelcomeStep } from "./Welcome";
 
 export interface SetupFormState {
   iOwnThis: boolean;
@@ -58,10 +58,8 @@ export function SetupWizard() {
       ai_runtime: form.aiRuntime,
       anthropic_api_key:
         form.aiRuntime === "anthropic" ? form.anthropicApiKey || undefined : undefined,
-      local_llm_url:
-        form.aiRuntime === "local-llm" ? form.localLlmUrl || undefined : undefined,
-      local_llm_token:
-        form.aiRuntime === "local-llm" ? form.localLlmToken || undefined : undefined,
+      local_llm_url: form.aiRuntime === "local-llm" ? form.localLlmUrl || undefined : undefined,
+      local_llm_token: form.aiRuntime === "local-llm" ? form.localLlmToken || undefined : undefined,
       sandbox_backend: form.sandboxBackend,
       i_own_this: form.iOwnThis,
     });

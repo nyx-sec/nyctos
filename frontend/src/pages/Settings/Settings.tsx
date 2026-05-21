@@ -1,5 +1,5 @@
-import { Card } from "@/components/Card";
 import { useAdvancedMode } from "@/api/preferences";
+import { Card } from "@/components/Card";
 
 /**
  * Operator settings surface. Phase 24 ships a single "Show advanced"
@@ -19,9 +19,8 @@ export function Settings() {
             <div>
               <h3 className="settings-page__row-title">Show advanced</h3>
               <p className="settings-page__row-help">
-                Reveals Quarantine and other advanced surfaces in the sidebar.
-                Quarantine holds findings that need manual confirmation before
-                they move into Findings.
+                Reveals Quarantine and other advanced surfaces in the sidebar. Quarantine holds
+                findings that need manual confirmation before they move into Findings.
               </p>
             </div>
             <label className="settings-page__toggle">

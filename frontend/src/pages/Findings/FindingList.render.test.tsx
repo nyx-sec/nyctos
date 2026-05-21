@@ -1,15 +1,10 @@
-import { ReactNode } from "react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render, screen, waitFor } from "@testing-library/react";
+import { ReactNode } from "react";
+import { MemoryRouter } from "react-router-dom";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { FindingWithDiff, ProjectRecord, RepoRecord, RunFindingsResponse } from "@/api/client";
 import { FindingList } from "./FindingList";
-import type {
-  FindingWithDiff,
-  ProjectRecord,
-  RepoRecord,
-  RunFindingsResponse,
-} from "@/api/client";
 
 function jsonResponse(body: unknown, init: ResponseInit = { status: 200 }) {
   return new Response(JSON.stringify(body), {
@@ -122,9 +117,7 @@ describe("FindingList full-render", () => {
 
   it("renders the run-scoped header showing the prior-run comparison", async () => {
     render(wrap(<FindingList />));
-    expect(
-      await screen.findByText(/Run run-1 compared with run-0/),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/Run run-1 compared with run-0/)).toBeInTheDocument();
   });
 
   it("maps each diff_status to the row chip label", async () => {

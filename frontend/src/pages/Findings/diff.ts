@@ -1,5 +1,5 @@
-import type { BadgeTone } from "@/components/Badge";
 import type { FindingDiffStatus } from "@/api/client";
+import type { BadgeTone } from "@/components/Badge";
 
 export const DIFF_TONE: Record<FindingDiffStatus, BadgeTone> = {
   new: "info",

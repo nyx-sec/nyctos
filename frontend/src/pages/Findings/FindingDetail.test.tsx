@@ -1,10 +1,10 @@
-import { ReactNode } from "react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { FindingDetail } from "./FindingDetail";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { ReactNode } from "react";
+import { MemoryRouter } from "react-router-dom";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FindingRecord } from "@/api/client";
+import { FindingDetail } from "./FindingDetail";
 
 function jsonResponse(body: unknown, init: ResponseInit = { status: 200 }) {
   return new Response(JSON.stringify(body), {
@@ -84,9 +84,7 @@ describe("FindingDetail", () => {
     expect(screen.getByText("Open")).toBeInTheDocument();
     expect(screen.getByText("Static")).toBeInTheDocument();
     // No flow_steps recorded yet → muted fallback copy.
-    expect(
-      screen.getByText("No flow steps recorded for this finding."),
-    ).toBeInTheDocument();
+    expect(screen.getByText("No flow steps recorded for this finding.")).toBeInTheDocument();
   });
 
   it("renders flow steps from verdict_blob.flow_steps and copies path:line on click", async () => {
@@ -105,13 +103,9 @@ describe("FindingDetail", () => {
     // The flow-step button does not carry an aria-label; query by its
     // title attribute instead so the assertion matches both the
     // accessible-name fallback and the visible text content.
-    const stepButton = (await screen.findByTitle(
-      "Copy src/controller.py:12",
-    )) as HTMLButtonElement;
+    const stepButton = (await screen.findByTitle("Copy src/controller.py:12")) as HTMLButtonElement;
     fireEvent.click(stepButton);
-    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
-      "src/controller.py:12",
-    );
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith("src/controller.py:12");
     expect(
       await screen.findByText("Copied src/controller.py:12 to clipboard."),
     ).toBeInTheDocument();

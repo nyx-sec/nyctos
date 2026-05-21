@@ -1,10 +1,10 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
+import { type ProjectRecord, useProjects } from "@/api/client";
 import { Button } from "@/components/Button";
 import { Card } from "@/components/Card";
 import { EmptyState } from "@/components/EmptyState";
 import { Spinner } from "@/components/Spinner";
-import { useProjects, type ProjectRecord } from "@/api/client";
 import { ProjectAddModal } from "./ProjectAddModal";
 
 export function ProjectList() {
@@ -48,10 +48,7 @@ export function ProjectList() {
           )}
 
           {noneConfigured && (
-            <EmptyState
-              title="No projects yet"
-              body="Create one project to group related repos."
-            />
+            <EmptyState title="No projects yet" body="Create one project to group related repos." />
           )}
 
           {rows.length > 0 && (

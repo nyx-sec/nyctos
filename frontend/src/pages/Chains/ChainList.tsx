@@ -1,18 +1,11 @@
 import { useMemo } from "react";
 import { Link, useSearchParams } from "react-router-dom";
+import { type ChainRecord, type RunRecord, useRunChains, useRuns } from "@/api/client";
 import { Badge } from "@/components/Badge";
 import { Card } from "@/components/Card";
 import { EmptyState } from "@/components/EmptyState";
 import { Spinner } from "@/components/Spinner";
-import {
-  useRunChains,
-  useRuns,
-  type ChainRecord,
-  type RunRecord,
-} from "@/api/client";
-import {
-  extractChainRationale,
-} from "@/pages/Findings/FindingList";
+import { extractChainRationale } from "@/pages/Findings/FindingList";
 import { parseMemberIds } from "./memberIds";
 
 const RATIONALE_PREVIEW_CHARS = 160;
@@ -150,9 +143,7 @@ function ChainTable({ chains }: ChainTableProps) {
           return (
             <tr key={chain.id}>
               <td className="findings-table__repo">
-                <Link to={`/chains/${encodeURIComponent(chain.id)}`}>
-                  {shortChainId(chain.id)}
-                </Link>
+                <Link to={`/chains/${encodeURIComponent(chain.id)}`}>{shortChainId(chain.id)}</Link>
               </td>
               <td>
                 {chain.cross_repo ? (

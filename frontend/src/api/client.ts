@@ -5,12 +5,7 @@
  * itself in release builds.
  */
 
-import {
-  useMutation,
-  useQuery,
-  useQueryClient,
-  type QueryClient,
-} from "@tanstack/react-query";
+import { type QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import type { AgentEvent } from "./types.gen";
 
@@ -47,10 +42,7 @@ export function getAuthToken(): string | undefined {
   return window.__NYCTOS_BOOTSTRAP__?.authToken;
 }
 
-async function request<T>(
-  path: string,
-  init: RequestInit = {},
-): Promise<T> {
+async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers ?? {});
   if (init.body !== undefined && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
@@ -487,10 +479,9 @@ export function useDeleteProject() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) =>
-      request<{ ok: boolean; message: string }>(
-        `/projects/${encodeURIComponent(id)}`,
-        { method: "DELETE" },
-      ),
+      request<{ ok: boolean; message: string }>(`/projects/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      }),
     onSuccess: () => invalidateProjectLists(qc),
   });
 }
@@ -500,8 +491,7 @@ export function useDeleteProject() {
 export function useProjectRepos(projectId: string | undefined) {
   return useQuery({
     queryKey: projectId ? qk.projectRepos(projectId) : ["projects", "_disabled", "repos"],
-    queryFn: () =>
-      request<RepoRecord[]>(`/projects/${encodeURIComponent(projectId!)}/repos`),
+    queryFn: () => request<RepoRecord[]>(`/projects/${encodeURIComponent(projectId!)}/repos`),
     enabled: Boolean(projectId),
   });
 }
@@ -518,9 +508,7 @@ export function useAllRepos() {
     queryFn: async () => {
       const projects = await request<ProjectRecord[]>("/projects");
       const lists = await Promise.all(
-        projects.map((p) =>
-          request<RepoRecord[]>(`/projects/${encodeURIComponent(p.id)}/repos`),
-        ),
+        projects.map((p) => request<RepoRecord[]>(`/projects/${encodeURIComponent(p.id)}/repos`)),
       );
       return lists.flat();
     },
@@ -566,10 +554,10 @@ export function usePatchProjectRepo(projectId: string) {
 export function useTestProjectRepo(projectId: string) {
   return useMutation({
     mutationFn: (body: TestRepoRequest) =>
-      request<TestRepoResponse>(
-        `/projects/${encodeURIComponent(projectId)}/repos/test`,
-        { method: "POST", body: JSON.stringify(body) },
-      ),
+      request<TestRepoResponse>(`/projects/${encodeURIComponent(projectId)}/repos/test`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
   });
 }
 
@@ -634,14 +622,9 @@ export function useFindings(params: FindingsQuery = {}) {
  * parameter, and `include_quarantine`, which is always false for the
  * run-scoped view).
  */
-export function useRunFindings(
-  runId: string | undefined,
-  filters: RunFindingsQuery = {},
-) {
+export function useRunFindings(runId: string | undefined, filters: RunFindingsQuery = {}) {
   return useQuery({
-    queryKey: runId
-      ? qk.runFindings(runId, filters)
-      : ["runs", "_disabled", "findings"],
+    queryKey: runId ? qk.runFindings(runId, filters) : ["runs", "_disabled", "findings"],
     queryFn: () => {
       const search = new URLSearchParams();
       for (const [key, value] of Object.entries(filters)) {
@@ -681,8 +664,7 @@ export function useChain(id: string | undefined) {
 export function useRunChains(runId: string | undefined) {
   return useQuery({
     queryKey: runId ? qk.runChains(runId) : ["runs", "_disabled", "chains"],
-    queryFn: () =>
-      request<ChainRecord[]>(`/chains?run_id=${encodeURIComponent(runId!)}`),
+    queryFn: () => request<ChainRecord[]>(`/chains?run_id=${encodeURIComponent(runId!)}`),
     enabled: Boolean(runId),
   });
 }
@@ -737,8 +719,7 @@ export function useDismissQuarantine() {
 export function useFindingTraces(id: string | undefined) {
   return useQuery({
     queryKey: id ? qk.findingTraces(id) : ["findings", "_disabled", "traces"],
-    queryFn: () =>
-      request<AgentTraceRow[]>(`/findings/${encodeURIComponent(id!)}/traces`),
+    queryFn: () => request<AgentTraceRow[]>(`/findings/${encodeURIComponent(id!)}/traces`),
     enabled: Boolean(id),
   });
 }
@@ -753,10 +734,9 @@ export function useFindingTraces(id: string | undefined) {
 export function useBuildReproBundle() {
   return useMutation({
     mutationFn: (id: string) =>
-      request<BundleManifest>(
-        `/findings/${encodeURIComponent(id)}/repro-bundle`,
-        { method: "POST" },
-      ),
+      request<BundleManifest>(`/findings/${encodeURIComponent(id)}/repro-bundle`, {
+        method: "POST",
+      }),
   });
 }
 
@@ -777,10 +757,7 @@ export function reproBundleDownloadUrl(id: string): string {
  * `ReplayEvent` frames. Returns the close handle so the caller can
  * abort mid-stream. Stream ends naturally after the `end` event.
  */
-export function startReplayStream(
-  id: string,
-  onEvent: (event: ReplayEvent) => void,
-): () => void {
+export function startReplayStream(id: string, onEvent: (event: ReplayEvent) => void): () => void {
   const token = getAuthToken();
   const qs = token ? `?token=${encodeURIComponent(token)}` : "";
   const url = `${API_BASE}/findings/${encodeURIComponent(id)}/replay${qs}`;
@@ -832,13 +809,7 @@ function parseSseFrame(frame: string): ReplayEvent | null {
   for (const line of frame.split("\n")) {
     if (line.startsWith("event:")) {
       const v = line.slice(6).trim();
-      if (
-        v === "start" ||
-        v === "stdout" ||
-        v === "stderr" ||
-        v === "end" ||
-        v === "error"
-      ) {
+      if (v === "start" || v === "stdout" || v === "stderr" || v === "end" || v === "error") {
         kind = v;
       }
     } else if (line.startsWith("data:")) {

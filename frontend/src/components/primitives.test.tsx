@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
+import { describe, expect, it } from "vitest";
 
 import { Badge } from "./Badge";
 import { Button } from "./Button";
@@ -106,9 +106,7 @@ describe("EmptyState", () => {
         actions={<button type="button">Scan now</button>}
       />,
     );
-    expect(
-      screen.getByRole("heading", { level: 3, name: "No findings yet" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 3, name: "No findings yet" })).toBeInTheDocument();
     expect(screen.getByText("Trigger a scan to see results.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Scan now" })).toBeInTheDocument();
   });

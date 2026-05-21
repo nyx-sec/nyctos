@@ -1,2 +1,2 @@
-export { FindingList } from "./FindingList";
 export { FindingDetail } from "./FindingDetail";
+export { FindingList } from "./FindingList";
