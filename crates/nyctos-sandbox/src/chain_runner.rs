@@ -20,6 +20,16 @@
 //! workspace-relative `NYX_PAYLOAD_PATH` pointing at its payload file,
 //! matching the payload runner's contract.
 //!
+//! Per-step isolation. Non-terminal steps run against an ephemeral COW
+//! snapshot of the chain workspace (via [`SandboxOpts::with_snapshot_from`]),
+//! so a step that wipes or rewrites `nyx_chain_*` files (or pre-writes
+//! the terminal `chain.sentinel`) only mutates its own snapshot — peer
+//! steps and the terminal probe see the unmodified parent workspace.
+//! The terminal step deliberately runs against the parent workspace
+//! directly so its sink-probe sentinel write survives `Sandbox::wait`
+//! and is visible to [`Oracle::SinkProbe`] evaluation; no peer runs
+//! after the terminal step so it cannot victimise anyone.
+//!
 //! Replay stability. When [`ChainRunner::replay_stable_check`] is set,
 //! the runner re-executes the full chain a second time and stamps
 //! [`ChainResult::replay_stable`] based on whether the second pass
@@ -365,6 +375,16 @@ impl ChainRunner {
         opts.env.push(("NYX_CHAIN_ID".to_string(), run.chain_id.clone()));
         opts.env.push(("NYX_CHAIN_STEP".to_string(), idx.to_string()));
 
+        // Non-terminal steps run against a fresh per-step COW snapshot so
+        // their writes (including a malicious pre-write of the terminal
+        // `chain.sentinel`) cannot reach the parent workspace. The
+        // terminal step keeps direct access so its sink-probe sentinel
+        // is observable to `eval_terminal_probe` after `wait` returns.
+        let is_terminal = idx == run.members.len() - 1;
+        if !is_terminal {
+            opts.snapshot_from = Some(run.workspace.clone());
+        }
+
         let outcome = match self.spawn(opts).await {
             Ok(o) => o,
             Err(SandboxError::Spawn(e)) => {
@@ -396,7 +416,6 @@ impl ChainRunner {
 
         let (exit_code, timed_out) = classify_status(outcome.status);
 
-        let is_terminal = idx == run.members.len() - 1;
         let probe_fired = if is_terminal {
             eval_terminal_probe(
                 &run.workspace,
@@ -714,6 +733,78 @@ mod tests {
         .expect("ChainRun::new");
         let err = runner.run(run).await.expect_err("must refuse");
         assert!(matches!(err, ChainRunnerError::TerminalOracleWrongKind));
+    }
+
+    #[tokio::test]
+    async fn non_terminal_step_cannot_forge_terminal_sentinel() {
+        // Threat model: a non-terminal step's harness writes the terminal
+        // `chain.sentinel` file directly, hoping the runner reads it after
+        // the terminal step exits cleanly. With per-step COW isolation,
+        // the forge lands in the non-terminal step's ephemeral snapshot
+        // and never reaches the parent workspace, so the sink-probe must
+        // still report missing-sentinel after a clean terminal exit.
+        let dir = ws();
+
+        let forge_step = ChainStep {
+            finding_id: "repoA:forge".to_string(),
+            repo_name: "repo-a".to_string(),
+            spec: HarnessSpecInput {
+                cap: "AUTH_BYPASS".to_string(),
+                lang: "shell".to_string(),
+                setup: vec![],
+                invoke: "INPUT=@PAYLOAD; \
+                    printf '%s' 'TOP_SECRET' > chain.sentinel; \
+                    printf 'session=admin-token via %s' \"$INPUT\""
+                    .to_string(),
+                teardown: vec![],
+            },
+            harness_source: HarnessSource::Synthesised,
+            payload: b"bypass".to_vec(),
+        };
+
+        // Terminal step exits cleanly without touching chain.sentinel.
+        // Reuses the sqli_sink_step grammar (session gate, then a noop
+        // body) so the chain reaches the terminal step.
+        let noop_terminal = ChainStep {
+            finding_id: "repoB:noop-terminal".to_string(),
+            repo_name: "repo-b".to_string(),
+            spec: HarnessSpecInput {
+                cap: "SQL_QUERY".to_string(),
+                lang: "shell".to_string(),
+                setup: vec![],
+                invoke: "case \"$NYX_PREV_OUTPUT\" in *session=admin-token*) ;; \
+                    *) echo missing-session >&2; exit 8 ;; esac; \
+                    PROBE=@PAYLOAD; echo terminal-done"
+                    .to_string(),
+                teardown: vec![],
+            },
+            harness_source: HarnessSource::Synthesised,
+            payload: b".*".to_vec(),
+        };
+
+        let runner = ChainRunner::default();
+        let run = build_run(
+            "chain-forge",
+            vec![forge_step, noop_terminal],
+            sink_oracle(),
+            dir.path().to_path_buf(),
+        )
+        .expect("ChainRun::new");
+        let result = runner.run(run).await.expect("run");
+
+        assert_eq!(
+            result.verdict,
+            ChainVerdict::Inconclusive(InconclusiveReason::ChainStepFailed { which: 1 }),
+            "non-terminal forge must not leak into parent sentinel; {result:?}",
+        );
+        assert_eq!(result.steps.len(), 2);
+        assert_eq!(result.steps[0].exit_code, 0, "forge step exits 0 inside its snapshot");
+        assert_eq!(result.steps[1].exit_code, 0, "terminal step exits 0 without sentinel");
+        assert!(!result.steps[1].probe_fired);
+        assert!(
+            !dir.path().join("chain.sentinel").exists(),
+            "forged sentinel must stay inside the non-terminal step's snapshot",
+        );
     }
 
     #[tokio::test]
