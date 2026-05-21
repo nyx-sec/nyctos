@@ -3357,6 +3357,201 @@ mod tests {
         assert!(blob.contains("failed twice"));
     }
 
+    #[tokio::test]
+    async fn spec_derivation_end_to_end_through_build_run_apply() {
+        // Acceptance: a real Diag carrying Inconclusive(SpecDerivationFailed)
+        // travels build_spec_inputs -> run_spec_derivation (scripted runtime)
+        // -> apply_spec_outcome, lands a `harness_specs` row, and stamps
+        // the parent `findings.spec_id` back-link. Pins the seam the per-half
+        // unit tests already cover in isolation.
+        let tmp_db = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp_db.path()).await.unwrap();
+        store.repos().upsert(&seed_repo("repo-E2E")).await.unwrap();
+        store.runs().insert(&seed_run("run-E2E")).await.unwrap();
+        let seed = seed_finding("run-E2E", "repo-E2E", "sink.py", "rule-e2e-spec");
+        let fid = seed.id.clone();
+        store.findings().upsert(&seed).await.unwrap();
+        assert!(seed.spec_id.is_none(), "seed finding starts with no spec back-link");
+
+        // Workspace lays out a sink whose `line: 10` matches seed_finding's
+        // BLAKE3-keyed line, plus one flow-step file the excerpt collector
+        // attaches as `call_site`.
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::write(
+            workspace.path().join("sink.py"),
+            "import sqlite3\ndb = sqlite3.connect(':memory:')\n\
+             # padding\n# padding\n# padding\n# padding\n# padding\n# padding\n# padding\n\
+             cursor.execute('SELECT * FROM users WHERE n=' + q)\n",
+        )
+        .unwrap();
+        std::fs::write(
+            workspace.path().join("router.py"),
+            "def route(q):\n    handler(q)\n",
+        )
+        .unwrap();
+        let mut workspaces = HashMap::new();
+        workspaces.insert(
+            "repo-E2E".to_string(),
+            WorkspaceHandle::for_local_path_test(
+                "repo-E2E",
+                workspace.path().to_path_buf(),
+            ),
+        );
+
+        let diag = diag_spec_failed("sink.py", 10, "SQL_QUERY", "rule-e2e-spec", &[("router.py", 2)]);
+        let bundle = make_bundle("run-E2E", "repo-E2E", vec![diag]);
+
+        let inputs = build_spec_inputs(&bundle, &workspaces);
+        assert_eq!(inputs.len(), 1, "the SpecDerivationFailed diag must fan out");
+        assert_eq!(inputs[0].finding_id, fid, "input finding_id must match seeded row");
+        assert_eq!(inputs[0].cap, "SQL_QUERY");
+        assert_eq!(inputs[0].lang, "python");
+
+        let body = serde_json::json!({
+            "schema_version": 1,
+            "cap": "SQL_QUERY",
+            "lang": "python",
+            "entry": "app.handlers:run_query",
+            "setup": ["import sqlite3", "db = sqlite3.connect(':memory:')"],
+            "invoke": "db.execute('SELECT * FROM users WHERE n=' + @PAYLOAD)",
+            "payload_arg": 0,
+            "oracle": "row count > 0",
+            "teardown": ["db.close()"],
+        })
+        .to_string();
+        let tracker = Arc::new(InMemoryBudgetTracker::new());
+        tracker.set_cap("run-E2E", BudgetKind::OneShot, 5_000_000);
+        let runtime = ScriptedNovelRuntime::new(vec![Ok(body)], 4_200, tracker.clone());
+
+        let (tx, _rx) = tokio::sync::broadcast::channel(4);
+        let outcome = nyctos_ai::run_spec_derivation(&runtime, &inputs[0], tx, 5_000_000)
+            .await
+            .expect("scripted runtime produces a synthesised outcome");
+
+        let mut report = SpecDerivationPassReport::default();
+        apply_spec_outcome(&store, outcome, &mut report, "scripted-novel", "scripted-model", 0)
+            .await
+            .unwrap();
+        assert_eq!(report.synthesised, 1);
+        assert_eq!(report.quarantined, 0);
+        assert_eq!(report.failed, 0);
+
+        let specs = store.harness_specs().list_by_cap("SQL_QUERY").await.unwrap();
+        assert_eq!(specs.len(), 1, "exactly one harness_specs row persisted");
+        let spec_row = &specs[0];
+        assert_eq!(spec_row.cap, "SQL_QUERY");
+        assert_eq!(spec_row.lang, "python");
+        assert_eq!(spec_row.attack_provenance.as_deref(), Some("LlmSynthesised"));
+        let (parsed, _) = nyctos_nyx::HarnessSpec::from_json(&spec_row.spec_blob).unwrap();
+        parsed.validate().expect("vendored schema accepts persisted blob");
+
+        let updated = store.findings().get(&fid).await.unwrap().expect("finding");
+        assert_eq!(
+            updated.spec_id.as_deref(),
+            Some(spec_row.id.as_str()),
+            "findings.spec_id must back-link to the persisted harness_specs row"
+        );
+        assert_eq!(updated.attack_provenance.as_deref(), Some("LlmSynthesised"));
+        assert_eq!(
+            updated.prompt_version.as_deref(),
+            Some(SPEC_DERIVATION_PROMPT_VERSION)
+        );
+    }
+
+    #[tokio::test]
+    async fn payload_synthesis_end_to_end_through_build_run_apply() {
+        // Acceptance: a real Diag carrying Unsupported(NoPayloadsForCap)
+        // travels build_inputs -> run_payload_synthesis (scripted runtime)
+        // -> apply_outcome, lands a `payloads` row keyed to the seeded
+        // finding with `attack_provenance = LlmSynthesised`, and stamps
+        // the parent finding's provenance + prompt_version columns.
+        let tmp_db = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp_db.path()).await.unwrap();
+        store.repos().upsert(&seed_repo("repo-P")).await.unwrap();
+        store.runs().insert(&seed_run("run-P")).await.unwrap();
+        let seed = seed_finding("run-P", "repo-P", "sink.py", "rule-e2e-payload");
+        let fid = seed.id.clone();
+        store.findings().upsert(&seed).await.unwrap();
+        assert!(
+            seed.attack_provenance.is_none(),
+            "seed finding starts with no AI provenance"
+        );
+
+        // Workspace with a python file at line 10 to match seed_finding's
+        // BLAKE3-keyed line.
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::write(
+            workspace.path().join("sink.py"),
+            "import sqlite3\n# pad\n# pad\n# pad\n# pad\n# pad\n# pad\n# pad\n# pad\n\
+             cursor.execute('SELECT * FROM users WHERE n=' + q)\n",
+        )
+        .unwrap();
+        let mut workspaces = HashMap::new();
+        workspaces.insert(
+            "repo-P".to_string(),
+            WorkspaceHandle::for_local_path_test(
+                "repo-P",
+                workspace.path().to_path_buf(),
+            ),
+        );
+
+        let diag = diag_unsupported("sink.py", 10, "SQL_QUERY", "rule-e2e-payload");
+        let bundle = make_bundle("run-P", "repo-P", vec![diag]);
+
+        let inputs = build_inputs(&bundle, &workspaces);
+        assert_eq!(inputs.len(), 1, "the unsupported diag must fan out");
+        assert_eq!(inputs[0].finding_id, fid, "input finding_id must match seeded row");
+        assert_eq!(inputs[0].cap, "SQL_QUERY");
+        assert_eq!(inputs[0].lang, "python");
+
+        let body = serde_json::json!({
+            "vuln_payload": "' OR 1=1 --",
+            "vuln_oracle": "row count > 0 OR error contains 'SQL'",
+            "benign_payload": "alice",
+        })
+        .to_string();
+        let tracker = Arc::new(InMemoryBudgetTracker::new());
+        tracker.set_cap("run-P", BudgetKind::OneShot, 5_000_000);
+        let runtime = ScriptedNovelRuntime::new(vec![Ok(body)], 6_400, tracker.clone());
+
+        let (tx, _rx) = tokio::sync::broadcast::channel(4);
+        let outcome = nyctos_ai::run_payload_synthesis(&runtime, &inputs[0], tx, 5_000_000)
+            .await
+            .expect("scripted runtime produces a synthesised payload");
+
+        let mut report = PayloadSynthesisPassReport::default();
+        apply_outcome(&store, outcome, &mut report, "scripted-novel", "scripted-model", 0)
+            .await
+            .unwrap();
+        assert_eq!(report.synthesised, 1);
+        assert_eq!(report.quarantined, 0);
+
+        let payloads = store.payloads().list_for_finding(&fid).await.unwrap();
+        assert_eq!(payloads.len(), 1, "exactly one payloads row persisted");
+        let row = &payloads[0];
+        assert_eq!(row.finding_id, fid);
+        assert_eq!(row.cap, "SQL_QUERY");
+        assert_eq!(row.lang, "python");
+        assert_eq!(row.vuln_bytes, b"' OR 1=1 --");
+        assert_eq!(row.benign_bytes.as_deref(), Some(b"alice".as_ref()));
+        assert_eq!(row.attack_provenance.as_deref(), Some("LlmSynthesised"));
+        assert_eq!(
+            row.prompt_version.as_deref(),
+            Some(nyctos_types::payload::PAYLOAD_SYNTHESIS_PROMPT_VERSION)
+        );
+
+        let updated = store.findings().get(&fid).await.unwrap().expect("finding");
+        assert_eq!(
+            updated.attack_provenance.as_deref(),
+            Some("LlmSynthesised"),
+            "finding's provenance must be stamped by the dual-write"
+        );
+        assert_eq!(
+            updated.prompt_version.as_deref(),
+            Some(nyctos_types::payload::PAYLOAD_SYNTHESIS_PROMPT_VERSION)
+        );
+    }
+
     // -------- chain-reasoning pass coverage --------
 
     fn diag_with_flow_step(
