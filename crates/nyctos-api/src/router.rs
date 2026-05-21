@@ -42,7 +42,8 @@ use nyctos_core::{
     ACCOUNT_AI_LOCAL_LLM,
 };
 use nyctos_types::api::{
-    DoctorCheck, DoctorRequest, DoctorResponse, HealthResponse, SetupRequest, SetupStatusResponse,
+    DoctorCheck, DoctorRequest, DoctorResponse, FindingDiffStatus, FindingWithDiff, HealthResponse,
+    RunFindingsResponse, SetupRequest, SetupStatusResponse,
 };
 use nyctos_types::event::{AgentEvent, ReproEvent, RunEvent};
 use nyctos_types::project::{CreateProjectRequest, PatchProjectRequest, TriStateJson};
@@ -1073,48 +1074,8 @@ async fn get_finding(
         .ok_or_else(|| ApiError::NotFound(format!("finding `{id}` not found")))
 }
 
-/// Diff status for one finding relative to a baseline run. Surfaced as
-/// the "new / regressed / closed" chips the findings browser renders.
-///
-/// - `New`: not observed during the prior run.
-/// - `Regressed`: observed during both runs but the status differs
-///   (e.g. was `Closed` in prior, is `Open` now).
-/// - `Closed`: observed during the prior run, not observed during
-///   the current run. The row body is the finding's latest-known
-///   shape; the diff status flags that no observation landed under
-///   the current run.
-/// - `Unchanged`: observed during both runs with the same status.
-///
-/// Sourced from the `run_findings` join table seeded by migration
-/// `0004_run_findings.sql`. Runs whose membership predates the
-/// migration carry no rows in that table; the classifier degrades
-/// to `New` for them so the chip wallpapers an unknown-history run
-/// rather than mislabelling it `Unchanged`.
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum FindingDiffStatus {
-    New,
-    Regressed,
-    Closed,
-    Unchanged,
-}
-
-#[derive(Debug, Serialize)]
-pub struct FindingWithDiff {
-    #[serde(flatten)]
-    pub record: FindingRecord,
-    pub diff_status: FindingDiffStatus,
-}
-
-#[derive(Debug, Serialize)]
-pub struct RunFindingsResponse {
-    pub run_id: String,
-    /// Most recent earlier run on the same install. `None` when this is
-    /// the first run, in which case every finding is classified as
-    /// [`FindingDiffStatus::New`].
-    pub prior_run_id: Option<String>,
-    pub items: Vec<FindingWithDiff>,
-}
+// `FindingDiffStatus`, `FindingWithDiff`, and `RunFindingsResponse`
+// live in `nyctos_types::api`; re-imported at the top of this file.
 
 /// Composite filter for `GET /api/v1/runs/:id/findings`. Mirrors the
 /// `FindingsQuery` shape minus `run_id` (taken from the path) and

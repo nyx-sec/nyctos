@@ -15,12 +15,15 @@ import type {
   CreateRepoRequest,
   DoctorCheck,
   DoctorResponse,
+  FindingDiffStatus,
   FindingRecord,
+  FindingWithDiff,
   HealthResponse,
   PatchProjectRequest,
   PatchRepoRequest,
   ProjectRecord,
   RepoRecord,
+  RunFindingsResponse,
   RunRecord,
   SetupRequest,
   SetupStatusResponse,
@@ -34,12 +37,15 @@ export type {
   CreateRepoRequest,
   DoctorCheck,
   DoctorResponse,
+  FindingDiffStatus,
   FindingRecord,
+  FindingWithDiff,
   HealthResponse,
   PatchProjectRequest,
   PatchRepoRequest,
   ProjectRecord,
   RepoRecord,
+  RunFindingsResponse,
   RunRecord,
   SetupRequest,
   SetupStatusResponse,
@@ -112,18 +118,6 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 // already hoisted into `nyctos-types` are re-exported above via
 // `./types.gen`; the rest still live here until the DTO-drop deferred
 // item retires them.
-
-export type FindingDiffStatus = "new" | "regressed" | "closed" | "unchanged";
-
-export interface FindingWithDiff extends FindingRecord {
-  diff_status: FindingDiffStatus;
-}
-
-export interface RunFindingsResponse {
-  run_id: string;
-  prior_run_id: string | null;
-  items: FindingWithDiff[];
-}
 
 export type QuarantineKind = "finding" | "candidate";
 

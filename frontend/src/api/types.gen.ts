@@ -261,3 +261,15 @@ ai_runtime: string,
  */
 sandbox_backend: string, };
 
+export type FindingDiffStatus = "new" | "regressed" | "closed" | "unchanged";
+
+export type FindingWithDiff = { diff_status: FindingDiffStatus, id: string, run_id: string, repo: string, path: string, line: number | null, cap: string, rule: string, severity: string, status: string, finding_origin: string, first_seen: number, last_seen: number, superseded_by: string | null, triage_state: string, triage_assigned_to: string | null, verdict_blob: string | null, repro_path: string | null, attack_provenance: string | null, prompt_version: string | null, chain_id: string | null, 
+/**
+ * Back-link to `harness_specs.id` populated by SpecDerivation.
+ * `None` for static-pass rows that never went through the AI
+ * spec pass.
+ */
+spec_id: string | null, };
+
+export type RunFindingsResponse = { run_id: string, prior_run_id: string | null, items: Array<FindingWithDiff>, };
+

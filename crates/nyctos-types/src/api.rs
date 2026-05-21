@@ -12,6 +12,8 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use crate::finding::FindingRecord;
+
 /// Response body for `GET /api/v1/health`. `status` is always the
 /// literal string `"ok"` on the wire (the daemon never returns a
 /// non-200 success); the FE keeps the `"ok"` literal narrowing as an
@@ -136,4 +138,60 @@ pub struct BundleManifest {
     #[ts(type = "number")]
     pub byte_size: u64,
     pub artifacts: Vec<String>,
+}
+
+/// Per-row diff classification on `GET /api/v1/runs/:id/findings`. The
+/// `lowercase` rename matches the FE's literal-union narrow
+/// (`"new" | "regressed" | "closed" | "unchanged"`) so ts-rs renders the
+/// type as that exact union and the SPA keys into `DIFF_TONE` /
+/// `DIFF_LABEL` records without casting.
+///
+/// - `New`: not observed during the prior run.
+/// - `Regressed`: observed during both runs but the status differs
+///   (e.g. was `Closed` in prior, is `Open` now).
+/// - `Closed`: observed during the prior run, not observed during
+///   the current run. The row body is the finding's latest-known
+///   shape; the diff status flags that no observation landed under
+///   the current run.
+/// - `Unchanged`: observed during both runs with the same status.
+///
+/// Sourced from the `run_findings` join table seeded by migration
+/// `0004_run_findings.sql`. Runs whose membership predates the
+/// migration carry no rows in that table; the router classifier
+/// degrades to `New` for them so the chip wallpapers an
+/// unknown-history run rather than mislabelling it `Unchanged`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "lowercase")]
+pub enum FindingDiffStatus {
+    New,
+    Regressed,
+    Closed,
+    Unchanged,
+}
+
+/// One row in [`RunFindingsResponse::items`]. Flattens
+/// [`FindingRecord`] onto a single object alongside the
+/// [`FindingDiffStatus`] chip; the FE's hand-rolled
+/// `interface FindingWithDiff extends FindingRecord { diff_status: ... }`
+/// is structurally equivalent to the `FindingRecord & { diff_status: ... }`
+/// shape ts-rs generates from the `#[serde(flatten)]` directive.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct FindingWithDiff {
+    #[serde(flatten)]
+    pub record: FindingRecord,
+    pub diff_status: FindingDiffStatus,
+}
+
+/// Response body for `GET /api/v1/runs/:id/findings`. `prior_run_id` is
+/// `null` (not absent) when this is the first run on the install, in
+/// which case every entry in `items` carries
+/// [`FindingDiffStatus::New`]; `#[ts(type = "string | null")]` pins the
+/// wire shape so the FE keeps reading `prior_run_id: string | null`
+/// rather than `string | undefined`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct RunFindingsResponse {
+    pub run_id: String,
+    #[ts(type = "string | null")]
+    pub prior_run_id: Option<String>,
+    pub items: Vec<FindingWithDiff>,
 }

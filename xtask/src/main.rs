@@ -24,8 +24,8 @@ use nyctos_types::{
         HaltReason, Prompt, Response, TokenUsage,
     },
     api::{
-        BundleManifest, DoctorCheck, DoctorRequest, DoctorResponse, HealthResponse, SetupRequest,
-        SetupStatusResponse,
+        BundleManifest, DoctorCheck, DoctorRequest, DoctorResponse, FindingDiffStatus,
+        FindingWithDiff, HealthResponse, RunFindingsResponse, SetupRequest, SetupStatusResponse,
     },
     chain::ChainRecord,
     event::{
@@ -140,6 +140,9 @@ fn render() -> String {
         decl_of::<DoctorCheck>(),
         decl_of::<DoctorResponse>(),
         decl_of::<DoctorRequest>(),
+        decl_of::<FindingDiffStatus>(),
+        decl_of::<FindingWithDiff>(),
+        decl_of::<RunFindingsResponse>(),
     ];
 
     for decl in decls {
