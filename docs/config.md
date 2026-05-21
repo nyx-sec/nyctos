@@ -88,6 +88,8 @@ fails the load rather than silently going to default.
 | `spec_derivation_per_call_cap_usd_micros`   | i64 (optional) | unset | Per-call cap for each SpecDerivation call. Same fall-back rules. |
 | `chain_reasoning_per_call_cap_usd_micros`   | i64 (optional) | unset | Per-call cap for the single ChainReasoning call. Same fall-back rules. |
 | `novel_discovery_per_call_cap_usd_micros`   | i64 (optional) | unset | Per-call cap for each NovelFindingDiscovery batch. Same fall-back rules. |
+| `exploration_soft_cap_usd_micros`           | i64 (optional) | unset | Per-task soft cap for AI Exploration. Crossing it emits a single warning; the run continues until the hard cap below trips. Falls back to `$5.00` (`5_000_000`) when unset or non-positive. |
+| `exploration_run_cap_usd_micros`            | i64 (optional) | unset | Per-run hard cap for AI Exploration. The pass halts if cumulative spend reaches this value. Falls back to `$10.00` (`10_000_000`) when unset or non-positive. |
 
 `runtime` values (kebab-case):
 

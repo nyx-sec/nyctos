@@ -267,6 +267,20 @@ pub struct AiConfig {
     /// via `[ai] novel_discovery_per_call_cap_usd_micros`.
     #[serde(default)]
     pub novel_discovery_per_call_cap_usd_micros: Option<i64>,
+    /// Per-task soft cap for AI Exploration. Crossing the cap emits
+    /// a single operator warning but does not halt the run; the hard
+    /// cap below is the only ceiling that aborts an in-progress
+    /// exploration. `None` falls back to the caller-supplied default
+    /// (crate-level constant in `nyctos-ai`). Configured via
+    /// `[ai] exploration_soft_cap_usd_micros`.
+    #[serde(default)]
+    pub exploration_soft_cap_usd_micros: Option<i64>,
+    /// Per-run hard cap for AI Exploration. Sized for Claude Opus
+    /// pricing on a Phase-23 exploration loop. `None` falls back to
+    /// the caller-supplied default. Configured via
+    /// `[ai] exploration_run_cap_usd_micros`.
+    #[serde(default)]
+    pub exploration_run_cap_usd_micros: Option<i64>,
 }
 
 impl Default for AiConfig {
@@ -283,6 +297,8 @@ impl Default for AiConfig {
             spec_derivation_per_call_cap_usd_micros: None,
             chain_reasoning_per_call_cap_usd_micros: None,
             novel_discovery_per_call_cap_usd_micros: None,
+            exploration_soft_cap_usd_micros: None,
+            exploration_run_cap_usd_micros: None,
         }
     }
 }
@@ -363,6 +379,28 @@ impl AiConfig {
         match self.novel_discovery_per_call_cap_usd_micros {
             Some(v) if v > 0 => v,
             _ => Self::DEFAULT_RUN_BUDGET_USD_MICROS,
+        }
+    }
+
+    /// Resolved per-task soft cap for AI Exploration. Falls back to
+    /// the caller-supplied default when the operator did not set
+    /// `[ai] exploration_soft_cap_usd_micros` or set a non-positive
+    /// value. The default lives in the `nyctos-ai` crate
+    /// (`DEFAULT_EXPLORATION_SOFT_CAP_USD_MICROS`); core does not
+    /// depend on `nyctos-ai`, so the caller passes the value in.
+    pub fn exploration_soft_cap_usd_micros_resolved(&self, default: i64) -> i64 {
+        match self.exploration_soft_cap_usd_micros {
+            Some(v) if v > 0 => v,
+            _ => default,
+        }
+    }
+
+    /// Resolved per-run hard cap for AI Exploration. Same fall-back
+    /// rules as `exploration_soft_cap_usd_micros_resolved`.
+    pub fn exploration_run_cap_usd_micros_resolved(&self, default: i64) -> i64 {
+        match self.exploration_run_cap_usd_micros {
+            Some(v) if v > 0 => v,
+            _ => default,
         }
     }
 }
@@ -692,6 +730,8 @@ mod tests {
                 spec_derivation_per_call_cap_usd_micros: Some(1_500_000),
                 chain_reasoning_per_call_cap_usd_micros: Some(3_000_000),
                 novel_discovery_per_call_cap_usd_micros: Some(4_000_000),
+                exploration_soft_cap_usd_micros: Some(3_500_000),
+                exploration_run_cap_usd_micros: Some(8_000_000),
             },
             ui: UiConfig { listen_addr: "0.0.0.0:9999".to_string(), open_browser: true },
             triggers: TriggersConfig {
@@ -1044,6 +1084,36 @@ mod tests {
         let fallback = AiConfig::DEFAULT_RUN_BUDGET_USD_MICROS;
         assert_eq!(cfg.ai.payload_synthesis_per_call_cap_usd_micros_resolved(), fallback);
         assert_eq!(cfg.ai.spec_derivation_per_call_cap_usd_micros_resolved(), fallback);
+    }
+
+    #[test]
+    fn ai_exploration_caps_default_to_caller_default() {
+        let cfg = Config::parse("", &PathBuf::from("<test>")).expect("parse");
+        assert!(cfg.ai.exploration_soft_cap_usd_micros.is_none());
+        assert!(cfg.ai.exploration_run_cap_usd_micros.is_none());
+        // Caller default round-trips through the resolved getter.
+        assert_eq!(cfg.ai.exploration_soft_cap_usd_micros_resolved(5_000_000), 5_000_000);
+        assert_eq!(cfg.ai.exploration_run_cap_usd_micros_resolved(10_000_000), 10_000_000);
+    }
+
+    #[test]
+    fn ai_exploration_caps_parse_operator_overrides() {
+        let raw = "[ai]\n\
+                   exploration_soft_cap_usd_micros = 3500000\n\
+                   exploration_run_cap_usd_micros = 8000000\n";
+        let cfg = Config::parse(raw, &PathBuf::from("<test>")).expect("parse");
+        assert_eq!(cfg.ai.exploration_soft_cap_usd_micros_resolved(5_000_000), 3_500_000);
+        assert_eq!(cfg.ai.exploration_run_cap_usd_micros_resolved(10_000_000), 8_000_000);
+    }
+
+    #[test]
+    fn ai_exploration_caps_non_positive_overrides_fall_back_to_caller_default() {
+        let raw = "[ai]\n\
+                   exploration_soft_cap_usd_micros = 0\n\
+                   exploration_run_cap_usd_micros = -1\n";
+        let cfg = Config::parse(raw, &PathBuf::from("<test>")).expect("parse");
+        assert_eq!(cfg.ai.exploration_soft_cap_usd_micros_resolved(5_000_000), 5_000_000);
+        assert_eq!(cfg.ai.exploration_run_cap_usd_micros_resolved(10_000_000), 10_000_000);
     }
 
     #[test]

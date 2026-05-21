@@ -30,6 +30,7 @@ use nyctos_ai::{
     ExplorationAuditEntry, ExplorationEndpoint, ExplorationFinding, ExplorationHaltReason,
     ExplorationOutcome, ExplorationScope, NovelFindingDiscoveryOutcome, PayloadSynthesisOutcome,
     Pricing, SharedBudgetTracker, SpecDerivationOutcome, DEFAULT_EXPLORATION_RUN_CAP_USD_MICROS,
+    DEFAULT_EXPLORATION_SOFT_CAP_USD_MICROS,
 };
 use nyctos_core::store::{
     AgentTraceRecord, CandidateFindingRecord, CandidateStatus, ChainRecord, FindingOrigin,
@@ -2486,8 +2487,16 @@ pub async fn run_ai_exploration_pass(
     // and a Claude Code binary is
     // on PATH (since the Anthropic adapter cannot drive an agent
     // loop).
-    let _ = config;
-    let adapter = match ClaudeCodeAdapter::discover(make_exploration_tracker(store)).await {
+    let run_cap_usd_micros = config
+        .exploration_run_cap_usd_micros_resolved(DEFAULT_EXPLORATION_RUN_CAP_USD_MICROS);
+    let soft_cap_usd_micros = config
+        .exploration_soft_cap_usd_micros_resolved(DEFAULT_EXPLORATION_SOFT_CAP_USD_MICROS);
+    let adapter = match ClaudeCodeAdapter::discover(make_exploration_tracker(
+        store,
+        run_cap_usd_micros,
+    ))
+    .await
+    {
         Ok(a) => a,
         Err(err) => {
             tracing::info!("ai exploration: claude-code unavailable ({err}); skipping pass");
@@ -2503,6 +2512,8 @@ pub async fn run_ai_exploration_pass(
         escape_gate,
         events,
         traces_dir,
+        soft_cap_usd_micros,
+        run_cap_usd_micros,
     )
     .await
 }
@@ -2511,6 +2522,7 @@ pub async fn run_ai_exploration_pass(
 /// scripted agent-loop runtime without going through the production
 /// Claude Code adapter. Shape mirrors the `drive_novel_finding_pass`
 /// inner driver.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn drive_ai_exploration_pass<R: AiRuntime + ?Sized>(
     runtime: &R,
     store: &Store,
@@ -2519,6 +2531,8 @@ pub(crate) async fn drive_ai_exploration_pass<R: AiRuntime + ?Sized>(
     escape_gate: &dyn EscapeSuiteGate,
     events: EventSink,
     traces_dir: &std::path::Path,
+    soft_cap_usd_micros: i64,
+    run_cap_usd_micros: i64,
 ) -> anyhow::Result<AiExplorationPassReport> {
     let mut report = AiExplorationPassReport::default();
     let runtime_name = runtime.name();
@@ -2530,7 +2544,12 @@ pub(crate) async fn drive_ai_exploration_pass<R: AiRuntime + ?Sized>(
         if !workspaces.contains_key(&repo_bundle.repo) {
             continue;
         }
-        let scope = build_exploration_scope(&bundle.run_id, &repo_bundle.repo);
+        let scope = build_exploration_scope(
+            &bundle.run_id,
+            &repo_bundle.repo,
+            soft_cap_usd_micros,
+            run_cap_usd_micros,
+        );
 
         let started_at = now_epoch_ms();
         let outcome = match run_exploration(runtime, &scope, escape_gate, events.clone()).await {
@@ -2562,11 +2581,16 @@ pub(crate) async fn drive_ai_exploration_pass<R: AiRuntime + ?Sized>(
     Ok(report)
 }
 
-fn make_exploration_tracker(store: &Store) -> SharedBudgetTracker {
-    Arc::new(BudgetStoreTracker::new(store.clone(), DEFAULT_EXPLORATION_RUN_CAP_USD_MICROS))
+fn make_exploration_tracker(store: &Store, run_cap_usd_micros: i64) -> SharedBudgetTracker {
+    Arc::new(BudgetStoreTracker::new(store.clone(), run_cap_usd_micros))
 }
 
-fn build_exploration_scope(run_id: &str, repo: &str) -> ExplorationScope {
+fn build_exploration_scope(
+    run_id: &str,
+    repo: &str,
+    soft_cap_usd_micros: i64,
+    run_cap_usd_micros: i64,
+) -> ExplorationScope {
     let mut scope = ExplorationScope::new(run_id, format!("expl-{repo}"));
     // Endpoint discovery is the env-builder's job. Until that wiring
     // lands, the agent receives an empty target list and
@@ -2575,6 +2599,8 @@ fn build_exploration_scope(run_id: &str, repo: &str) -> ExplorationScope {
     // real hosts through the settings page once it ships.
     scope.allowed_hosts = Vec::new();
     scope.target_endpoints = Vec::<ExplorationEndpoint>::new();
+    scope.soft_cap_usd_micros = soft_cap_usd_micros;
+    scope.run_cap_usd_micros = run_cap_usd_micros;
     scope
 }
 
@@ -5024,6 +5050,8 @@ mod tests {
             &gate,
             tx,
             traces_root.path(),
+            DEFAULT_EXPLORATION_SOFT_CAP_USD_MICROS,
+            DEFAULT_EXPLORATION_RUN_CAP_USD_MICROS,
         )
         .await
         .unwrap();
@@ -5100,6 +5128,8 @@ mod tests {
             &gate,
             tx,
             traces_root.path(),
+            DEFAULT_EXPLORATION_SOFT_CAP_USD_MICROS,
+            DEFAULT_EXPLORATION_RUN_CAP_USD_MICROS,
         )
         .await
         .unwrap();
@@ -5180,6 +5210,8 @@ mod tests {
             &gate,
             tx,
             traces_root.path(),
+            DEFAULT_EXPLORATION_SOFT_CAP_USD_MICROS,
+            DEFAULT_EXPLORATION_RUN_CAP_USD_MICROS,
         )
         .await
         .unwrap();
@@ -5259,6 +5291,8 @@ mod tests {
             &gate,
             tx,
             traces_root.path(),
+            DEFAULT_EXPLORATION_SOFT_CAP_USD_MICROS,
+            DEFAULT_EXPLORATION_RUN_CAP_USD_MICROS,
         )
         .await
         .unwrap();
@@ -5329,6 +5363,8 @@ mod tests {
             &gate,
             tx,
             traces_root.path(),
+            DEFAULT_EXPLORATION_SOFT_CAP_USD_MICROS,
+            DEFAULT_EXPLORATION_RUN_CAP_USD_MICROS,
         )
         .await
         .unwrap();

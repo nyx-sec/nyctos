@@ -1879,8 +1879,29 @@ async fn doctor(
     report_scheduler(config);
     report_webhook(config);
     report_run(config);
+    report_ai(config);
 
     Ok(nyx_code)
+}
+
+fn report_ai(config: &Config) {
+    let soft_cap = config
+        .ai
+        .exploration_soft_cap_usd_micros_resolved(nyctos_ai::DEFAULT_EXPLORATION_SOFT_CAP_USD_MICROS);
+    let run_cap = config
+        .ai
+        .exploration_run_cap_usd_micros_resolved(nyctos_ai::DEFAULT_EXPLORATION_RUN_CAP_USD_MICROS);
+    let soft_origin =
+        if config.ai.exploration_soft_cap_usd_micros.is_some() { "configured" } else { "default" };
+    let run_origin =
+        if config.ai.exploration_run_cap_usd_micros.is_some() { "configured" } else { "default" };
+    println!(
+        "ai exploration caps: ${:.2} soft [{}], ${:.2} run [{}]",
+        soft_cap as f64 / 1_000_000.0,
+        soft_origin,
+        run_cap as f64 / 1_000_000.0,
+        run_origin,
+    );
 }
 
 fn report_run(config: &Config) {
