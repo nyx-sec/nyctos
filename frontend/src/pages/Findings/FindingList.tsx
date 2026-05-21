@@ -8,7 +8,9 @@ import { Spinner } from "@/components/Spinner";
 import {
   useAllRepos,
   useFindings,
+  useRunChains,
   useRunFindings,
+  type ChainRecord,
   type FindingDiffStatus,
   type FindingRecord,
   type FindingWithDiff,
@@ -54,6 +56,7 @@ export function FindingList() {
   const repos = useAllRepos();
   const runQuery = useRunFindings(runId);
   const listQuery = useFindings(runId ? {} : filters);
+  const chainsQuery = useRunChains(runId);
 
   // When run_id is set, render the diff-decorated rows. Apply the
   // client-side facet filters (cap/origin/status/severity/repo) on top
@@ -71,7 +74,15 @@ export function FindingList() {
   }, [runId, runQuery.data, listQuery.data, filters]);
 
   const [groupByChain, setGroupByChain] = useState(false);
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(() => params.get("focus"));
+
+  function selectFinding(id: string | null) {
+    setSelected(id);
+    const next = new URLSearchParams(params);
+    if (id) next.set("focus", id);
+    else next.delete("focus");
+    setParams(next, { replace: true });
+  }
 
   const isLoading = runId ? runQuery.isPending : listQuery.isPending;
   const error = runId ? runQuery.error : listQuery.error;
@@ -95,7 +106,14 @@ export function FindingList() {
     setParams(next, { replace: true });
   }
 
-  const grouped = useMemo(() => groupRowsByChain(rows, groupByChain), [rows, groupByChain]);
+  const chainSummaries = useMemo(
+    () => buildChainSummaryIndex(chainsQuery.data ?? []),
+    [chainsQuery.data],
+  );
+  const grouped = useMemo(
+    () => groupRowsByChain(rows, groupByChain, chainSummaries),
+    [rows, groupByChain, chainSummaries],
+  );
   const priorRunId = runId ? runQuery.data?.prior_run_id ?? null : null;
   const resultSummary = isLoading
     ? "Loading findings..."
@@ -197,13 +215,13 @@ export function FindingList() {
         {rows.length > 0 && (
           <FindingTable
             grouped={grouped}
-            onSelect={(id) => setSelected(id)}
+            onSelect={(id) => selectFinding(id)}
             selected={selected}
           />
         )}
       </Card>
 
-      {selected && <FindingDetail id={selected} onClose={() => setSelected(null)} />}
+      {selected && <FindingDetail id={selected} onClose={() => selectFinding(null)} />}
     </div>
   );
 }
@@ -253,11 +271,79 @@ function FilterSelect({ label, value, onChange, options }: FilterSelectProps) {
   );
 }
 
-type ChainGroup = { key: string; label: string; items: FindingWithDiff[] };
+type ChainGroup = {
+  key: string;
+  label: string;
+  rationale: string | null;
+  crossRepo: boolean;
+  items: FindingWithDiff[];
+};
 
-function groupRowsByChain(rows: FindingWithDiff[], groupByChain: boolean): ChainGroup[] {
+export interface ChainSummary {
+  rationale: string | null;
+  crossRepo: boolean;
+}
+
+const CHAIN_RATIONALE_PREVIEW_CHARS = 140;
+
+export function extractChainRationale(blob: string | null): string | null {
+  if (!blob) return null;
+  try {
+    const parsed = JSON.parse(blob) as unknown;
+    if (parsed && typeof parsed === "object" && "rationale" in parsed) {
+      const value = (parsed as { rationale?: unknown }).rationale;
+      if (typeof value === "string" && value.length > 0) {
+        return value;
+      }
+    }
+  } catch {
+    // Fall through; treat blob as the rationale.
+  }
+  return blob.length > 0 ? blob : null;
+}
+
+export function buildChainSummaryIndex(
+  chains: ChainRecord[],
+): Map<string, ChainSummary> {
+  const map = new Map<string, ChainSummary>();
+  for (const chain of chains) {
+    map.set(chain.id, {
+      rationale: extractChainRationale(chain.rationale_blob),
+      crossRepo: chain.cross_repo,
+    });
+  }
+  return map;
+}
+
+function shortChainId(id: string): string {
+  const stripped = id.startsWith("chain-") ? id.slice("chain-".length) : id;
+  return stripped.length > 12 ? `${stripped.slice(0, 12)}…` : stripped;
+}
+
+export function chainLabelFor(
+  chainId: string,
+  summary: ChainSummary | undefined,
+): string {
+  const base = `Chain ${shortChainId(chainId)}`;
+  if (!summary) return base;
+  const tag = summary.crossRepo ? " (cross-repo)" : "";
+  if (!summary.rationale) return `${base}${tag}`;
+  const rationale =
+    summary.rationale.length > CHAIN_RATIONALE_PREVIEW_CHARS
+      ? `${summary.rationale.slice(0, CHAIN_RATIONALE_PREVIEW_CHARS)}…`
+      : summary.rationale;
+  return `${base}${tag} — ${rationale}`;
+}
+
+function groupRowsByChain(
+  rows: FindingWithDiff[],
+  groupByChain: boolean,
+  chainSummaries: Map<string, ChainSummary>,
+): ChainGroup[] {
   if (!groupByChain) {
-    return [{ key: "_all", label: "", items: rows }];
+    return [
+      { key: "_all", label: "", rationale: null, crossRepo: false, items: rows },
+    ];
   }
   const groups = new Map<string, FindingWithDiff[]>();
   for (const row of rows) {
@@ -268,11 +354,25 @@ function groupRowsByChain(rows: FindingWithDiff[], groupByChain: boolean): Chain
   }
   return Array.from(groups.entries())
     .sort(([a], [b]) => (a === "_no-chain" ? 1 : b === "_no-chain" ? -1 : a.localeCompare(b)))
-    .map(([key, items]) => ({
-      key,
-      label: key === "_no-chain" ? "Unchained" : `Chain ${key}`,
-      items,
-    }));
+    .map(([key, items]) => {
+      if (key === "_no-chain") {
+        return {
+          key,
+          label: "Unchained",
+          rationale: null,
+          crossRepo: false,
+          items,
+        };
+      }
+      const summary = chainSummaries.get(key);
+      return {
+        key,
+        label: chainLabelFor(key, summary),
+        rationale: summary?.rationale ?? null,
+        crossRepo: summary?.crossRepo ?? false,
+        items,
+      };
+    });
 }
 
 interface FindingTableProps {

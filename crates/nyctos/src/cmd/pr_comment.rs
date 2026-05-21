@@ -203,7 +203,16 @@ pub fn build_comment_body(
             let line = row.line.map(|l| format!(":{l}")).unwrap_or_default();
             let severity_badge = severity_badge(&row.severity);
             let origin_badge = origin_badge(&row.finding_origin);
-            let id = code_safe(&short_id(&row.id));
+            let id_text = code_safe(&short_id(&row.id));
+            let id = match ui_url {
+                Some(url) => format!(
+                    "[{id_text}]({base}/findings?run_id={run}&focus={id})",
+                    base = trim_url(url),
+                    run = url_encode_query(&report.run_id),
+                    id = url_encode_query(&row.id),
+                ),
+                None => id_text,
+            };
             let chain = match &row.chain_id {
                 Some(cid) => format!(" (chain {})", code_safe(&short_id(cid))),
                 None => String::new(),
@@ -321,6 +330,27 @@ fn code_safe(s: &str) -> String {
 
 fn trim_url(url: &str) -> &str {
     url.trim_end_matches('/')
+}
+
+/// Percent-encode a value that will be interpolated into a query string.
+/// The finding id grammar is a-zA-Z0-9._- with optional prefixes
+/// (`finding-`, `cand-`), so the encoder only needs to escape characters
+/// outside the unreserved set; covers any future id shape that picks up
+/// `+` / `=` / `&` / `#`.
+fn url_encode_query(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(byte as char);
+            }
+            _ => {
+                out.push('%');
+                out.push_str(&format!("{:02X}", byte));
+            }
+        }
+    }
+    out
 }
 
 /// Refuse `--gh-api` values that could exfiltrate the GitHub bearer
@@ -652,6 +682,33 @@ mod tests {
         let filtered = filter_for_pr(&report);
         let body = build_comment_body(&filtered, &report, None);
         assert!(!body.contains("open run"));
+        // Without a UI url the per-finding id stays bare (no deep link).
+        assert!(body.contains("id `a`"), "expected bare id token: {body}");
+        assert!(!body.contains("?focus="));
+    }
+
+    #[test]
+    fn comment_body_deep_links_each_finding_id_when_ui_url_set() {
+        let mut report = empty_report();
+        report.run_id = "run-2026-01".to_string();
+        report.findings =
+            vec![finding("finding-aaaa1", "alpha", "src/a.py", "High", "Verified", None)];
+        let filtered = filter_for_pr(&report);
+        let body = build_comment_body(&filtered, &report, Some("https://ops.example.com/"));
+        let expected = "[`finding-aaaa`](https://ops.example.com/findings?run_id=run-2026-01&focus=finding-aaaa1)";
+        assert!(body.contains(expected), "expected deep link `{expected}` in body:\n{body}");
+        // The bare-token form must no longer appear.
+        assert!(!body.contains("id `finding-aaaa`\n"), "bare id leaked: {body}");
+    }
+
+    #[test]
+    fn url_encode_query_escapes_reserved_chars_and_passes_unreserved() {
+        assert_eq!(url_encode_query("finding-abc.123_xyz~"), "finding-abc.123_xyz~");
+        assert_eq!(url_encode_query("a b"), "a%20b");
+        assert_eq!(url_encode_query("a&b"), "a%26b");
+        assert_eq!(url_encode_query("a=b"), "a%3Db");
+        assert_eq!(url_encode_query("a+b"), "a%2Bb");
+        assert_eq!(url_encode_query("a#b"), "a%23b");
     }
 
     #[test]

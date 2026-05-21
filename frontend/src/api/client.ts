@@ -370,6 +370,7 @@ export const qk = {
   finding: (id: string) => ["findings", id] as const,
   runFindings: (run_id: string) => ["runs", run_id, "findings"] as const,
   chain: (id: string) => ["chains", id] as const,
+  runChains: (run_id: string) => ["runs", run_id, "chains"] as const,
   quarantine: () => ["quarantine"] as const,
   findingTraces: (id: string) => ["findings", id, "traces"] as const,
 };
@@ -629,6 +630,20 @@ export function useChain(id: string | undefined) {
     queryKey: id ? qk.chain(id) : ["chains", "_disabled"],
     queryFn: () => request<ChainRecord>(`/chains/${encodeURIComponent(id!)}`),
     enabled: Boolean(id),
+  });
+}
+
+/**
+ * Bulk chains for a run, used by the FindingList group-by-chain view to
+ * render the chain rationale next to each grouping without N+1-ing the
+ * single-chain endpoint per group.
+ */
+export function useRunChains(runId: string | undefined) {
+  return useQuery({
+    queryKey: runId ? qk.runChains(runId) : ["runs", "_disabled", "chains"],
+    queryFn: () =>
+      request<ChainRecord[]>(`/chains?run_id=${encodeURIComponent(runId!)}`),
+    enabled: Boolean(runId),
   });
 }
 
