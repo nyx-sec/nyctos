@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "\n            SELECT id AS \"id!\", run_id AS \"run_id!\", repo AS \"repo!\",\n                   path AS \"path!\", line,\n                   cap AS \"cap!\", rule AS \"rule!\", severity AS \"severity!\",\n                   status AS \"status!\", finding_origin AS \"finding_origin!\",\n                   first_seen AS \"first_seen!: i64\",\n                   last_seen  AS \"last_seen!: i64\",\n                   superseded_by, triage_state AS \"triage_state!\",\n                   triage_assigned_to, verdict_blob, repro_path,\n                   attack_provenance, prompt_version, chain_id\n            FROM findings\n            WHERE repo = ? AND status != 'Quarantine'\n            ORDER BY last_seen DESC\n            ",
+  "query": "\n            SELECT id AS \"id!\", run_id AS \"run_id!\", repo AS \"repo!\",\n                   path AS \"path!\", line,\n                   cap AS \"cap!\", rule AS \"rule!\", severity AS \"severity!\",\n                   status AS \"status!\", finding_origin AS \"finding_origin!\",\n                   first_seen AS \"first_seen!: i64\",\n                   last_seen  AS \"last_seen!: i64\",\n                   superseded_by, triage_state AS \"triage_state!\",\n                   triage_assigned_to, verdict_blob, repro_path,\n                   attack_provenance, prompt_version, chain_id, spec_id\n            FROM findings\n            WHERE repo = ? AND status != 'Quarantine'\n            ORDER BY last_seen DESC\n            ",
   "describe": {
     "columns": [
       {
@@ -102,6 +102,11 @@
         "name": "chain_id",
         "ordinal": 19,
         "type_info": "Text"
+      },
+      {
+        "name": "spec_id",
+        "ordinal": 20,
+        "type_info": "Text"
       }
     ],
     "parameters": {
@@ -127,8 +132,9 @@
       true,
       true,
       true,
+      true,
       true
     ]
   },
-  "hash": "0f4ee26de09302fbc1ad4e681e13a9c046080af36cbc818686390bdc875c9b49"
+  "hash": "853d38a05ca1971080ddb3cbd7e4312871e961d75f116983d9e19cdcc599dc68"
 }

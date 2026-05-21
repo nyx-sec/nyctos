@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "\n            SELECT id AS \"id!\", run_id AS \"run_id!\", repo AS \"repo!\",\n                   path AS \"path!\", line,\n                   cap AS \"cap!\", rule AS \"rule!\", severity AS \"severity!\",\n                   status AS \"status!\", finding_origin AS \"finding_origin!\",\n                   first_seen AS \"first_seen!: i64\",\n                   last_seen  AS \"last_seen!: i64\",\n                   superseded_by, triage_state AS \"triage_state!\",\n                   triage_assigned_to, verdict_blob, repro_path,\n                   attack_provenance, prompt_version, chain_id\n            FROM findings WHERE id = ?\n            ",
+  "query": "\n            SELECT id AS \"id!\", run_id AS \"run_id!\", repo AS \"repo!\",\n                   path AS \"path!\", line,\n                   cap AS \"cap!\", rule AS \"rule!\", severity AS \"severity!\",\n                   status AS \"status!\", finding_origin AS \"finding_origin!\",\n                   first_seen AS \"first_seen!: i64\",\n                   last_seen  AS \"last_seen!: i64\",\n                   superseded_by, triage_state AS \"triage_state!\",\n                   triage_assigned_to, verdict_blob, repro_path,\n                   attack_provenance, prompt_version, chain_id, spec_id\n            FROM findings WHERE run_id = ? ORDER BY last_seen DESC\n            ",
   "describe": {
     "columns": [
       {
@@ -102,6 +102,11 @@
         "name": "chain_id",
         "ordinal": 19,
         "type_info": "Text"
+      },
+      {
+        "name": "spec_id",
+        "ordinal": 20,
+        "type_info": "Text"
       }
     ],
     "parameters": {
@@ -127,8 +132,9 @@
       true,
       true,
       true,
+      true,
       true
     ]
   },
-  "hash": "c2e2a539d1ed42c8ee1ac6e02c74c9acb14903116379aac5ef82960201c3c444"
+  "hash": "8e897d53feeb29a069138134d37884055725683c95a4ed116eab53dfe7e2e5af"
 }

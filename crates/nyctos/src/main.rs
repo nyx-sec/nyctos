@@ -1299,6 +1299,7 @@ async fn persist_run_results(store: &Store, bundle: &RunBundle<Diag>) -> anyhow:
                     attack_provenance: None,
                     prompt_version: None,
                     chain_id: None,
+                    spec_id: None,
                 };
                 store.findings().upsert(&rec).await?;
             }

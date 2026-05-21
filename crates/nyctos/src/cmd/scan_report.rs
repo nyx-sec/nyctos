@@ -307,6 +307,7 @@ mod tests {
             attack_provenance: None,
             prompt_version: None,
             chain_id: None,
+            spec_id: None,
         };
         let dropped = FindingRecord { path: "src/b.py".into(), ..kept.clone() };
         let other_repo = FindingRecord { repo: "beta".into(), ..kept.clone() };

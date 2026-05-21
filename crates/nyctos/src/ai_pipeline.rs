@@ -2177,6 +2177,7 @@ async fn promote_candidate(
         attack_provenance: Some(result.attack_provenance.as_str().to_string()),
         prompt_version: candidate.prompt_version.clone(),
         chain_id: None,
+        spec_id: None,
     };
     store.findings().upsert(&rec).await?;
     store
@@ -2524,6 +2525,7 @@ async fn persist_exploration_finding(
         attack_provenance: Some(AttackProvenance::AiExploration.as_str().to_string()),
         prompt_version: Some(prompt_version.to_string()),
         chain_id: None,
+        spec_id: None,
     };
     store.findings().upsert(&rec).await?;
     Ok(id)
@@ -3006,6 +3008,7 @@ mod tests {
             attack_provenance: None,
             prompt_version: None,
             chain_id: None,
+            spec_id: None,
         }
     }
 
@@ -3269,6 +3272,7 @@ mod tests {
                 attack_provenance: None,
                 prompt_version: None,
                 chain_id: None,
+                spec_id: None,
             };
             store.findings().upsert(&f).await.unwrap();
         }

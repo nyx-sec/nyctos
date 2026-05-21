@@ -158,6 +158,7 @@ fn sample_finding(run_id: &str, repo: &str, path: &str, rule: &str) -> FindingRe
         attack_provenance: None,
         prompt_version: None,
         chain_id: None,
+        spec_id: None,
     }
 }
 

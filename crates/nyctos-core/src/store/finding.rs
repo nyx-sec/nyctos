@@ -141,6 +141,7 @@ fn row_to_finding(row: sqlx::sqlite::SqliteRow) -> FindingRecord {
         attack_provenance: row.get("attack_provenance"),
         prompt_version: row.get("prompt_version"),
         chain_id: row.get("chain_id"),
+        spec_id: row.get("spec_id"),
     }
 }
 
@@ -166,6 +167,13 @@ pub struct FindingRecord {
     pub attack_provenance: Option<String>,
     pub prompt_version: Option<String>,
     pub chain_id: Option<String>,
+    /// Back-link to `harness_specs.id` populated by SpecDerivation.
+    /// `None` for static-pass rows that never went through the AI
+    /// spec pass. Written by `HarnessSpecStore::insert_with_finding_spec_link`
+    /// (and the historical `FindingStore::set_spec` helper); never
+    /// written by `upsert`, so a re-scan does not clobber an
+    /// existing AI-side spec back-link.
+    pub spec_id: Option<String>,
 }
 
 pub struct FindingStore<'a> {
@@ -239,7 +247,7 @@ impl<'a> FindingStore<'a> {
                    last_seen  AS "last_seen!: i64",
                    superseded_by, triage_state AS "triage_state!",
                    triage_assigned_to, verdict_blob, repro_path,
-                   attack_provenance, prompt_version, chain_id
+                   attack_provenance, prompt_version, chain_id, spec_id
             FROM findings WHERE id = ?
             "#,
             id
@@ -263,7 +271,7 @@ impl<'a> FindingStore<'a> {
                    last_seen  AS "last_seen!: i64",
                    superseded_by, triage_state AS "triage_state!",
                    triage_assigned_to, verdict_blob, repro_path,
-                   attack_provenance, prompt_version, chain_id
+                   attack_provenance, prompt_version, chain_id, spec_id
             FROM findings
             WHERE repo = ? AND status != 'Quarantine'
             ORDER BY last_seen DESC
@@ -289,7 +297,7 @@ impl<'a> FindingStore<'a> {
             "SELECT id, run_id, repo, path, line, cap, rule, severity, status, \
              finding_origin, first_seen, last_seen, superseded_by, triage_state, \
              triage_assigned_to, verdict_blob, repro_path, attack_provenance, \
-             prompt_version, chain_id FROM findings",
+             prompt_version, chain_id, spec_id FROM findings",
         );
         let mut needs_where = true;
         let mut push_clause = |qb: &mut QueryBuilder<sqlx::Sqlite>| {
@@ -357,7 +365,7 @@ impl<'a> FindingStore<'a> {
                    last_seen  AS "last_seen!: i64",
                    superseded_by, triage_state AS "triage_state!",
                    triage_assigned_to, verdict_blob, repro_path,
-                   attack_provenance, prompt_version, chain_id
+                   attack_provenance, prompt_version, chain_id, spec_id
             FROM findings WHERE run_id = ? ORDER BY last_seen DESC
             "#,
             run_id
@@ -695,6 +703,87 @@ mod tests {
         s.findings().upsert(&f).await.expect("insert");
         let got = s.findings().get(&f.id).await.expect("get").expect("row");
         assert_eq!(got.prompt_version.as_deref(), Some("prompts/finding/v17"));
+    }
+
+    #[tokio::test]
+    async fn spec_id_surfaces_on_every_read_path() {
+        // SpecDerivation writes `findings.spec_id` via
+        // `HarnessSpecStore::insert_with_finding_spec_link`. The reads
+        // exposed by `FindingStore::get` / `list_active_for_repo` /
+        // `list_by_run` / `list_filtered` must all project the column
+        // so a UI back-link can render without joining `harness_specs`.
+        let (_tmp, s) = fresh_store().await;
+        seed(&s).await;
+        let f = sample_finding("run-1", "repo-1", "src/a.rs", "rule-1");
+        s.findings().upsert(&f).await.expect("finding");
+        let spec = crate::store::HarnessSpecRecord {
+            id: "spec-1".to_string(),
+            cap: "SQL_QUERY".to_string(),
+            lang: "python".to_string(),
+            spec_blob: r#"{"schema_version":1,"cap":"SQL_QUERY"}"#.to_string(),
+            attack_provenance: Some("LlmSynthesised".to_string()),
+            prompt_version: Some("phase15.spec_derivation.v1".to_string()),
+            created_at: 4_000,
+        };
+        s.harness_specs()
+            .insert_with_finding_spec_link(
+                &spec,
+                &f.id,
+                "LlmSynthesised",
+                "phase15.spec_derivation.v1",
+            )
+            .await
+            .expect("dual write");
+
+        let got = s.findings().get(&f.id).await.expect("get").expect("row");
+        assert_eq!(got.spec_id.as_deref(), Some("spec-1"));
+
+        let active = s.findings().list_active_for_repo("repo-1").await.expect("active");
+        assert_eq!(active.iter().find(|r| r.id == f.id).and_then(|r| r.spec_id.as_deref()),
+                   Some("spec-1"));
+
+        let by_run = s.findings().list_by_run("run-1").await.expect("by run");
+        assert_eq!(by_run.iter().find(|r| r.id == f.id).and_then(|r| r.spec_id.as_deref()),
+                   Some("spec-1"));
+
+        let filtered = s
+            .findings()
+            .list_filtered(&FindingFilter { repo: Some("repo-1"), ..Default::default() })
+            .await
+            .expect("filtered");
+        assert_eq!(filtered.iter().find(|r| r.id == f.id).and_then(|r| r.spec_id.as_deref()),
+                   Some("spec-1"));
+    }
+
+    #[tokio::test]
+    async fn upsert_does_not_clobber_existing_spec_id() {
+        // A re-scan upserts a FindingRecord constructed by the static
+        // pass with `spec_id: None`. The existing AI-side back-link on
+        // the row must survive the conflict-update so the UI does not
+        // lose the SpecDerivation pointer between scans.
+        let (_tmp, s) = fresh_store().await;
+        seed(&s).await;
+        let mut f = sample_finding("run-1", "repo-1", "src/a.rs", "rule-1");
+        s.findings().upsert(&f).await.expect("first insert");
+        let spec = crate::store::HarnessSpecRecord {
+            id: "spec-keep".to_string(),
+            cap: "SQL_QUERY".to_string(),
+            lang: "python".to_string(),
+            spec_blob: "{}".to_string(),
+            attack_provenance: None,
+            prompt_version: None,
+            created_at: 4_000,
+        };
+        s.harness_specs()
+            .insert_with_finding_spec_link(&spec, &f.id, "LlmSynthesised", "v1")
+            .await
+            .expect("dual write");
+        f.severity = "Critical".to_string();
+        f.last_seen = 9_000;
+        s.findings().upsert(&f).await.expect("re-upsert");
+        let got = s.findings().get(&f.id).await.expect("get").expect("row");
+        assert_eq!(got.spec_id.as_deref(), Some("spec-keep"));
+        assert_eq!(got.severity, "Critical");
     }
 
     #[tokio::test]

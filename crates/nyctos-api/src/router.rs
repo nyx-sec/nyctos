@@ -1568,6 +1568,7 @@ async fn promote_candidate_to_finding(
         attack_provenance: Some("ManualPromote".to_string()),
         prompt_version: cand.prompt_version.clone(),
         chain_id: None,
+        spec_id: None,
     };
     s.store.findings().upsert(&rec).await?;
     s.store.candidate_findings().set_status(&cand.id, CandidateStatus::Promoted.as_str()).await?;

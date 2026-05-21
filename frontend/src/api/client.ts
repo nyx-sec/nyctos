@@ -160,6 +160,7 @@ export interface FindingRecord {
   attack_provenance: string | null;
   prompt_version: string | null;
   chain_id: string | null;
+  spec_id: string | null;
 }
 
 export type FindingDiffStatus = "new" | "regressed" | "closed" | "unchanged";
