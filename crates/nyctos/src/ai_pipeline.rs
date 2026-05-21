@@ -1253,6 +1253,13 @@ const PRIORITY_KEYWORDS: &[(&str, i64)] = &[
     ("exec", 3),
 ];
 
+/// Maximum boost applied to [`priority_for`] when a path's historical
+/// AI-promotion rate is at the ceiling (rate = 1.0). At rate = 0.0 the
+/// boost is zero; the boost scales linearly in between. Sized so the
+/// strongest converters can outrank a plain `route`-keyword hit (which
+/// scores +6 today) without drowning out the keyword signal entirely.
+const PROMOTION_RATE_WEIGHT: f64 = 10.0;
+
 /// Counts surfaced by [`run_novel_finding_discovery_pass`].
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct NovelFindingDiscoveryPassReport {
@@ -1343,12 +1350,31 @@ pub(crate) async fn drive_novel_finding_pass<R: AiRuntime + ?Sized>(
         let Some(workspace) = workspaces.get(&repo_bundle.repo) else {
             continue;
         };
+        // Historical AI-promotion rate per source path in this repo,
+        // used to bias the priority heuristic toward files the verifier
+        // has previously confirmed. A store error degrades to "no
+        // boost" rather than failing the pass — the keyword + size
+        // heuristic still produces a usable ordering on its own.
+        let promotion_rates =
+            match store.findings().per_path_promotion_rate(&repo_bundle.repo).await {
+                Ok(map) => Some(map),
+                Err(err) => {
+                    tracing::warn!(
+                        repo = %repo_bundle.repo,
+                        error = %err,
+                        "novel finding discovery: per-path promotion rate lookup failed; \
+                         falling back to keyword + size heuristic only"
+                    );
+                    None
+                }
+            };
         let inputs = build_novel_inputs_for_repo(
             &bundle.run_id,
             &repo_bundle.repo,
             workspace.workspace(),
             diags,
             files_per_batch,
+            promotion_rates.as_ref(),
         );
         if inputs.is_empty() {
             continue;
@@ -1411,14 +1437,18 @@ pub(crate) async fn drive_novel_finding_pass<R: AiRuntime + ?Sized>(
 /// Pure data path: walk the repo workspace, prioritise files by the
 /// route/controller/model/db keyword heuristic, partition into batches
 /// of `files_per_batch`, and attach the matching nyx priors per batch.
-/// Public so the prioritisation + batching can be unit-tested without
-/// spinning up an adapter.
+/// `promotion_rates`, when set, maps repo-relative paths to their
+/// historical AI-promotion rate (see
+/// `FindingStore::per_path_promotion_rate`); a non-empty entry boosts
+/// the file's priority. Public so the prioritisation + batching can be
+/// unit-tested without spinning up an adapter.
 pub fn build_novel_inputs_for_repo(
     run_id: &str,
     repo: &str,
     workspace: &std::path::Path,
     diags: &[Diag],
     files_per_batch: usize,
+    promotion_rates: Option<&HashMap<String, f64>>,
 ) -> Vec<NovelFindingDiscoveryInput> {
     let files = walk_source_files(workspace);
     if files.is_empty() {
@@ -1428,7 +1458,14 @@ pub fn build_novel_inputs_for_repo(
         .into_iter()
         .map(|p| {
             let size = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
-            let score = priority_for(&p, size);
+            let rate = promotion_rates.and_then(|map| {
+                p.strip_prefix(workspace)
+                    .ok()
+                    .and_then(|rel| rel.to_str())
+                    .and_then(|rel| map.get(rel))
+                    .copied()
+            });
+            let score = priority_for(&p, size, rate);
             (score, p, size)
         })
         .collect();
@@ -1483,31 +1520,38 @@ pub fn build_novel_inputs_for_repo(
 }
 
 fn walk_source_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    // `ignore::WalkBuilder` honours .gitignore / .ignore / global excludes
+    // and skips hidden entries by default. SKIP_DIRS layers in the
+    // hardcoded skips that often are absent from a repo's gitignore
+    // (target, vendor, __pycache__, site-packages, etc.).
+    let walker = ignore::WalkBuilder::new(root)
+        .standard_filters(true)
+        .hidden(true)
+        .parents(false)
+        .require_git(false)
+        .filter_entry(|entry| {
+            entry.file_name().to_str().is_some_and(|name| !SKIP_DIRS.contains(&name))
+        })
+        .build();
     let mut out = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&dir) else {
+    for result in walker {
+        let Ok(entry) = result else { continue };
+        let Some(ft) = entry.file_type() else { continue };
+        if !ft.is_file() {
+            continue;
+        }
+        let path = entry.into_path();
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
             continue;
         };
-        for entry in rd.flatten() {
-            let Some(name) = entry.file_name().to_str().map(str::to_string) else {
-                continue;
-            };
-            let Ok(ft) = entry.file_type() else { continue };
-            if ft.is_dir() {
-                if name.starts_with('.') || SKIP_DIRS.contains(&name.as_str()) {
-                    continue;
-                }
-                stack.push(entry.path());
-            } else if ft.is_file() && accepts_source_file(&name) {
-                let path = entry.path();
-                let raw_size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-                if raw_size > NOVEL_DISCOVERY_MAX_RAW_BYTES {
-                    continue;
-                }
-                out.push(path);
-            }
+        if !accepts_source_file(name) {
+            continue;
         }
+        let raw_size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        if raw_size > NOVEL_DISCOVERY_MAX_RAW_BYTES {
+            continue;
+        }
+        out.push(path);
     }
     out
 }
@@ -1516,7 +1560,7 @@ fn accepts_source_file(name: &str) -> bool {
     infer_lang(name) != "unknown"
 }
 
-fn priority_for(path: &std::path::Path, size: u64) -> i64 {
+fn priority_for(path: &std::path::Path, size: u64, promotion_rate: Option<f64>) -> i64 {
     let lower = path.to_string_lossy().to_lowercase();
     let mut score = 0_i64;
     for (kw, w) in PRIORITY_KEYWORDS {
@@ -1533,6 +1577,10 @@ fn priority_for(path: &std::path::Path, size: u64) -> i64 {
         score += 3;
     } else if s > 200_000 {
         score -= 5;
+    }
+    if let Some(rate) = promotion_rate {
+        let clamped = rate.clamp(0.0, 1.0);
+        score += (clamped * PROMOTION_RATE_WEIGHT).round() as i64;
     }
     score
 }
@@ -3967,9 +4015,26 @@ mod tests {
 
     #[test]
     fn priority_for_prefers_route_controller_handler() {
-        let routes = priority_for(std::path::Path::new("app/routes/users.py"), 4_096);
-        let plain = priority_for(std::path::Path::new("misc/notes.py"), 4_096);
+        let routes = priority_for(std::path::Path::new("app/routes/users.py"), 4_096, None);
+        let plain = priority_for(std::path::Path::new("misc/notes.py"), 4_096, None);
         assert!(routes > plain, "routes={routes} plain={plain}");
+    }
+
+    #[test]
+    fn priority_for_boosts_historical_promotion_rate() {
+        // Two identically-keyworded paths: one with no rate, one with a
+        // strong historical promotion rate. The boosted one must
+        // outrank the unboosted one.
+        let base = priority_for(std::path::Path::new("models/user.py"), 4_096, None);
+        let zero = priority_for(std::path::Path::new("models/user.py"), 4_096, Some(0.0));
+        let high = priority_for(std::path::Path::new("models/user.py"), 4_096, Some(0.9));
+        assert_eq!(base, zero, "rate=0.0 must not change the score");
+        assert!(high > base, "high={high} base={base}");
+        // Cap saturation: rate above 1.0 collapses to the same boost
+        // as rate = 1.0 (defence against a corrupt rate map).
+        let saturated = priority_for(std::path::Path::new("models/user.py"), 4_096, Some(5.0));
+        let ceiling = priority_for(std::path::Path::new("models/user.py"), 4_096, Some(1.0));
+        assert_eq!(saturated, ceiling);
     }
 
     #[test]
@@ -3979,6 +4044,31 @@ mod tests {
         let stems: Vec<String> = files.iter().map(|p| p.to_string_lossy().to_string()).collect();
         let any_nm = stems.iter().any(|s| s.contains("node_modules"));
         assert!(!any_nm, "node_modules must be skipped: {stems:?}");
+    }
+
+    #[test]
+    fn walk_source_files_respects_repo_gitignore() {
+        // A custom build dir that is NOT in SKIP_DIRS but IS in the
+        // operator's .gitignore must be skipped. This is the close-out
+        // case for the deferred "swap hardcoded SKIP_DIRS for the
+        // `ignore` crate" item.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("custom_artifacts")).unwrap();
+        std::fs::write(tmp.path().join("src/main.py"), "x = 1\n").unwrap();
+        std::fs::write(tmp.path().join("custom_artifacts/gen.py"), "x = 2\n").unwrap();
+        std::fs::write(tmp.path().join(".gitignore"), "custom_artifacts/\n").unwrap();
+
+        let files = walk_source_files(tmp.path());
+        let stems: Vec<String> = files.iter().map(|p| p.to_string_lossy().to_string()).collect();
+        assert!(
+            stems.iter().any(|s| s.ends_with("src/main.py")),
+            "main.py must surface: {stems:?}",
+        );
+        assert!(
+            !stems.iter().any(|s| s.contains("custom_artifacts")),
+            "gitignored dir must be skipped: {stems:?}",
+        );
     }
 
     #[test]
@@ -3994,6 +4084,7 @@ mod tests {
             tmp.path(),
             &[diag],
             DEFAULT_FILES_PER_BATCH,
+            None,
         );
         assert!(!inputs.is_empty(), "walker must produce at least one batch");
         let first = &inputs[0];
@@ -4017,12 +4108,48 @@ mod tests {
         // Force a tiny batch size so the chunker fires even on a small
         // workspace.
         let tmp = two_python_workspace();
-        let inputs = build_novel_inputs_for_repo("run-N", "repo-1", tmp.path(), &[], 1);
+        let inputs = build_novel_inputs_for_repo("run-N", "repo-1", tmp.path(), &[], 1, None);
         assert!(inputs.len() >= 2, "got: {}", inputs.len());
         for (i, b) in inputs.iter().enumerate() {
             assert_eq!(b.batch_id, format!("repo-1:{i}"));
             assert_eq!(b.files.len(), 1);
         }
+    }
+
+    #[test]
+    fn build_novel_inputs_promotion_rates_boost_path_to_top_batch() {
+        // Two source files: a low-keyword path with a strong historical
+        // promotion rate vs a high-keyword path with no history. The
+        // boost (PROMOTION_RATE_WEIGHT = 10 at rate = 1.0) must outrank
+        // the strongest keyword hit (+6 for "route"/"controller") so
+        // the historically-converting file lands in the first batch.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("misc")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("app/routes")).unwrap();
+        let body = "def x():\n    pass\n".repeat(40);
+        std::fs::write(tmp.path().join("misc/notes.py"), &body).unwrap();
+        std::fs::write(tmp.path().join("app/routes/users.py"), &body).unwrap();
+
+        let mut rates = HashMap::new();
+        // Boost the otherwise-low-priority misc/notes.py path to a
+        // near-ceiling rate. "misc/notes.py" matches "exec" in the
+        // keyword table (because the body contains "pass"? no — keyword
+        // table operates on the lowercased path, which does contain "ex" but not
+        // "exec"; the path "misc/notes.py" alone scores 0 for keywords).
+        rates.insert("misc/notes.py".to_string(), 1.0);
+        let inputs = build_novel_inputs_for_repo(
+            "run-N",
+            "repo-1",
+            tmp.path(),
+            &[],
+            1,
+            Some(&rates),
+        );
+        assert!(inputs.len() >= 2, "expected at least 2 batches; got {}", inputs.len());
+        assert_eq!(
+            inputs[0].files[0].path, "misc/notes.py",
+            "promotion-rate boost must lift misc/notes.py above route-keyword path",
+        );
     }
 
     #[tokio::test]
@@ -4148,7 +4275,8 @@ mod tests {
 
         // Sanity: with files_per_batch=1 the walker must emit >=2
         // batches so the halt path is exercised.
-        let inputs = build_novel_inputs_for_repo("run-Bg", "repo-B", workspace.path(), &[], 1);
+        let inputs =
+            build_novel_inputs_for_repo("run-Bg", "repo-B", workspace.path(), &[], 1, None);
         assert!(inputs.len() >= 2, "fixture must produce >=2 batches; got {}", inputs.len());
 
         let report = drive_novel_finding_pass(

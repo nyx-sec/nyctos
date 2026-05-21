@@ -1,10 +1,19 @@
 //! `findings` table - the main aggregated finding store with stable hash
 //! IDs so re-running a scan over the same code converges on the same row.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use sqlx::{QueryBuilder, Row, SqlitePool};
 
 use crate::store::StoreError;
+
+/// Smoothing prior baked into [`FindingStore::per_path_promotion_rate`].
+/// A path with only one observation must not get the full rate boost a
+/// path with 50 observations does; this denominator floor dampens
+/// low-cardinality rows. Picked at 5 because nyx-side AI passes
+/// typically observe a path 1-3 times in one run.
+pub const PROMOTION_RATE_LAPLACE_PRIOR: f64 = 5.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FindingStatus {
@@ -479,6 +488,40 @@ impl<'a> FindingStore<'a> {
             .execute(self.pool)
             .await?;
         Ok(())
+    }
+
+    /// Per-path AI-finding promotion rate for `repo`, in [0.0, 1.0].
+    /// Numerator: AI-originated findings on the path whose final
+    /// status is `Open` (verifier-confirmed) or `Verified` (operator-
+    /// promoted). Denominator: total AI-originated findings on the
+    /// path, plus a Laplace prior so a path with one observation does
+    /// not score the same as a path with fifty. Backs the file
+    /// priority heuristic in the Novel discovery walker: paths that
+    /// historically converted are more worth burning AI budget on.
+    pub async fn per_path_promotion_rate(
+        &self,
+        repo: &str,
+    ) -> Result<HashMap<String, f64>, StoreError> {
+        let rows = sqlx::query(
+            "SELECT path, \
+                    SUM(CASE WHEN status IN ('Open','Verified') THEN 1 ELSE 0 END) AS promotions, \
+                    COUNT(*) AS total \
+             FROM findings \
+             WHERE repo = ? AND attack_provenance IN ('AiExploration','LlmSynthesised') \
+             GROUP BY path",
+        )
+        .bind(repo)
+        .fetch_all(self.pool)
+        .await?;
+        let mut out = HashMap::with_capacity(rows.len());
+        for row in rows {
+            let path: String = row.get("path");
+            let promotions: i64 = row.get("promotions");
+            let total: i64 = row.get("total");
+            let rate = (promotions as f64) / (total as f64 + PROMOTION_RATE_LAPLACE_PRIOR);
+            out.insert(path, rate.clamp(0.0, 1.0));
+        }
+        Ok(out)
     }
 
     /// Stamp the verifier outcome on `id`: flips `status` (Verified
@@ -1005,6 +1048,68 @@ mod tests {
         s.runs().delete("run-1").await.expect("delete run");
         let mem = s.findings().list_run_membership("run-1").await.expect("membership");
         assert!(mem.is_empty(), "FK cascade should empty run_findings on run delete");
+    }
+
+    #[tokio::test]
+    async fn per_path_promotion_rate_groups_ai_rows_by_path_and_applies_prior() {
+        let (_tmp, s) = fresh_store().await;
+        seed(&s).await;
+        // Path A: 1 AI-promoted (Open) row. With Laplace prior 5 the
+        // rate floats around 1/(1+5)=0.167 — non-zero, but well below
+        // the full-confidence ceiling.
+        let mut a = sample_finding("run-1", "repo-1", "hot.py", "rule-a");
+        a.attack_provenance = Some("LlmSynthesised".to_string());
+        a.status = "Open".to_string();
+        s.findings().upsert(&a).await.expect("a");
+
+        // Path B: 5 AI-promoted rows. Rate -> 5/(5+5) = 0.5.
+        for i in 0..5 {
+            let mut b = sample_finding("run-1", "repo-1", "warm.py", &format!("rule-b{i}"));
+            b.attack_provenance = Some("AiExploration".to_string());
+            b.status = "Verified".to_string();
+            s.findings().upsert(&b).await.expect("b");
+        }
+
+        // Path C: 2 AI-rejected (Quarantine) rows. Rate -> 0/(2+5) = 0.
+        for i in 0..2 {
+            let mut c = sample_finding("run-1", "repo-1", "cold.py", &format!("rule-c{i}"));
+            c.attack_provenance = Some("LlmSynthesised".to_string());
+            c.status = "Quarantine".to_string();
+            s.findings().upsert(&c).await.expect("c");
+        }
+
+        // Static-pass row on path D must NOT count (no attack_provenance).
+        let d = sample_finding("run-1", "repo-1", "static.py", "rule-d");
+        s.findings().upsert(&d).await.expect("d");
+
+        let rates = s.findings().per_path_promotion_rate("repo-1").await.expect("rates");
+        let a_rate = rates.get("hot.py").copied().unwrap_or(0.0);
+        let b_rate = rates.get("warm.py").copied().unwrap_or(0.0);
+        let c_rate = rates.get("cold.py").copied().unwrap_or(0.0);
+        assert!((a_rate - 1.0 / 6.0).abs() < 1e-9, "hot.py rate: {a_rate}");
+        assert!((b_rate - 0.5).abs() < 1e-9, "warm.py rate: {b_rate}");
+        assert!(c_rate.abs() < 1e-9, "cold.py rate: {c_rate}");
+        assert!(!rates.contains_key("static.py"), "static-pass rows must be excluded");
+        assert!(b_rate > a_rate && a_rate > c_rate, "ordering must reflect promotion signal");
+    }
+
+    #[tokio::test]
+    async fn per_path_promotion_rate_scopes_to_repo() {
+        let (_tmp, s) = fresh_store().await;
+        seed(&s).await;
+        s.repos().upsert(&sample_repo("repo-2")).await.expect("repo-2");
+        let mut a = sample_finding("run-1", "repo-1", "shared.py", "rule-a");
+        a.attack_provenance = Some("LlmSynthesised".to_string());
+        a.status = "Open".to_string();
+        s.findings().upsert(&a).await.expect("a");
+        let mut b = sample_finding("run-1", "repo-2", "shared.py", "rule-b");
+        b.attack_provenance = Some("LlmSynthesised".to_string());
+        b.status = "Quarantine".to_string();
+        s.findings().upsert(&b).await.expect("b");
+        let r1 = s.findings().per_path_promotion_rate("repo-1").await.expect("r1");
+        let r2 = s.findings().per_path_promotion_rate("repo-2").await.expect("r2");
+        assert!(r1.get("shared.py").copied().unwrap_or(0.0) > 0.0);
+        assert_eq!(r2.get("shared.py").copied().unwrap_or(0.0), 0.0);
     }
 
     #[tokio::test]

@@ -354,6 +354,33 @@ Common rules across the four `one_shot` tasks:
   binary's `build_trace_row` lifts `usage` / `cache` / `model` from
   this envelope into the trace columns.
 
+### NovelFindingDiscovery file priority
+
+The walker behind `build_novel_inputs_for_repo` orders source files
+before chunking them into per-batch prompts. The score combines three
+inputs:
+
+1. **Keyword score.** Path segments matching `route`, `controller`,
+   `handler`, `view`, `api`, `model`, `auth`, `login`, `query`, `sql`,
+   `db`, `exec` add 2 to 6 points each. Picks up the high-leverage
+   surface (HTTP layer, ORM, auth flows) on a typical web app.
+2. **Size band.** Tiny files (<256 B) and oversize files (>200 kB)
+   subtract 5; the 2 kB to 50 kB band adds 3.
+3. **Historical promotion rate.** When the run has prior
+   AI-originated findings on disk, the walker calls
+   `FindingStore::per_path_promotion_rate(repo)` and looks up each
+   path. Rate = `promotions / (total + 5)` where `promotions` is the
+   row count with `status IN ('Open', 'Verified')` and `total` is
+   every AI-originated row on the path (provenance
+   `LlmSynthesised` or `AiExploration`). The denominator's `+ 5`
+   smooths low-cardinality paths so a single observation does not
+   peg the rate. The score adds up to +10 at rate = 1.0; the boost
+   scales linearly.
+
+A store error on the rate lookup degrades to the keyword + size
+heuristic — the pass still produces a useful ordering when the
+findings table has not yet accumulated AI-promotion history.
+
 Exploration is the only `agent_loop` task. It runs against a
 chain-lane sandbox with three guard rails:
 

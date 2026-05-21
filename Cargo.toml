@@ -56,6 +56,7 @@ sha2 = "0.10"
 subtle = "2"
 regex = "1"
 serde_norway = "0.9"
+ignore = "0.4"
 tar = { version = "0.4", default-features = false }
 
 [profile.release]
