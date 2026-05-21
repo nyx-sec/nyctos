@@ -37,7 +37,8 @@ use nyctos_core::store::{
     RepoRecord, RunRecord,
 };
 use nyctos_core::{
-    now_epoch_ms, AiRuntime, SandboxBackend, ACCOUNT_AI_ANTHROPIC, ACCOUNT_AI_LOCAL_LLM,
+    now_epoch_ms, AiRuntime, GitAuth, IngestError, SandboxBackend, ACCOUNT_AI_ANTHROPIC,
+    ACCOUNT_AI_LOCAL_LLM,
 };
 use nyctos_types::event::{AgentEvent, RunEvent};
 
@@ -735,6 +736,7 @@ async fn create_project_repo(
             "i_own_this must be set to true before the daemon will accept a repo".to_string(),
         ));
     }
+    validate_git_auth_ref(&req.source_kind, req.auth_ref.as_deref())?;
     let now = now_epoch_ms();
     let existing = s.store.repos().get(&req.name).await?;
     // Refuse re-POST against a different project so an operator cannot
@@ -825,6 +827,13 @@ async fn patch_project_repo(
             "i_own_this cannot be cleared via PATCH; remove the repo instead".to_string(),
         ));
     }
+    let effective_source_kind = req.source_kind.as_deref().unwrap_or(existing.source_kind.as_str());
+    let effective_auth_ref: Option<&str> = match &req.auth_ref {
+        None => existing.auth_ref.as_deref(),
+        Some(None) => None,
+        Some(Some(v)) => Some(v.as_str()),
+    };
+    validate_git_auth_ref(effective_source_kind, effective_auth_ref)?;
     let now = now_epoch_ms();
     let branch = patch_option_for(&req.branch);
     let auth_ref = patch_option_for(&req.auth_ref);
@@ -848,6 +857,31 @@ async fn patch_project_repo(
         .await?
         .ok_or_else(|| ApiError::Internal("repo vanished after update".to_string()))?;
     Ok(Json(row))
+}
+
+/// Refuse a repo create/patch whose `auth_ref` would fail the same grammar
+/// the ingestion crate expects (`ssh-key:<path>` / `token-env:<VAR>` /
+/// `gh-app:<id>`). Validation runs only when the effective `source_kind`
+/// is `git` / `github` / `gitlab`; other source kinds ignore `auth_ref`,
+/// so we do not block on a stale value left over from a kind switch.
+fn validate_git_auth_ref(source_kind: &str, auth_ref: Option<&str>) -> Result<(), ApiError> {
+    if !matches!(source_kind, "git" | "github" | "gitlab") {
+        return Ok(());
+    }
+    let Some(raw) = auth_ref else {
+        return Ok(());
+    };
+    GitAuth::parse(raw).map_err(|err| match err {
+        IngestError::AuthMalformed { raw } => ApiError::BadRequest(format!(
+            "auth_ref `{raw}` is malformed; expected `ssh-key:<path>`, `token-env:<VAR>`, or \
+             `gh-app:<id>`"
+        )),
+        IngestError::AuthUnknownScheme { scheme } => ApiError::BadRequest(format!(
+            "auth_ref scheme `{scheme}` is not supported; use `ssh-key`, `token-env`, or `gh-app`"
+        )),
+        other => ApiError::BadRequest(format!("auth_ref failed validation: {other}")),
+    })?;
+    Ok(())
 }
 
 fn patch_option_for(opt: &Option<Option<String>>) -> PatchOption<Option<&str>> {

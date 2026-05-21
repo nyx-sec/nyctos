@@ -784,6 +784,146 @@ async fn delete_repo_removes_workspace_dir_when_configured() {
 }
 
 #[tokio::test]
+async fn create_repo_rejects_malformed_git_auth_ref() {
+    let srv = TestServer::start().await;
+    let client = reqwest::Client::new();
+    let url = format!("{}/api/v1/projects/{}/repos", srv.base(), DEFAULT_PROJECT_ID);
+
+    let resp = client
+        .post(&url)
+        .json(&serde_json::json!({
+            "name": "billing",
+            "source_kind": "git",
+            "source_url_or_path": "https://example.com/billing.git",
+            "auth_ref": "no-colon-here",
+            "i_own_this": true,
+        }))
+        .send()
+        .await
+        .expect("post");
+    assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
+    let body = resp.text().await.unwrap_or_default();
+    assert!(body.contains("malformed"), "body did not name the malformed shape: {body}");
+
+    let resp = client
+        .post(&url)
+        .json(&serde_json::json!({
+            "name": "billing-2",
+            "source_kind": "github",
+            "source_url_or_path": "https://example.com/billing.git",
+            "auth_ref": "kerberos:realm",
+            "i_own_this": true,
+        }))
+        .send()
+        .await
+        .expect("post");
+    assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
+    let body = resp.text().await.unwrap_or_default();
+    assert!(body.contains("kerberos"), "body did not name the unknown scheme: {body}");
+
+    let resp = client
+        .post(&url)
+        .json(&serde_json::json!({
+            "name": "billing-3",
+            "source_kind": "git",
+            "source_url_or_path": "https://example.com/billing.git",
+            "auth_ref": "token-env:GH_TOKEN",
+            "i_own_this": true,
+        }))
+        .send()
+        .await
+        .expect("post");
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+}
+
+#[tokio::test]
+async fn create_repo_skips_auth_ref_validation_for_non_git_source_kind() {
+    let srv = TestServer::start().await;
+    let url = format!("{}/api/v1/projects/{}/repos", srv.base(), DEFAULT_PROJECT_ID);
+    let resp = reqwest::Client::new()
+        .post(&url)
+        .json(&serde_json::json!({
+            "name": "logs",
+            "source_kind": "local-path",
+            "source_url_or_path": "/tmp/logs",
+            "auth_ref": "this-would-be-rejected-for-git",
+            "i_own_this": true,
+        }))
+        .send()
+        .await
+        .expect("post");
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+}
+
+#[tokio::test]
+async fn patch_repo_rejects_setting_malformed_git_auth_ref() {
+    let srv = TestServer::start().await;
+    let client = reqwest::Client::new();
+    let repos_url = format!("{}/api/v1/projects/{}/repos", srv.base(), DEFAULT_PROJECT_ID);
+    client
+        .post(&repos_url)
+        .json(&serde_json::json!({
+            "name": "svc",
+            "source_kind": "git",
+            "source_url_or_path": "https://example.com/svc.git",
+            "i_own_this": true,
+        }))
+        .send()
+        .await
+        .expect("post");
+
+    let resp = client
+        .patch(format!("{repos_url}/svc"))
+        .json(&serde_json::json!({ "auth_ref": "token-env" }))
+        .send()
+        .await
+        .expect("patch");
+    assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn patch_repo_rejects_promoting_to_git_when_existing_auth_ref_is_invalid() {
+    let srv = TestServer::start().await;
+    let client = reqwest::Client::new();
+    let repos_url = format!("{}/api/v1/projects/{}/repos", srv.base(), DEFAULT_PROJECT_ID);
+    client
+        .post(&repos_url)
+        .json(&serde_json::json!({
+            "name": "svc",
+            "source_kind": "local-path",
+            "source_url_or_path": "/tmp/svc",
+            "auth_ref": "garbage-from-when-this-was-not-git",
+            "i_own_this": true,
+        }))
+        .send()
+        .await
+        .expect("post");
+
+    let resp = client
+        .patch(format!("{repos_url}/svc"))
+        .json(&serde_json::json!({
+            "source_kind": "git",
+            "source_url_or_path": "https://example.com/svc.git",
+        }))
+        .send()
+        .await
+        .expect("patch");
+    assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
+
+    let resp = client
+        .patch(format!("{repos_url}/svc"))
+        .json(&serde_json::json!({
+            "source_kind": "git",
+            "source_url_or_path": "https://example.com/svc.git",
+            "auth_ref": null,
+        }))
+        .send()
+        .await
+        .expect("patch");
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+}
+
+#[tokio::test]
 async fn test_repo_endpoint_rejects_unknown_source_kind() {
     let srv = TestServer::start().await;
     let resp = reqwest::Client::new()

