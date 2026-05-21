@@ -10,12 +10,26 @@ import { useEffect, useRef, useState } from "react";
 import type {
   AgentEvent,
   ChainRecord,
+  CreateProjectRequest,
+  CreateRepoRequest,
   FindingRecord,
+  PatchProjectRequest,
+  PatchRepoRequest,
   ProjectRecord,
   RepoRecord,
   RunRecord,
 } from "./types.gen";
-export type { ChainRecord, FindingRecord, ProjectRecord, RepoRecord, RunRecord };
+export type {
+  ChainRecord,
+  CreateProjectRequest,
+  CreateRepoRequest,
+  FindingRecord,
+  PatchProjectRequest,
+  PatchRepoRequest,
+  ProjectRecord,
+  RepoRecord,
+  RunRecord,
+};
 
 const API_BASE = "/api/v1";
 
@@ -82,26 +96,6 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 // already hoisted into `nyctos-types` are re-exported above via
 // `./types.gen`; the rest still live here until the DTO-drop deferred
 // item retires them.
-
-export interface CreateProjectRequest {
-  name: string;
-  description?: string;
-  target_base_url?: string;
-  env_config?: unknown;
-}
-
-/**
- * Partial update body for `PATCH /api/v1/projects/:project_id`. Nullable
- * fields use tri-state semantics:
- *   - omitted: leave existing value untouched
- *   - `null`: clear the existing value
- *   - value: set the field to the supplied value
- */
-export interface PatchProjectRequest {
-  description?: string | null;
-  target_base_url?: string | null;
-  env_config?: unknown;
-}
 
 export type FindingDiffStatus = "new" | "regressed" | "closed" | "unchanged";
 
@@ -182,30 +176,6 @@ export interface ReplayEvent {
 }
 
 export type RepoSourceKind = "git" | "local-path" | "github" | "gitlab" | "local";
-
-export interface CreateRepoRequest {
-  name: string;
-  source_kind: RepoSourceKind;
-  source_url_or_path: string;
-  branch?: string;
-  auth_ref?: string;
-  i_own_this: boolean;
-}
-
-/**
- * Partial update body for `PATCH /api/v1/projects/:project_id/repos/:name`.
- * Nullable fields (`branch`, `auth_ref`) use tri-state semantics:
- *   - omitted: leave existing value untouched
- *   - `null`: clear the existing value
- *   - string: set the field to the supplied value
- */
-export interface PatchRepoRequest {
-  source_kind?: RepoSourceKind;
-  source_url_or_path?: string;
-  branch?: string | null;
-  auth_ref?: string | null;
-  i_own_this?: boolean;
-}
 
 export interface TestRepoRequest {
   source_kind: RepoSourceKind;

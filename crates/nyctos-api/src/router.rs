@@ -42,6 +42,8 @@ use nyctos_core::{
     ACCOUNT_AI_LOCAL_LLM,
 };
 use nyctos_types::event::{AgentEvent, ReproEvent, RunEvent};
+use nyctos_types::project::{CreateProjectRequest, PatchProjectRequest, TriStateJson};
+use nyctos_types::repo::{CreateRepoRequest, PatchRepoRequest};
 
 use crate::state::{ApiError, ScanTriggerSource, ServerState};
 
@@ -523,17 +525,6 @@ async fn list_projects(State(s): State<ServerState>) -> Result<Json<Vec<ProjectR
     Ok(Json(rows))
 }
 
-#[derive(Debug, Deserialize)]
-pub struct CreateProjectRequest {
-    pub name: String,
-    #[serde(default)]
-    pub description: Option<String>,
-    #[serde(default)]
-    pub target_base_url: Option<String>,
-    #[serde(default)]
-    pub env_config: Option<serde_json::Value>,
-}
-
 async fn create_project(
     State(s): State<ServerState>,
     Json(req): Json<CreateProjectRequest>,
@@ -577,18 +568,6 @@ async fn get_project(
         .await?
         .map(Json)
         .ok_or_else(|| ApiError::NotFound(format!("project `{id}` not found")))
-}
-
-#[derive(Debug, Deserialize)]
-pub struct PatchProjectRequest {
-    #[serde(default, deserialize_with = "deserialize_double_option_string")]
-    pub description: Option<Option<String>>,
-    #[serde(default, deserialize_with = "deserialize_double_option_string")]
-    pub target_base_url: Option<Option<String>>,
-    /// Tri-state JSON value: omitted = no change, `null` = clear, value =
-    /// set. The body is re-serialized verbatim into `env_config_json`.
-    #[serde(default, deserialize_with = "deserialize_tri_state_json")]
-    pub env_config: TriStateJson,
 }
 
 async fn patch_project(
@@ -638,26 +617,6 @@ fn project_patch_for(opt: &Option<Option<String>>) -> ProjectPatchOption<Option<
     }
 }
 
-#[derive(Debug, Default)]
-pub enum TriStateJson {
-    #[default]
-    Unset,
-    Null,
-    Value(serde_json::Value),
-}
-
-fn deserialize_tri_state_json<'de, D>(d: D) -> Result<TriStateJson, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let value = Option::<serde_json::Value>::deserialize(d)?;
-    Ok(match value {
-        None => TriStateJson::Null,
-        Some(serde_json::Value::Null) => TriStateJson::Null,
-        Some(v) => TriStateJson::Value(v),
-    })
-}
-
 async fn delete_project(
     State(s): State<ServerState>,
     Path(id): Path<String>,
@@ -705,19 +664,6 @@ async fn list_project_repos(
     require_project(&s, &project_id).await?;
     let rows = s.store.repos().list_by_project(&project_id).await?;
     Ok(Json(rows))
-}
-
-#[derive(Debug, Deserialize)]
-pub struct CreateRepoRequest {
-    pub name: String,
-    pub source_kind: String,
-    pub source_url_or_path: String,
-    #[serde(default)]
-    pub branch: Option<String>,
-    #[serde(default)]
-    pub auth_ref: Option<String>,
-    #[serde(default)]
-    pub i_own_this: bool,
 }
 
 async fn create_project_repo(
@@ -784,21 +730,6 @@ async fn get_project_repo(
         )));
     }
     Ok(Json(row))
-}
-
-#[derive(Debug, Deserialize)]
-pub struct PatchRepoRequest {
-    #[serde(default)]
-    pub source_kind: Option<String>,
-    #[serde(default)]
-    pub source_url_or_path: Option<String>,
-    /// Tri-state: omitted = no change, `null` = clear, string = set.
-    #[serde(default, deserialize_with = "deserialize_double_option_string")]
-    pub branch: Option<Option<String>>,
-    #[serde(default, deserialize_with = "deserialize_double_option_string")]
-    pub auth_ref: Option<Option<String>>,
-    #[serde(default)]
-    pub i_own_this: Option<bool>,
 }
 
 async fn patch_project_repo(
@@ -891,17 +822,6 @@ fn patch_option_for(opt: &Option<Option<String>>) -> PatchOption<Option<&str>> {
         Some(None) => PatchOption::Set(None),
         Some(Some(v)) => PatchOption::Set(Some(v.as_str())),
     }
-}
-
-/// Distinguish a missing JSON key (outer `None`) from `null` (`Some(None)`)
-/// from a present string value (`Some(Some(_))`). Paired with
-/// `#[serde(default)]` on the field so omitted keys produce the outer
-/// `None`.
-fn deserialize_double_option_string<'de, D>(d: D) -> Result<Option<Option<String>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Option::<String>::deserialize(d).map(Some)
 }
 
 async fn delete_project_repo(

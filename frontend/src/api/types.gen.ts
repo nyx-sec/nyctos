@@ -159,6 +159,10 @@ export type RepoRecord = { name: string, project_id: string, source_kind: string
  */
 last_scan_finished_at: number | null, created_at: number, updated_at: number, };
 
+export type CreateRepoRequest = { name: string, source_kind: string, source_url_or_path: string, branch?: string, auth_ref?: string, i_own_this: boolean, };
+
+export type PatchRepoRequest = { source_kind?: string, source_url_or_path?: string, branch?: string | null, auth_ref?: string | null, i_own_this?: boolean, };
+
 export type RunRecord = { id: string, started_at: number, finished_at: number | null, status: string, triggered_by: string, git_ref: string | null, parent_run_id: string | null, wall_clock_ms: number | null, total_ai_spend_usd_micros: number, };
 
 export type ChainRecord = { id: string, run_id: string, cross_repo: boolean, member_ids: string, rationale_blob: string | null, attack_provenance: string | null, prompt_version: string | null, };
@@ -172,4 +176,13 @@ export type FindingRecord = { id: string, run_id: string, repo: string, path: st
 spec_id: string | null, };
 
 export type ProjectRecord = { id: string, name: string, description: string | null, target_base_url: string | null, env_config_json: string | null, created_at: number, updated_at: number, };
+
+export type CreateProjectRequest = { name: string, description?: string, target_base_url?: string, env_config?: unknown, };
+
+export type PatchProjectRequest = { description?: string | null, target_base_url?: string | null, 
+/**
+ * Tri-state JSON value: omitted = no change, `null` = clear, value =
+ * set. The body is re-serialized verbatim into `env_config_json`.
+ */
+env_config: unknown, };
 

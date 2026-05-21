@@ -1,0 +1,36 @@
+{
+  "task_id": "expl-demo",
+  "prompt_version": "phase23.exploration.v1",
+  "completed_at_utc": "2026-05-21",
+  "actions_used": 7,
+  "findings": [
+    {
+      "path": "crates/nyctos-api/src/router.rs",
+      "line": 146,
+      "cap": "AUTH_BYPASS",
+      "rationale": "check_query_token accepts the daemon bearer via `?token=<secret>` URL param. URL query strings are persisted in webserver access logs, browser history, proxy/CDN logs, and leaked as the Referer header on outbound links/iframes. Equivalent to plaintext credential storage in those sinks; an attacker who can read any of them obtains a working bearer that also gates the post-setup wizard endpoints.",
+      "endpoint": "<api:any authenticated route>",
+      "suggested_payload_hint": "GET /api/v1/projects?token=<bearer> — observe 200; replay token in logs/Referer to confirm leak surface."
+    },
+    {
+      "path": "crates/nyctos-api/src/router.rs",
+      "line": 529,
+      "cap": "SSRF",
+      "rationale": "create_project / patch_project accept `target_base_url` as a free-form String with no scheme allowlist, no host validation, no loopback/link-local guard. Value is stamped into the super-compose doc as x-nyx-target-base-url (crates/nyctos-sandbox/src/env/compose.rs:231) where the scanner / trace-viewer consume it. Authed caller can pivot downstream tooling at http://169.254.169.254/ (cloud metadata), file:///etc/passwd, or internal services. Static pass misses because sink is in a different crate.",
+      "endpoint": "<api:POST /api/v1/projects>",
+      "suggested_payload_hint": "{\"name\":\"x\",\"target_base_url\":\"http://169.254.169.254/latest/meta-data/iam/security-credentials/\"} then observe scanner trace-viewer fetch."
+    },
+    {
+      "path": "crates/nyctos-api/src/router.rs",
+      "line": 159,
+      "cap": "TIMING_SIDE_CHANNEL",
+      "rationale": "constant_eq returns immediately when a.len() != b.len(). Length differential is observable via response timing; for the query-token path attacker controls candidate length, narrowing the search space before mounting a byte-comparison attack on the real ct_eq. Bearer length typically fixed so direct exploit is small, but the helper advertises itself as constant-time and is reused — should hash both inputs or pad before compare."
+    },
+    {
+      "path": "crates/nyctos-api/src/router.rs",
+      "line": 184,
+      "cap": "CORRECTNESS",
+      "rationale": "urlencoded_decode pushes the decoded byte as `char` directly. For percent-encoded bytes >0x7F this yields the Latin-1 codepoint rather than UTF-8 reassembly, so `%C3%A9` decodes to two chars (Ã, ©) instead of one (é). Operator tokens containing any non-ASCII byte are unmatchable via the query-token path. Not a security hole on its own, but combined with finding #1 produces silent auth failures that may push operators toward weaker ASCII-only tokens."
+    }
+  ]
+}

@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::project::ProjectId;
+use crate::project::{deserialize_double_option_string, ProjectId};
 
 /// In-memory descriptor of a configured repository.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -94,4 +94,48 @@ pub struct RepoRecord {
     pub created_at: i64,
     #[ts(type = "number")]
     pub updated_at: i64,
+}
+
+/// Request body for `POST /api/v1/projects/:project_id/repos`. The
+/// router validates `source_kind` against the closed string set
+/// `git` / `local-path` / `github` / `gitlab` / `local` at handler
+/// time; the wire shape leaves the field as `String` so the FE can
+/// share a narrower `RepoSourceKind` union alias on top.
+#[derive(Debug, Deserialize, TS)]
+pub struct CreateRepoRequest {
+    pub name: String,
+    pub source_kind: String,
+    pub source_url_or_path: String,
+    #[serde(default)]
+    #[ts(optional)]
+    pub branch: Option<String>,
+    #[serde(default)]
+    #[ts(optional)]
+    pub auth_ref: Option<String>,
+    #[serde(default)]
+    pub i_own_this: bool,
+}
+
+/// Request body for `PATCH /api/v1/projects/:project_id/repos/:name`.
+/// `branch` and `auth_ref` use tri-state semantics (omitted = no
+/// change, `null` = clear, value = set) paired with
+/// [`deserialize_double_option_string`]; `source_kind`,
+/// `source_url_or_path`, and `i_own_this` are plain `Option`s.
+#[derive(Debug, Deserialize, TS)]
+pub struct PatchRepoRequest {
+    #[serde(default)]
+    #[ts(optional)]
+    pub source_kind: Option<String>,
+    #[serde(default)]
+    #[ts(optional)]
+    pub source_url_or_path: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_double_option_string")]
+    #[ts(optional, type = "string | null")]
+    pub branch: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_double_option_string")]
+    #[ts(optional, type = "string | null")]
+    pub auth_ref: Option<Option<String>>,
+    #[serde(default)]
+    #[ts(optional)]
+    pub i_own_this: Option<bool>,
 }

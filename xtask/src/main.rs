@@ -29,8 +29,8 @@ use nyctos_types::{
         ReproEvent, RunEvent, SandboxEvent,
     },
     finding::FindingRecord,
-    project::ProjectRecord,
-    repo::{GitAuth, Repo, RepoRecord, RepoSource},
+    project::{CreateProjectRequest, PatchProjectRequest, ProjectRecord},
+    repo::{CreateRepoRequest, GitAuth, PatchRepoRequest, Repo, RepoRecord, RepoSource},
     run::RunRecord,
 };
 use ts_rs::TS;
@@ -116,10 +116,14 @@ fn render() -> String {
         decl_of::<RepoSource>(),
         decl_of::<Repo>(),
         decl_of::<RepoRecord>(),
+        decl_of::<CreateRepoRequest>(),
+        decl_of::<PatchRepoRequest>(),
         decl_of::<RunRecord>(),
         decl_of::<ChainRecord>(),
         decl_of::<FindingRecord>(),
         decl_of::<ProjectRecord>(),
+        decl_of::<CreateProjectRequest>(),
+        decl_of::<PatchProjectRequest>(),
     ];
 
     for decl in decls {
