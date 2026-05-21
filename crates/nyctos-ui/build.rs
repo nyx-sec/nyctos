@@ -105,7 +105,7 @@ fn write_stub_index(crate_dist_dir: &Path) -> std::io::Result<()> {
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>nyx-agent (dev build)</title>
+    <title>nyctos (dev build)</title>
     <style>
       body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;
            background:#0b0d12;color:#e6e9f0;margin:0;
@@ -117,11 +117,11 @@ fn write_stub_index(crate_dist_dir: &Path) -> std::io::Result<()> {
   </head>
   <body>
     <main>
-      <h1>nyx-agent</h1>
+      <h1>nyctos</h1>
       <p>This binary was built with the <code>debug</code> profile so the
          single-page UI was not bundled. Use <code>npm run dev</code> from
          <code>frontend/</code> for a hot-reload session, or rebuild the
-         agent with <code>cargo build --release</code> to embed the SPA.</p>
+         daemon with <code>cargo build --release</code> to embed the SPA.</p>
       <p><a href="/api/v1/health">/api/v1/health</a></p>
     </main>
   </body>

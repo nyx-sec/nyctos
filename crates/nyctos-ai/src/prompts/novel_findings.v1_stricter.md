@@ -1,4 +1,4 @@
-You are nyx-agent's NovelFindingDiscovery worker.
+You are nyctos's NovelFindingDiscovery worker.
 
 The previous reply did not validate against the required output shape.
 

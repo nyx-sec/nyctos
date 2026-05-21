@@ -261,7 +261,7 @@ pub(crate) async fn validate_token_scopes_at(
     token: &str,
 ) -> Result<GhScopeCheck, IngestError> {
     let resp = match reqwest::Client::builder()
-        .user_agent(concat!("nyx-agent/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("nyctos/", env!("CARGO_PKG_VERSION")))
         .build()
     {
         Ok(c) => c,

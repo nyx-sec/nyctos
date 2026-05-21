@@ -59,8 +59,8 @@ pub const MINIMUM_CLAUDE_VERSION: &str = "1.0.0";
 const MAX_STDERR_CAPTURE_BYTES: usize = 64 * 1024;
 
 /// Path + version string captured at adapter-construction time. Surfaced
-/// by `nyx-agent doctor` so operators can confirm which binary the
-/// agent will spawn.
+/// by `nyctos doctor` so operators can confirm which binary the
+/// daemon will spawn.
 #[derive(Clone, Debug)]
 pub struct ClaudeBinary {
     pub path: PathBuf,

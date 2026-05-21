@@ -38,7 +38,7 @@ pub enum SecretsError {
     },
     #[error(
         "prod-shaped credential detected in {path} on line {line}: matches the {kind} \
-         regex. nyx-agent refuses to start with production secrets in test.env; remove \
+         regex. nyctos refuses to start with production secrets in test.env; remove \
          the credential (or replace it with a test-mode equivalent) and try again."
     )]
     ProdToken { path: PathBuf, line: usize, kind: &'static str },

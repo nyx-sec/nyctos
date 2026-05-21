@@ -1,6 +1,6 @@
 //! Sandbox layer. Each backend isolates a single short-lived child process
 //! that runs an agent task (a dynamic verify, a payload-runner, an ai-tool
-//! call). The trait stays independent of every other nyx-agent crate so a
+//! call). The trait stays independent of every other nyctos crate so a
 //! future VM backend can ship without dragging core/api/ai changes along.
 //!
 //! Backends shipped today:

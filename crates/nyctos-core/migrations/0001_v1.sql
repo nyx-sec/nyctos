@@ -1,4 +1,4 @@
--- v1 schema for nyx-agent. This is the full forward-looking surface that
+-- v1 schema for nyctos. This is the full forward-looking surface that
 -- every later phase (payloads, chains, candidate findings, agent traces,
 -- repro bundles, schedules, webhooks, feedback) needs to land against.
 -- Migrations after v1 are append-only and field-additive only.

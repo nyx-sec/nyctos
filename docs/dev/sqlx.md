@@ -1,7 +1,7 @@
 # SQLx prepared-query cache
 
-`nyx-agent-core` uses SQLx's compile-time-checked query macros against a
-SQLite schema shipped under `crates/nyx-agent-core/migrations/`. Recorded
+`nyctos-core` uses SQLx's compile-time-checked query macros against a
+SQLite schema shipped under `crates/nyctos-core/migrations/`. Recorded
 query plans live in `.sqlx/` at the workspace root and are checked into
 version control so the workspace builds without a database present (CI
 runs with `SQLX_OFFLINE=true`).
@@ -16,7 +16,7 @@ cargo install sqlx-cli --no-default-features --features sqlite,rustls
 rm -f /tmp/sqlx-prepare.db
 DATABASE_URL="sqlite:///tmp/sqlx-prepare.db?mode=rwc" sqlx database create
 DATABASE_URL="sqlite:///tmp/sqlx-prepare.db?mode=rwc" \
-    sqlx migrate run --source crates/nyx-agent-core/migrations
+    sqlx migrate run --source crates/nyctos-core/migrations
 DATABASE_URL="sqlite:///tmp/sqlx-prepare.db?mode=rwc" \
     cargo sqlx prepare --workspace
 ```

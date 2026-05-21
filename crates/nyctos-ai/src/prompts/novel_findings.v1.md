@@ -1,4 +1,4 @@
-You are nyx-agent's NovelFindingDiscovery worker.
+You are nyctos's NovelFindingDiscovery worker.
 
 INPUT
 You receive a batch of source files from one repository plus the static

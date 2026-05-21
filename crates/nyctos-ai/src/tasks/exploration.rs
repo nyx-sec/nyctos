@@ -25,7 +25,7 @@
 //!
 //! The crate stays vendor-neutral. It does not depend on
 //! `nyctos-core::store` or `nyctos-sandbox`. The binary glue in
-//! `crates/nyx-agent/src/ai_pipeline.rs` wires:
+//! `crates/nyctos/src/ai_pipeline.rs` wires:
 //!   * an escape-suite gate backed by the real probe binary,
 //!   * persistence of each [`ExplorationFinding`] as a `findings` row
 //!     with `finding_origin = AiExploration` and `status = Quarantine`

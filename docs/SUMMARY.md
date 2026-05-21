@@ -1,11 +1,11 @@
 # Nyctos docs
 
-Operator-facing reference for `nyx-agent`, the binary that ships the
+Operator-facing reference for `nyctos`, the binary that ships the
 Nyctos product. Every page on this list describes behaviour that
 currently ships; topics still in flight are tracked in
 `.pitboss/play/deferred.md` and added here once the code lands.
 
-The shipping binary is `nyx-agent`; the product brand is "Nyctos".
+The shipping binary is `nyctos`; the product brand is "Nyctos".
 Both names appear in these pages for the reasons explained in
 `README.md`.
 
@@ -13,11 +13,11 @@ Both names appear in these pages for the reasons explained in
 
 - [install.md](install.md): prerequisites, source build, the `nyx`
   scanner dependency, the optional `claude-code` CLI, and
-  `nyx-agent doctor` line-by-line.
+  `nyctos doctor` line-by-line.
 - [quickstart.md](quickstart.md): start the daemon, walk the
   first-launch wizard, create a project, attach repos, kick a scan,
   read findings.
-- [cli.md](cli.md): every subcommand `nyx-agent` ships, the flags
+- [cli.md](cli.md): every subcommand `nyctos` ships, the flags
   it accepts, and the exit codes it returns.
 - [config.md](config.md): `nyctos.toml` schema, defaults, and
   failure modes section by section.

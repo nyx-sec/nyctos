@@ -17,7 +17,7 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.83"
 license = "LicenseRef-PolyForm-Small-Business-1.0.0"
-repository = "https://github.com/nyx/nyx-pro"
+repository = "https://github.com/nyctos/nyctos"
 
 [workspace.dependencies]
 tokio = { version = "1.42", features = ["full"] }

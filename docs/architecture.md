@@ -1,6 +1,6 @@
 # Architecture
 
-Nyctos ships as one binary, `nyx-agent`, that runs as a local daemon.
+Nyctos ships as one binary, `nyctos`, that runs as a local daemon.
 This page maps the workspace crates, the subprocess boundary to the
 upstream `nyx` scanner, the in-process event bus, and the layout of
 the tokio runtime that drives the whole thing.
@@ -13,61 +13,61 @@ If you only want operator details (paths, ports, flags) read
 
 The workspace lives under `crates/` and breaks into eight crates.
 Dependencies fan in toward `nyctos-types`; nothing depends on
-`nyx-agent`. There are no cycles.
+`nyctos`. There are no cycles.
 
 | Crate                 | Role                                                                                | Depends on                                                |
 |-----------------------|-------------------------------------------------------------------------------------|-----------------------------------------------------------|
 | `nyctos-types`        | Wire types shared across every crate: events, findings, agent task envelopes, repo + run shapes, budget rows. `ts_rs` derives generate `frontend/src/api/types.gen.ts` from these. | (leaf)                                                    |
-| `nyx-agent-core`      | Persistence, config parsing, run dispatcher, repo ingestion, report rendering, state directory layout. Owns the SQLx-backed `Store`. | `nyctos-types`                                            |
-| `nyx-agent-nyx`       | Subprocess driver for the GPL `nyx` scanner. Resolves the binary, enforces a minimum version, spawns `nyx scan --format json`, parses diagnostics. | `nyx-agent-core`, `nyctos-types`                          |
-| `nyx-agent-ai`        | Vendor-neutral `AiRuntime` trait plus adapters (Anthropic SDK, Claude Code CLI) and task templates (exploration, novel findings). | `nyx-agent-nyx`, `nyctos-types`                           |
-| `nyx-agent-sandbox`   | Sandbox `Sandbox` trait, five backends (process, birdcage, libkrun, firecracker, docker), chain-lane env-builder, payload runner, shim binary. | `nyx-agent-core`, `nyctos-types`                          |
-| `nyx-agent-api`       | Axum router, `ServerState`, bearer-auth middleware, WebSocket event stream, HMAC git webhook. | `nyx-agent-core`, `nyx-agent-sandbox`, `nyctos-types`     |
-| `nyx-agent-ui`        | SPA embed glue. `build.rs` builds the React app and `lib.rs` serves the static bundle plus `/setup.json` bootstrap. | (none)                                                    |
-| `nyx-agent`           | The binary. Wires every other crate together, owns `main`, the `clap` CLI, the in-process scan worker, and the cron scheduler. | every other crate                                         |
+| `nyctos-core`      | Persistence, config parsing, run dispatcher, repo ingestion, report rendering, state directory layout. Owns the SQLx-backed `Store`. | `nyctos-types`                                            |
+| `nyctos-nyx`       | Subprocess driver for the GPL `nyx` scanner. Resolves the binary, enforces a minimum version, spawns `nyx scan --format json`, parses diagnostics. | `nyctos-core`, `nyctos-types`                          |
+| `nyctos-ai`        | Vendor-neutral `AiRuntime` trait plus adapters (Anthropic SDK, Claude Code CLI) and task templates (exploration, novel findings). | `nyctos-nyx`, `nyctos-types`                           |
+| `nyctos-sandbox`   | Sandbox `Sandbox` trait, five backends (process, birdcage, libkrun, firecracker, docker), chain-lane env-builder, payload runner, shim binary. | `nyctos-core`, `nyctos-types`                          |
+| `nyctos-api`       | Axum router, `ServerState`, bearer-auth middleware, WebSocket event stream, HMAC git webhook. | `nyctos-core`, `nyctos-sandbox`, `nyctos-types`     |
+| `nyctos-ui`        | SPA embed glue. `build.rs` builds the React app and `lib.rs` serves the static bundle plus `/setup.json` bootstrap. | (none)                                                    |
+| `nyctos`           | The binary. Wires every other crate together, owns `main`, the `clap` CLI, the in-process scan worker, and the cron scheduler. | every other crate                                         |
 
 A few invariants the crate split protects:
 
 - Shared types belong in `nyctos-types`. No other crate exports a
   type that crosses a crate boundary; if you find a duplicate
   `struct Foo` in two crates, one of them is wrong.
-- `nyx-agent-sandbox` does not depend on `nyx-agent-api`, and
-  `nyx-agent-ai` does not depend on `nyx-agent-sandbox`. Both
+- `nyctos-sandbox` does not depend on `nyctos-api`, and
+  `nyctos-ai` does not depend on `nyctos-sandbox`. Both
   surfaces are wired together inside the binary, not by linking the
   layers directly.
-- The `nyx` scanner is consumed through `nyx-agent-nyx` and only
-  through `nyx-agent-nyx`. See the subprocess boundary section.
+- The `nyx` scanner is consumed through `nyctos-nyx` and only
+  through `nyctos-nyx`. See the subprocess boundary section.
 
 ## Process model
 
-`nyx-agent serve` is a single async process. The runtime is built
-by `#[tokio::main]` at the top of `crates/nyx-agent/src/main.rs`
+`nyctos serve` is a single async process. The runtime is built
+by `#[tokio::main]` at the top of `crates/nyctos/src/main.rs`
 and drives four concurrent surfaces:
 
 1. **HTTP server.** `axum::serve` on the listener returned by
    `tokio::net::TcpListener::bind`. The router is built in
-   `nyx_agent_api::build_router` and falls back to the embedded SPA
+   `nyctos_api::build_router` and falls back to the embedded SPA
    for unknown paths. Default bind is `127.0.0.1:8765` (see
    [`config.md`](config.md)).
 2. **Scan worker.** A `tokio::sync::mpsc` channel feeds an inline
-   task in `serve` (`crates/nyx-agent/src/main.rs:937`). API
+   task in `serve` (`crates/nyctos/src/main.rs:937`). API
    handlers and the cron scheduler push `ScanRequest`s onto the
    channel; the worker spawns one `tokio::spawn` per request that
    calls `run_scan_for_api`, which in turn drives the run
    dispatcher.
-3. **Run dispatcher.** `nyx_agent_core::run::RunDispatcher`
+3. **Run dispatcher.** `nyctos_core::run::RunDispatcher`
    schedules per-repo static-pass work onto a rayon thread pool
    sized by `[performance] static_concurrency` (defaults to
    `min(num_cpus / 2, repo_count)`). Each rayon worker calls the
    `ScanLane` trait, which the binary wires to a
-   `nyx_agent_nyx::NyxRunner`. See
-   `crates/nyx-agent-core/src/run/mod.rs:270`.
+   `nyctos_nyx::NyxRunner`. See
+   `crates/nyctos-core/src/run/mod.rs:270`.
 4. **Event replay tap.** A separate `tokio::spawn` subscribes to
    the broadcast channel and feeds every event into
    `ServerState.replay`, so WebSocket clients that attach mid-run
    still see `RunStarted` and early `RepoStarted` frames.
 
-The cron scheduler in `crates/nyx-agent/src/scheduler.rs` runs as
+The cron scheduler in `crates/nyctos/src/scheduler.rs` runs as
 another spawned task when `[[schedule]]` entries are configured.
 It evaluates cron expressions on a 60s tick and pushes
 `ScanRequest`s onto the same mpsc channel the API uses, so a
@@ -76,12 +76,12 @@ once they reach the worker.
 
 ## Subprocess boundary to `nyx`
 
-The upstream `nyx` scanner is GPL-3.0-or-later. `nyx-agent` is
+The upstream `nyx` scanner is GPL-3.0-or-later. `nyctos` is
 source-available under PolyForm Small Business 1.0.0. To keep the
 two licenses from contaminating each other, Nyctos consumes `nyx`
 only through `fork`/`exec`, never as a linked library:
 
-- `nyx_agent_nyx::NyxRunner::discover` resolves the binary via
+- `nyctos_nyx::NyxRunner::discover` resolves the binary via
   `Config::nyx.binary` (operator override) or `$PATH`, then runs
   `nyx --version` and refuses to start if the version is below
   `MINIMUM_NYX_VERSION` (currently `0.7.0`, see
@@ -100,8 +100,8 @@ only through `fork`/`exec`, never as a linked library:
   `InconclusiveReason::StaticPassTimeout` and lets the rest of
   the run finish.
 
-If `nyx-agent` needs a scanner feature, file it against the `nyx`
-repo. Never modify `nyx` from inside `nyx-agent`.
+If `nyctos` needs a scanner feature, file it against the `nyx`
+repo. Never modify `nyx` from inside `nyctos`.
 
 ## Event bus
 
@@ -136,13 +136,13 @@ the replay buffer.
 
 ## Storage
 
-All persistence goes through `nyx_agent_core::store::Store`, a
+All persistence goes through `nyctos_core::store::Store`, a
 SQLx + SQLite handle that wraps a per-table accessor pattern:
 `store.repos()`, `store.runs()`, `store.findings()`, and so on.
 Each accessor returns a stateless helper that owns no connection;
 the pool is shared via `Arc` inside `Store`.
 
-Tables live under `crates/nyx-agent-core/src/store/`: `repo`,
+Tables live under `crates/nyctos-core/src/store/`: `repo`,
 `run`, `finding`, `payload`, `chain`, `candidate`, `spec`,
 `trace`, `budget`, `feedback`, `repro`, `project`, `schedule`,
 `webhook`. SQLx migrations live alongside; the prepared-query
@@ -155,7 +155,7 @@ workspaces, and repro bundles land) is documented in
 ## AI runtime
 
 The `AiRuntime` trait in
-`crates/nyx-agent-ai/src/runtime.rs:18` is vendor-neutral. Two
+`crates/nyctos-ai/src/runtime.rs:18` is vendor-neutral. Two
 adapters ship today: `AnthropicAdapter` (Messages API) and
 `ClaudeCodeAdapter` (the `claude-code` CLI subprocess). Both
 publish `AgentEvent::Ai` frames into the same broadcast bus the
@@ -169,24 +169,24 @@ and adapters that support deterministic sampling set
 
 ## Sandbox
 
-The `Sandbox` trait in `crates/nyx-agent-sandbox/src/lib.rs:354`
+The `Sandbox` trait in `crates/nyctos-sandbox/src/lib.rs:354`
 runs one short-lived child process per agent task. Backends ship
-in `crates/nyx-agent-sandbox/src/backend/`: `process` (no
+in `crates/nyctos-sandbox/src/backend/`: `process` (no
 isolation upgrade), `birdcage` (Linux landlock + seccomp, macOS
 Seatbelt), `libkrun` (macOS HVF, Linux KVM), `firecracker`
 (Linux KVM), `docker` (chain-lane fallback). Backend selection
 runs per scan lane: see `select_backend` in
-`crates/nyx-agent-sandbox/src/lib.rs:158`.
+`crates/nyctos-sandbox/src/lib.rs:158`.
 
 The `birdcage` backend spawns through a shim binary
 (`nyx-sandbox-shim`) so seccomp profiles applied by the
 `birdcage` crate cannot collide with the daemon's own syscall
 needs. The shim lives at
-`crates/nyx-agent-sandbox/src/bin/nyx_sandbox_shim.rs`.
+`crates/nyctos-sandbox/src/bin/nyx_sandbox_shim.rs`.
 
 ## Frontend embed
 
-`nyx-agent-ui`'s `build.rs` runs `pnpm build` against `frontend/`
+`nyctos-ui`'s `build.rs` runs `pnpm build` against `frontend/`
 in release builds and bakes the resulting `dist/` into the binary
 via `rust-embed`. Debug builds skip the build step and proxy
 through `frontend/`'s dev server. The two-mode behavior is
@@ -195,13 +195,13 @@ documented in [`dev/frontend.md`](dev/frontend.md).
 `/setup.json` is served separately from the embedded bundle: the
 SPA fetches it on boot to discover the bearer token (when auth is
 enforced) and the daemon's setup state. See
-`crates/nyx-agent-ui/src/lib.rs`.
+`crates/nyctos-ui/src/lib.rs`.
 
 ## Related pages
 
 - [`install.md`](install.md): toolchain, build flags, and the
   `nyx` binary dependency.
-- [`cli.md`](cli.md): every `nyx-agent` subcommand and the
+- [`cli.md`](cli.md): every `nyctos` subcommand and the
   daemon entry point.
 - [`config.md`](config.md): every TOML section, including the
   `[performance]`, `[sandbox]`, and `[ai]` knobs referenced above.

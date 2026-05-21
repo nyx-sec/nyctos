@@ -11,7 +11,7 @@ trace viewer) sees only the trait, not the vendor SDK.
 The crate stays vendor-neutral. Adapters depend on `nyctos-types`
 for the wire envelope and on the `BudgetTracker` port for spend
 accounting; nothing else. The binary at
-`crates/nyx-agent/src/main.rs:1793` is the only place that picks a
+`crates/nyctos/src/main.rs:1793` is the only place that picks a
 concrete adapter from `[ai] runtime`, wires it to the
 `BudgetStore`-backed tracker, and hands it to the dispatcher.
 
@@ -171,7 +171,7 @@ to embed Anthropic's tool-use loop. Detection runs
 construction time; failure surfaces as
 `AiError::AdapterUnavailable`. The binary path plus `--version`
 output is captured into `ClaudeBinary` and surfaced by
-`nyx-agent doctor`.
+`nyctos doctor`.
 
 Wire shape:
 

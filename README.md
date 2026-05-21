@@ -3,7 +3,7 @@
   <img src="assets/nyctos-readme-header.png" alt="NYCTOS - automated pentesting, refined" width="900"/>
 
 [![Status: pre-MVP](https://img.shields.io/badge/status-pre--MVP-2ea067)](#status)
-[![Binary: nyx-agent](https://img.shields.io/badge/binary-nyx--agent-c79a2b)](#naming)
+[![Binary: nyctos](https://img.shields.io/badge/binary-nyctos-c79a2b)](#naming)
 [![License: PolyForm Small Business 1.0.0](https://img.shields.io/badge/license-PolyForm%20Small%20Business-9fa3ad)](LICENSE.md)
 [![Docs](https://img.shields.io/badge/docs-operator%20guide-58a6ff)](docs/SUMMARY.md)
 </div>
@@ -16,8 +16,8 @@ sandbox. It runs continuously across your repositories, validates
 findings inside an isolated dev environment, and emits reproducible
 evidence for every exploitable finding.
 
-The shipping binary is `nyx-agent`; the rename to `nyctos` is queued
-as its own phase (see Naming below).
+The shipping binary is `nyctos`; the upstream OSS static scanner stays
+`nyx` (see Naming below).
 <!-- /nyx: verbatim -->
 
 ## Status
@@ -128,17 +128,18 @@ communication.
 
 The upstream `nyx` core scanner is a separate project under
 GPL-3.0-or-later. That GPL-licensed scanner is the OSS component of the
-stack; the `nyx-agent` daemon in this repository is not.
+stack; the `nyctos` daemon in this repository is not.
 
 ## Naming
 
 **Nyctos** (Greek genitive of `Nyx`, "of-the-night") is the product
-brand. The shipping crates, binary (`nyx-agent`), config
-(`nyctos.toml`), and state directory (`~/.local/share/nyctos/`)
-still carry their legacy names; the code rename to `nyctos` is queued
-as its own phase. The upstream dynamic-verification engine `nyx`
-(GPL-3.0-or-later) keeps its name. Full target surface at
-`.pitboss/nyctos-spec.md`.
+brand. The shipping crates (`nyctos`, `nyctos-core`, `nyctos-ai`,
+`nyctos-api`, `nyctos-nyx`, `nyctos-sandbox`, `nyctos-types`,
+`nyctos-ui`), binary (`nyctos`), config (`nyctos.toml`), and state
+directory (`~/.local/share/nyctos/`) all carry the same brand. The
+upstream OSS static scanner `nyx` (GPL-3.0-or-later) keeps its name
+and is invoked as a subprocess; do not conflate it with the
+commercial daemon. Full target surface at `.pitboss/nyctos-spec.md`.
 
 ## Contributing
 

@@ -100,7 +100,7 @@ The publishers live at:
 - `crates/nyctos-core/src/run/mod.rs:404-464` (per-repo
   `RepoStarted` / `RepoStaticDone` / `RepoFailed` /
   `RepoFinished`).
-- `crates/nyx-agent/src/main.rs:578` (out-of-band `RepoFailed` when
+- `crates/nyctos/src/main.rs:578` (out-of-band `RepoFailed` when
   the API-driven scan path rejects the request before reaching the
   dispatcher).
 
@@ -151,7 +151,7 @@ Every other `RunEvent` variant is. `AiEvent`, `SandboxEvent`, and
 the other placeholder families are not buffered today; if the WS
 client joined after the relevant frame, it is lost.
 
-A tap task in `crates/nyx-agent/src/main.rs:989-1000` subscribes
+A tap task in `crates/nyctos/src/main.rs:989-1000` subscribes
 to the broadcast channel and pushes every event into the replay
 buffer. When a WS client opens with `?run_id=<id>`, the handler
 calls `EventReplay::snapshot(run_id)` before joining the live
@@ -164,9 +164,9 @@ idempotent).
 
 The broadcast channel is sized at startup:
 
-- 256 frames for the serve path (`crates/nyx-agent/src/main.rs:928`).
+- 256 frames for the serve path (`crates/nyctos/src/main.rs:928`).
 - 16 frames for the headless wizard path
-  (`crates/nyx-agent/src/main.rs:443`), since no WS clients
+  (`crates/nyctos/src/main.rs:443`), since no WS clients
   attach.
 
 When a subscriber falls more than capacity frames behind, tokio

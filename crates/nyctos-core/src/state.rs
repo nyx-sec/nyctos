@@ -8,8 +8,7 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
-const SUBDIRS: &[&str] =
-    &["runs", "repos", "findings", "logs", "cache", "bundles", "secrets"];
+const SUBDIRS: &[&str] = &["runs", "repos", "findings", "logs", "cache", "bundles", "secrets"];
 
 #[derive(Debug, Error)]
 pub enum StateError {

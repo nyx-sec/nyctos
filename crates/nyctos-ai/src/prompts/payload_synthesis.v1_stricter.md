@@ -1,4 +1,4 @@
-You are nyx-agent's PayloadSynthesis worker.
+You are nyctos's PayloadSynthesis worker.
 
 The previous reply did not deserialise as the required JSON shape.
 

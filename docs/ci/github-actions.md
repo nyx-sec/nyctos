@@ -1,7 +1,7 @@
 # GitHub Actions integration
 
-The `nyx-agent` repo ships a composite Action at
-`.github/actions/nyx-agent/action.yml` that runs the scanner against a
+The `nyctos` repo ships a composite Action at
+`.github/actions/nyctos/action.yml` that runs the scanner against a
 pull request, writes a machine-readable report, and posts (or updates)
 a single grouped PR comment summarising Confirmed + cross-repo chain
 findings. Everything else (Open, Quarantine, Inconclusive, AI trace
@@ -11,17 +11,17 @@ viewer, repro bundles) stays in the operator's local UI.
 
 The Action runs in two steps:
 
-1. **`nyx-agent scan`** against the current checkout. Writes a JSON
+1. **`nyctos scan`** against the current checkout. Writes a JSON
    report to `<state-dir>/report.json`. The `--since-ref` flag filters
    findings to paths the PR touched (the base ref's `git diff
    --name-only` view); the underlying scan still walks the whole
    repository but the emitted report contains only PR-relevant rows.
-2. **`nyx-agent pr-comment`** reads the report, filters to findings
+2. **`nyctos pr-comment`** reads the report, filters to findings
    with `status = Verified` (Confirmed by the dynamic verifier) or
    members of a cross-repo chain, groups them by `(repo, path)` and
    severity, and posts a Markdown comment via the GitHub REST API.
 
-A hidden HTML marker (`<!-- nyx-agent:pr-comment v1 -->`) at the top
+A hidden HTML marker (`<!-- nyctos:pr-comment v1 -->`) at the top
 of the comment body is used to recognise an existing comment on
 subsequent runs - the second push to the same PR updates the comment
 in place rather than creating a new one.
@@ -45,7 +45,7 @@ permissions:
 
 | input | required | description |
 |---|---|---|
-| `nyx-agent-binary` | no | Path to the binary. Defaults to `nyx-agent` (PATH lookup). |
+| `nyctos-binary` | no | Path to the binary. Defaults to `nyctos` (PATH lookup). |
 | `config` | no | Path to `nyctos.toml`. Defaults to `./nyctos.toml`. |
 | `state-dir` | no | State directory override. Defaults to a per-run tempdir under `$RUNNER_TEMP`. |
 | `ui-url` | no | Base URL of the operator's local UI. Used to deep-link the comment back to `<ui-url>/runs/<run_id>`. Empty = no link. |
@@ -55,7 +55,7 @@ permissions:
 ## Workflow example
 
 ```yaml
-name: nyx-agent
+name: nyctos
 on:
   pull_request:
     branches: [main]
@@ -65,14 +65,14 @@ permissions:
   pull-requests: write
 
 jobs:
-  nyx-agent:
-    runs-on: self-hosted   # nyx-agent binary must be installed
+  nyctos:
+    runs-on: self-hosted   # nyctos binary must be installed
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0    # required for `git diff base_ref...HEAD`
 
-      - uses: ./.github/actions/nyx-agent
+      - uses: ./.github/actions/nyctos
         with:
           ui-url: https://nyx.example.internal
           gh-token: ${{ github.token }}
@@ -131,7 +131,7 @@ Re-running the workflow against the same PR (e.g. after a push) is a
 
 This means the comment surface is bounded by the number of distinct
 markers we ship. Right now there is exactly one
-(`<!-- nyx-agent:pr-comment v1 -->`). Schema bumps will mint a new
+(`<!-- nyctos:pr-comment v1 -->`). Schema bumps will mint a new
 marker so the older one becomes invisible to the new binary and a
 fresh comment lands - giving operators a clean swap rather than an
 update that mixes old and new shape.

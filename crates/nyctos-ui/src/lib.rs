@@ -1,9 +1,9 @@
-//! Embedded single-page UI for the nyx-agent daemon.
+//! Embedded single-page UI for the nyctos daemon.
 //!
 //! The `dist/` directory is populated by `build.rs`:
 //! * release builds run the Vite pipeline in `<repo>/frontend/` and
 //!   copy the output here;
-//! * other profiles drop a tiny stub `index.html` so the agent's `/`
+//! * other profiles drop a tiny stub `index.html` so the daemon's `/`
 //!   route still returns something usable.
 //!
 //! Consumers wire [`spa_handler`] as the Axum fallback so any path

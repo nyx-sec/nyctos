@@ -9,7 +9,7 @@
 //! Agent-side selection + invocation skeleton. The real boot path
 //! lives in a separate `nyx-fc-runner` helper binary (out-of-tree;
 //! the established skeleton is the one nyx-engine already vendors and
-//! we shell out to avoid pulling its source into nyx-agent's build
+//! we shell out to avoid pulling its source into nyctos's build
 //! graph). The backend feeds the runner a JSON spec on stdin and
 //! reads captured guest stdio on stdout/stderr.
 //!

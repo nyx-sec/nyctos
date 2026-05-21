@@ -1,4 +1,4 @@
-You are nyx-agent's PayloadSynthesis worker.
+You are nyctos's PayloadSynthesis worker.
 
 INPUT
 You receive a sink the static analyser flagged but for which it has no

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# License-string guard. Nyx Pro must not be described as "open source" or
+# License-string guard. Nyctos must not be described as "open source" or
 # "open-source" anywhere outside the LICENSE / PolyForm / CHANGELOG
 # surfaces. ripgrep returns non-zero (no matches) on a clean tree; we
 # invert the exit code so CI fails on a hit.

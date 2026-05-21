@@ -153,7 +153,7 @@ Response:
 }
 ```
 
-The sandbox check routes through `nyx_agent_sandbox::probe` so its
+The sandbox check routes through `nyctos_sandbox::probe` so its
 verdict matches what the run-time auto-selector would see. `auto`
 returns the advisory message `Backend will be chosen at scan time`.
 
@@ -345,7 +345,7 @@ reserved for when a per-run finding-membership history lands.
 
 Run card as JSON. Carries per-repo counts, per-severity totals,
 chain links, and the AI cost summary. Backed by
-`nyx_agent_core::report::build_run_card`.
+`nyctos_core::report::build_run_card`.
 
 `GET /api/v1/runs/:id/summary.md`
 
@@ -552,7 +552,7 @@ dispatched), 200 (branch filter rejected the delivery).
   writes.
 - [state-dir.md](state-dir.md) for where `auth_token`,
   `bundles/`, and `logs/agent.jsonl` live.
-- [cli.md](cli.md) for the `nyx-agent scan` shortcut that calls
+- [cli.md](cli.md) for the `nyctos scan` shortcut that calls
   this API.
 - [triggers/webhook.md](triggers/webhook.md) and
   [triggers/cron.md](triggers/cron.md) for the two automated

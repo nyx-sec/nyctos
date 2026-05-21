@@ -1,4 +1,4 @@
-# Curated banned-phrase list for nyx-pro voice-lint.
+# Curated banned-phrase list for nyctos voice-lint.
 # One phrase per line. Lines starting with `#` are comments.
 # Matching is case-insensitive literal substring by default. Lines that
 # start with `regex:` are extended regular expressions (POSIX ERE,
@@ -7,6 +7,7 @@
 # the verb is banned, but `leverage point` (noun) is not.
 # To allow a phrase in a specific file, wrap the surrounding region in
 # `<!-- nyx: verbatim -->` / `<!-- /nyx: verbatim -->` markers.
+Nyx Pro
 delve
 seamless
 synergy

@@ -102,7 +102,7 @@ where
         .map_err(|_| LogInitError::AlreadyInstalled)
 }
 
-/// Inspect-only helper used by `nyx-agent doctor` so it can confirm the
+/// Inspect-only helper used by `nyctos doctor` so it can confirm the
 /// JSON sink path without actually installing a subscriber.
 pub fn json_log_path(log_dir: &Path) -> PathBuf {
     log_dir.join("agent.jsonl")

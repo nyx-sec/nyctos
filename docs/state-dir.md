@@ -1,6 +1,6 @@
 # State directory
 
-`nyx-agent` keeps every artifact that has to outlive a process under
+`nyctos` keeps every artifact that has to outlive a process under
 a single root directory: the SQLite store, repo workspaces, repro
 bundles, structured logs, and the local bearer token the API uses
 to authenticate the embedded SPA. Resetting Nyctos on a host means
@@ -16,7 +16,7 @@ On first launch the agent resolves the root in this order:
    `~/Library/Application Support/nyctos`; on Linux,
    `$XDG_DATA_HOME/nyctos` (defaulting to `~/.local/share/nyctos`).
 
-`nyx-agent doctor` prints the resolved path:
+`nyctos doctor` prints the resolved path:
 
 ```text
 state dir OK at /Users/eli/Library/Application Support/nyctos
@@ -50,7 +50,7 @@ around it.
 ```
 
 The root and every subdirectory in that list are created together
-by `StateDir::ensure` on the first `nyx-agent` invocation; later
+by `StateDir::ensure` on the first `nyctos` invocation; later
 invocations are idempotent.
 
 ## Permissions
@@ -72,7 +72,7 @@ on <path>: <io error>`.
 SQLite database. The pool opens with WAL journaling, `synchronous =
 NORMAL`, `foreign_keys = ON`, `cache_size = -8000` (8 MiB), and
 `temp_store = MEMORY`. The schema is managed by the bundled
-migrator (`crates/nyx-agent-core/migrations/`):
+migrator (`crates/nyctos-core/migrations/`):
 
 | Migration             | Adds                                                                                          |
 |-----------------------|-----------------------------------------------------------------------------------------------|
@@ -89,7 +89,7 @@ sqlite3 "<state>/state.db" \
   "SELECT schema_version, agent_version, datetime(created_at/1000, 'unixepoch') FROM meta WHERE id = 1;"
 ```
 
-`nyx-agent doctor` prints the schema version on every run:
+`nyctos doctor` prints the schema version on every run:
 
 ```text
 db OK at <state>/state.db (schema v2)
@@ -167,8 +167,8 @@ writes here yet. Reserved.
 Run against a tempdir for a one-off scan:
 
 ```bash
-nyx-agent --state-dir /tmp/nyctos-scratch doctor
-nyx-agent --state-dir /tmp/nyctos-scratch scan --project demo
+nyctos --state-dir /tmp/nyctos-scratch doctor
+nyctos --state-dir /tmp/nyctos-scratch scan --project demo
 ```
 
 Pin the directory in `nyctos.toml` (handy for `systemd` /

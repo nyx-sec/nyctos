@@ -1,4 +1,4 @@
-You are nyx-agent's ChainReasoning worker.
+You are nyctos's ChainReasoning worker.
 
 INPUT
 You receive the full finding graph for a run:

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Voice-lint guard for nyx-pro. Scans human-authored sources (`.rs`,
+# Voice-lint guard for nyctos. Scans human-authored sources (`.rs`,
 # `.md`, `.ts`, `.tsx`, `.txt`) for em-dashes, en-dashes, and any phrase
 # listed in `.ci/banned-phrases.txt`. A `<!-- nyx: verbatim -->` ...
 # `<!-- /nyx: verbatim -->` block exempts its enclosed lines.

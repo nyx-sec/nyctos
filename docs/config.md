@@ -2,7 +2,7 @@
 
 Nyctos loads its configuration from `nyctos.toml`. The file is
 optional: when missing, every section falls back to defaults, so
-read-only commands like `nyx-agent doctor` work in a fresh checkout
+read-only commands like `nyctos doctor` work in a fresh checkout
 with no config on disk.
 
 ## Where the file lives
@@ -11,10 +11,10 @@ The agent looks for `./nyctos.toml` relative to the current
 working directory. Override with `--config <PATH>` on any subcommand:
 
 ```bash
-nyx-agent --config /etc/nyctos.toml serve
+nyctos --config /etc/nyctos.toml serve
 ```
 
-`nyx-agent doctor` prints whether the file was found and which
+`nyctos doctor` prints whether the file was found and which
 sections parsed.
 
 ## Schema overview
@@ -72,7 +72,7 @@ fails the load rather than silently going to default.
 | `firecracker` | Lightweight microVM on Linux via Firecracker.                     |
 | `docker`      | Docker container fallback. Slowest, requires the docker daemon.   |
 
-`nyx-agent doctor` prints which backends probe healthy on this host.
+`nyctos doctor` prints which backends probe healthy on this host.
 
 ## `[ai]`
 

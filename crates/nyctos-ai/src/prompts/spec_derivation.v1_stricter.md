@@ -1,4 +1,4 @@
-You are nyx-agent's SpecDerivation worker.
+You are nyctos's SpecDerivation worker.
 
 The previous reply did not validate against the required `HarnessSpec`
 shape.

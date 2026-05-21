@@ -4,7 +4,7 @@
 //! `keyring` crate (Keychain on macOS, libsecret/secret-service on Linux,
 //! Credential Manager on Windows) so the operator's tokens never land
 //! in `nyctos.toml` or the JSON log. The keychain entry name is
-//! `<service>:<account>` where `service` defaults to `nyx-agent` and the
+//! `<service>:<account>` where `service` defaults to `nyctos` and the
 //! account is a stable identifier such as `ai-anthropic`.
 //!
 //! Tracing redaction lives in [`super::log_init`] so even a stray
@@ -13,7 +13,7 @@
 //! In addition to the keyring backend, the store also supports an
 //! in-process [`SecretStore::memory`] backend for CI / unattended
 //! environments where the platform keychain is unavailable. The runtime
-//! selector is `NYX_SECRETS_BACKEND`: set to `memory` to make
+//! selector is `NYCTOS_SECRETS_BACKEND`: set to `memory` to make
 //! [`SecretStore::from_env`] return the in-process backend instead of
 //! the keyring.
 
@@ -32,11 +32,11 @@ pub const ACCOUNT_AI_LOCAL_LLM: &str = "ai-local-llm";
 /// Default keychain service identifier used by every entry. Operators
 /// running multiple installations can override via
 /// [`SecretStore::with_service`].
-pub const DEFAULT_SERVICE: &str = "nyx-agent";
+pub const DEFAULT_SERVICE: &str = "nyctos";
 
 /// Environment variable that selects the secret backend at startup.
 /// Recognised values: `keyring` (default) and `memory`.
-pub const ENV_BACKEND: &str = "NYX_SECRETS_BACKEND";
+pub const ENV_BACKEND: &str = "NYCTOS_SECRETS_BACKEND";
 
 #[derive(Debug, Error)]
 pub enum SecretError {
@@ -88,7 +88,7 @@ impl SecretStore {
         Self { backend: Backend::Memory(Arc::new(Mutex::new(HashMap::new()))) }
     }
 
-    /// Select the backend from the `NYX_SECRETS_BACKEND` environment
+    /// Select the backend from the `NYCTOS_SECRETS_BACKEND` environment
     /// variable: `memory` returns the in-process backend, anything else
     /// (including unset) falls back to the keyring under the default
     /// service name.
@@ -228,7 +228,7 @@ mod tests {
         assert!(looks_like_secret("sk-test-1234"));
         assert!(looks_like_secret("ghp_abcdefghijklmnopqrstuvwxyz0123"));
         assert!(!looks_like_secret("hello"));
-        assert!(!looks_like_secret("nyx-agent"));
+        assert!(!looks_like_secret("nyctos"));
     }
 
     #[test]

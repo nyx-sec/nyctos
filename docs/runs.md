@@ -7,9 +7,9 @@ row into the `runs` SQLite table. Every event the run produces
 carries the run id so subscribers can group across the bus and the
 DB without a side lookup.
 
-Source: `crates/nyx-agent-core/src/run/mod.rs`,
-`crates/nyx-agent-core/src/store/run.rs`,
-`crates/nyx-agent/src/main.rs` (the binary's `scan` subcommand).
+Source: `crates/nyctos-core/src/run/mod.rs`,
+`crates/nyctos-core/src/store/run.rs`,
+`crates/nyctos/src/main.rs` (the binary's `scan` subcommand).
 
 ## Run id
 
@@ -23,7 +23,7 @@ different ids. Run ids sort lexicographically when minted from the
 same process: the millisecond prefix dominates and the counter
 breaks ties in order.
 
-The minter lives at `crates/nyx-agent-core/src/run/mod.rs:494`.
+The minter lives at `crates/nyctos-core/src/run/mod.rs:494`.
 Tests pin both the uniqueness and the monotonicity guarantee.
 
 The id is intentionally not folded into the finding-id hash; see
@@ -38,7 +38,7 @@ dispatcher:
 - the resolved `Project`,
 - a fresh `Run` (`Run::new()`),
 - an `Arc<dyn ScanLane<Diag>>` (the production lane wraps
-  `nyx_agent_nyx::NyxRunner`, which shells out to `nyx scan`),
+  `nyctos_nyx::NyxRunner`, which shells out to `nyx scan`),
 - a `Vec<WorkspaceHandle>`, one per enabled repo.
 
 `RunDispatcher::dispatch_project` runs synchronously on a
@@ -62,7 +62,7 @@ dispatcher:
 
 After dispatch returns, the `scan` subcommand persists every
 `RepoOutcome::Success` diag through `persist_run_results`
-(`crates/nyx-agent/src/main.rs:1243`), then calls `finalise_run`
+(`crates/nyctos/src/main.rs:1243`), then calls `finalise_run`
 to update the `runs` row's status, finished-at, and wall clock.
 
 Lane errors are recoverable: a panicking rayon worker or a sqlx
@@ -95,7 +95,7 @@ config layer and the dispatcher. See
 [`docs/config.md`](config.md) for the full `[performance]` block.
 
 The resolver lives at
-`crates/nyx-agent-core/src/run/mod.rs:475`.
+`crates/nyctos-core/src/run/mod.rs:475`.
 
 ## Per-repo outcomes
 
@@ -159,7 +159,7 @@ Two tables touch each run:
 | `findings`     | `persist_run_results` (one row per static-pass diag) |
 
 The `runs` row schema (see
-`crates/nyx-agent-core/src/store/run.rs:50`):
+`crates/nyctos-core/src/store/run.rs:50`):
 
 | Column                         | Notes                                  |
 |--------------------------------|----------------------------------------|
@@ -188,14 +188,14 @@ that appears once stays correlated across re-scans.
 
 The hash domain is `(repo, path, Some(line), cap, rule)`. The run
 id is intentionally **not** folded in. See
-`finding_id_hash` at `crates/nyx-agent-core/src/store/finding.rs:79`
+`finding_id_hash` at `crates/nyctos-core/src/store/finding.rs:79`
 and the `rerun_on_identical_sources_produces_identical_finding_ids`
 test in `run/mod.rs:749`.
 
 ## Workspaces and snapshots
 
 Each repo lands inside the dispatcher as a `WorkspaceHandle`
-(`crates/nyx-agent-core/src/run/workspace.rs`). The handle wraps
+(`crates/nyctos-core/src/run/workspace.rs`). The handle wraps
 an `Arc<IngestedRepo>`, so clones are cheap and the snapshot
 directory persists until the last clone drops. Production code
 clones one handle into a name-keyed `HashMap` before dispatch so
@@ -213,7 +213,7 @@ in [`docs/architecture.md`](architecture.md).
 Runs originate from one of five surfaces. The
 `triggered_by` column records which:
 
-- `Manual`: operator ran `nyx-agent scan` from the CLI.
+- `Manual`: operator ran `nyctos scan` from the CLI.
 - `Cron`: in-process scheduler fired a `[[schedule]]` entry. See
   [`docs/triggers/cron.md`](triggers/cron.md).
 - `Webhook`: `POST /webhook/git` was verified. See

@@ -292,10 +292,7 @@ mod tests {
         let err = sb.run(opts).await.expect_err("fast-lane loopback must refuse");
         match err {
             SandboxError::Config(reason) => {
-                assert!(
-                    reason.contains("fast lane"),
-                    "reason must name the lane: {reason}"
-                );
+                assert!(reason.contains("fast lane"), "reason must name the lane: {reason}");
                 assert!(reason.contains("loopback"), "reason must name the flag: {reason}");
             }
             other => panic!("expected Config, got {other:?}"),

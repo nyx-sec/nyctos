@@ -1,7 +1,7 @@
 # Install
 
 This page walks through building Nyctos from source and wiring its
-external dependencies. The shipping binary is `nyx-agent`; the product
+external dependencies. The shipping binary is `nyctos`; the product
 brand is "Nyctos". Both names appear here for the reasons explained in
 `README.md`.
 
@@ -23,20 +23,20 @@ Linux and macOS are the supported targets. Windows is untested.
 ## Build from source
 
 ```bash
-git clone <repo-url> nyx-pro
-cd nyx-pro
+git clone <repo-url> nyctos
+cd nyctos
 cargo build --release
 ```
 
-`cargo build --release` runs `crates/nyx-agent-ui/build.rs`, which
+`cargo build --release` runs `crates/nyctos-ui/build.rs`, which
 invokes `npm ci --silent` and `npm run build` inside `frontend/`,
-then mirrors `frontend/dist/` into `crates/nyx-agent-ui/dist/` so
+then mirrors `frontend/dist/` into `crates/nyctos-ui/dist/` so
 `rust_embed` can pick the assets up at compile time. A release build
 fails loudly if Node is missing or the frontend build errors out: we
 never want to ship a release binary with a stub UI.
 
 If you build the SPA out-of-band (e.g. a CI job that prepopulates
-`crates/nyx-agent-ui/dist/`), set `NYCTOS_SKIP_FRONTEND_BUILD=1` to skip
+`crates/nyctos-ui/dist/`), set `NYCTOS_SKIP_FRONTEND_BUILD=1` to skip
 the npm step:
 
 ```bash
@@ -47,7 +47,7 @@ Debug builds (`cargo build`, `cargo run`, `cargo nextest run`) write
 a tiny stub `index.html` instead, so `/` keeps returning a usable
 page in CI environments without Node.
 
-The resulting binary lives at `target/release/nyx-agent`. Copy it
+The resulting binary lives at `target/release/nyctos`. Copy it
 onto your `PATH` or invoke it directly.
 
 ## Install the `nyx` scanner
@@ -76,14 +76,14 @@ spawns it.
 
 ## Optional: claude-code
 
-The AI exploit-synthesis layer (`crates/nyx-agent-ai`) drives the
+The AI exploit-synthesis layer (`crates/nyctos-ai`) drives the
 `claude-code` agent-loop CLI as a subprocess. Without it the daemon
 still starts, scans complete, and findings persist; only the AI
 pipeline degrades to "unavailable".
 
 To enable it, install Anthropic's `claude-code` CLI and put it on
 `PATH` as `claude` (or, for older installs, `claude-code`; the
-detector accepts either). `nyx-agent doctor` reports the resolved
+detector accepts either). `nyctos doctor` reports the resolved
 binary and the captured `--version` string.
 
 ## State directory
@@ -104,11 +104,11 @@ bundles, logs, and the bearer-token file (`auth_token`, mode `0600`).
 
 ## Verify the install
 
-`nyx-agent doctor` runs every health check the daemon performs at
+`nyctos doctor` runs every health check the daemon performs at
 startup and exits non-zero on any failure:
 
 ```bash
-./target/release/nyx-agent doctor
+./target/release/nyctos doctor
 ```
 
 Sample output:
@@ -159,9 +159,9 @@ unset). Set one of those env vars, or pass `--state-dir /abs/path`.
 
 ### Release build panics with `frontend build failed`
 
-The `crates/nyx-agent-ui` build script could not run `npm`. Install
+The `crates/nyctos-ui` build script could not run `npm`. Install
 Node and `npm`, or set `NYCTOS_SKIP_FRONTEND_BUILD=1` and provide
-prebuilt assets in `crates/nyx-agent-ui/dist/`.
+prebuilt assets in `crates/nyctos-ui/dist/`.
 
 ### `cargo build` fails on missing `.sqlx/` query data
 

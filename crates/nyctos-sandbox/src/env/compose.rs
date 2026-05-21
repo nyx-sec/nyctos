@@ -717,7 +717,7 @@ secrets:
 
     #[test]
     fn sanitise_prefix_replaces_non_alnum() {
-        assert_eq!(sanitise_prefix("nyx-pro"), "nyx_pro");
+        assert_eq!(sanitise_prefix("acme-app"), "acme_app");
         assert_eq!(sanitise_prefix("Alpha/Beta"), "alpha_beta");
         assert_eq!(sanitise_prefix(""), "repo");
         assert_eq!(sanitise_prefix("---"), "repo");

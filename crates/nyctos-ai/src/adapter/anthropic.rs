@@ -762,12 +762,9 @@ mod tests {
     fn pricing_override_wins_over_builtin_table() {
         let tracker = Arc::new(InMemoryBudgetTracker::new());
         let mut overrides = HashMap::new();
-        overrides.insert(
-            "claude-opus-4-7".to_string(),
-            Pricing::from_per_mtok_usd(12, 60, 15, 1),
-        );
-        let adapter = AnthropicSdkAdapter::new("k".to_string(), tracker)
-            .with_pricing_overrides(overrides);
+        overrides.insert("claude-opus-4-7".to_string(), Pricing::from_per_mtok_usd(12, 60, 15, 1));
+        let adapter =
+            AnthropicSdkAdapter::new("k".to_string(), tracker).with_pricing_overrides(overrides);
 
         let resolved = adapter.pricing_for("claude-opus-4-7");
         assert_eq!(resolved.input_per_token_micros, 12);
@@ -784,8 +781,8 @@ mod tests {
             "claude-opus-4-7-20260101".to_string(),
             Pricing::from_per_mtok_usd(99, 99, 99, 99),
         );
-        let adapter = AnthropicSdkAdapter::new("k".to_string(), tracker)
-            .with_pricing_overrides(overrides);
+        let adapter =
+            AnthropicSdkAdapter::new("k".to_string(), tracker).with_pricing_overrides(overrides);
 
         // Override is keyed by exact id; `claude-haiku-4-5` does not
         // match, so the built-in haiku rate sheet wins.

@@ -1,5 +1,5 @@
 // Shared serde structs, enums, and event-bus types used by every other
-// nyx-agent crate. No logic lives here. Each placeholder module gets
+// nyctos crate. No logic lives here. Each placeholder module gets
 // populated by the phase that owns its surface area.
 
 pub mod agent;

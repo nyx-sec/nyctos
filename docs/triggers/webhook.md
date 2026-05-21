@@ -34,7 +34,7 @@ endpoint). The recommended shape is a launchd wrapper:
 set -euo pipefail
 NYX_WEBHOOK_SECRET="$(cat "$HOME/.config/nyctos/webhook.secret")"
 export NYX_WEBHOOK_SECRET
-exec /usr/local/bin/nyx-agent serve --headless
+exec /usr/local/bin/nyctos serve --headless
 ```
 
 Save with mode 0700 and point the LaunchAgent's `ProgramArguments`

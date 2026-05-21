@@ -453,7 +453,7 @@ mod tests {
         let mut sched = Scheduler::with_clock(
             &[ScheduleConfig {
                 cron: "0 3 * * 1".to_string(),
-                repo: Some("nyx-pro".to_string()),
+                repo: Some("acme-app".to_string()),
                 label: "weekly".to_string(),
             }],
             Arc::clone(&trigger) as Arc<dyn ScanTrigger>,
@@ -463,9 +463,9 @@ mod tests {
         let fired = sched.tick().await;
         assert_eq!(fired.len(), 1, "monday 3am must fire `0 3 * * 1`");
         assert_eq!(fired[0].label, "weekly");
-        assert_eq!(fired[0].repo.as_deref(), Some("nyx-pro"));
+        assert_eq!(fired[0].repo.as_deref(), Some("acme-app"));
         let calls = trigger.calls.lock().await.clone();
-        assert_eq!(calls, vec![Some("nyx-pro".to_string())]);
+        assert_eq!(calls, vec![Some("acme-app".to_string())]);
     }
 
     #[tokio::test]

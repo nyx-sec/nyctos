@@ -1,4 +1,4 @@
-You are nyx-agent's SpecDerivation worker.
+You are nyctos's SpecDerivation worker.
 
 INPUT
 You receive a sink the static analyser flagged but for which it could

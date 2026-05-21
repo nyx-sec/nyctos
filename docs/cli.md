@@ -1,31 +1,31 @@
 # CLI reference
 
-`nyx-agent` is a single binary with nine subcommands. This page
+`nyctos` is a single binary with nine subcommands. This page
 documents every subcommand that currently ships, the flags it accepts,
 and the exit codes it returns. Subcommands the binary advertises in
 `--help` but that are not yet wired (`reverify`, `budget`) are called
 out at the bottom so an operator knows not to script against them.
 
-The shipping binary is `nyx-agent`; the product brand is "Nyctos".
+The shipping binary is `nyctos`; the product brand is "Nyctos".
 Both names appear here for the reasons explained in `README.md`.
 
 ## Global flags
 
 These three flags are accepted by every subcommand (including the
 default `serve`). Pass them before the subcommand name, e.g.
-`nyx-agent --log-level debug scan`.
+`nyctos --log-level debug scan`.
 
 | Flag | Default | Effect |
 |---|---|---|
-| `--config PATH` | `./nyctos.toml` | Path to the config file. `nyx-agent` runs with built-in defaults when the path does not exist; see `docs/config.md` (forthcoming). |
-| `--state-dir PATH` | `dirs::data_dir()` plus `nyx-agent/` | Override the state directory. Persists runs, findings, repro bundles, ingested repos, logs, and the SQLite store. |
-| `--log-level FILTER` | `info` | Filter passed to `tracing-subscriber`. Accepts `info`, `debug`, `nyx_agent=trace,sqlx=warn`, etc. Applied to stderr only. |
+| `--config PATH` | `./nyctos.toml` | Path to the config file. `nyctos` runs with built-in defaults when the path does not exist; see `docs/config.md` (forthcoming). |
+| `--state-dir PATH` | `dirs::data_dir()` plus `nyctos/` | Override the state directory. Persists runs, findings, repro bundles, ingested repos, logs, and the SQLite store. |
+| `--log-level FILTER` | `info` | Filter passed to `tracing-subscriber`. Accepts `info`, `debug`, `nyctos=trace,sqlx=warn`, etc. Applied to stderr only. |
 
-When no subcommand is given, `nyx-agent` runs `serve` with no flags.
+When no subcommand is given, `nyctos` runs `serve` with no flags.
 That is the documented "double-click the binary" path.
 
 The subcommand wiring lives in
-`crates/nyx-agent/src/main.rs:209` (`match cli.command.unwrap_or(...)`).
+`crates/nyctos/src/main.rs:209` (`match cli.command.unwrap_or(...)`).
 Read that block alongside this page if you need to confirm which
 subcommand a flag attaches to.
 
@@ -34,7 +34,7 @@ subcommand a flag attaches to.
 Run the long-lived HTTP/UI daemon. Default when no subcommand is given.
 
 ```bash
-nyx-agent serve
+nyctos serve
 ```
 
 Binds to `[ui] listen_addr` (default `127.0.0.1:8765`), opens the
@@ -52,7 +52,7 @@ end to end.
 
 Triggers wired into `serve` at startup:
 
-- The HTTP API and WebSocket event stream (`crates/nyx-agent-api/`).
+- The HTTP API and WebSocket event stream (`crates/nyctos-api/`).
 - The in-process cron scheduler, if `[[schedule]]` entries exist.
   See [`docs/triggers/cron.md`](triggers/cron.md).
 - `POST /webhook/git`, if `[triggers] webhook_secret_ref` is set.
@@ -79,10 +79,10 @@ narrow within the selected projects. Bare `--repo` without a
 `--project` is rejected to keep scoping explicit.
 
 ```bash
-nyx-agent scan
-nyx-agent scan --project acme-app
-nyx-agent scan --project acme-app --repo acme-backend
-nyx-agent scan --project acme-app --output report.json --since-ref origin/main
+nyctos scan
+nyctos scan --project acme-app
+nyctos scan --project acme-app --repo acme-backend
+nyctos scan --project acme-app --output report.json --since-ref origin/main
 ```
 
 | Flag | Effect |
@@ -145,15 +145,15 @@ top-level scan unit; repos are nested under a project via
 `[[project.repo]]` in `nyctos.toml` and via a `project_id` FK in
 the SQLite store. Every CLI/API/sandbox surface operates per
 project, so the canonical first step in a fresh deployment is
-`nyx-agent project create`.
+`nyctos project create`.
 
 ```bash
-nyx-agent project create acme-app --description "Acme web product" --target-base-url http://localhost:3000
-nyx-agent project list
-nyx-agent project show acme-app
-nyx-agent project add-repo acme-app acme-backend --path /abs/path/backend --i-own-this
-nyx-agent project add-repo acme-app acme-frontend --git-url https://github.com/acme/frontend.git --branch main --i-own-this
-nyx-agent project delete acme-app
+nyctos project create acme-app --description "Acme web product" --target-base-url http://localhost:3000
+nyctos project list
+nyctos project show acme-app
+nyctos project add-repo acme-app acme-backend --path /abs/path/backend --i-own-this
+nyctos project add-repo acme-app acme-frontend --git-url https://github.com/acme/frontend.git --branch main --i-own-this
+nyctos project delete acme-app
 ```
 
 ### `project create NAME`
@@ -204,8 +204,8 @@ findings plus cross-repo chain findings from a previous
 from flags plus the standard GHA environment variables.
 
 ```bash
-nyx-agent scan --output report.json --since-ref ${{ github.base_ref }}
-nyx-agent pr-comment --report report.json
+nyctos scan --output report.json --since-ref ${{ github.base_ref }}
+nyctos pr-comment --report report.json
 ```
 
 | Flag | Default | Effect |
@@ -218,7 +218,7 @@ nyx-agent pr-comment --report report.json
 | `--token-env ENV` | `GITHUB_TOKEN` | Name of the env var that holds the PAT or GitHub Apps token. The token never appears in argv or logs. |
 
 Dedup is achieved by embedding a hidden HTML marker
-(`<!-- nyx-agent:pr-comment v1 -->`) at the top of the comment
+(`<!-- nyctos:pr-comment v1 -->`) at the top of the comment
 body. Subsequent runs list the PR's comments, locate the carrier,
 and `PATCH` it in place. There is at most one Nyctos comment per
 PR.
@@ -250,7 +250,7 @@ Inspect persisted state. Subcommand-driven; each variant prints a
 terse listing the operator can grep, pipe, or paste into a ticket.
 
 ```bash
-nyx-agent inspect quarantine
+nyctos inspect quarantine
 ```
 
 ### `inspect quarantine`
@@ -281,8 +281,8 @@ Print AI conversation traces persisted by the store. Optionally
 scoped to a finding.
 
 ```bash
-nyx-agent traces
-nyx-agent traces --finding <finding-id>
+nyctos traces
+nyctos traces --finding <finding-id>
 ```
 
 | Flag | Effect |
@@ -312,13 +312,13 @@ selection look healthy. Runs before logging is initialised so it
 prints to stdout directly.
 
 ```bash
-nyx-agent doctor
+nyctos doctor
 ```
 
 Output, in order:
 
 1. State directory location.
-2. Log file path (`state-dir/logs/nyx-agent.log.json`).
+2. Log file path (`state-dir/logs/nyctos.log.json`).
 3. Config status: `OK at <path>` or `not found at <path>
    (using defaults)`.
 4. SQLite store path and current schema version.
@@ -350,12 +350,12 @@ satisfies `[nyx] min_version`. `1` if `nyx` is missing or too old.
 
 ## Stubs that are not yet wired
 
-`nyx-agent --help` lists two further subcommands that `clap`
+`nyctos --help` lists two further subcommands that `clap`
 advertises but the binary panics on:
 
 | Subcommand | Status |
 |---|---|
-| `reverify --run RUN --finding FINDING` | Stub. Calls `todo!()` at `crates/nyx-agent/src/main.rs:249`. Will surface a manual re-verification path against a previously-confirmed finding. |
+| `reverify --run RUN --finding FINDING` | Stub. Calls `todo!()` at `crates/nyctos/src/main.rs:249`. Will surface a manual re-verification path against a previously-confirmed finding. |
 | `budget` | Stub. Same `todo!()` site. Will print AI spend rolled up by run and by prompt version. |
 
 Until those panics are replaced with real wiring, do not script

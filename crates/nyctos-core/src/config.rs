@@ -1,6 +1,6 @@
 //! Typed configuration loaded from `nyctos.toml`.
 //!
-//! Missing sections fall back to defaults so that `nyx-agent doctor` and
+//! Missing sections fall back to defaults so that `nyctos doctor` and
 //! other read-only operations work in a fresh checkout with no config
 //! file on disk.
 
@@ -167,9 +167,7 @@ impl PerformanceConfig {
     /// not set `[performance] fast_lane_concurrency`; a configured
     /// `0` is floored to `1`.
     pub fn fast_lane_concurrency_resolved(&self) -> usize {
-        self.fast_lane_concurrency
-            .map(|n| n.max(1))
-            .unwrap_or(Self::DEFAULT_FAST_LANE_CONCURRENCY)
+        self.fast_lane_concurrency.map(|n| n.max(1)).unwrap_or(Self::DEFAULT_FAST_LANE_CONCURRENCY)
     }
 }
 
@@ -567,10 +565,10 @@ mod tests {
                 env_config: None,
                 repos: vec![
                     RepoConfig {
-                        name: "nyx-pro".to_string(),
+                        name: "acme-backend".to_string(),
                         i_own_this: true,
                         source: RepoSourceConfig::Git {
-                            url: "git@github.com:nyx/nyx-pro.git".to_string(),
+                            url: "git@github.com:acme/acme-backend.git".to_string(),
                             branch: Some("main".to_string()),
                             auth: Some("ssh-key:~/.ssh/work_ed25519".to_string()),
                         },
@@ -588,7 +586,7 @@ mod tests {
             }],
             schedules: vec![ScheduleConfig {
                 cron: "0 3 * * 1".to_string(),
-                repo: Some("nyx-pro".to_string()),
+                repo: Some("acme-backend".to_string()),
                 label: "weekly-monday-3am".to_string(),
             }],
         };
@@ -612,9 +610,9 @@ mod tests {
 
     #[test]
     fn repo_enabled_defaults_to_true_when_omitted() {
-        let raw = "[[project]]\nname = \"p\"\n\n[[project.repo]]\nname = \"nyx-pro\"\n\
+        let raw = "[[project]]\nname = \"p\"\n\n[[project.repo]]\nname = \"acme-backend\"\n\
                    i_own_this = true\n\
-                   source = { kind = \"local-path\", path = \"/srv/repos/nyx-pro\" }\n";
+                   source = { kind = \"local-path\", path = \"/srv/repos/acme-backend\" }\n";
         let cfg = Config::parse(raw, &PathBuf::from("<test>")).expect("parse");
         assert_eq!(cfg.projects.len(), 1);
         assert_eq!(cfg.projects[0].repos.len(), 1);
@@ -827,11 +825,8 @@ mod tests {
                    cache_write_per_mtok_usd = 15\n\
                    cache_read_per_mtok_usd = 1\n";
         let cfg = Config::parse(raw, &PathBuf::from("<test>")).expect("parse");
-        let entry = cfg
-            .ai
-            .pricing
-            .get("claude-opus-4-7")
-            .expect("override for claude-opus-4-7 must parse");
+        let entry =
+            cfg.ai.pricing.get("claude-opus-4-7").expect("override for claude-opus-4-7 must parse");
         assert_eq!(entry.input_per_mtok_usd, 12);
         assert_eq!(entry.output_per_mtok_usd, 60);
         assert_eq!(entry.cache_write_per_mtok_usd, 15);

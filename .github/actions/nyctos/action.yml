@@ -1,20 +1,20 @@
-name: 'nyx-agent scan'
+name: 'nyctos scan'
 description: >
-  Run nyx-agent against the current checkout, write a machine-readable
+  Run nyctos against the current checkout, write a machine-readable
   report, and post (or update) a single dedup'd PR comment summarising
   Confirmed + cross-repo chain findings. Everything else (Open,
   Quarantine, Inconclusive, AI trace viewer, repro bundles) stays in
   the operator's local UI.
-author: 'nyx'
+author: 'nyctos'
 
 inputs:
-  nyx-agent-binary:
+  nyctos-binary:
     description: >
-      Path to the `nyx-agent` binary. Defaults to `nyx-agent` (PATH
+      Path to the `nyctos` binary. Defaults to `nyctos` (PATH
       lookup). Override when self-hosted runners install the binary in
       a known location.
     required: false
-    default: 'nyx-agent'
+    default: 'nyctos'
   config:
     description: >
       Path to `nyctos.toml`. Defaults to `./nyctos.toml`. The
@@ -32,7 +32,7 @@ inputs:
   ui-url:
     description: >
       Base URL of the operator's local UI (e.g.
-      `https://nyx.example.internal`). The PR comment links each run
+      `https://nyctos.example.internal`). The PR comment links each run
       back to `<ui-url>/runs/<run_id>`. Leave empty to omit the link.
     required: false
     default: ''
@@ -60,12 +60,12 @@ runs:
         if [ -n "${{ inputs.state-dir }}" ]; then
           dir="${{ inputs.state-dir }}"
         else
-          dir="${RUNNER_TEMP:-/tmp}/nyx-agent-state-$$"
+          dir="${RUNNER_TEMP:-/tmp}/nyctos-state-$$"
         fi
         mkdir -p "$dir"
         echo "dir=$dir" >> "$GITHUB_OUTPUT"
 
-    - name: Run nyx-agent scan
+    - name: Run nyctos scan
       shell: bash
       env:
         # Token surfaces only here so the agent can fan out into git
@@ -73,7 +73,7 @@ runs:
         GITHUB_TOKEN: ${{ inputs.gh-token }}
       run: |
         set -euo pipefail
-        "${{ inputs.nyx-agent-binary }}" \
+        "${{ inputs.nyctos-binary }}" \
           --config "${{ inputs.config }}" \
           --state-dir "${{ steps.state.outputs.dir }}" \
           scan \
@@ -89,7 +89,7 @@ runs:
         GITHUB_REPOSITORY: ${{ github.repository }}
       run: |
         set -euo pipefail
-        "${{ inputs.nyx-agent-binary }}" \
+        "${{ inputs.nyctos-binary }}" \
           --config "${{ inputs.config }}" \
           --state-dir "${{ steps.state.outputs.dir }}" \
           pr-comment \

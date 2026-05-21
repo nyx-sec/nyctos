@@ -288,21 +288,21 @@ mod tests {
     #[tokio::test]
     async fn upsert_then_get_roundtrips() {
         let (_tmp, s) = fresh_store().await;
-        let r = sample_repo("nyx-pro");
+        let r = sample_repo("acme-app");
         s.repos().upsert(&r).await.expect("insert");
-        let got = s.repos().get("nyx-pro").await.expect("get").expect("row");
+        let got = s.repos().get("acme-app").await.expect("get").expect("row");
         assert_eq!(got, r);
     }
 
     #[tokio::test]
     async fn upsert_is_idempotent_on_conflict() {
         let (_tmp, s) = fresh_store().await;
-        let mut r = sample_repo("nyx-pro");
+        let mut r = sample_repo("acme-app");
         s.repos().upsert(&r).await.expect("first");
         r.branch = Some("dev".to_string());
         r.updated_at = 9_999;
         s.repos().upsert(&r).await.expect("second");
-        let got = s.repos().get("nyx-pro").await.expect("get").expect("row");
+        let got = s.repos().get("acme-app").await.expect("get").expect("row");
         assert_eq!(got.branch.as_deref(), Some("dev"));
         assert_eq!(got.updated_at, 9_999);
     }
@@ -422,18 +422,18 @@ mod tests {
     async fn last_scan_finished_at_joins_runs_table() {
         use crate::store::testutil::sample_run;
         let (_tmp, s) = fresh_store().await;
-        s.repos().upsert(&sample_repo("nyx-pro")).await.expect("insert repo");
+        s.repos().upsert(&sample_repo("acme-app")).await.expect("insert repo");
 
         // No scan yet: pointer null, joined timestamp null.
-        let before = s.repos().get("nyx-pro").await.expect("get").expect("row");
+        let before = s.repos().get("acme-app").await.expect("get").expect("row");
         assert!(before.last_scan_run_id.is_none());
         assert!(before.last_scan_finished_at.is_none());
 
         // Run row exists but is still in flight (finished_at = NULL): the
         // pointer points at it, joined timestamp stays null.
         s.runs().insert(&sample_run("run-flight")).await.expect("insert run");
-        s.repos().set_last_scan("nyx-pro", "run-flight", 4_000).await.expect("set last_scan");
-        let in_flight = s.repos().get("nyx-pro").await.expect("get").expect("row");
+        s.repos().set_last_scan("acme-app", "run-flight", 4_000).await.expect("set last_scan");
+        let in_flight = s.repos().get("acme-app").await.expect("get").expect("row");
         assert_eq!(in_flight.last_scan_run_id.as_deref(), Some("run-flight"));
         assert!(in_flight.last_scan_finished_at.is_none());
 
@@ -441,7 +441,7 @@ mod tests {
         // dispatcher's stamp from set_last_scan, distinct from the run's
         // finished_at.
         s.runs().finish("run-flight", 5_500, "Succeeded", 3_500).await.expect("finish run");
-        let after = s.repos().get("nyx-pro").await.expect("get").expect("row");
+        let after = s.repos().get("acme-app").await.expect("get").expect("row");
         assert_eq!(after.last_scan_run_id.as_deref(), Some("run-flight"));
         assert_eq!(after.last_scan_finished_at, Some(5_500));
         assert_eq!(after.updated_at, 4_000);
@@ -449,8 +449,8 @@ mod tests {
         // Pointer at a run id that does not exist (e.g. retention swept
         // the run row out from under us): join falls back to null
         // without erroring.
-        s.repos().set_last_scan("nyx-pro", "run-missing", 6_000).await.expect("dangling");
-        let dangling = s.repos().get("nyx-pro").await.expect("get").expect("row");
+        s.repos().set_last_scan("acme-app", "run-missing", 6_000).await.expect("dangling");
+        let dangling = s.repos().get("acme-app").await.expect("get").expect("row");
         assert_eq!(dangling.last_scan_run_id.as_deref(), Some("run-missing"));
         assert!(dangling.last_scan_finished_at.is_none());
     }
@@ -458,9 +458,9 @@ mod tests {
     #[tokio::test]
     async fn set_last_scan_updates_pointer_and_timestamp() {
         let (_tmp, s) = fresh_store().await;
-        s.repos().upsert(&sample_repo("nyx-pro")).await.expect("insert");
-        s.repos().set_last_scan("nyx-pro", "run-xyz", 9_999).await.expect("set");
-        let got = s.repos().get("nyx-pro").await.expect("get").expect("row");
+        s.repos().upsert(&sample_repo("acme-app")).await.expect("insert");
+        s.repos().set_last_scan("acme-app", "run-xyz", 9_999).await.expect("set");
+        let got = s.repos().get("acme-app").await.expect("get").expect("row");
         assert_eq!(got.last_scan_run_id.as_deref(), Some("run-xyz"));
         assert_eq!(got.updated_at, 9_999);
     }

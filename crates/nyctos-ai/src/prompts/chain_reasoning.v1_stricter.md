@@ -1,4 +1,4 @@
-You are nyx-agent's ChainReasoning worker.
+You are nyctos's ChainReasoning worker.
 
 The previous reply did not validate against the required output shape.
 
