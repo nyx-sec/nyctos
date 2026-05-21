@@ -127,12 +127,11 @@ fn run(cfg: ShimConfig) -> ExitCode {
         }
     }
     // Birdcage refuses some exceptions (path does not exist, filesystem
-    // the kernel cannot landlock, Seatbelt-incompatible pattern). Until
-    // an out-of-band status fd lands (paired with the structured
-    // status-fd shim work), surface refusals on stderr so callers see why the
-    // sandboxee later trips a confusing "permission denied" on a path
-    // they thought was allowed. The parent BirdcageSandbox captures
-    // this stream via SandboxOutcome.stderr.
+    // the kernel cannot landlock, Seatbelt-incompatible pattern). The
+    // refusals also ride the fd-3 ShimReport envelope so the parent can
+    // surface them on SandboxOutcome.refusals; the stderr copy here
+    // stays for operators running the shim by hand and for older
+    // parents that did not allocate a status pipe.
     for line in &refused {
         eprintln!("nyx-sandbox-shim: exception refused {line}");
     }
@@ -148,7 +147,7 @@ fn run(cfg: ShimConfig) -> ExitCode {
     match child.wait() {
         Ok(status) => {
             if cfg.write_status_fd {
-                write_status_frame_to_fd3(status);
+                write_report_to_fd3(status, &refused);
             }
             exit_code_from(status)
         }
@@ -185,19 +184,20 @@ fn exit_code_from(status: std::process::ExitStatus) -> ExitCode {
 }
 
 #[cfg(unix)]
-fn write_status_frame_to_fd3(status: std::process::ExitStatus) {
+fn write_report_to_fd3(status: std::process::ExitStatus, refusals: &[String]) {
     use std::io::Write;
     use std::os::fd::FromRawFd;
     use std::os::unix::process::ExitStatusExt;
 
-    use nyctos_sandbox::shim::ShimStatus;
+    use nyctos_sandbox::shim::{ShimReport, ShimStatus};
 
-    let frame = if let Some(sig) = status.signal() {
+    let status = if let Some(sig) = status.signal() {
         ShimStatus::Signaled(sig)
     } else {
         ShimStatus::Exited(status.code().unwrap_or(-1))
     };
-    let json = match serde_json::to_vec(&frame) {
+    let report = ShimReport { status, refusals: refusals.to_vec() };
+    let json = match serde_json::to_vec(&report) {
         Ok(b) => b,
         Err(_) => return,
     };
@@ -211,4 +211,4 @@ fn write_status_frame_to_fd3(status: std::process::ExitStatus) {
 }
 
 #[cfg(not(unix))]
-fn write_status_frame_to_fd3(_status: std::process::ExitStatus) {}
+fn write_report_to_fd3(_status: std::process::ExitStatus, _refusals: &[String]) {}

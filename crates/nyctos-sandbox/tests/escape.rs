@@ -262,6 +262,44 @@ async fn abort_sandboxee_surfaces_signaled_through_shim() {
 }
 
 #[tokio::test]
+async fn nonexistent_allow_read_path_surfaces_as_structured_refusal() {
+    // Acceptance: when birdcage refuses an exception during sandbox
+    // setup (here an allow_read on a path that does not exist on the
+    // host), the refusal reaches the parent on SandboxOutcome.refusals
+    // via the shim's fd-3 ShimReport envelope, not just as a grepable
+    // stderr line. The stderr copy is still emitted as a fallback for
+    // older parents but the structured wire is the canonical channel.
+    let scratch = tempdir().unwrap();
+    let workspace = scratch.path().join("ws");
+    std::fs::create_dir(&workspace).unwrap();
+    let missing = PathBuf::from("/nyx-sandbox-nonexistent-allow-read-path/abc123");
+    assert!(!missing.exists(), "test precondition: path must not exist");
+
+    let mut opts = base_opts(&workspace, vec!["noop".into()]);
+    opts.allow_read.push(missing.clone());
+    let outcome = run(opts).await;
+
+    let refusals = &outcome.refusals;
+    let stderr = String::from_utf8_lossy(&outcome.stderr);
+    let missing_str = missing.display().to_string();
+    let stderr_mentions_missing = stderr.contains(&missing_str);
+    assert!(
+        stderr_mentions_missing,
+        "shim stderr fallback should mention refused path; got stderr={stderr}"
+    );
+    assert!(
+        refusals.iter().any(|r| r.contains(&missing_str)),
+        "structured refusals should mention the nonexistent allow_read path; \
+         got refusals={refusals:?} stderr={stderr}"
+    );
+    assert!(
+        refusals.iter().any(|r| r.starts_with("ExecuteAndRead(")),
+        "refusal line should name the birdcage exception kind; \
+         got refusals={refusals:?}"
+    );
+}
+
+#[tokio::test]
 async fn noop_harness_cold_start_under_50ms() {
     let scratch = tempdir().unwrap();
     let workspace = scratch.path().join("ws");

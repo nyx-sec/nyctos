@@ -339,6 +339,13 @@ pub struct SandboxOutcome {
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
     pub duration: Duration,
+    /// Birdcage exception refusals the shim collected during sandbox
+    /// setup. A non-empty list means at least one declared exception
+    /// (allow_read / allow_write / allow_env / Networking) did not
+    /// take effect, which typically explains a follow-on "permission
+    /// denied" inside the sandboxee. Always empty on backends that do
+    /// not exercise the shim's fd-3 report channel.
+    pub refusals: Vec<String>,
 }
 
 /// Sandbox error surface. Backend-specific failures are folded into the

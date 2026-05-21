@@ -30,16 +30,18 @@ pub(crate) struct RunningChild {
     /// `Signaled(SIGKILL)` / shim's `128+SIGKILL` exit code. Lets a
     /// caller distinguish operator cancel from spontaneous death.
     pub(crate) killed_by_operator: bool,
-    /// Optional read end of the shim's out-of-band status pipe.
+    /// Optional read end of the shim's out-of-band report pipe.
     /// Backends that wrap their sandboxee in a helper shim
     /// (`BirdcageSandbox`) cannot read the sandboxee's real
     /// `ExitStatus` because the shim collapses signal-killed children
     /// into the `128+signum` exit-code convention. The shim instead
-    /// writes a JSON `ShimStatus` frame to fd 3 and the backend hands
-    /// the read end here; `drive_to_completion` reads it after wait
-    /// and overrides `classify(status)` accordingly. `None` means
-    /// "use the kernel `ExitStatus` directly" (the unwrapped path
-    /// used by `ProcessSandbox`).
+    /// writes a JSON `ShimReport` envelope to fd 3 carrying both the
+    /// real status and the list of birdcage exception refusals; the
+    /// backend hands the read end here and `drive_to_completion`
+    /// reads it after wait, overriding `classify(status)` and
+    /// populating `SandboxOutcome.refusals`. `None` means "use the
+    /// kernel `ExitStatus` directly" (the unwrapped path used by
+    /// `ProcessSandbox`).
     #[cfg(unix)]
     pub(crate) status_fd: Option<std::os::fd::OwnedFd>,
 }
@@ -132,42 +134,52 @@ pub(crate) async fn drive_to_completion(
     let stderr = stderr_task.await.unwrap_or_default();
     let duration = state.started_at.elapsed();
 
+    // The shim's fd-3 report channel covers BOTH the real status and
+    // any birdcage exception refusals collected during sandbox setup.
+    // Read it unconditionally on unix so refusals reach
+    // SandboxOutcome.refusals even when the kernel ExitStatus is the
+    // path we would have chosen anyway (TimedOut / Killed branches
+    // still win against the report's status field).
+    #[cfg(unix)]
+    let (status_override, refusals) = read_report_fd(&mut state.status_fd);
+    #[cfg(not(unix))]
+    let (status_override, refusals): (Option<SandboxStatus>, Vec<String>) = (None, Vec::new());
+
     let sandbox_status = if timed_out {
         SandboxStatus::TimedOut
     } else if state.killed_by_operator {
         SandboxStatus::Killed
     } else {
-        #[cfg(unix)]
-        {
-            read_status_fd(&mut state.status_fd).unwrap_or_else(|| classify(status))
-        }
-        #[cfg(not(unix))]
-        {
-            classify(status)
-        }
+        status_override.unwrap_or_else(|| classify(status))
     };
 
-    Ok(SandboxOutcome { backend, status: sandbox_status, stdout, stderr, duration })
+    Ok(SandboxOutcome { backend, status: sandbox_status, stdout, stderr, duration, refusals })
 }
 
 #[cfg(unix)]
-fn read_status_fd(slot: &mut Option<std::os::fd::OwnedFd>) -> Option<SandboxStatus> {
+fn read_report_fd(
+    slot: &mut Option<std::os::fd::OwnedFd>,
+) -> (Option<SandboxStatus>, Vec<String>) {
     use std::io::Read;
 
-    use crate::shim::ShimStatus;
+    use crate::shim::{ShimReport, ShimStatus};
 
-    let fd = slot.take()?;
+    let Some(fd) = slot.take() else {
+        return (None, Vec::new());
+    };
     let mut file = std::fs::File::from(fd);
-    let mut buf = Vec::with_capacity(64);
-    file.read_to_end(&mut buf).ok()?;
-    if buf.is_empty() {
-        return None;
+    let mut buf = Vec::with_capacity(128);
+    if file.read_to_end(&mut buf).is_err() || buf.is_empty() {
+        return (None, Vec::new());
     }
-    let frame: ShimStatus = serde_json::from_slice(&buf).ok()?;
-    Some(match frame {
+    let Ok(report) = serde_json::from_slice::<ShimReport>(&buf) else {
+        return (None, Vec::new());
+    };
+    let status = Some(match report.status {
         ShimStatus::Exited(c) => SandboxStatus::Exited(c),
         ShimStatus::Signaled(s) => SandboxStatus::Signaled(s),
-    })
+    });
+    (status, report.refusals)
 }
 
 #[cfg(unix)]
