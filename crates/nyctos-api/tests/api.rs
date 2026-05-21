@@ -1798,6 +1798,206 @@ async fn webhook_replayed_delivery_id_is_dropped() {
     h.abort();
 }
 
+async fn start_webhook_server_with_limits(
+    secret: &[u8],
+    concurrency: Option<Arc<nyctos_api::WebhookConcurrencyLimit>>,
+    rate_limit: Option<Arc<nyctos_api::WebhookRateLimiter>>,
+) -> (std::net::SocketAddr, Arc<RecordingTrigger>, tokio::task::JoinHandle<()>, tempfile::TempDir) {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = Store::open(tmp.path()).await.expect("open store");
+    let (events, _rx) = broadcast::channel::<AgentEvent>(64);
+    let config_path = tmp.path().join("nyctos.toml");
+    let setup = SetupContext::new(config_path, Config::default(), true, SecretStore::memory());
+    let trigger = Arc::new(RecordingTrigger::default());
+    let scan_trigger: Arc<dyn ScanTrigger> = trigger.clone();
+    let mut cfg = nyctos_api::WebhookConfig::new(
+        Arc::new(nyctos_api::StaticSecretResolver { secret: Some(secret.to_vec()) }),
+        None,
+        None,
+    );
+    if let Some(c) = concurrency {
+        cfg = cfg.with_concurrency_limit(c);
+    }
+    if let Some(r) = rate_limit {
+        cfg = cfg.with_rate_limit(r);
+    }
+    let state = ServerState::new(store, events, scan_trigger, setup, AuthConfig::default())
+        .with_webhook(cfg);
+    let app = build_router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    // Launch with ConnectInfo so the rate limiter can see the peer's IP.
+    let handle = tokio::spawn(async move {
+        let _ = axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await;
+    });
+    (addr, trigger, handle, tmp)
+}
+
+#[tokio::test]
+async fn webhook_rate_limit_refuses_burst_from_one_ip_with_429() {
+    let secret = b"shared-secret";
+    // Bucket size 2, refill 0 (no replenishment during the test).
+    let limiter = Arc::new(nyctos_api::WebhookRateLimiter::new(2, 0.0, 32));
+    let (addr, trigger, h, _tmp) =
+        start_webhook_server_with_limits(secret, None, Some(limiter)).await;
+    let body = br#"{"ref":"refs/heads/main"}"#.to_vec();
+    let sig = nyctos_api::sign_webhook(secret, &body);
+    let url = format!("http://{}/webhook/git", addr);
+    let client = reqwest::Client::new();
+    let mut statuses = Vec::new();
+    for _ in 0..4 {
+        let resp = client
+            .post(&url)
+            .header("X-Hub-Signature-256", &sig)
+            .header("X-GitHub-Event", "push")
+            .header("content-type", "application/json")
+            .body(body.clone())
+            .send()
+            .await
+            .expect("post");
+        statuses.push(resp.status());
+    }
+    // First two requests fit in the bucket; the next two must be
+    // refused with 429 without triggering a scan.
+    assert_eq!(statuses[0], reqwest::StatusCode::ACCEPTED, "first request must succeed");
+    assert_eq!(statuses[1], reqwest::StatusCode::ACCEPTED, "second request must succeed");
+    assert_eq!(
+        statuses[2],
+        reqwest::StatusCode::TOO_MANY_REQUESTS,
+        "third request must be rate-limited",
+    );
+    assert_eq!(
+        statuses[3],
+        reqwest::StatusCode::TOO_MANY_REQUESTS,
+        "fourth request must remain rate-limited"
+    );
+    let calls = trigger.calls.lock().await.clone();
+    assert_eq!(
+        calls.len(),
+        2,
+        "rate-limited requests must not reach the scan trigger",
+    );
+    h.abort();
+}
+
+#[tokio::test]
+async fn webhook_concurrency_limit_refuses_overflow_with_429() {
+    let secret = b"shared-secret";
+    // One permit; the rate limiter is unset so the only gate is the
+    // concurrency cap. We need a trigger that blocks long enough for
+    // the second request to land while the first still holds the
+    // permit.
+    let trigger = Arc::new(BlockingTrigger::default());
+    let limit = Arc::new(nyctos_api::WebhookConcurrencyLimit::new(1));
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = Store::open(tmp.path()).await.expect("open store");
+    let (events, _rx) = broadcast::channel::<AgentEvent>(64);
+    let config_path = tmp.path().join("nyctos.toml");
+    let setup = SetupContext::new(config_path, Config::default(), true, SecretStore::memory());
+    let scan_trigger: Arc<dyn ScanTrigger> = trigger.clone();
+    let cfg = nyctos_api::WebhookConfig::new(
+        Arc::new(nyctos_api::StaticSecretResolver { secret: Some(secret.to_vec()) }),
+        None,
+        None,
+    )
+    .with_concurrency_limit(limit);
+    let state = ServerState::new(store, events, scan_trigger, setup, AuthConfig::default())
+        .with_webhook(cfg);
+    let app = build_router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let h = tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    let body = br#"{"ref":"refs/heads/main"}"#.to_vec();
+    let sig = nyctos_api::sign_webhook(secret, &body);
+    let url = format!("http://{}/webhook/git", addr);
+    // Fire the first request without awaiting; it parks inside the
+    // trigger waiting for our release signal.
+    let url_a = url.clone();
+    let sig_a = sig.clone();
+    let body_a = body.clone();
+    let in_flight = tokio::spawn(async move {
+        reqwest::Client::new()
+            .post(&url_a)
+            .header("X-Hub-Signature-256", &sig_a)
+            .header("X-GitHub-Event", "push")
+            .header("content-type", "application/json")
+            .body(body_a)
+            .send()
+            .await
+            .expect("post")
+    });
+    // Wait until the trigger has been entered (and the permit is held).
+    for _ in 0..200 {
+        if trigger.is_blocking().await {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        trigger.is_blocking().await,
+        "first request did not reach the trigger within 2s"
+    );
+
+    // Second request hits the saturated concurrency gate and is
+    // refused with 429.
+    let resp = reqwest::Client::new()
+        .post(&url)
+        .header("X-Hub-Signature-256", &sig)
+        .header("X-GitHub-Event", "push")
+        .header("content-type", "application/json")
+        .body(body)
+        .send()
+        .await
+        .expect("post");
+    assert_eq!(resp.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
+
+    trigger.release();
+    let first = in_flight.await.expect("first request joined");
+    assert_eq!(first.status(), reqwest::StatusCode::ACCEPTED);
+    h.abort();
+}
+
+#[derive(Default)]
+struct BlockingTrigger {
+    calls: tokio::sync::Mutex<usize>,
+    in_flight: tokio::sync::Mutex<bool>,
+    gate: tokio::sync::Notify,
+}
+
+impl BlockingTrigger {
+    async fn is_blocking(&self) -> bool {
+        *self.in_flight.lock().await
+    }
+
+    fn release(&self) {
+        self.gate.notify_waiters();
+    }
+}
+
+impl ScanTrigger for BlockingTrigger {
+    fn trigger<'a>(
+        &'a self,
+        _source: ScanTriggerSource,
+        _project_id: Option<String>,
+        _repo: Option<String>,
+    ) -> Pin<Box<dyn Future<Output = Result<String, ScanTriggerError>> + Send + 'a>> {
+        Box::pin(async move {
+            *self.in_flight.lock().await = true;
+            self.gate.notified().await;
+            *self.in_flight.lock().await = false;
+            let mut g = self.calls.lock().await;
+            *g += 1;
+            Ok(format!("run-{}", *g))
+        })
+    }
+}
+
 #[tokio::test]
 async fn webhook_refless_body_without_event_header_does_not_trigger() {
     // Signed body that has no `ref` field and no provider-specific

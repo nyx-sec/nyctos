@@ -242,3 +242,41 @@ Uncommitted diff inventory (no new primitives):
       the new filter parameters; no production surface change.
 
 Inventory stays at 15.
+
+---
+session-appended 2026-05-20 expl-demo follow-up #7 (HEAD 4e62db0 session-0019 + uncommitted webhook concurrency/rate-limit diff). Re-anchor of all 15 prior findings vs current HEAD:
+
+  router.rs unchanged: build_router :48; auth_layer :100-120; is_always_open
+    :122; check_query_token :142; constant_eq :155-164; submit_setup :293;
+    validate_git_auth_ref :867; delete_project_repo :906;
+    test_repo_connectivity :976; read_local_git_remote :1088; scan_project
+    :1132; events_ws :1730; create_repro_bundle :1881;
+    ensure_bundle_path_inside_root :1942; extract_ustar :2173.
+
+  webhook.rs shifted (+196 lines in uncommitted diff): webhook_git was :421,
+    now :617. Finding #15 (pre-auth state oracle) re-confirmed against the
+    new handler.
+
+Two new findings appended: (#16) pre-HMAC ping/Other ack drains per-IP token bucket + provider fingerprint; (#17) pre-HMAC slow-body holds concurrency permit across `to_bytes` await, exhausting the global gate from one IP without ever holding a valid HMAC. Total: 17 findings.
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyctos-api/src/webhook.rs",
+  "line": 691,
+  "cap": "DOS",
+  "endpoint": "POST /webhook/git (pre-HMAC Ping/Other 200-ack path)",
+  "rationale": "webhook_git classifies the upstream event header and short-circuits with `200 OK` for `EventKind::Ping` (webhook.rs:694-704) and `EventKind::Other(name)` (:705-715) BEFORE invoking `verify_signature` (:741). The signature header is checked only for syntactic well-formedness (:681-683 — 64-char hex regex). Two distinct primitives emerge: (a) **per-IP rate-limit exhaustion** — each Ping/Other request consumes one token from `WebhookRateLimiter` (:631-639, default burst=30, refill=30/min) and one permit from `WebhookConcurrencyLimit` (:644-655, default 8) before the unauthenticated short-circuit fires. A single attacker IP firing `POST /webhook/git -H 'X-Hub-Signature-256: sha256=0000…0000' -H 'X-GitHub-Event: ping'` at ~1 req/2s pegs the per-IP bucket empty, blocking legitimate GitHub deliveries from that same IP (or any NAT'd-shared IP) with a 429. The rate-limit gate runs FIRST in the handler so mitigating one tier doesn't restore the other. (b) **provider fingerprint without auth** — Ping returns body `{\"triggered\":false,\"message\":\"ping event acknowledged\"}`; Other returns `{\"triggered\":false,\"message\":\"event `<name>` is not a push; ignored\"}` with the echoed event name. Rotating `X-GitHub-Event` / `X-Gitea-Event` / `X-Forgejo-Event` / `X-Gogs-Event` / `X-Gitlab-Event` headers and observing which yields a 200-with-ping-ack vs Unknown-fallthrough (which proceeds to HMAC and returns 401) tells the attacker which upstream provider the operator wired, narrowing the secret-source candidate set for later credential-phishing. Distinct from finding #15 (3-way 500/503/401 oracle on webhook posture): that one fingerprints whether the webhook is armed; this one fingerprints which provider is wired AND turns a single attacker IP into a DoS against deliveries from the same source. Static pass missed it because the dangerous behavior is the interaction between an admission-control gate (rate limiter, runs first) and an unauthenticated ack path (runs third) — taint analysis treats both as benign in isolation. Mitigation: move the rate-limit and concurrency gates AFTER `verify_signature` for Ping/Other branches, or require valid HMAC before any 200-ack regardless of declared event kind (the upstream-retry concern that motivated the early ack is moot when the signature is forged — the legitimate provider always carries valid HMAC).",
+  "suggested_payload_hint": "loop { curl -s -o/dev/null -w '%{http_code}\\n' -X POST http://127.0.0.1:8088/webhook/git -H 'X-GitHub-Event: ping' -H 'X-Hub-Signature-256: sha256='$(printf '0%.0s' $(seq 1 64)) ; sleep 1.9 } — observe 200/200/200/.../429 cadence; concurrently real GitHub pushes from a colocated CI runner get 429. Then rotate -H 'X-GitHub-Event:' / 'X-Gitea-Event:' / etc. to fingerprint the wired provider via which header yields ping-ack vs 401."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyctos-api/src/webhook.rs",
+  "line": 737,
+  "cap": "DOS",
+  "endpoint": "POST /webhook/git (pre-HMAC, slow-body permit pinning across `to_bytes` await)",
+  "rationale": "Distinct primitive from finding #16 (which drains the per-IP token bucket via fast ping-acks). The new `WebhookConcurrencyLimit` permit is acquired at webhook.rs:644-655 BEFORE secret resolution, BEFORE the Push/Ping/Other event classifier (:691), and BEFORE the `to_bytes(body, MAX_WEBHOOK_BODY_BYTES).await` at :737. The permit is bound to `_permit` and lives across that await for the full handler scope (drop at end-of-fn). The body read has a 1 MiB byte cap but NO wall-clock / read-timeout: an attacker who advertises `Content-Length: 1048576` (or just relies on chunked encoding without a Content-Length header — `to_bytes` enforces the cap at the body layer either way) and trickles one byte every ~30s holds the permit for ~9 hours per connection. With the default 8 permits, 8 such connections from a single attacker IP exhaust the global gate. Per-IP rate limiter does NOT close this hole: it charges *one* token per request (not per byte / per second held), so 8 long-lived slow-body requests fit trivially under the 30/min burst, AND the limiter runs first so it cannot 'see' the cumulative residence-time cost. After the 8th permit is held, every legitimate signed delivery (regardless of source IP, because the concurrency gate is global) returns `429 webhook concurrency limit reached`. The very semaphore added in this session to *protect* against valid-HMAC floods becomes the chokepoint that any unauthenticated attacker can peg with 8 raw TCP connections. The rate limiter's per-IP budget separately drains for the attacker's IP — but that just means subsequent attacker requests from the same IP get 429'd; the existing 8 slow connections continue to hold their permits because permit-acquisition already happened. Static pass missed this because the bug is the *interaction* between (a) permit-held-across-await semantics (correct in isolation), (b) bounded body cap with no read deadline (correct in isolation, and necessary for handling slow legitimate HTTP/1.1 streamed bodies), and (c) a defense-in-depth gate that runs admission-side rather than residence-side. Mitigations (any one closes the primitive): (1) wrap the `to_bytes` call in `tokio::time::timeout(Duration::from_secs(5), …)` — a stalled body releases the permit; (2) hoist the permit acquisition to AFTER the Content-Length check and Push/Ping/Other classification but BEFORE `to_bytes`, paired with a read deadline; (3) bound per-permit residence-time independently of byte cap; (4) replace the global semaphore with a per-IP semaphore so single-IP exhaustion only DoSes that IP's own future deliveries.",
+  "suggested_payload_hint": "python3 -c 'import socket,time\\nfor _ in range(8):\\n  s=socket.socket();s.connect((\"127.0.0.1\",8088));s.send(b\"POST /webhook/git HTTP/1.1\\\\r\\\\nHost: x\\\\r\\\\nX-Hub-Signature-256: sha256=\"+b\"0\"*64+b\"\\\\r\\\\nContent-Type: application/json\\\\r\\\\nContent-Length: 1048576\\\\r\\\\n\\\\r\\\\n\");time.sleep(0)\\nimport sys;sys.stdin.read()' — opens 8 sockets, sends headers + 0 body bytes, blocks. From a second shell `curl -X POST http://127.0.0.1:8088/webhook/git -H 'X-Hub-Signature-256: sha256=<valid>' -d @push.json` returns 429 immediately. Kill the python process and legitimate deliveries resume. The asymmetry between bearer-gated `/api/v1/scan` (still works) and HMAC-gated `/webhook/git` (429-locked) is the confirmation."
+}

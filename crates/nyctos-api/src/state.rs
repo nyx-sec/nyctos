@@ -338,6 +338,12 @@ pub enum ApiError {
     Unauthorized,
     #[error("payload too large: {0}")]
     PayloadTooLarge(String),
+    /// Refused at the rate-limit or concurrency gate (e.g. the
+    /// per-IP webhook token bucket or the webhook concurrency
+    /// semaphore). HTTP 429 so the upstream backs off instead of
+    /// retrying at full rate.
+    #[error("too many requests: {0}")]
+    TooManyRequests(String),
     #[error("store error: {0}")]
     Store(#[from] StoreError),
     #[error("scan trigger failed: {0}")]
@@ -353,6 +359,7 @@ impl IntoResponse for ApiError {
             ApiError::BadRequest(_) => (StatusCode::BAD_REQUEST, "bad_request"),
             ApiError::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized"),
             ApiError::PayloadTooLarge(_) => (StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large"),
+            ApiError::TooManyRequests(_) => (StatusCode::TOO_MANY_REQUESTS, "too_many_requests"),
             ApiError::Store(_) => (StatusCode::INTERNAL_SERVER_ERROR, "store_error"),
             ApiError::Scan(ScanTriggerError::Rejected(_)) => {
                 (StatusCode::BAD_REQUEST, "scan_rejected")

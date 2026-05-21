@@ -23,6 +23,8 @@ pub use state::{
 };
 pub use webhook::{
     sign as sign_webhook, verify_signature as verify_webhook_signature, EnvSecretResolver,
-    StaticSecretResolver, WebhookConfig, WebhookResponse, WebhookSecretResolver,
-    MAX_WEBHOOK_BODY_BYTES,
+    StaticSecretResolver, WebhookConcurrencyLimit, WebhookConfig, WebhookRateLimiter,
+    WebhookResponse, WebhookSecretResolver, DEFAULT_WEBHOOK_MAX_CONCURRENT,
+    DEFAULT_WEBHOOK_RATE_LIMIT_BURST, DEFAULT_WEBHOOK_RATE_LIMIT_MAX_IPS,
+    DEFAULT_WEBHOOK_RATE_LIMIT_PER_MINUTE, MAX_WEBHOOK_BODY_BYTES,
 };

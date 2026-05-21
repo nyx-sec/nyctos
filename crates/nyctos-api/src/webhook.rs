@@ -24,11 +24,13 @@
 //! - Wrong branch → HTTP 200 with `triggered=false` so the upstream
 //!   git server records a successful delivery and stops retrying.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use axum::body::{to_bytes, Body};
-use axum::extract::State;
+use axum::extract::{ConnectInfo, State};
 use axum::http::header::CONTENT_LENGTH;
 use axum::http::{HeaderMap, Request, StatusCode};
 use axum::response::IntoResponse;
@@ -75,6 +77,161 @@ const DELIVERY_HEADERS: &[&str] = &[
 /// and covers the largest plausible burst window before older
 /// deliveries naturally roll off.
 pub const DELIVERY_DEDUP_CAP: usize = 1024;
+
+/// Default cap on simultaneous in-flight webhook handlers. Set above
+/// the dispatcher's scan-request queue depth so legitimate bursts are
+/// absorbed, but bounded so a flood of valid-HMAC deliveries cannot
+/// peg every tokio worker on HMAC verification + body read in
+/// parallel. Operators tune via `[triggers].webhook_max_concurrent`.
+pub const DEFAULT_WEBHOOK_MAX_CONCURRENT: usize = 8;
+
+/// Default per-source-IP token bucket size. One push every two seconds
+/// sustained, with bursts up to [`DEFAULT_WEBHOOK_RATE_LIMIT_BURST`]
+/// allowed. Operators tune via `[triggers].webhook_rate_limit_per_minute`.
+pub const DEFAULT_WEBHOOK_RATE_LIMIT_PER_MINUTE: u32 = 30;
+
+/// Burst depth for the per-IP token bucket. Matches the default
+/// per-minute rate so a fresh sender can fire up to this many
+/// deliveries back-to-back before the bucket drains.
+pub const DEFAULT_WEBHOOK_RATE_LIMIT_BURST: u32 = 30;
+
+/// Maximum number of IPs the per-IP rate limiter tracks before it
+/// evicts the least-recently-seen entry. Caps memory under a flood of
+/// unique source addresses.
+pub const DEFAULT_WEBHOOK_RATE_LIMIT_MAX_IPS: usize = 1024;
+
+/// Hand-rolled semaphore-backed concurrency cap on `webhook_git`.
+/// Lives on [`WebhookConfig`] so a router rebuild keeps the live
+/// permit count intact. Wraps an `Arc<Semaphore>` directly rather
+/// than depending on `tower::limit::ConcurrencyLimitLayer` so the
+/// workspace stays off the `tower` base crate.
+pub struct WebhookConcurrencyLimit {
+    inner: Arc<tokio::sync::Semaphore>,
+    permits: usize,
+}
+
+impl WebhookConcurrencyLimit {
+    pub fn new(permits: usize) -> Self {
+        let permits = permits.max(1);
+        Self { inner: Arc::new(tokio::sync::Semaphore::new(permits)), permits }
+    }
+
+    /// Total permits configured. Used by tests and for operator
+    /// reporting.
+    pub fn permits(&self) -> usize {
+        self.permits
+    }
+
+    /// Try to acquire one permit without waiting. Returns
+    /// `Some(permit)` on success; the caller must hold the permit
+    /// until the response is sent. Returns `None` when every permit
+    /// is in flight so the handler can refuse with 429.
+    pub fn try_acquire(&self) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        Arc::clone(&self.inner).try_acquire_owned().ok()
+    }
+}
+
+/// Per-source-IP token bucket. `capacity` tokens refill at
+/// `refill_per_sec` tokens/second; each admitted request consumes
+/// one. When the bucket empties the next call to
+/// [`WebhookRateLimiter::admit`] returns `false` so the handler can
+/// refuse with 429.
+///
+/// The map is bounded at `max_ips`: when an unknown IP would push
+/// the map past the cap, the entry with the oldest `last_refill`
+/// timestamp is evicted. That keeps memory bounded under a flood of
+/// unique source addresses while letting a steady stream of senders
+/// keep their state warm.
+pub struct WebhookRateLimiter {
+    capacity: f64,
+    refill_per_sec: f64,
+    max_ips: usize,
+    inner: Mutex<HashMap<IpAddr, TokenBucket>>,
+}
+
+#[derive(Debug)]
+struct TokenBucket {
+    tokens: f64,
+    last_refill: Instant,
+}
+
+impl WebhookRateLimiter {
+    /// Build a limiter that admits `capacity` requests up front and
+    /// then refills at `refill_per_sec` tokens per second. `max_ips`
+    /// caps the tracked set; entries past the cap are evicted oldest
+    /// first.
+    pub fn new(capacity: u32, refill_per_sec: f64, max_ips: usize) -> Self {
+        Self {
+            capacity: f64::from(capacity.max(1)),
+            refill_per_sec: refill_per_sec.max(0.0),
+            max_ips: max_ips.max(1),
+            inner: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Build a limiter from the operator-facing
+    /// `webhook_rate_limit_per_minute` knob. The burst depth is
+    /// the same value (so a fresh sender can fire that many requests
+    /// back-to-back before throttling kicks in).
+    pub fn per_minute(rate_per_minute: u32, max_ips: usize) -> Self {
+        let rate = rate_per_minute.max(1);
+        Self::new(rate, f64::from(rate) / 60.0, max_ips)
+    }
+
+    /// Consume one token for `ip`. Returns `true` when the request is
+    /// admitted and `false` when the bucket is empty.
+    pub fn admit(&self, ip: IpAddr) -> bool {
+        self.admit_at(ip, Instant::now())
+    }
+
+    /// Same as [`Self::admit`] but with an explicit `now` so tests
+    /// can drive the refill clock deterministically without sleeping.
+    pub fn admit_at(&self, ip: IpAddr, now: Instant) -> bool {
+        let mut g = match self.inner.lock() {
+            Ok(g) => g,
+            // A poisoned mutex means a prior insert panicked. Recover
+            // by taking the inner data; the next caller starts with
+            // whatever state was visible at the panic. Failing open
+            // here is wrong for a rate limiter (it would defeat the
+            // throttle), so we proceed but the existing entries stay
+            // intact.
+            Err(p) => p.into_inner(),
+        };
+
+        // Evict oldest if at capacity AND ip is not already tracked.
+        if !g.contains_key(&ip) && g.len() >= self.max_ips {
+            if let Some(victim) =
+                g.iter().min_by_key(|(_, b)| b.last_refill).map(|(k, _)| *k)
+            {
+                g.remove(&victim);
+            }
+        }
+
+        let bucket = g
+            .entry(ip)
+            .or_insert_with(|| TokenBucket { tokens: self.capacity, last_refill: now });
+
+        // Clock can jump backwards on a leap-second / clock-drift
+        // event; clamp the elapsed delta to zero so we don't add a
+        // negative refill.
+        let elapsed = now.saturating_duration_since(bucket.last_refill).as_secs_f64();
+        bucket.tokens = (bucket.tokens + elapsed * self.refill_per_sec).min(self.capacity);
+        bucket.last_refill = now;
+
+        if bucket.tokens >= 1.0 {
+            bucket.tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Number of currently tracked IPs. Used by tests.
+    #[cfg(test)]
+    pub fn tracked_ips(&self) -> usize {
+        self.inner.lock().map(|g| g.len()).unwrap_or(0)
+    }
+}
 
 /// Quick syntactic check on the signature header. Refuses anything that
 /// is not `sha256=` + exactly 64 lowercase-or-uppercase hex chars. Lets
@@ -257,6 +414,19 @@ pub struct WebhookConfig {
     /// (`refheads`) covers GitHub / Gitea / Forgejo / Gogs / GitLab,
     /// which all ship the branch under top-level `ref`.
     pub extractor: Arc<dyn WebhookPayloadExtractor>,
+    /// Optional cap on simultaneous in-flight handler invocations.
+    /// `None` disables the gate (every request is admitted). When
+    /// set, requests past the cap return 429 before HMAC verification
+    /// so a flood of valid-signed pushes cannot peg the executor.
+    pub concurrency: Option<Arc<WebhookConcurrencyLimit>>,
+    /// Optional per-source-IP token bucket. `None` disables the gate
+    /// (every IP is admitted). When set, requests past the per-IP
+    /// budget return 429 before HMAC verification. The handler
+    /// reads the source IP from the request's [`ConnectInfo`]
+    /// extension; deployments that route through a reverse proxy
+    /// without preserving the peer address will not see per-IP
+    /// throttling and fall back to the global concurrency cap.
+    pub rate_limit: Option<Arc<WebhookRateLimiter>>,
 }
 
 impl WebhookConfig {
@@ -285,7 +455,23 @@ impl WebhookConfig {
             repo,
             dedup: Arc::new(Mutex::new(DeliveryDedupCache::new())),
             extractor,
+            concurrency: None,
+            rate_limit: None,
         }
+    }
+
+    /// Attach a concurrency cap. Subsequent requests past the cap
+    /// return 429 before HMAC verification.
+    pub fn with_concurrency_limit(mut self, limit: Arc<WebhookConcurrencyLimit>) -> Self {
+        self.concurrency = Some(limit);
+        self
+    }
+
+    /// Attach a per-source-IP rate limiter. Requests past the per-IP
+    /// budget return 429 before HMAC verification.
+    pub fn with_rate_limit(mut self, limit: Arc<WebhookRateLimiter>) -> Self {
+        self.rate_limit = Some(limit);
+        self
     }
 }
 
@@ -417,6 +603,16 @@ pub struct WebhookResponse {
     pub message: String,
 }
 
+/// Read the peer's IP from the request extensions. Populated by
+/// `axum::serve(_, app.into_make_service_with_connect_info::<SocketAddr>())`.
+/// Returns `None` when the server was launched without
+/// `into_make_service_with_connect_info`, in which case the per-IP
+/// rate limiter is skipped (the global concurrency gate still
+/// applies).
+fn peer_ip_from_request(req: &Request<Body>) -> Option<IpAddr> {
+    req.extensions().get::<ConnectInfo<SocketAddr>>().map(|c| c.0.ip())
+}
+
 /// `POST /webhook/git` handler.
 pub async fn webhook_git(
     State(state): State<ServerState>,
@@ -426,6 +622,36 @@ pub async fn webhook_git(
         return Err(ApiError::Internal(
             "webhook not enabled; set [triggers].webhook_secret_ref in nyctos.toml".to_string(),
         ));
+    };
+
+    // Per-source-IP rate limit. Runs first so a hostile sender's
+    // CPU spend per delivery stays at "header parse" before we even
+    // resolve the secret. Skipped when the server was not launched
+    // with `into_make_service_with_connect_info` (peer IP absent).
+    if let Some(limiter) = cfg.rate_limit.as_ref() {
+        if let Some(ip) = peer_ip_from_request(&req) {
+            if !limiter.admit(ip) {
+                return Err(ApiError::TooManyRequests(format!(
+                    "webhook rate limit exceeded for `{ip}`"
+                )));
+            }
+        }
+    }
+
+    // Global concurrency cap on the handler. Holding the permit
+    // until end-of-handler covers HMAC verification + body buffer +
+    // scan-trigger dispatch.
+    let _permit = if let Some(limit) = cfg.concurrency.as_ref() {
+        match limit.try_acquire() {
+            Some(permit) => Some(permit),
+            None => {
+                return Err(ApiError::TooManyRequests(
+                    "webhook concurrency limit reached".to_string(),
+                ));
+            }
+        }
+    } else {
+        None
     };
 
     let Some(secret) = cfg.secret.resolve() else {
@@ -932,6 +1158,94 @@ mod tests {
             ex.extract(&HeaderMap::new(), body).and_then(|p| p.branch).as_deref(),
             Some("main"),
         );
+    }
+
+    #[test]
+    fn rate_limiter_admits_until_bucket_empty() {
+        let limiter = WebhookRateLimiter::new(3, 0.0, 16);
+        let ip: IpAddr = "127.0.0.1".parse().unwrap();
+        assert!(limiter.admit(ip));
+        assert!(limiter.admit(ip));
+        assert!(limiter.admit(ip));
+        assert!(!limiter.admit(ip), "fourth request must be refused");
+    }
+
+    #[test]
+    fn rate_limiter_refills_over_time() {
+        // 1 token / second refill. Bucket size 2.
+        let limiter = WebhookRateLimiter::new(2, 1.0, 16);
+        let ip: IpAddr = "10.0.0.5".parse().unwrap();
+        let t0 = Instant::now();
+        assert!(limiter.admit_at(ip, t0));
+        assert!(limiter.admit_at(ip, t0));
+        // Same instant: bucket empty.
+        assert!(!limiter.admit_at(ip, t0));
+        // One second later: one token regenerated.
+        let t1 = t0 + std::time::Duration::from_secs(1);
+        assert!(limiter.admit_at(ip, t1));
+        // Immediately after: empty again.
+        assert!(!limiter.admit_at(ip, t1));
+        // Five seconds later: bucket fully refilled, but cap at 2.
+        let t6 = t1 + std::time::Duration::from_secs(5);
+        assert!(limiter.admit_at(ip, t6));
+        assert!(limiter.admit_at(ip, t6));
+        assert!(!limiter.admit_at(ip, t6));
+    }
+
+    #[test]
+    fn rate_limiter_per_ip_buckets_are_independent() {
+        let limiter = WebhookRateLimiter::new(1, 0.0, 16);
+        let a: IpAddr = "127.0.0.1".parse().unwrap();
+        let b: IpAddr = "127.0.0.2".parse().unwrap();
+        assert!(limiter.admit(a));
+        // a is exhausted; b still has its own token.
+        assert!(!limiter.admit(a));
+        assert!(limiter.admit(b));
+    }
+
+    #[test]
+    fn rate_limiter_per_minute_helper_matches_rate() {
+        // 60/min == 1 token / second refill, with burst depth 60.
+        let limiter = WebhookRateLimiter::per_minute(60, 64);
+        let ip: IpAddr = "127.0.0.1".parse().unwrap();
+        let t0 = Instant::now();
+        for _ in 0..60 {
+            assert!(limiter.admit_at(ip, t0));
+        }
+        assert!(!limiter.admit_at(ip, t0));
+    }
+
+    #[test]
+    fn rate_limiter_evicts_oldest_ip_at_cap() {
+        let limiter = WebhookRateLimiter::new(1, 0.0, 2);
+        let t0 = Instant::now();
+        let a: IpAddr = "127.0.0.1".parse().unwrap();
+        let b: IpAddr = "127.0.0.2".parse().unwrap();
+        let c: IpAddr = "127.0.0.3".parse().unwrap();
+        assert!(limiter.admit_at(a, t0));
+        assert!(limiter.admit_at(b, t0 + std::time::Duration::from_secs(1)));
+        assert!(limiter.admit_at(c, t0 + std::time::Duration::from_secs(2)));
+        // `a` was oldest; it should have been evicted to make room
+        // for `c`, so the map carries `b` and `c` only.
+        assert_eq!(limiter.tracked_ips(), 2);
+    }
+
+    #[test]
+    fn concurrency_limit_refuses_past_cap() {
+        let limit = WebhookConcurrencyLimit::new(2);
+        let p1 = limit.try_acquire().expect("first permit");
+        let p2 = limit.try_acquire().expect("second permit");
+        assert!(limit.try_acquire().is_none(), "third acquire must fail when cap is reached");
+        drop(p1);
+        assert!(limit.try_acquire().is_some(), "releasing a permit must make one available again");
+        drop(p2);
+    }
+
+    #[test]
+    fn concurrency_limit_floor_is_one() {
+        let limit = WebhookConcurrencyLimit::new(0);
+        assert_eq!(limit.permits(), 1);
+        assert!(limit.try_acquire().is_some());
     }
 
     #[test]

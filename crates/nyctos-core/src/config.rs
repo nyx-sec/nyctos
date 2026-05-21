@@ -484,6 +484,43 @@ pub struct TriggersConfig {
     /// with a warning so a typo never silently disables webhooks.
     #[serde(default)]
     pub webhook_provider: Option<String>,
+    /// Cap on simultaneous in-flight `POST /webhook/git` handlers.
+    /// `None` falls back to the in-crate default. Set to a small
+    /// integer to bound the worst-case parallel HMAC + body-buffer
+    /// cost a flood of valid-signed deliveries can impose on the
+    /// daemon. Non-positive values fall back to the default.
+    #[serde(default)]
+    pub webhook_max_concurrent: Option<usize>,
+    /// Per-source-IP token bucket size for `POST /webhook/git`,
+    /// expressed in deliveries per minute. `None` falls back to the
+    /// in-crate default. Non-positive values fall back to the
+    /// default. The token-bucket burst depth matches this value so a
+    /// fresh sender can fire that many requests back-to-back before
+    /// throttling kicks in.
+    #[serde(default)]
+    pub webhook_rate_limit_per_minute: Option<u32>,
+}
+
+impl TriggersConfig {
+    /// Resolved cap on simultaneous in-flight webhook handlers.
+    /// Falls back to the crate-level default when the operator left
+    /// the knob unset or stamped a non-positive value.
+    pub fn webhook_max_concurrent_resolved(&self, default: usize) -> usize {
+        match self.webhook_max_concurrent {
+            Some(n) if n > 0 => n,
+            _ => default,
+        }
+    }
+
+    /// Resolved per-IP rate limit in deliveries per minute. Falls
+    /// back to the crate-level default when the operator left the
+    /// knob unset or stamped a non-positive value.
+    pub fn webhook_rate_limit_per_minute_resolved(&self, default: u32) -> u32 {
+        match self.webhook_rate_limit_per_minute {
+            Some(n) if n > 0 => n,
+            _ => default,
+        }
+    }
 }
 
 /// One `[[schedule]]` entry. A 5-field cron expression plus
@@ -664,6 +701,8 @@ mod tests {
                 webhook_secret_ref: Some("env:NYX_WEBHOOK_SECRET".to_string()),
                 webhook_branch: Some("main".to_string()),
                 webhook_provider: Some("github".to_string()),
+                webhook_max_concurrent: Some(4),
+                webhook_rate_limit_per_minute: Some(60),
             },
             nyx: NyxConfig {
                 binary_path: Some(PathBuf::from("/opt/nyx/bin/nyx")),
@@ -1039,6 +1078,37 @@ mod tests {
         let raw = "[env]\nmystery = true\n";
         let err = Config::parse(raw, &PathBuf::from("<test>")).expect_err("must reject");
         assert!(matches!(err, ConfigError::Parse { .. }));
+    }
+
+    #[test]
+    fn webhook_limit_knobs_default_to_none_and_fall_back_to_caller_default() {
+        let cfg = Config::parse("", &PathBuf::from("<test>")).expect("parse");
+        assert!(cfg.triggers.webhook_max_concurrent.is_none());
+        assert!(cfg.triggers.webhook_rate_limit_per_minute.is_none());
+        assert_eq!(cfg.triggers.webhook_max_concurrent_resolved(8), 8);
+        assert_eq!(cfg.triggers.webhook_rate_limit_per_minute_resolved(30), 30);
+    }
+
+    #[test]
+    fn webhook_limit_knobs_parse_operator_overrides() {
+        let raw = "[triggers]\n\
+                   webhook_max_concurrent = 16\n\
+                   webhook_rate_limit_per_minute = 120\n";
+        let cfg = Config::parse(raw, &PathBuf::from("<test>")).expect("parse");
+        assert_eq!(cfg.triggers.webhook_max_concurrent, Some(16));
+        assert_eq!(cfg.triggers.webhook_rate_limit_per_minute, Some(120));
+        assert_eq!(cfg.triggers.webhook_max_concurrent_resolved(8), 16);
+        assert_eq!(cfg.triggers.webhook_rate_limit_per_minute_resolved(30), 120);
+    }
+
+    #[test]
+    fn webhook_limit_knobs_non_positive_overrides_fall_back_to_default() {
+        let raw = "[triggers]\n\
+                   webhook_max_concurrent = 0\n\
+                   webhook_rate_limit_per_minute = 0\n";
+        let cfg = Config::parse(raw, &PathBuf::from("<test>")).expect("parse");
+        assert_eq!(cfg.triggers.webhook_max_concurrent_resolved(8), 8);
+        assert_eq!(cfg.triggers.webhook_rate_limit_per_minute_resolved(30), 30);
     }
 
     #[test]

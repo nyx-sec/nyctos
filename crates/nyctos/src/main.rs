@@ -1001,12 +1001,27 @@ async fn serve(
         let extractor = nyctos_api::webhook::extractor_for_provider(
             config.triggers.webhook_provider.as_deref(),
         );
-        server_state = server_state.with_webhook(WebhookConfig::with_extractor(
+        let max_concurrent = config
+            .triggers
+            .webhook_max_concurrent_resolved(nyctos_api::DEFAULT_WEBHOOK_MAX_CONCURRENT);
+        let rate_per_minute = config.triggers.webhook_rate_limit_per_minute_resolved(
+            nyctos_api::DEFAULT_WEBHOOK_RATE_LIMIT_PER_MINUTE,
+        );
+        let concurrency =
+            Arc::new(nyctos_api::WebhookConcurrencyLimit::new(max_concurrent));
+        let rate_limit = Arc::new(nyctos_api::WebhookRateLimiter::per_minute(
+            rate_per_minute,
+            nyctos_api::DEFAULT_WEBHOOK_RATE_LIMIT_MAX_IPS,
+        ));
+        let cfg = WebhookConfig::with_extractor(
             resolver,
             config.triggers.webhook_branch.clone(),
             None,
             extractor,
-        ));
+        )
+        .with_concurrency_limit(concurrency)
+        .with_rate_limit(rate_limit);
+        server_state = server_state.with_webhook(cfg);
     }
 
     // Tap the broadcast channel and feed every event into the per-run
@@ -1092,7 +1107,14 @@ async fn serve(
         let _ = tokio::signal::ctrl_c().await;
     };
 
-    let serve_result = axum::serve(listener, app).with_graceful_shutdown(shutdown).await;
+    // Launch with `into_make_service_with_connect_info` so the
+    // webhook handler can read the peer socket address from the
+    // request's `ConnectInfo` extension and apply per-IP rate
+    // limits before HMAC verification.
+    let serve_result =
+        axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>())
+            .with_graceful_shutdown(shutdown)
+            .await;
     scan_worker.abort();
     let _ = scheduler_shutdown_tx.send(true);
     if let Some(h) = scheduler_handle {
