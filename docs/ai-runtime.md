@@ -244,6 +244,46 @@ Two implementations ship:
 the envelope is the operator-visible per-call cap; the tracker
 sees the per-run accumulated total separately.
 
+### Per-call cap allocation ladder
+
+Four `one_shot` tasks share a single
+`(run_id, BudgetKind::OneShot)` bucket: PayloadSynthesis,
+SpecDerivation, ChainReasoning, and NovelFindingDiscovery. The
+binary drives them in that fixed order (see the `scan_loop`
+function in `crates/nyctos/src/main.rs`), so earlier-pass spend
+reduces the budget every later pass sees through the same tracker.
+Each pass also carries its own per-call cap on the wire
+(`payload_synthesis_per_call_cap_usd_micros`,
+`spec_derivation_per_call_cap_usd_micros`,
+`chain_reasoning_per_call_cap_usd_micros`,
+`novel_discovery_per_call_cap_usd_micros`); each value clamps a
+single call below the shared per-run bucket and falls back to
+`AiConfig::DEFAULT_RUN_BUDGET_USD_MICROS` when unset.
+
+The invariant the binary commits to is: PayloadSynthesis and
+SpecDerivation get the full per-run cap to drive their fan-outs;
+ChainReasoning fires a single call against whatever budget
+remains after those passes finish; NovelFindingDiscovery runs
+last and drains the remainder one batch at a time. The order is
+intentional. The static-pass refusals that PayloadSynthesis and
+SpecDerivation address are the most actionable signal in a run,
+so they get first refusal on the budget; chain reasoning and
+novel-discovery enrichments degrade gracefully when an earlier
+pass exhausted the cap (the adapter pre-call check refuses, the
+pass logs and continues). Operators who want chain reasoning or
+novel-discovery to see a larger headroom should raise
+`default_run_budget_usd_micros` rather than try to slice the
+shared pool. The `BudgetKind` enum does not sub-bucket today, and
+splitting `OneShot` into `OneShot.payload` / `OneShot.spec` /
+`OneShot.chain` / `OneShot.novel` would touch every adapter and
+every tracker in tree without changing the realised behaviour for
+a run that finishes inside its cap.
+
+AI Exploration is the only `agent_loop` task and lives in a
+separate `(run_id, BudgetKind::AgentLoop)` row with its own
+per-run hard cap (default `$10.00`). It does not draw from the
+OneShot pool.
+
 ## Event stream
 
 Every model call publishes a fan-out of `AgentEvent::Ai { data:
