@@ -10,6 +10,15 @@
 //!    the env up, asserts `docker ps` shows both containers, and tears
 //!    them down with `docker compose down --volumes`. Skips cleanly
 //!    when docker is not on PATH or the daemon is unreachable.
+//!
+//!    Strict mode: setting `NYCTOS_REQUIRE_DOCKER=1` flips every
+//!    skip branch into a hard-fail (docker-missing,
+//!    daemon-unreachable, and `EnvBuilder::up` returning `Err`). A CI
+//!    lane that ships a warm `alpine:3.20` image or runs with the
+//!    Phase-20 deferred `--pull never` mode should set this so a real
+//!    regression in compose merge / flag wiring surfaces as a red
+//!    test instead of a silent skip. Dev boxes without the env var
+//!    keep the historic skip behaviour.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -103,13 +112,26 @@ async fn docker_daemon_reachable(docker: &Path) -> bool {
     matches!(out, Ok(o) if o.status.success())
 }
 
+fn require_docker() -> bool {
+    std::env::var("NYCTOS_REQUIRE_DOCKER").ok().as_deref() == Some("1")
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn two_service_compose_spins_up() {
+    let strict = require_docker();
     let Some(docker) = docker_available() else {
+        if strict {
+            panic!("NYCTOS_REQUIRE_DOCKER=1 but `docker` is not on PATH");
+        }
         eprintln!("SKIP: `docker` not on PATH; env-builder integration test bypassed.");
         return;
     };
     if !docker_daemon_reachable(&docker).await {
+        if strict {
+            panic!(
+                "NYCTOS_REQUIRE_DOCKER=1 but docker daemon unreachable (`docker info` failed)"
+            );
+        }
         eprintln!("SKIP: docker daemon unreachable (`docker info` failed); env-builder integration test bypassed.");
         return;
     }
@@ -135,9 +157,13 @@ async fn two_service_compose_spins_up() {
         Ok(e) => e,
         Err(err) => {
             // image pulls / network can fail on a poorly connected CI;
-            // surface the error but do not fail the suite. The
-            // acceptance criterion is "spins up when docker is
-            // reachable", not "spins up on every offline lane".
+            // surface the error but do not fail the suite by default.
+            // A strict-mode CI lane sets NYCTOS_REQUIRE_DOCKER=1 and
+            // gets the real assertion: a bad compose merge / missing
+            // flag / regressed secrets check then surfaces as red.
+            if strict {
+                panic!("NYCTOS_REQUIRE_DOCKER=1 but `docker compose up` failed: {err}");
+            }
             eprintln!("SKIP: `docker compose up` failed: {err}");
             return;
         }

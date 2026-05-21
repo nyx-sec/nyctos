@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use nyctos_api::{
-    build_router, AuthConfig, EnvSecretResolver, ScanTrigger, ScanTriggerError, ServerState,
-    SetupContext, WebhookConfig, WebhookSecretResolver,
+    build_router, AuthConfig, EnvSecretResolver, ScanTrigger, ScanTriggerError, ScanTriggerSource,
+    ServerState, SetupContext, WebhookConfig, WebhookSecretResolver,
 };
 use nyctos_core::store::{finding_id_hash, FindingRecord, ProjectRecord, RepoRecord, RunRecord};
 use nyctos_core::{
@@ -963,6 +963,7 @@ async fn serve(
                 let outcome = run_scan_for_api(
                     &state_dir,
                     &config,
+                    &req.source,
                     req.project_id.as_deref(),
                     req.repo.as_deref(),
                     events,
@@ -1103,6 +1104,7 @@ async fn serve(
 }
 
 struct ScanRequest {
+    source: ScanTriggerSource,
     project_id: Option<String>,
     repo: Option<String>,
     reply: oneshot::Sender<Result<String, ScanTriggerError>>,
@@ -1115,6 +1117,7 @@ struct MpscScanTrigger {
 impl ScanTrigger for MpscScanTrigger {
     fn trigger<'a>(
         &'a self,
+        source: ScanTriggerSource,
         project_id: Option<String>,
         repo: Option<String>,
     ) -> Pin<Box<dyn Future<Output = Result<String, ScanTriggerError>> + Send + 'a>> {
@@ -1125,11 +1128,14 @@ impl ScanTrigger for MpscScanTrigger {
             // `send().await` when the dispatcher is saturated. The
             // bound is set in `serve()`; raise it there if a real load
             // profile demands a deeper queue.
-            self.tx.try_send(ScanRequest { project_id, repo, reply }).map_err(|err| match err {
-                mpsc::error::TrySendError::Full(_) => ScanTriggerError::Backpressure(
-                    "scan request queue is full; retry after the current run completes".to_string(),
-                ),
-                mpsc::error::TrySendError::Closed(_) => ScanTriggerError::Closed,
+            self.tx.try_send(ScanRequest { source, project_id, repo, reply }).map_err(|err| {
+                match err {
+                    mpsc::error::TrySendError::Full(_) => ScanTriggerError::Backpressure(
+                        "scan request queue is full; retry after the current run completes"
+                            .to_string(),
+                    ),
+                    mpsc::error::TrySendError::Closed(_) => ScanTriggerError::Closed,
+                }
             })?;
             rx.await.map_err(|_| ScanTriggerError::Closed)?
         })
@@ -1139,6 +1145,7 @@ impl ScanTrigger for MpscScanTrigger {
 async fn run_scan_for_api(
     state_dir: &StateDir,
     config: &Config,
+    source: &ScanTriggerSource,
     project_id: Option<&str>,
     repo: Option<&str>,
     events: EventSink,
@@ -1186,7 +1193,8 @@ async fn run_scan_for_api(
     // First-run UI semantics: synthesise one run row, kick the
     // dispatcher per project in sequence on a background task.
     let run = Run::new();
-    let run_record = build_run_record(&run, "UI");
+    let triggered_by = source.as_run_record_string();
+    let run_record = build_run_record(&run, &triggered_by);
     store.runs().insert(&run_record).await.map_err(internal_string)?;
 
     let run_id_out = run.id.clone();
@@ -1884,6 +1892,7 @@ struct DoctorScanTrigger;
 impl ScanTrigger for DoctorScanTrigger {
     fn trigger<'a>(
         &'a self,
+        _source: ScanTriggerSource,
         _project_id: Option<String>,
         _repo: Option<String>,
     ) -> Pin<Box<dyn Future<Output = Result<String, ScanTriggerError>> + Send + 'a>> {

@@ -42,7 +42,7 @@ use nyctos_core::{
 };
 use nyctos_types::event::{AgentEvent, RunEvent};
 
-use crate::state::{ApiError, ServerState};
+use crate::state::{ApiError, ScanTriggerSource, ServerState};
 
 /// Build the production router with every `/api/v1/...` route attached.
 pub fn build_router(state: ServerState) -> Router {
@@ -1138,7 +1138,8 @@ async fn scan_project(
     // A `?repo=...` filter scopes the trigger to a single repo; the
     // dispatcher / config-resolver downstream is responsible for
     // rejecting unknown names so this handler stays a thin pass-through.
-    let run_id = s.scan.trigger(Some(project_id), q.repo).await?;
+    let run_id =
+        s.scan.trigger(ScanTriggerSource::Manual, Some(project_id), q.repo).await?;
     Ok(Json(ScanResponse { run_id }))
 }
 

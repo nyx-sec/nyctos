@@ -20,15 +20,56 @@ use nyctos_types::event::{AgentEvent, EventSink, RunEvent};
 pub type ScanFuture<'a> =
     Pin<Box<dyn Future<Output = Result<String, ScanTriggerError>> + Send + 'a>>;
 
+/// What surface kicked off a scan. The daemon stamps this onto the
+/// `runs.triggered_by` column via [`ScanTriggerSource::as_run_record_string`]
+/// so subsequent reads (`GET /api/v1/runs/:id`, `nyctos report`) can
+/// attribute the run to the right source. Previously every API-driven
+/// run was stamped `"UI"` regardless of whether the scheduler, the
+/// webhook handler, or the SPA fired it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScanTriggerSource {
+    /// SPA "Scan now" button or anything else routed through
+    /// `POST /api/v1/projects/:id/scan`.
+    Manual,
+    /// `[[schedule]]` cron entry; `label` is the entry's operator-facing
+    /// name so the persisted row records which schedule fired.
+    Scheduler { label: String },
+    /// `POST /webhook/git` delivery (verified HMAC).
+    Webhook,
+}
+
+impl ScanTriggerSource {
+    /// Encode for the `runs.triggered_by` TEXT column. The scheduler
+    /// variant carries a label so the row records which `[[schedule]]`
+    /// entry fired; the prefix matches the historical
+    /// `TriggeredBy::Cron` discriminator in `nyctos-core` so existing
+    /// readers that match on the prefix keep working.
+    pub fn as_run_record_string(&self) -> String {
+        match self {
+            ScanTriggerSource::Manual => "UI".to_string(),
+            ScanTriggerSource::Scheduler { label } => format!("Cron:{label}"),
+            ScanTriggerSource::Webhook => "Webhook".to_string(),
+        }
+    }
+}
+
 /// Plug that lets the API hand off a manual scan request to the daemon
 /// that owns the run dispatcher. The daemon wires the production impl;
 /// tests substitute a stub.
 pub trait ScanTrigger: Send + Sync + 'static {
-    /// Kick off a scan. Returns the freshly minted run id. The
-    /// `project_id` filter, when set, restricts the run to repos
-    /// belonging to that project; the `repo` filter further narrows
-    /// to a single repo. Passing both unset scans every enabled repo.
-    fn trigger<'a>(&'a self, project_id: Option<String>, repo: Option<String>) -> ScanFuture<'a>;
+    /// Kick off a scan. Returns the freshly minted run id.
+    ///
+    /// - `source` records the surface that requested the scan; the
+    ///   daemon stamps it onto `runs.triggered_by`.
+    /// - `project_id`, when set, restricts the run to repos belonging
+    ///   to that project; `repo` further narrows to a single repo.
+    ///   Passing both unset scans every enabled repo.
+    fn trigger<'a>(
+        &'a self,
+        source: ScanTriggerSource,
+        project_id: Option<String>,
+        repo: Option<String>,
+    ) -> ScanFuture<'a>;
 }
 
 #[derive(Debug, Error)]
@@ -335,6 +376,22 @@ impl IntoResponse for ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scan_trigger_source_manual_stamps_ui() {
+        assert_eq!(ScanTriggerSource::Manual.as_run_record_string(), "UI");
+    }
+
+    #[test]
+    fn scan_trigger_source_webhook_stamps_webhook() {
+        assert_eq!(ScanTriggerSource::Webhook.as_run_record_string(), "Webhook");
+    }
+
+    #[test]
+    fn scan_trigger_source_scheduler_stamps_label_under_cron_prefix() {
+        let s = ScanTriggerSource::Scheduler { label: "weekly".to_string() };
+        assert_eq!(s.as_run_record_string(), "Cron:weekly");
+    }
 
     fn run_started(run_id: &str) -> AgentEvent {
         AgentEvent::Run {

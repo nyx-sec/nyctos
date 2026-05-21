@@ -2,6 +2,13 @@
 //! `claude` CLI when it is on `PATH`. The test is skipped cleanly
 //! when the binary is missing so CI without Claude Code installed
 //! stays green.
+//!
+//! Strict mode: setting `NYCTOS_REQUIRE_CLAUDE_CODE=1` flips the
+//! `claude`-missing branch and the `UpstreamRefused` / `Transport`
+//! branch from clean-skip to hard-fail. A CI lane that has known-good
+//! Claude Code credentials should set this so a revoked API key on the
+//! CI machine surfaces as a red test instead of a silent skip. Dev
+//! boxes without the env var keep the historic skip behaviour.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -13,11 +20,25 @@ use nyctos_types::agent::{AgentTask, AiError, Budget, BudgetKind};
 use nyctos_types::event::AgentEvent;
 use tokio::sync::broadcast;
 
+/// `true` when the CI lane has flipped strict mode on. Read once at
+/// test entry; the env-var check is `==` "1" so other truthy spellings
+/// (`true`, `yes`) intentionally do NOT flip the gate — CI owners
+/// should be explicit.
+fn require_claude_code() -> bool {
+    std::env::var("NYCTOS_REQUIRE_CLAUDE_CODE").ok().as_deref() == Some("1")
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn agent_loop_round_trips_when_claude_on_path() {
+    let strict = require_claude_code();
     let binary = match detect_claude_binary().await {
         Ok(b) => b,
-        Err(_) => {
+        Err(err) => {
+            if strict {
+                panic!(
+                    "NYCTOS_REQUIRE_CLAUDE_CODE=1 but `claude` is not on PATH: {err}",
+                );
+            }
             eprintln!("skipping: `claude` not on PATH");
             return;
         }
@@ -62,7 +83,16 @@ async fn agent_loop_round_trips_when_claude_on_path() {
         }
         Err(AiError::UpstreamRefused(msg)) | Err(AiError::Transport(msg)) => {
             // `claude` is on PATH but not authenticated / not reachable.
-            // Treat as a clean skip per the phase contract.
+            // Without strict mode, treat as a clean skip per the phase
+            // contract so a dev box without Anthropic credentials does
+            // not red the workspace.
+            if strict {
+                panic!(
+                    "NYCTOS_REQUIRE_CLAUDE_CODE=1 but adapter refused: {msg}. \
+                     The CI lane shipped a `claude` binary whose credentials \
+                     are invalid or whose upstream is unreachable.",
+                );
+            }
             eprintln!("skipping: claude reached but refused: {msg}");
         }
         Err(other) => panic!("unexpected adapter error: {other:?}"),

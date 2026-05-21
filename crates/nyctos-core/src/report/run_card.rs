@@ -86,6 +86,16 @@ pub struct RunCard {
     /// own start/finish; everything else is derived from
     /// `agent_traces` rows for the matching `TaskKind`.
     pub phase_durations: Vec<PhaseDuration>,
+    /// Total AI-proposed candidates (`candidate_findings` rows) bound
+    /// to this run, irrespective of their `status`. Sums every variant
+    /// in [`Self::by_candidate_status`]; surfaced as a separate field
+    /// so a consumer that does not care about the per-status breakdown
+    /// can read one integer.
+    pub candidate_findings_total: i64,
+    /// Per-status breakdown of `candidate_findings` rows for this run
+    /// (`Pending` / `Promoted` / `Dismissed`). Empty when the run
+    /// produced no candidates.
+    pub by_candidate_status: Vec<BySplit>,
 }
 
 #[derive(Debug, Error)]
@@ -128,6 +138,27 @@ pub async fn build_run_card(pool: &SqlitePool, run_id: &str) -> Result<RunCard, 
     let mut finding_lang: BTreeMap<String, String> = BTreeMap::new();
     for p in payloads {
         finding_lang.entry(p.finding_id).or_insert(p.lang);
+    }
+
+    // Per-run `candidate_findings` aggregate. Reads off the
+    // `idx_candidate_findings_run_id` index added by migration
+    // `0001_v1.sql`, so the GROUP BY scan is bounded to one run's worth
+    // of rows. A denormalised column on `runs` would save the join, but
+    // the index already keeps this read sub-millisecond on the realistic
+    // candidate-count-per-run cardinality.
+    let candidate_rows: Vec<CandidateRow> = sqlx::query_as::<_, CandidateRow>(
+        "SELECT status, COUNT(*) AS count \
+         FROM candidate_findings WHERE run_id = ? \
+         GROUP BY status",
+    )
+    .bind(run_id)
+    .fetch_all(pool)
+    .await?;
+    let mut by_candidate_status_map: BTreeMap<String, i64> = BTreeMap::new();
+    let mut candidate_findings_total: i64 = 0;
+    for row in candidate_rows {
+        by_candidate_status_map.insert(row.status, row.count);
+        candidate_findings_total += row.count;
     }
 
     let traces: Vec<TraceRow> = sqlx::query_as::<_, TraceRow>(
@@ -213,6 +244,8 @@ pub async fn build_run_card(pool: &SqlitePool, run_id: &str) -> Result<RunCard, 
         by_repo: into_sorted_split(by_repo),
         spend,
         phase_durations,
+        candidate_findings_total,
+        by_candidate_status: into_sorted_split(by_candidate_status_map),
     })
 }
 
@@ -259,7 +292,8 @@ pub fn render_html(card: &RunCard) -> String {
          <dt>Triggered by</dt><dd>{}</dd>\
          <dt>Started</dt><dd>{}</dd><dt>Finished</dt><dd>{}</dd>\
          <dt>Wall clock</dt><dd>{} ms</dd>\
-         <dt>Total findings</dt><dd>{}</dd></dl></section>",
+         <dt>Total findings</dt><dd>{}</dd>\
+         <dt>Candidate findings</dt><dd>{}</dd></dl></section>",
         escape_html(&card.run_id),
         escape_html(&card.status),
         escape_html(&card.triggered_by),
@@ -267,12 +301,14 @@ pub fn render_html(card: &RunCard) -> String {
         card.finished_at.map(|v| v.to_string()).unwrap_or_else(|| "-".to_string()),
         card.wall_clock_ms.unwrap_or(0),
         card.total_findings,
+        card.candidate_findings_total,
     ));
     push_html_split(&mut out, "Status", &card.by_status);
     push_html_split(&mut out, "Capability", &card.by_cap);
     push_html_split(&mut out, "Origin", &card.by_origin);
     push_html_split(&mut out, "Language", &card.by_lang);
     push_html_split(&mut out, "Repository", &card.by_repo);
+    push_html_split(&mut out, "Candidate status", &card.by_candidate_status);
     out.push_str(&format!(
         "<section><h3>AI spend</h3>\
          <p>One-shot: ${:.6} · Agent loop: ${:.6} · Total: ${:.6}</p>",
@@ -349,13 +385,18 @@ pub fn render_markdown(card: &RunCard) -> String {
         card.finished_at.map(|v| v.to_string()).unwrap_or_else(|| "-".to_string())
     ));
     out.push_str(&format!("- **Wall clock**: {} ms\n", card.wall_clock_ms.unwrap_or(0)));
-    out.push_str(&format!("- **Total findings**: {}\n\n", card.total_findings));
+    out.push_str(&format!("- **Total findings**: {}\n", card.total_findings));
+    out.push_str(&format!(
+        "- **Candidate findings**: {}\n\n",
+        card.candidate_findings_total
+    ));
 
     push_markdown_split(&mut out, "Status", &card.by_status);
     push_markdown_split(&mut out, "Capability", &card.by_cap);
     push_markdown_split(&mut out, "Origin", &card.by_origin);
     push_markdown_split(&mut out, "Language", &card.by_lang);
     push_markdown_split(&mut out, "Repository", &card.by_repo);
+    push_markdown_split(&mut out, "Candidate status", &card.by_candidate_status);
 
     out.push_str("## AI spend\n\n");
     out.push_str(&format!(
@@ -462,11 +503,17 @@ struct TraceRow {
     finished_at: Option<i64>,
 }
 
+#[derive(sqlx::FromRow)]
+struct CandidateRow {
+    status: String,
+    count: i64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::store::testutil::{
-        fresh_store, sample_finding, sample_payload, sample_repo, sample_run,
+        fresh_store, sample_candidate, sample_finding, sample_payload, sample_repo, sample_run,
     };
     use crate::store::AgentTraceRecord;
 
@@ -536,6 +583,16 @@ mod tests {
             })
             .await
             .expect("trace-2");
+        // Two AI-proposed candidates for this run: one still Pending,
+        // one Promoted (an end-to-end NovelFindingDiscovery + verifier
+        // confirmation). Used by the candidate-aggregate assertion.
+        s.candidate_findings()
+            .insert(&sample_candidate("cand-pending", "run-card-1", "alpha"))
+            .await
+            .expect("cand-pending");
+        let mut promoted = sample_candidate("cand-promoted", "run-card-1", "beta");
+        promoted.status = "Promoted".to_string();
+        s.candidate_findings().insert(&promoted).await.expect("cand-promoted");
         "run-card-1".to_string()
     }
 
@@ -579,6 +636,35 @@ mod tests {
             .expect("exploration phase");
         assert_eq!(exploration.wall_clock_ms, 7_000);
         assert_eq!(exploration.call_count, 1);
+
+        // Candidate-findings aggregate: two rows, one Pending + one
+        // Promoted. The per-status split sorts by `count DESC` then key
+        // ASC, so both keys end up present without relying on order.
+        assert_eq!(card.candidate_findings_total, 2);
+        let by_cand: Vec<_> =
+            card.by_candidate_status.iter().map(|s| (s.key.as_str(), s.count)).collect();
+        assert!(by_cand.contains(&("Pending", 1)), "by_candidate_status missing Pending: {by_cand:?}");
+        assert!(
+            by_cand.contains(&("Promoted", 1)),
+            "by_candidate_status missing Promoted: {by_cand:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn build_run_card_with_no_candidates_reports_zero_total() {
+        let (_tmp, s) = fresh_store().await;
+        s.repos().upsert(&sample_repo("alpha")).await.expect("alpha");
+        let mut run = sample_run("run-card-empty");
+        run.status = "Succeeded".to_string();
+        run.finished_at = Some(1);
+        run.wall_clock_ms = Some(1);
+        s.runs().insert(&run).await.expect("run");
+        let card = build_run_card(s.pool(), "run-card-empty").await.expect("card");
+        assert_eq!(card.candidate_findings_total, 0);
+        assert!(
+            card.by_candidate_status.is_empty(),
+            "no candidate rows should yield no per-status split",
+        );
     }
 
     #[tokio::test]
@@ -637,6 +723,8 @@ mod tests {
             by_repo: Vec::new(),
             spend: SpendSplit::default(),
             phase_durations: Vec::new(),
+            candidate_findings_total: 0,
+            by_candidate_status: Vec::new(),
         };
         let md = render_markdown(&card);
         // The dangerous chars are inside a code span; the literal `<`

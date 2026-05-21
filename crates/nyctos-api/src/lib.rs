@@ -18,7 +18,8 @@ pub mod webhook;
 
 pub use router::build_router;
 pub use state::{
-    ApiError, AuthConfig, EventReplay, ScanTrigger, ScanTriggerError, ServerState, SetupContext,
+    ApiError, AuthConfig, EventReplay, ScanTrigger, ScanTriggerError, ScanTriggerSource,
+    ServerState, SetupContext,
 };
 pub use webhook::{
     sign as sign_webhook, verify_signature as verify_webhook_signature, EnvSecretResolver,

@@ -15,7 +15,8 @@ use serde_json::Value;
 use tokio::sync::broadcast;
 
 use nyctos_api::{
-    build_router, AuthConfig, ScanTrigger, ScanTriggerError, ServerState, SetupContext,
+    build_router, AuthConfig, ScanTrigger, ScanTriggerError, ScanTriggerSource, ServerState,
+    SetupContext,
 };
 use nyctos_core::store::{ChainRecord, FindingRecord, RepoRecord, RunRecord, DEFAULT_PROJECT_ID};
 use nyctos_core::{Config, SecretStore, Store};
@@ -28,6 +29,7 @@ struct StubScanTrigger {
 impl ScanTrigger for StubScanTrigger {
     fn trigger<'a>(
         &'a self,
+        _source: ScanTriggerSource,
         _project_id: Option<String>,
         _repo: Option<String>,
     ) -> Pin<Box<dyn Future<Output = Result<String, ScanTriggerError>> + Send + 'a>> {
@@ -441,6 +443,25 @@ async fn scan_endpoint_calls_trigger() {
 }
 
 #[tokio::test]
+async fn scan_endpoint_stamps_manual_source_for_runs_triggered_by() {
+    let trigger = Arc::new(RecordingTrigger::default());
+    let srv = TestServer::start_with_trigger(trigger.clone() as Arc<dyn ScanTrigger>).await;
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/v1/projects/{}/scan", srv.base(), DEFAULT_PROJECT_ID))
+        .send()
+        .await
+        .expect("post");
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    let calls = trigger.calls.lock().await.clone();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        calls[0].0,
+        ScanTriggerSource::Manual,
+        "API-driven scan must stamp `Manual` so the daemon records `UI` in runs.triggered_by",
+    );
+}
+
+#[tokio::test]
 async fn websocket_receives_repo_started_and_finished() {
     let srv = TestServer::start().await;
     let url = format!("{}/api/v1/events?run_id=run-ws", srv.ws_base());
@@ -721,7 +742,8 @@ async fn patch_repo_returns_404_when_missing() {
 #[tokio::test]
 async fn delete_repo_removes_workspace_dir_when_configured() {
     use nyctos_api::{
-        build_router, AuthConfig, ScanTrigger, ScanTriggerError, ServerState, SetupContext,
+        build_router, AuthConfig, ScanTrigger, ScanTriggerError, ScanTriggerSource, ServerState,
+        SetupContext,
     };
     use nyctos_core::{Config, SecretStore, Store};
     use tokio::sync::broadcast;
@@ -730,6 +752,7 @@ async fn delete_repo_removes_workspace_dir_when_configured() {
     impl ScanTrigger for Stub {
         fn trigger<'a>(
             &'a self,
+            _source: ScanTriggerSource,
             _project_id: Option<String>,
             _repo: Option<String>,
         ) -> Pin<Box<dyn Future<Output = Result<String, ScanTriggerError>> + Send + 'a>> {
@@ -1391,19 +1414,20 @@ async fn start_webhook_server(
 
 #[derive(Default)]
 struct RecordingTrigger {
-    calls: tokio::sync::Mutex<Vec<Option<String>>>,
+    calls: tokio::sync::Mutex<Vec<(ScanTriggerSource, Option<String>)>>,
 }
 
 impl ScanTrigger for RecordingTrigger {
     fn trigger<'a>(
         &'a self,
+        source: ScanTriggerSource,
         _project_id: Option<String>,
         repo: Option<String>,
     ) -> Pin<Box<dyn Future<Output = Result<String, ScanTriggerError>> + Send + 'a>> {
         Box::pin(async move {
             let mut g = self.calls.lock().await;
             let id = format!("run-{}", g.len());
-            g.push(repo);
+            g.push((source, repo));
             Ok(id)
         })
     }
@@ -1431,6 +1455,11 @@ async fn webhook_with_valid_hmac_triggers_scan() {
     assert!(v["run_id"].as_str().is_some());
     let calls = trigger.calls.lock().await.clone();
     assert_eq!(calls.len(), 1, "trigger fired exactly once");
+    assert_eq!(
+        calls[0].0,
+        ScanTriggerSource::Webhook,
+        "webhook-triggered scan must stamp `Webhook` source for runs.triggered_by",
+    );
     h.abort();
 }
 

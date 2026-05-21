@@ -33,7 +33,7 @@ use chrono::{DateTime, TimeZone, Utc};
 #[cfg(not(test))]
 use chrono::{DateTime, Utc};
 use cron::Schedule;
-use nyctos_api::{ScanTrigger, ScanTriggerError};
+use nyctos_api::{ScanTrigger, ScanTriggerError, ScanTriggerSource};
 use nyctos_core::ScheduleConfig;
 use tokio::sync::watch;
 use tracing::{debug, error, warn};
@@ -163,7 +163,8 @@ impl Scheduler {
                 continue;
             }
             entry.last_fired_minute = Some(minute);
-            match self.trigger.trigger(None, entry.repo.clone()).await {
+            let source = ScanTriggerSource::Scheduler { label: entry.label.clone() };
+            match self.trigger.trigger(source, None, entry.repo.clone()).await {
                 Ok(run_id) => {
                     debug!(
                         schedule = %entry.label,
@@ -336,22 +337,24 @@ mod tests {
     use tokio::sync::Mutex as AsyncMutex;
 
     /// In-memory stub. Records each trigger call so tests can assert
-    /// which schedules fired.
+    /// which schedules fired and what `ScanTriggerSource` (carrying the
+    /// schedule label) the scheduler stamped onto the run.
     #[derive(Default)]
     struct StubTrigger {
-        calls: AsyncMutex<Vec<Option<String>>>,
+        calls: AsyncMutex<Vec<(ScanTriggerSource, Option<String>)>>,
     }
 
     impl ScanTrigger for StubTrigger {
         fn trigger<'a>(
             &'a self,
+            source: ScanTriggerSource,
             _project_id: Option<String>,
             repo: Option<String>,
         ) -> Pin<Box<dyn Future<Output = Result<String, ScanTriggerError>> + Send + 'a>> {
             Box::pin(async move {
                 let mut g = self.calls.lock().await;
                 let run_id = format!("run-{}", g.len());
-                g.push(repo);
+                g.push((source, repo));
                 Ok(run_id)
             })
         }
@@ -465,7 +468,13 @@ mod tests {
         assert_eq!(fired[0].label, "weekly");
         assert_eq!(fired[0].repo.as_deref(), Some("acme-app"));
         let calls = trigger.calls.lock().await.clone();
-        assert_eq!(calls, vec![Some("acme-app".to_string())]);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].1.as_deref(), Some("acme-app"));
+        assert_eq!(
+            calls[0].0,
+            ScanTriggerSource::Scheduler { label: "weekly".to_string() },
+            "scheduler-fired run must carry the schedule label in its trigger source",
+        );
     }
 
     #[tokio::test]
@@ -540,6 +549,7 @@ mod tests {
         impl ScanTrigger for FullTrigger {
             fn trigger<'a>(
                 &'a self,
+                _source: ScanTriggerSource,
                 _project_id: Option<String>,
                 _repo: Option<String>,
             ) -> Pin<Box<dyn Future<Output = Result<String, ScanTriggerError>> + Send + 'a>>
