@@ -196,6 +196,8 @@ impl Sandbox for BirdcageSandbox {
             #[cfg(unix)]
             status_fd: Some(status_read_fd),
             scratch_snapshot,
+            workspace: opts.workspace,
+            capture_files: opts.capture_files,
         });
         Ok(())
     }

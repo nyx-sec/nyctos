@@ -223,21 +223,29 @@ impl PayloadRunner {
         let payload_path = run.workspace.join(payload_filename(label));
         std::fs::write(&payload_path, payload).map_err(PayloadRunnerError::Workspace)?;
 
-        // SinkProbe oracles observe a workspace-relative sentinel
-        // file. Clear it between runs so the previous payload's flag
-        // does not leak into the next run's verdict. Verifiers that
-        // run each payload in a fresh workspace snapshot would not
-        // need this, but the payload runner reuses the workspace.
-        if let Oracle::SinkProbe { sentinel_path, .. } = &run.oracle {
-            let abs = run.workspace.join(sentinel_path);
-            if abs.exists() {
-                std::fs::remove_file(&abs).map_err(PayloadRunnerError::Workspace)?;
-            }
-        }
-
-        let mut opts = SandboxOpts::new(run.workspace.clone(), lang.argv(&harness_rel));
+        // Per-run COW snapshot. Each `verify` call snapshots the
+        // caller's workspace into a private tempdir under the
+        // backend's `RunningChild`; the snapshot drops when the child
+        // is reaped. Per-run isolation means a `SinkProbe` sentinel
+        // file written by a prior payload cannot leak into the next
+        // payload's verdict, and the harness + payload files this
+        // runner just wrote stage into the snapshot via the recursive
+        // copy that `workspace::snapshot` performs.
+        //
+        // SinkProbe oracle observation: declare the sentinel path on
+        // `opts.capture_files` so the backend reads the file after
+        // wait but before the snapshot tempdir drops, then surface
+        // the bytes back on `outcome.captured_files`. The post-wait
+        // `run.workspace` no longer contains the file (the snapshot
+        // is gone by then), so reading via the outcome map is the
+        // only reliable observation path.
+        let mut opts = SandboxOpts::new(run.workspace.clone(), lang.argv(&harness_rel))
+            .with_snapshot_from(run.workspace.clone());
         opts.timeout = self.per_run_timeout;
         opts.lane = Some(Lane::Fast);
+        if let Oracle::SinkProbe { sentinel_path, .. } = &run.oracle {
+            opts.capture_files.push(PathBuf::from(sentinel_path));
+        }
         // Surface workspace-relative payload path so OnDisk harnesses
         // can locate it deterministically.
         opts.env.push((
@@ -296,16 +304,17 @@ impl PayloadRunner {
                     || bytes_contains(&outcome.stderr, marker.as_bytes())
             }
             Oracle::SinkProbe { sentinel_path, expect_contains } => {
-                let abs: PathBuf = run.workspace.join(sentinel_path);
-                if !abs.is_file() {
-                    false
-                } else if let Some(needle) = expect_contains {
-                    match std::fs::read(&abs) {
-                        Ok(body) => bytes_contains(&body, needle.as_bytes()),
-                        Err(_) => false,
-                    }
-                } else {
-                    true
+                // Read the captured bytes the backend stashed before the
+                // snapshot tempdir dropped. `None` means the sentinel
+                // was absent at capture time (the harness did not trip
+                // the sink); `Some(bytes)` is the file contents.
+                let key = PathBuf::from(sentinel_path);
+                match outcome.captured_files.get(&key) {
+                    Some(Some(body)) => match expect_contains {
+                        Some(needle) => bytes_contains(body, needle.as_bytes()),
+                        None => true,
+                    },
+                    _ => false,
                 }
             }
         };
@@ -624,6 +633,65 @@ mod tests {
             .expect("verify");
         assert_eq!(result.verdict, VerifyVerdict::Confirmed);
         assert_eq!(result.replay_stable, Some(true));
+    }
+
+    #[tokio::test]
+    async fn vuln_run_sentinel_does_not_leak_into_benign_run() {
+        // Per-run COW isolation contract: a sentinel file written by the
+        // vuln payload's harness MUST NOT be observable by the benign
+        // payload's run. The two runs share `run.workspace` from the
+        // caller's perspective, but each one runs against its own
+        // ephemeral snapshot. Without per-run isolation a stale vuln
+        // sentinel would carry over and flip the benign run's
+        // `oracle_fired` from false to true, breaking the differential.
+        //
+        // The harness always writes the sentinel unconditionally, so the
+        // only thing keeping the benign run from observing it is the
+        // snapshot drop between vuln and benign.
+        let dir = ws();
+        let spec = HarnessSpecInput {
+            cap: "OS_COMMAND".to_string(),
+            lang: "shell".to_string(),
+            setup: vec![],
+            invoke: "printf 'always-trip' > sentinel.flag; echo @PAYLOAD".to_string(),
+            teardown: vec![],
+        };
+        let runner = PayloadRunner::default();
+        let oracle = Oracle::SinkProbe {
+            sentinel_path: "sentinel.flag".to_string(),
+            expect_contains: None,
+        };
+        let result = runner
+            .verify(PayloadRun {
+                finding_id: "f-isolation".to_string(),
+                spec,
+                vuln_payload: b"v".to_vec(),
+                benign_payload: b"b".to_vec(),
+                oracle,
+                attack_provenance: AttackProvenance::Curated,
+                harness_source: HarnessSource::Synthesised,
+                workspace: dir.path().to_path_buf(),
+            })
+            .await
+            .expect("verify");
+        // Both payloads trip the oracle because each runs in isolation
+        // and writes its OWN sentinel inside its OWN snapshot. The
+        // differential lands NotConfirmed (both oracles fired, the
+        // benign control was not clean).
+        assert!(result.vuln_run.oracle_fired, "vuln run must see its own sentinel");
+        assert!(
+            result.benign_run.oracle_fired,
+            "benign run must see its own sentinel, not leak from vuln; \
+             a stale-sentinel bug would force this to true via leak, \
+             but per-run isolation must allow the harness to write its own"
+        );
+        // Source workspace must NOT contain the leaked sentinel after
+        // the runs complete: both snapshots have been dropped, so the
+        // sentinel only ever lived inside the ephemeral tempdir.
+        assert!(
+            !dir.path().join("sentinel.flag").exists(),
+            "per-run snapshot must not leak the sentinel back to the source workspace",
+        );
     }
 
     #[tokio::test]

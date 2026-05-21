@@ -5,6 +5,8 @@
 //! unavailable or the operator opts out) without forking on the call
 //! site. Static-pass scanning runs on this backend in CI today.
 
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::time::Instant;
 
 use tempfile::TempDir;
@@ -55,6 +57,15 @@ pub(crate) struct RunningChild {
     /// drop happens at end-of-scope.
     #[allow(dead_code)]
     pub(crate) scratch_snapshot: Option<TempDir>,
+    /// Post-`apply_snapshot_from` workspace path. `drive_to_completion`
+    /// joins each [`Self::capture_files`] entry against this root to
+    /// read the captured bytes after wait but before the snapshot tempdir
+    /// drops. Stored here (not derived from opts at drive time) because
+    /// `SandboxOpts` is consumed during `run()`.
+    pub(crate) workspace: PathBuf,
+    /// Workspace-relative paths the backend reads at capture time. Empty
+    /// when the caller declared no captures.
+    pub(crate) capture_files: Vec<PathBuf>,
 }
 
 impl ProcessSandbox {
@@ -93,6 +104,8 @@ impl Sandbox for ProcessSandbox {
             #[cfg(unix)]
             status_fd: None,
             scratch_snapshot,
+            workspace: opts.workspace,
+            capture_files: opts.capture_files,
         });
         Ok(())
     }
@@ -166,7 +179,34 @@ pub(crate) async fn drive_to_completion(
         status_override.unwrap_or_else(|| classify(status))
     };
 
-    Ok(SandboxOutcome { backend, status: sandbox_status, stdout, stderr, duration, refusals })
+    // Capture declared sentinel paths from the live workspace before
+    // returning. The backend's RunningChild still owns `scratch_snapshot`
+    // at this point, so a `with_snapshot_from` workspace is still on
+    // disk. The drop of `state` after this function returns reaps both
+    // the snapshot tempdir and the captured-files vec.
+    let captured_files = capture_files(&state.workspace, &state.capture_files);
+
+    Ok(SandboxOutcome {
+        backend,
+        status: sandbox_status,
+        stdout,
+        stderr,
+        duration,
+        refusals,
+        captured_files,
+    })
+}
+
+fn capture_files(
+    workspace: &std::path::Path,
+    paths: &[PathBuf],
+) -> HashMap<PathBuf, Option<Vec<u8>>> {
+    let mut out: HashMap<PathBuf, Option<Vec<u8>>> = HashMap::with_capacity(paths.len());
+    for rel in paths {
+        let abs = workspace.join(rel);
+        out.insert(rel.clone(), std::fs::read(&abs).ok());
+    }
+    out
 }
 
 #[cfg(unix)]
@@ -252,6 +292,7 @@ mod tests {
             allow_write: Vec::new(),
             max_output_bytes: 1 << 16,
             snapshot_from: None,
+            capture_files: Vec::new(),
         }
     }
 
@@ -283,6 +324,43 @@ mod tests {
             "expected Exited(0) on natural exit, got {:?}",
             outcome.status
         );
+    }
+
+    // Acceptance for SandboxOpts::capture_files: the backend reads each
+    // declared workspace-relative path after `wait` returns and stamps
+    // the bytes on `outcome.captured_files`. Files that did not exist
+    // surface as `Some(rel) -> None` so the caller can distinguish
+    // "harness did not write the sentinel" from "caller never asked".
+    // This is the path PayloadRunner relies on for SinkProbe oracle
+    // observation after a `with_snapshot_from` snapshot dropped the
+    // live workspace before the caller gets the outcome back.
+    #[tokio::test]
+    async fn capture_files_round_trip_present_and_missing_paths() {
+        let scratch = tempdir().unwrap();
+        let workspace = scratch.path().join("ws");
+        std::fs::create_dir(&workspace).unwrap();
+
+        let mut opts = SandboxOpts::new(
+            workspace.clone(),
+            vec!["/bin/sh".into(), "-c".into(), "printf hit > present.flag".into()],
+        );
+        opts.capture_files.push(std::path::PathBuf::from("present.flag"));
+        opts.capture_files.push(std::path::PathBuf::from("absent.flag"));
+
+        let mut sb = ProcessSandbox::new();
+        sb.run(opts).await.expect("run");
+        let outcome = sb.wait().await.expect("wait");
+
+        let present = outcome
+            .captured_files
+            .get(std::path::Path::new("present.flag"))
+            .expect("present declared");
+        assert_eq!(present.as_deref(), Some(b"hit".as_slice()), "present must carry harness bytes");
+        let absent = outcome
+            .captured_files
+            .get(std::path::Path::new("absent.flag"))
+            .expect("absent declared");
+        assert!(absent.is_none(), "absent declared path must capture as None, not omitted");
     }
 
     // Acceptance for SandboxOpts::with_snapshot_from(...): the sandbox

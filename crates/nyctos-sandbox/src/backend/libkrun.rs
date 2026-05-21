@@ -193,6 +193,8 @@ impl Sandbox for LibkrunSandbox {
             #[cfg(unix)]
             status_fd: None,
             scratch_snapshot,
+            workspace: opts.workspace,
+            capture_files: opts.capture_files,
         });
         Ok(())
     }

@@ -1205,3 +1205,26 @@ record_exploration_finding
 }
 
 Inventory: 64.
+
+---
+re-anchored 2026-05-21 (session expl-demo, HEAD 82bf13c session-0046).
+  Session-0046 committed the exploration-caps slice that was working-tree
+  uncommitted at the time #62/#63/#64 were written. Diff vs prior HEAD
+  0f2e9f2: config.rs adds `exploration_soft_cap_usd_micros` /
+  `exploration_run_cap_usd_micros` fields (config.rs:269-285), `_resolved`
+  getters (config.rs:381-405), and three parse/round-trip tests
+  (config.rs:1086-1118); ai_pipeline.rs threads the resolved values
+  through `make_exploration_tracker(store, run_cap)` (:2581-2585) and
+  `build_exploration_scope(run_id, repo, soft_cap, run_cap)` (:2587-2604)
+  so the tracker's hard ceiling and `scope.{soft_cap,run_cap}_usd_micros`
+  inherit operator overrides; main.rs:1887-1905 adds `report_ai` to
+  doctor; docs/config.md + docs/install.md document the surface. No
+  mitigation landed on the three sentinel-#62/#63/#64 primitives —
+  cross-field ordering (#62), `is_some()`-vs-`v>0` divergence (#63 at
+  main.rs:1895/:1897), and absent upper-bound clamp (#64) all hold
+  verbatim. f64 lossy conversion concern from #64 confirmed at
+  main.rs:1900/:1902 (`soft_cap as f64 / 1_000_000.0`). No net-new
+  attack surface in the commit — every byte either implements the
+  three already-described primitives or is test/doc support around
+  them. Pre-existing findings #1-#64 still apply unchanged. Total: 64.
+Inventory: 64.

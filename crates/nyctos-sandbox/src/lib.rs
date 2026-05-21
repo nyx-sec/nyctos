@@ -21,6 +21,7 @@
 //!   isolation is available; the chain-lane delegates to the
 //!   docker-compose env-builder for the actual spin-up.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -297,6 +298,15 @@ pub struct SandboxOpts {
     /// copy itself. Defaults to `None` (the sandbox uses
     /// `workspace` directly).
     pub snapshot_from: Option<PathBuf>,
+    /// Workspace-relative paths the backend reads after the child
+    /// exits but before the sandbox tears down (in particular, before
+    /// `snapshot_from`'s tempdir drops). Each declared path lands in
+    /// [`SandboxOutcome::captured_files`] keyed by its workspace-relative
+    /// form: `Some(bytes)` when the file existed at capture time,
+    /// `None` when it did not. Lets callers observe per-run side
+    /// effects (e.g. a `SinkProbe` sentinel file) without keeping the
+    /// workspace alive past `wait()`.
+    pub capture_files: Vec<PathBuf>,
 }
 
 impl SandboxOpts {
@@ -314,6 +324,7 @@ impl SandboxOpts {
             allow_write: Vec::new(),
             max_output_bytes: 1 << 20,
             snapshot_from: None,
+            capture_files: Vec::new(),
         }
     }
 
@@ -326,6 +337,15 @@ impl SandboxOpts {
     /// `SandboxOpts` setters.
     pub fn with_snapshot_from(mut self, src: PathBuf) -> Self {
         self.snapshot_from = Some(src);
+        self
+    }
+
+    /// Builder: declare a workspace-relative path the backend should
+    /// read at capture time (after `wait`, before snapshot drop) and
+    /// stamp on [`SandboxOutcome::captured_files`]. Multiple calls
+    /// accumulate. Composes with the other `SandboxOpts` setters.
+    pub fn capture_file(mut self, rel: PathBuf) -> Self {
+        self.capture_files.push(rel);
         self
     }
 }
@@ -369,6 +389,14 @@ pub struct SandboxOutcome {
     /// denied" inside the sandboxee. Always empty on backends that do
     /// not exercise the shim's fd-3 report channel.
     pub refusals: Vec<String>,
+    /// Files the backend captured from the post-wait workspace, keyed
+    /// by the workspace-relative path the caller declared via
+    /// [`SandboxOpts::capture_files`]. `Some(bytes)` when the file
+    /// existed; `None` when it did not. Lets callers observe per-run
+    /// side effects (e.g. a `SinkProbe` sentinel) without keeping the
+    /// workspace alive past `wait()`. Empty when the caller declared
+    /// no captures.
+    pub captured_files: HashMap<PathBuf, Option<Vec<u8>>>,
 }
 
 /// Sandbox error surface. Backend-specific failures are folded into the
