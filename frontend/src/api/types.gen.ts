@@ -281,3 +281,7 @@ export type AgentTraceRecord = { id: string, finding_id: string | null, task_kin
 
 export type AgentTraceRow = { id: string, finding_id: string | null, task_kind: string, runtime_name: string, model: string, prompt_version: string | null, conversation_jsonl_path: string | null, tokens_in: number, tokens_out: number, cost_usd_micros: number, cache_hits: number, cache_misses: number, duration_ms: number | null, started_at: number, finished_at: number | null, };
 
+export type ReplayEventKind = "start" | "stdout" | "stderr" | "end" | "error";
+
+export type ReplayEvent = { kind: ReplayEventKind, data: string, };
+

@@ -26,7 +26,7 @@ use nyctos_types::{
     api::{
         AgentTraceRow, BundleManifest, DoctorCheck, DoctorRequest, DoctorResponse,
         FindingDiffStatus, FindingWithDiff, HealthResponse, QuarantineItem, QuarantineKind,
-        RunFindingsResponse, SetupRequest, SetupStatusResponse,
+        ReplayEvent, ReplayEventKind, RunFindingsResponse, SetupRequest, SetupStatusResponse,
     },
     chain::ChainRecord,
     event::{
@@ -149,6 +149,8 @@ fn render() -> String {
         decl_of::<QuarantineItem>(),
         decl_of::<AgentTraceRecord>(),
         decl_of::<AgentTraceRow>(),
+        decl_of::<ReplayEventKind>(),
+        decl_of::<ReplayEvent>(),
     ];
 
     for decl in decls {

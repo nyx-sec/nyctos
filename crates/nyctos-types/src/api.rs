@@ -299,3 +299,38 @@ impl From<AgentTraceRecord> for AgentTraceRow {
         }
     }
 }
+
+/// Frame variant for the SSE stream emitted by
+/// `POST /api/v1/findings/:id/replay`. Mirrors the `event:` header of
+/// each SSE frame. `lowercase` matches the router's hand-formatted
+/// `event:` line and the FE's existing literal-union narrow so ts-rs
+/// renders the type as that exact union.
+///
+/// - `Start`: bash spawned; carries a JSON object with `finding_id`,
+///   `bundle_path`, `started_at_ms`.
+/// - `Stdout` / `Stderr`: one captured line of repro.sh output.
+/// - `End`: bash exited; carries a JSON object with `exit_code`,
+///   `status`, `started_at_ms`, `finished_at_ms`, `duration_ms`.
+/// - `Error`: spawn / IO / timeout. Aborts the stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "lowercase")]
+pub enum ReplayEventKind {
+    Start,
+    Stdout,
+    Stderr,
+    End,
+    Error,
+}
+
+/// FE-facing projection of one SSE frame from
+/// `POST /api/v1/findings/:id/replay`. The wire format is raw SSE
+/// (`event: <kind>\ndata: <line>\n\n`), not a JSON envelope — this
+/// struct exists purely to give ts-rs a generated TS shape so the
+/// FE can drop its hand-rolled interface. `data` is the SSE frame's
+/// `data:` body verbatim (newline-joined when the frame carried
+/// multiple data lines); the FE prints it into the replay log.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ReplayEvent {
+    pub kind: ReplayEventKind,
+    pub data: String,
+}

@@ -25,6 +25,8 @@ import type {
   ProjectRecord,
   QuarantineItem,
   QuarantineKind,
+  ReplayEvent,
+  ReplayEventKind,
   RepoRecord,
   RunFindingsResponse,
   RunRecord,
@@ -50,6 +52,8 @@ export type {
   ProjectRecord,
   QuarantineItem,
   QuarantineKind,
+  ReplayEvent,
+  ReplayEventKind,
   RepoRecord,
   RunFindingsResponse,
   RunRecord,
@@ -124,20 +128,6 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 // already hoisted into `nyctos-types` are re-exported above via
 // `./types.gen`; the rest still live here until the DTO-drop deferred
 // item retires them.
-
-/**
- * Streaming event surfaced by `POST /api/v1/findings/:id/replay`.
- *
- * `start` fires when bash spawns; `stdout` / `stderr` carry per-line
- * output from the bundled `repro.sh`; `end` fires once with the exit
- * status; `error` aborts the stream.
- */
-export type ReplayEventKind = "start" | "stdout" | "stderr" | "end" | "error";
-
-export interface ReplayEvent {
-  kind: ReplayEventKind;
-  data: string;
-}
 
 export type RepoSourceKind = "git" | "local-path" | "github" | "gitlab" | "local";
 

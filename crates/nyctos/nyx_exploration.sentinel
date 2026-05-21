@@ -2073,3 +2073,30 @@ record_exploration_finding
 }
 
 Inventory: 103.
+
+re-scanned 2026-05-21 (session-0031 expl-demo, HEAD 8bd8ae4 + uncommitted
+  ts-rs DTO-drop diff that hoists ReplayEvent/ReplayEventKind from
+  nyctos-api/.../client.ts into nyctos-types::api and re-exports them
+  via xtask -> types.gen.ts). Diff is type-binding only; no router /
+  handler line shifts. Pre-existing findings still apply unchanged.
+  Survey-only (ALLOWED HOSTS empty, TARGETS empty); no HTTP probes
+  issued. One new finding appended below (#104 BEARER_TOKEN_DISCLOSURE
+  on startReplayStream — fetch() POST path needlessly uses ?token=
+  query-auth, leaking the bearer into TraceLayer's request log on
+  every replay click; distinct from #110 which covers the WS path
+  where the WebSocket constructor structurally forbids header auth,
+  and from reproBundleDownloadUrl which covers anchor-download where
+  the same is true). Total: 104 findings.
+
+---
+record_exploration_finding
+{
+  "path": "frontend/src/api/client.ts",
+  "line": 586,
+  "cap": "BEARER_TOKEN_DISCLOSURE",
+  "endpoint": "POST /api/v1/findings/:id/replay",
+  "rationale": "startReplayStream embeds the bearer in the request URL as ?token=<bearer> (client.ts:587-589) even though the underlying call is fetch() with method POST (runReplayFetch at client.ts:599-605). fetch() can set arbitrary headers, so the query-token branch is gratuitous here — unlike (a) the /api/v1/events WS path covered by sentinel #110 where the WebSocket constructor exposes no header API, and (b) reproBundleDownloadUrl (client.ts:575-578) where the URL is consumed by a bare <a download> anchor that likewise cannot set headers. The leak surface is the daemon-side request log: TraceLayer is mounted unconditionally on every route (router.rs:97) and records the full request URI before auth_layer (router.rs:107) ever runs, so each replay click writes one log line of the form `POST /api/v1/findings/<id>/replay?token=<bearer> 200` to whatever sink TraceLayer is wired to (stderr by default, plus any structured-logging exporter the operator has attached). Secondary surfaces: the URL is exposed to the browser's fetch() instrumentation (devtools network panel, Sentry / OpenTelemetry breadcrumbs, any service worker that intercepts fetches) and to any HTTP-level egress proxy that captures request URLs. The new uncommitted DTO-drop diff (nyctos-types/src/api.rs:303-336 adds ReplayEvent / ReplayEventKind; frontend/src/api/client.ts swaps its hand-rolled type for the ts-rs import) does not itself introduce the leak — the leak already exists at client.ts:586 — but it does freeze the wire shape, making this the right point to also fix the bearer placement before the contract becomes load-bearing for additional callers. Static pass missed this because the offending construction is a one-liner string concatenation in a TS helper, and the harm depends on knowing TraceLayer's mount point relative to auth_layer (router.rs:96-97 → middleware order: TraceLayer wraps the inner stack including auth_layer, so the URI is observed BEFORE auth runs and is logged regardless of the request's outcome).",
+  "suggested_payload_hint": "Reproduce: (1) start the daemon with default tracing (`RUST_LOG=tower_http=debug,nyctos_api=debug` or whatever the project's `tracing-subscriber` defaults to); (2) from the FE, on any finding detail page, click 'Replay locally'; (3) grep the daemon stderr / log sink for `?token=` — expected: one or more `http.request` / `tower_http::trace` lines of the form `POST /api/v1/findings/<id>/replay?token=<bearer-verbatim>`. Negative control: on the same finding click any GET that goes through the generic request() helper (client.ts request() at ~:50 which uses Authorization: Bearer); the daemon log should record the URI WITHOUT a token query param, confirming the leak is specific to startReplayStream. Suggested fix (verifier seed): in client.ts replace the ?token= construction with `await fetch(url, { method: \"POST\", headers: { Authorization: `Bearer ${token}` }, signal })`; add a frontend unit test asserting `startReplayStream(..)` does not append `?token=` to the URL it passes to fetch (mock global fetch and inspect the first arg)."
+}
+
+Inventory: 104.
