@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::finding::FindingRecord;
+use crate::trace::AgentTraceRecord;
 
 /// Response body for `GET /api/v1/health`. `status` is always the
 /// literal string `"ok"` on the wire (the daemon never returns a
@@ -239,4 +240,62 @@ pub struct QuarantineItem {
     pub verdict_blob: Option<String>,
     #[ts(type = "number | null")]
     pub last_seen: Option<i64>,
+}
+
+/// Wire row for `GET /api/v1/findings/:id/traces` (and `/traces/:id`).
+/// Projection over [`AgentTraceRecord`] that drops the persistence-only
+/// `verifier_blob` field so the FE shape stays minimal; lift
+/// `verifier_blob` here when the trace viewer (Phase 24) starts
+/// rendering Verifier-row inputs/outputs without joining
+/// `findings.verdict_blob`. All `i64` fields carry
+/// `#[ts(type = "number")]` to override ts-rs's `bigint` default
+/// (serde_json emits JSON numbers for `i64`, which JS receives as
+/// `number`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct AgentTraceRow {
+    pub id: String,
+    pub finding_id: Option<String>,
+    pub task_kind: String,
+    pub runtime_name: String,
+    pub model: String,
+    pub prompt_version: Option<String>,
+    pub conversation_jsonl_path: Option<String>,
+    #[ts(type = "number")]
+    pub tokens_in: i64,
+    #[ts(type = "number")]
+    pub tokens_out: i64,
+    #[ts(type = "number")]
+    pub cost_usd_micros: i64,
+    #[ts(type = "number")]
+    pub cache_hits: i64,
+    #[ts(type = "number")]
+    pub cache_misses: i64,
+    #[ts(type = "number | null")]
+    pub duration_ms: Option<i64>,
+    #[ts(type = "number")]
+    pub started_at: i64,
+    #[ts(type = "number | null")]
+    pub finished_at: Option<i64>,
+}
+
+impl From<AgentTraceRecord> for AgentTraceRow {
+    fn from(r: AgentTraceRecord) -> Self {
+        Self {
+            id: r.id,
+            finding_id: r.finding_id,
+            task_kind: r.task_kind,
+            runtime_name: r.runtime_name,
+            model: r.model,
+            prompt_version: r.prompt_version,
+            conversation_jsonl_path: r.conversation_jsonl_path,
+            tokens_in: r.tokens_in,
+            tokens_out: r.tokens_out,
+            cost_usd_micros: r.cost_usd_micros,
+            cache_hits: r.cache_hits,
+            cache_misses: r.cache_misses,
+            duration_ms: r.duration_ms,
+            started_at: r.started_at,
+            finished_at: r.finished_at,
+        }
+    }
 }

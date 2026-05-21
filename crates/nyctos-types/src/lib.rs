@@ -14,6 +14,7 @@ pub mod project;
 pub mod repo;
 pub mod run;
 pub mod spec;
+pub mod trace;
 pub mod verify;
 
 pub use event::{

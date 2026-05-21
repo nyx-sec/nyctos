@@ -9,6 +9,7 @@ import { type QueryClient, useMutation, useQuery, useQueryClient } from "@tansta
 import { useEffect, useRef, useState } from "react";
 import type {
   AgentEvent,
+  AgentTraceRow,
   BundleManifest,
   ChainRecord,
   CreateProjectRequest,
@@ -33,6 +34,7 @@ import type {
   TestRepoResponse,
 } from "./types.gen";
 export type {
+  AgentTraceRow,
   BundleManifest,
   ChainRecord,
   CreateProjectRequest,
@@ -122,24 +124,6 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 // already hoisted into `nyctos-types` are re-exported above via
 // `./types.gen`; the rest still live here until the DTO-drop deferred
 // item retires them.
-
-export interface AgentTraceRow {
-  id: string;
-  finding_id: string | null;
-  task_kind: string;
-  runtime_name: string;
-  model: string;
-  prompt_version: string | null;
-  conversation_jsonl_path: string | null;
-  tokens_in: number;
-  tokens_out: number;
-  cost_usd_micros: number;
-  cache_hits: number;
-  cache_misses: number;
-  duration_ms: number | null;
-  started_at: number;
-  finished_at: number | null;
-}
 
 /**
  * Streaming event surfaced by `POST /api/v1/findings/:id/replay`.

@@ -33,17 +33,17 @@ use nyctos_core::report::{
     BundleError, BundleManifest, RunCard, RunCardError,
 };
 use nyctos_core::store::{
-    AgentTraceRecord, CandidateFindingRecord, CandidateStatus, ChainRecord, FindingFilter,
-    FindingRecord, PatchOption, ProjectPatch, ProjectPatchOption, ProjectRecord, RepoPatch,
-    RepoRecord, RunRecord,
+    CandidateFindingRecord, CandidateStatus, ChainRecord, FindingFilter, FindingRecord,
+    PatchOption, ProjectPatch, ProjectPatchOption, ProjectRecord, RepoPatch, RepoRecord, RunRecord,
 };
 use nyctos_core::{
     now_epoch_ms, parse_git_auth, AiRuntime, IngestError, SandboxBackend, ACCOUNT_AI_ANTHROPIC,
     ACCOUNT_AI_LOCAL_LLM,
 };
 use nyctos_types::api::{
-    DoctorCheck, DoctorRequest, DoctorResponse, FindingDiffStatus, FindingWithDiff, HealthResponse,
-    QuarantineItem, QuarantineKind, RunFindingsResponse, SetupRequest, SetupStatusResponse,
+    AgentTraceRow, DoctorCheck, DoctorRequest, DoctorResponse, FindingDiffStatus, FindingWithDiff,
+    HealthResponse, QuarantineItem, QuarantineKind, RunFindingsResponse, SetupRequest,
+    SetupStatusResponse,
 };
 use nyctos_types::event::{AgentEvent, ReproEvent, RunEvent};
 use nyctos_types::project::{CreateProjectRequest, PatchProjectRequest, TriStateJson};
@@ -1545,57 +1545,17 @@ fn candidate_to_quarantine_item(c: &CandidateFindingRecord) -> QuarantineItem {
 }
 
 // ---- /traces ----------------------------------------------------------------
-
-/// Trace row envelope: the `AgentTraceRecord` shape carries unsigned
-/// counts as `i64`, but for the wire we keep the raw shape so the
-/// frontend can render whatever the daemon persisted (zeroes for
-/// fields the per-pass outcome does not yet surface; widening the
-/// per-pass envelopes is tracked separately).
-#[derive(Debug, Serialize)]
-pub struct TraceRow {
-    pub id: String,
-    pub finding_id: Option<String>,
-    pub task_kind: String,
-    pub runtime_name: String,
-    pub model: String,
-    pub prompt_version: Option<String>,
-    pub conversation_jsonl_path: Option<String>,
-    pub tokens_in: i64,
-    pub tokens_out: i64,
-    pub cost_usd_micros: i64,
-    pub cache_hits: i64,
-    pub cache_misses: i64,
-    pub duration_ms: Option<i64>,
-    pub started_at: i64,
-    pub finished_at: Option<i64>,
-}
-
-impl From<AgentTraceRecord> for TraceRow {
-    fn from(r: AgentTraceRecord) -> Self {
-        Self {
-            id: r.id,
-            finding_id: r.finding_id,
-            task_kind: r.task_kind,
-            runtime_name: r.runtime_name,
-            model: r.model,
-            prompt_version: r.prompt_version,
-            conversation_jsonl_path: r.conversation_jsonl_path,
-            tokens_in: r.tokens_in,
-            tokens_out: r.tokens_out,
-            cost_usd_micros: r.cost_usd_micros,
-            cache_hits: r.cache_hits,
-            cache_misses: r.cache_misses,
-            duration_ms: r.duration_ms,
-            started_at: r.started_at,
-            finished_at: r.finished_at,
-        }
-    }
-}
+//
+// `AgentTraceRow` lives in `nyctos_types::api`; the `From<AgentTraceRecord>`
+// projection it carries drops the persistence-only `verifier_blob` field
+// so the FE shape stays minimal. Lift `verifier_blob` onto the wire here
+// when the trace viewer (Phase 24) starts rendering Verifier-row
+// inputs/outputs without joining `findings.verdict_blob`.
 
 async fn traces_for_finding(
     State(s): State<ServerState>,
     Path(id): Path<String>,
-) -> Result<Json<Vec<TraceRow>>, ApiError> {
+) -> Result<Json<Vec<AgentTraceRow>>, ApiError> {
     // Candidate ids carry a `cand-` prefix (see
     // `nyctos::ai_pipeline::candidate_id`); route those through the
     // `candidate_findings.trace_id` back-link added in migration
@@ -1607,18 +1567,18 @@ async fn traces_for_finding(
     } else {
         s.store.agent_traces().list_for_finding(&id).await?
     };
-    Ok(Json(rows.into_iter().map(TraceRow::from).collect()))
+    Ok(Json(rows.into_iter().map(AgentTraceRow::from).collect()))
 }
 
 async fn get_trace(
     State(s): State<ServerState>,
     Path(id): Path<String>,
-) -> Result<Json<TraceRow>, ApiError> {
+) -> Result<Json<AgentTraceRow>, ApiError> {
     s.store
         .agent_traces()
         .get(&id)
         .await?
-        .map(TraceRow::from)
+        .map(AgentTraceRow::from)
         .map(Json)
         .ok_or_else(|| ApiError::NotFound(format!("trace `{id}` not found")))
 }

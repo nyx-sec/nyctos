@@ -5,6 +5,8 @@ use sqlx::SqlitePool;
 
 use crate::store::StoreError;
 
+pub use nyctos_types::trace::AgentTraceRecord;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TaskKind {
     PayloadSynthesis,
@@ -30,33 +32,6 @@ impl TaskKind {
             TaskKind::Verifier => "Verifier",
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AgentTraceRecord {
-    pub id: String,
-    pub finding_id: Option<String>,
-    pub task_kind: String,
-    pub runtime_name: String,
-    pub model: String,
-    pub prompt_version: Option<String>,
-    pub conversation_jsonl_path: Option<String>,
-    pub tokens_in: i64,
-    pub tokens_out: i64,
-    pub cost_usd_micros: i64,
-    pub cache_hits: i64,
-    pub cache_misses: i64,
-    pub duration_ms: Option<i64>,
-    pub started_at: i64,
-    pub finished_at: Option<i64>,
-    /// JSON blob populated for `TaskKind::Verifier` rows.
-    ///
-    /// Carries the spec id, vuln/benign payload sha256 hex digests,
-    /// and per-run exit codes so the trace viewer can render the
-    /// verifier's inputs + outputs without joining
-    /// `findings.verdict_blob`. `None` for non-verifier rows and for
-    /// pre-migration verifier rows.
-    pub verifier_blob: Option<String>,
 }
 
 pub struct AgentTraceStore<'a> {

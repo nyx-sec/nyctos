@@ -277,3 +277,7 @@ export type QuarantineKind = "finding" | "candidate";
 
 export type QuarantineItem = { kind: QuarantineKind, id: string, run_id: string, repo: string, path: string, line: number | null, cap: string, rule: string | null, severity: string | null, finding_origin: string | null, prompt_version: string | null, attack_provenance: string | null, rationale: string | null, verdict_blob: string | null, last_seen: number | null, };
 
+export type AgentTraceRecord = { id: string, finding_id: string | null, task_kind: string, runtime_name: string, model: string, prompt_version: string | null, conversation_jsonl_path: string | null, tokens_in: number, tokens_out: number, cost_usd_micros: number, cache_hits: number, cache_misses: number, duration_ms: number | null, started_at: number, finished_at: number | null, verifier_blob: string | null, };
+
+export type AgentTraceRow = { id: string, finding_id: string | null, task_kind: string, runtime_name: string, model: string, prompt_version: string | null, conversation_jsonl_path: string | null, tokens_in: number, tokens_out: number, cost_usd_micros: number, cache_hits: number, cache_misses: number, duration_ms: number | null, started_at: number, finished_at: number | null, };
+

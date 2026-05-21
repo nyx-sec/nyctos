@@ -24,9 +24,9 @@ use nyctos_types::{
         HaltReason, Prompt, Response, TokenUsage,
     },
     api::{
-        BundleManifest, DoctorCheck, DoctorRequest, DoctorResponse, FindingDiffStatus,
-        FindingWithDiff, HealthResponse, QuarantineItem, QuarantineKind, RunFindingsResponse,
-        SetupRequest, SetupStatusResponse,
+        AgentTraceRow, BundleManifest, DoctorCheck, DoctorRequest, DoctorResponse,
+        FindingDiffStatus, FindingWithDiff, HealthResponse, QuarantineItem, QuarantineKind,
+        RunFindingsResponse, SetupRequest, SetupStatusResponse,
     },
     chain::ChainRecord,
     event::{
@@ -40,6 +40,7 @@ use nyctos_types::{
         TestRepoRequest, TestRepoResponse,
     },
     run::RunRecord,
+    trace::AgentTraceRecord,
 };
 use ts_rs::TS;
 
@@ -146,6 +147,8 @@ fn render() -> String {
         decl_of::<RunFindingsResponse>(),
         decl_of::<QuarantineKind>(),
         decl_of::<QuarantineItem>(),
+        decl_of::<AgentTraceRecord>(),
+        decl_of::<AgentTraceRow>(),
     ];
 
     for decl in decls {
