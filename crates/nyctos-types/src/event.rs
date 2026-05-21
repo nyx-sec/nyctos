@@ -184,8 +184,39 @@ pub enum AiEvent {
     },
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
-pub struct SandboxEvent {}
+/// Sandbox / verifier lifecycle events. Subscribers fan out by
+/// `run_id`; consumers that only care about a single finding's verifier
+/// progress key off `finding_id`. Today only the deterministic
+/// verifier publishes here; future backends (chain-lane runner,
+/// AI exploration sandbox) will add their own variants.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind")]
+pub enum SandboxEvent {
+    /// Verifier pass picked up a finding and is about to launch the
+    /// vuln/benign payload pair. Emitted once per finding the pass
+    /// actually drives (skipped findings produce no event).
+    VerifierStarted {
+        run_id: String,
+        finding_id: String,
+        repo: String,
+        #[ts(type = "number")]
+        started_at_ms: i64,
+    },
+    /// Verifier pass finished a finding. `verdict` mirrors
+    /// `VerifyVerdict::as_str()` (`"Confirmed"` / `"NotConfirmed"` /
+    /// `"Errored"`). `replay_stable` stays `None` when the
+    /// `[run] replay_stable_check` knob is off; `Some(true)` when the
+    /// optional second run produced an identical verdict.
+    VerifierFinished {
+        run_id: String,
+        finding_id: String,
+        repo: String,
+        verdict: String,
+        replay_stable: Option<bool>,
+        #[ts(type = "number")]
+        elapsed_ms: i64,
+    },
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct FindingEvent {}

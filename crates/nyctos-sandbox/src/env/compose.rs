@@ -15,7 +15,7 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
-use serde_yaml::{Mapping, Value};
+use serde_norway::{Mapping, Value};
 use thiserror::Error;
 
 /// Filenames docker compose recognises out of the box. Order is also
@@ -88,7 +88,7 @@ pub enum ComposeError {
     Parse {
         path: PathBuf,
         #[source]
-        source: serde_yaml::Error,
+        source: serde_norway::Error,
     },
     #[error("compose at {path} is not a YAML mapping")]
     NotMapping { path: PathBuf },
@@ -99,7 +99,7 @@ pub enum ComposeError {
         source: std::io::Error,
     },
     #[error("compose emit failed: {0}")]
-    Emit(#[source] serde_yaml::Error),
+    Emit(#[source] serde_norway::Error),
 }
 
 /// Find the canonical compose file for a single repo, if any. Walks
@@ -172,7 +172,7 @@ pub fn merge(
     for cf in files {
         let raw = std::fs::read_to_string(&cf.path)
             .map_err(|source| ComposeError::Read { path: cf.path.clone(), source })?;
-        let doc: Value = serde_yaml::from_str(&raw)
+        let doc: Value = serde_norway::from_str(&raw)
             .map_err(|source| ComposeError::Parse { path: cf.path.clone(), source })?;
         let Value::Mapping(map) = doc else {
             return Err(ComposeError::NotMapping { path: cf.path.clone() });
@@ -233,11 +233,11 @@ pub fn merge(
             .insert(Value::String("x-nyx-target-base-url".into()), Value::String(url.to_string()));
     }
     if let Some(env_cfg) = overrides.env_config {
-        let yaml = serde_yaml::to_value(env_cfg).map_err(ComposeError::Emit)?;
+        let yaml = serde_norway::to_value(env_cfg).map_err(ComposeError::Emit)?;
         merged.insert(Value::String("x-nyx-env-config".into()), yaml);
     }
 
-    let body = serde_yaml::to_string(&Value::Mapping(merged)).map_err(ComposeError::Emit)?;
+    let body = serde_norway::to_string(&Value::Mapping(merged)).map_err(ComposeError::Emit)?;
     if let Some(parent) = out_path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|source| ComposeError::Write { path: parent.to_path_buf(), source })?;
@@ -553,7 +553,7 @@ services:
         );
 
         let raw = std::fs::read_to_string(&out).unwrap();
-        let doc: Value = serde_yaml::from_str(&raw).unwrap();
+        let doc: Value = serde_norway::from_str(&raw).unwrap();
         let svcs = doc.get("services").and_then(|v| v.as_mapping()).unwrap();
         assert!(svcs.contains_key(Value::String("alpha_db".into())));
         assert!(svcs.contains_key(Value::String("alpha_cache".into())));
@@ -607,7 +607,7 @@ services:
         merge(&files, &out, &overrides).expect("merge ok");
 
         let raw = std::fs::read_to_string(&out).unwrap();
-        let doc: Value = serde_yaml::from_str(&raw).unwrap();
+        let doc: Value = serde_norway::from_str(&raw).unwrap();
         assert_eq!(
             doc.get("x-nyx-target-base-url").and_then(|v| v.as_str()),
             Some("http://localhost:3000")
@@ -629,7 +629,7 @@ services:
         let out = tmp.path().join("super.yml");
         merge(&files, &out, &ProjectOverrides::default()).expect("merge ok");
         let raw = std::fs::read_to_string(&out).unwrap();
-        let doc: Value = serde_yaml::from_str(&raw).unwrap();
+        let doc: Value = serde_norway::from_str(&raw).unwrap();
         assert!(doc.get("x-nyx-target-base-url").is_none());
         assert!(doc.get("x-nyx-env-config").is_none());
     }
@@ -684,7 +684,7 @@ secrets:
         merge(&files, &out, &ProjectOverrides::default()).expect("merge ok");
 
         let raw = std::fs::read_to_string(&out).unwrap();
-        let doc: Value = serde_yaml::from_str(&raw).unwrap();
+        let doc: Value = serde_norway::from_str(&raw).unwrap();
 
         let top_secrets = doc.get("secrets").and_then(|v| v.as_mapping()).unwrap();
         assert!(top_secrets.contains_key(Value::String("alpha_db_password".into())));

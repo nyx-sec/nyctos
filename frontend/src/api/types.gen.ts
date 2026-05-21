@@ -4,7 +4,7 @@
 
 export type RepoOutcomeTag = "Success" | "Inconclusive" | "Failed";
 
-export type RunEvent = { "kind": "Heartbeat", ts: number, } | { "kind": "RunStarted", run_id: string, project_id: string, repos: Array<string>, started_at_ms: number, } | { "kind": "ProjectStarted", run_id: string, project_id: string, project_name: string, started_at_ms: number, } | { "kind": "RepoStarted", run_id: string, project_id: string, repo: string, started_at_ms: number, } | { "kind": "RepoStaticDone", run_id: string, project_id: string, repo: string, n_diags: number, elapsed_ms: number, } | { "kind": "RepoDynamicDone", run_id: string, project_id: string, repo: string, elapsed_ms: number, } | { "kind": "RepoFailed", run_id: string, project_id: string, repo: string, message: string, elapsed_ms: number, } | { "kind": "RepoFinished", run_id: string, project_id: string, repo: string, outcome: RepoOutcomeTag, elapsed_ms: number, } | { "kind": "ProjectFinished", run_id: string, project_id: string, finished_at_ms: number, } | { "kind": "RunFinished", run_id: string, project_id: string, finished_at_ms: number, wall_clock_ms: number, succeeded: number, inconclusive: number, failed: number, };
+export type RunEvent = { "kind": "Heartbeat", ts: number, } | { "kind": "RunStarted", run_id: string, project_id: string, repos: Array<string>, started_at_ms: number, } | { "kind": "ProjectStarted", run_id: string, project_id: string, project_name: string, started_at_ms: number, } | { "kind": "RepoStarted", run_id: string, project_id: string, repo: string, started_at_ms: number, } | { "kind": "RepoStaticDone", run_id: string, project_id: string, repo: string, n_diags: number, elapsed_ms: number, } | { "kind": "RepoDynamicDone", run_id: string, project_id: string, repo: string, elapsed_ms: number, } | { "kind": "RepoFailed", run_id: string, project_id: string, repo: string, message: string, elapsed_ms: number, } | { "kind": "RepoIngestFailed", run_id: string, project_id: string, repo: string, message: string, } | { "kind": "RepoFinished", run_id: string, project_id: string, repo: string, outcome: RepoOutcomeTag, elapsed_ms: number, } | { "kind": "ProjectFinished", run_id: string, project_id: string, finished_at_ms: number, } | { "kind": "RunFinished", run_id: string, project_id: string, finished_at_ms: number, wall_clock_ms: number, succeeded: number, inconclusive: number, failed: number, };
 
 export type HaltReason = "BudgetCapReached" | "OperatorCancelled" | "UpstreamRefused";
 
@@ -111,7 +111,17 @@ export type AgentTask = { prompt_version: string, task_id: string, system: strin
 
 export type ExtractedAgentResult = { "kind": "PayloadFound", rule_id: string, body: string, } | { "kind": "SpecFound", capability: string, spec: string, } | { "kind": "ChainsRanked", chain_ids: Array<string>, rationale: string, } | { "kind": "ExplorationFinding", path: string, line: number | null, cap: string, rationale: string, endpoint: string | null, suggested_payload_hint: string | null, } | { "kind": "ExplorationEvent", message: string, };
 
-export type AgentResult = { prompt_version: string, task_id: string, final_message: string, turns: number, usage: TokenUsage, cost_usd_micros: number, 
+export type AgentResult = { prompt_version: string, task_id: string, 
+/**
+ * Model name as reported by the vendor. Empty when the adapter
+ * cannot extract a per-call model id from the agent-loop stream.
+ */
+model: string, final_message: string, turns: number, usage: TokenUsage, 
+/**
+ * Prompt-cache statistics. `None` when the adapter does not parse
+ * per-turn cache deltas yet.
+ */
+cache: CacheStats | null, cost_usd_micros: number, 
 /**
  * Structured artefacts the adapter lifted out of the agent loop's
  * tool-use trace. The Claude Code adapter populates these from
@@ -121,7 +131,7 @@ export type AgentResult = { prompt_version: string, task_id: string, final_messa
  */
 extracted: Array<ExtractedAgentResult>, };
 
-export type SandboxEvent = Record<string, never>;
+export type SandboxEvent = { "kind": "VerifierStarted", run_id: string, finding_id: string, repo: string, started_at_ms: number, } | { "kind": "VerifierFinished", run_id: string, finding_id: string, repo: string, verdict: string, replay_stable: boolean | null, elapsed_ms: number, };
 
 export type FindingEvent = Record<string, never>;
 

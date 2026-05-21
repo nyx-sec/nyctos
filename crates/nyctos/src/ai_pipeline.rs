@@ -47,7 +47,7 @@ use nyctos_types::chain::{
     ChainReasoningEdge, ChainReasoningInput, ChainReasoningNode, CHAIN_REASONING_DEFAULT_MAX,
     CHAIN_REASONING_PROMPT_VERSION, NODE_KIND_ENTRY, NODE_KIND_FRAMEWORK, NODE_KIND_SINK,
 };
-use nyctos_types::event::EventSink;
+use nyctos_types::event::{AgentEvent, EventSink, SandboxEvent};
 use nyctos_types::novel::{
     FileForReview, NovelFindingDiscoveryInput, PriorFinding, DEFAULT_FILES_PER_BATCH,
     DEFAULT_NOVEL_DISCOVERY_RUN_CAP_USD_MICROS, NOVEL_FINDING_DISCOVERY_PROMPT_VERSION,
@@ -1654,7 +1654,6 @@ pub async fn run_payload_verification_pass(
     workspaces: &HashMap<String, WorkspaceHandle>,
     events: EventSink,
 ) -> anyhow::Result<PayloadVerificationPassReport> {
-    let _ = events; // event surfacing arrives with the trace-viewer phase
     let runner = PayloadRunner {
         backend: pick_verifier_backend(sandbox_config),
         per_run_timeout: std::time::Duration::from_secs(VERIFIER_PER_RUN_TIMEOUT_SECS),
@@ -1669,7 +1668,9 @@ pub async fn run_payload_verification_pass(
         let Some(workspace) = workspaces.get(&finding.repo) else {
             continue;
         };
-        match drive_verify_for_finding(&runner, store, &finding, workspace).await {
+        match drive_verify_for_finding(&runner, store, &finding, workspace, &events, &bundle.run_id)
+            .await
+        {
             Ok(VerifyOutcome::Skipped) => report.skipped_no_payload += 1,
             Ok(VerifyOutcome::Verdict(verdict)) => bump_verdict(&mut report, verdict),
             Err(err) => {
@@ -1692,7 +1693,17 @@ pub async fn run_payload_verification_pass(
         let Some(workspace) = workspaces.get(&cand.repo) else {
             continue;
         };
-        match drive_verify_for_candidate(&runner, store, &cand, workspace, now_ms).await {
+        match drive_verify_for_candidate(
+            &runner,
+            store,
+            &cand,
+            workspace,
+            now_ms,
+            &events,
+            &bundle.run_id,
+        )
+        .await
+        {
             Ok(VerifyOutcome::Skipped) => report.skipped_no_payload += 1,
             Ok(VerifyOutcome::Verdict(verdict)) => {
                 bump_verdict(&mut report, verdict);
@@ -1708,6 +1719,14 @@ pub async fn run_payload_verification_pass(
     }
 
     Ok(report)
+}
+
+/// Best-effort fan-out of a `SandboxEvent` over the run-wide bus. The
+/// underlying `broadcast::Sender::send` returns `Err` only when no
+/// receiver is alive, which is not actionable for the verifier pass —
+/// log nothing and drop the error so the pass continues.
+fn emit_sandbox(events: &EventSink, event: SandboxEvent) {
+    let _ = events.send(AgentEvent::Sandbox { data: event });
 }
 
 fn pick_verifier_backend(sandbox_config: &SandboxConfig) -> BackendKind {
@@ -1738,6 +1757,8 @@ async fn drive_verify_for_finding(
     store: &Store,
     finding: &FindingRecord,
     workspace: &WorkspaceHandle,
+    events: &EventSink,
+    run_id: &str,
 ) -> anyhow::Result<VerifyOutcome> {
     let Some((payload, spec)) = load_payload_and_spec(store, &finding.id).await? else {
         return Ok(VerifyOutcome::Skipped);
@@ -1745,8 +1766,28 @@ async fn drive_verify_for_finding(
     let prompt_version = payload.prompt_version.clone();
     let spec_id = spec.id.clone();
     let started_at = now_epoch_ms();
+    emit_sandbox(
+        events,
+        SandboxEvent::VerifierStarted {
+            run_id: run_id.to_string(),
+            finding_id: finding.id.clone(),
+            repo: finding.repo.clone(),
+            started_at_ms: started_at,
+        },
+    );
     let result = run_one_verify(runner, &finding.id, payload, spec, workspace).await?;
     let finished_at = now_epoch_ms();
+    emit_sandbox(
+        events,
+        SandboxEvent::VerifierFinished {
+            run_id: run_id.to_string(),
+            finding_id: finding.id.clone(),
+            repo: finding.repo.clone(),
+            verdict: result.verdict.as_str().to_string(),
+            replay_stable: result.replay_stable,
+            elapsed_ms: finished_at - started_at,
+        },
+    );
     persist_finding_verdict(store, finding, &result).await?;
     persist_verifier_trace(
         store,
@@ -1822,6 +1863,8 @@ async fn drive_verify_for_candidate(
     candidate: &CandidateFindingRecord,
     workspace: &WorkspaceHandle,
     now_ms: i64,
+    events: &EventSink,
+    run_id: &str,
 ) -> anyhow::Result<VerifyOutcome> {
     // Candidates do not yet flow through PayloadSynthesis +
     // SpecDerivation (that hand-off is the deferred
@@ -1854,17 +1897,38 @@ async fn drive_verify_for_candidate(
         .clone()
         .unwrap_or_else(|| format!("builtin-cap:{}", candidate.cap));
     let started_at = now_epoch_ms();
+    emit_sandbox(
+        events,
+        SandboxEvent::VerifierStarted {
+            run_id: run_id.to_string(),
+            finding_id: candidate.id.clone(),
+            repo: candidate.repo.clone(),
+            started_at_ms: started_at,
+        },
+    );
     let result = match runner.verify(run).await {
         Ok(r) => r,
         Err(err) => {
             tracing::warn!(error = %err, candidate = %candidate.id, "verifier errored on candidate");
+            let finished_at = now_epoch_ms();
+            emit_sandbox(
+                events,
+                SandboxEvent::VerifierFinished {
+                    run_id: run_id.to_string(),
+                    finding_id: candidate.id.clone(),
+                    repo: candidate.repo.clone(),
+                    verdict: VerifyVerdict::Errored.as_str().to_string(),
+                    replay_stable: None,
+                    elapsed_ms: finished_at - started_at,
+                },
+            );
             persist_verifier_trace(
                 store,
                 None,
                 runner.backend.as_str(),
                 &prompt_version,
                 started_at,
-                now_epoch_ms(),
+                finished_at,
                 None,
                 None,
             )
@@ -1873,6 +1937,17 @@ async fn drive_verify_for_candidate(
         }
     };
     let finished_at = now_epoch_ms();
+    emit_sandbox(
+        events,
+        SandboxEvent::VerifierFinished {
+            run_id: run_id.to_string(),
+            finding_id: candidate.id.clone(),
+            repo: candidate.repo.clone(),
+            verdict: result.verdict.as_str().to_string(),
+            replay_stable: result.replay_stable,
+            elapsed_ms: finished_at - started_at,
+        },
+    );
     if matches!(result.verdict, VerifyVerdict::Confirmed) {
         promote_candidate(store, candidate, &result, now_ms).await?;
     } else {
@@ -4130,6 +4205,88 @@ mod tests {
         assert_eq!(report.skipped_no_payload, 1);
         let row = store.findings().get(&fid).await.unwrap().expect("row");
         assert_eq!(row.status, "Open", "status untouched without a payload");
+    }
+
+    #[tokio::test]
+    async fn verifier_pass_emits_started_and_finished_sandbox_events() {
+        // Subscribers on the run-wide bus see one VerifierStarted +
+        // one VerifierFinished frame per finding the pass drives. Skipped
+        // findings (no payload/spec) produce no event.
+        let (_ws_tmp_a, ws_a) = ws_handle_for("repo-E").await;
+        let (_ws_tmp_b, ws_b) = ws_handle_for("repo-F").await;
+        let mut workspaces = HashMap::new();
+        workspaces.insert("repo-E".to_string(), ws_a);
+        workspaces.insert("repo-F".to_string(), ws_b);
+
+        let tmp_db = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp_db.path()).await.unwrap();
+        store.repos().upsert(&seed_repo("repo-E")).await.unwrap();
+        store.repos().upsert(&seed_repo("repo-F")).await.unwrap();
+        store.runs().insert(&seed_run("run-E")).await.unwrap();
+
+        // Driven finding: has payload + spec.
+        let driven = seed_finding("run-E", "repo-E", "src/sink.sh", "rule-sqli");
+        let driven_id = driven.id.clone();
+        store.findings().upsert(&driven).await.unwrap();
+        store.payloads().insert(&seed_payload(&driven_id, b".*", b"^alice$")).await.unwrap();
+        store.harness_specs().insert(&seed_spec("spec-E")).await.unwrap();
+
+        // Skipped finding: same run, no payload row.
+        let skipped = seed_finding("run-E", "repo-F", "src/other.sh", "rule-orphan");
+        store.findings().upsert(&skipped).await.unwrap();
+
+        let (tx, mut rx) = tokio::sync::broadcast::channel(16);
+        let report = run_payload_verification_pass(
+            &RunConfig::default(),
+            &SandboxConfig::default(),
+            &store,
+            &empty_bundle("run-E"),
+            &workspaces,
+            tx,
+        )
+        .await
+        .unwrap();
+        assert_eq!(report.confirmed, 1);
+        assert_eq!(report.skipped_no_payload, 1);
+
+        let mut started = Vec::new();
+        let mut finished = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            if let AgentEvent::Sandbox { data } = ev {
+                match data {
+                    SandboxEvent::VerifierStarted { finding_id, repo, run_id, .. } => {
+                        started.push((run_id, finding_id, repo));
+                    }
+                    SandboxEvent::VerifierFinished {
+                        finding_id,
+                        repo,
+                        run_id,
+                        verdict,
+                        replay_stable,
+                        elapsed_ms,
+                    } => {
+                        finished.push((
+                            run_id,
+                            finding_id,
+                            repo,
+                            verdict,
+                            replay_stable,
+                            elapsed_ms,
+                        ));
+                    }
+                }
+            }
+        }
+        assert_eq!(started.len(), 1, "skipped findings must not emit Started");
+        assert_eq!(finished.len(), 1);
+        assert_eq!(started[0], ("run-E".into(), driven_id.clone(), "repo-E".into()));
+        let (run_id, fid, repo, verdict, replay_stable, elapsed_ms) = finished[0].clone();
+        assert_eq!(run_id, "run-E");
+        assert_eq!(fid, driven_id);
+        assert_eq!(repo, "repo-E");
+        assert_eq!(verdict, "Confirmed");
+        assert!(replay_stable.is_none(), "replay_stable_check is off by default");
+        assert!(elapsed_ms >= 0);
     }
 
     #[test]
