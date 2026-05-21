@@ -8,7 +8,8 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
-const SUBDIRS: &[&str] = &["runs", "repos", "findings", "logs", "cache", "bundles", "secrets"];
+const SUBDIRS: &[&str] =
+    &["runs", "repos", "findings", "logs", "cache", "bundles", "secrets", "traces"];
 
 #[derive(Debug, Error)]
 pub enum StateError {
@@ -84,6 +85,21 @@ impl StateDir {
     /// requests a repro bundle.
     pub fn bundles(&self) -> PathBuf {
         self.root.join("bundles")
+    }
+
+    /// Per-AI-task trace artefact directory (`<state>/traces`). The
+    /// exploration pass writes one `<task_id>.jsonl` per run under
+    /// [`Self::traces_for_run`] and stamps the path on the matching
+    /// `agent_traces.conversation_jsonl_path` row.
+    pub fn traces(&self) -> PathBuf {
+        self.root.join("traces")
+    }
+
+    /// Per-run trace directory at `<state>/traces/<run_id>`. Created
+    /// on demand by the pass that writes into it; callers should
+    /// `std::fs::create_dir_all` before opening files.
+    pub fn traces_for_run(&self, run_id: &str) -> PathBuf {
+        self.traces().join(run_id)
     }
 
     /// Secrets directory at `<state>/secrets`, created with mode `0700`
@@ -259,6 +275,8 @@ mod tests {
         assert_eq!(sd.logs(), Path::new("/var/state/logs"));
         assert_eq!(sd.cache(), Path::new("/var/state/cache"));
         assert_eq!(sd.bundles(), Path::new("/var/state/bundles"));
+        assert_eq!(sd.traces(), Path::new("/var/state/traces"));
+        assert_eq!(sd.traces_for_run("run-abc"), Path::new("/var/state/traces/run-abc"));
         assert_eq!(sd.secrets(), Path::new("/var/state/secrets"));
         assert_eq!(sd.secrets_test_env_path(), Path::new("/var/state/secrets/test.env"));
         assert_eq!(

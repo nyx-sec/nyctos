@@ -27,9 +27,9 @@ use nyctos_ai::{
     read_spec_excerpt, run_chain_reasoning, run_exploration, run_novel_findings,
     run_payload_synthesis, run_spec_derivation, AiRuntime, AnthropicSdkAdapter, BudgetTracker,
     ChainReasoningOutcome, ClaudeCodeAdapter, EscapeSuiteGate, EscapeSuiteVerdict,
-    ExplorationEndpoint, ExplorationFinding, ExplorationHaltReason, ExplorationOutcome,
-    ExplorationScope, NovelFindingDiscoveryOutcome, PayloadSynthesisOutcome, Pricing,
-    SharedBudgetTracker, SpecDerivationOutcome, DEFAULT_EXPLORATION_RUN_CAP_USD_MICROS,
+    ExplorationAuditEntry, ExplorationEndpoint, ExplorationFinding, ExplorationHaltReason,
+    ExplorationOutcome, ExplorationScope, NovelFindingDiscoveryOutcome, PayloadSynthesisOutcome,
+    Pricing, SharedBudgetTracker, SpecDerivationOutcome, DEFAULT_EXPLORATION_RUN_CAP_USD_MICROS,
 };
 use nyctos_core::store::{
     AgentTraceRecord, CandidateFindingRecord, CandidateStatus, ChainRecord, FindingOrigin,
@@ -2411,6 +2411,7 @@ pub async fn run_ai_exploration_pass(
     workspaces: &HashMap<String, WorkspaceHandle>,
     escape_gate: &dyn EscapeSuiteGate,
     events: EventSink,
+    traces_dir: &std::path::Path,
 ) -> anyhow::Result<AiExplorationPassReport> {
     // Route the exploration loop through Claude Code's agent loop
     // adapter specifically; the Anthropic Messages adapter does not
@@ -2429,7 +2430,16 @@ pub async fn run_ai_exploration_pass(
         }
     };
 
-    drive_ai_exploration_pass(&adapter, store, bundle, workspaces, escape_gate, events).await
+    drive_ai_exploration_pass(
+        &adapter,
+        store,
+        bundle,
+        workspaces,
+        escape_gate,
+        events,
+        traces_dir,
+    )
+    .await
 }
 
 /// Inner driver, generic over `AiRuntime` so tests can supply a
@@ -2443,6 +2453,7 @@ pub(crate) async fn drive_ai_exploration_pass<R: AiRuntime + ?Sized>(
     workspaces: &HashMap<String, WorkspaceHandle>,
     escape_gate: &dyn EscapeSuiteGate,
     events: EventSink,
+    traces_dir: &std::path::Path,
 ) -> anyhow::Result<AiExplorationPassReport> {
     let mut report = AiExplorationPassReport::default();
     let runtime_name = runtime.name();
@@ -2473,11 +2484,13 @@ pub(crate) async fn drive_ai_exploration_pass<R: AiRuntime + ?Sized>(
             store,
             &bundle.run_id,
             &repo_bundle.repo,
+            &scope.task_id,
             outcome,
             &mut report,
             runtime_name,
             &runtime_model,
             started_at,
+            traces_dir,
         )
         .await?;
     }
@@ -2505,11 +2518,13 @@ async fn apply_exploration_outcome(
     store: &Store,
     run_id: &str,
     repo: &str,
+    task_id: &str,
     outcome: ExplorationOutcome,
     report: &mut AiExplorationPassReport,
     runtime_name: &str,
     runtime_model: &str,
     started_at_ms: i64,
+    traces_dir: &std::path::Path,
 ) -> anyhow::Result<()> {
     let finished_at = now_epoch_ms();
     match outcome {
@@ -2535,7 +2550,7 @@ async fn apply_exploration_outcome(
         },
         ExplorationOutcome::Completed {
             findings,
-            audit: _audit,
+            audit,
             final_message: _final_message,
             turns: _turns,
             spent_usd_micros,
@@ -2597,7 +2612,23 @@ async fn apply_exploration_outcome(
                     (0..n_succ).map(|i| if i < leftover { base + 1 } else { base }).collect();
                 (0, costs)
             };
-            let parent_trace = build_trace_row(
+            let audit_path = if audit.is_empty() {
+                None
+            } else {
+                match write_exploration_audit_jsonl(traces_dir, run_id, task_id, &audit) {
+                    Ok(path) => Some(path.to_string_lossy().to_string()),
+                    Err(err) => {
+                        tracing::warn!(
+                            run_id = %run_id,
+                            task_id = %task_id,
+                            error = %err,
+                            "ai exploration: failed to write audit jsonl"
+                        );
+                        None
+                    }
+                }
+            };
+            let mut parent_trace = build_trace_row(
                 TaskKind::Exploration,
                 None,
                 runtime_name,
@@ -2608,6 +2639,7 @@ async fn apply_exploration_outcome(
                 finished_at,
                 Some(&metrics),
             );
+            parent_trace.conversation_jsonl_path = audit_path;
             persist_trace_row(store, parent_trace).await;
             for (finding_id, cost) in successful.into_iter().zip(per_finding_costs) {
                 let per_trace = build_trace_row(
@@ -2626,6 +2658,35 @@ async fn apply_exploration_outcome(
         }
     }
     Ok(())
+}
+
+/// Persist the exploration audit log as JSONL under
+/// `<traces_dir>/<run_id>/<task_id>.jsonl`. One JSON object per line
+/// keyed on `action` / `summary`. Returns the absolute path that the
+/// caller stamps on `agent_traces.conversation_jsonl_path`.
+fn write_exploration_audit_jsonl(
+    traces_dir: &std::path::Path,
+    run_id: &str,
+    task_id: &str,
+    audit: &[ExplorationAuditEntry],
+) -> std::io::Result<std::path::PathBuf> {
+    use std::io::Write;
+
+    let run_dir = traces_dir.join(run_id);
+    std::fs::create_dir_all(&run_dir)?;
+    let path = run_dir.join(format!("{task_id}.jsonl"));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&path)?;
+    for entry in audit {
+        let line = serde_json::to_string(entry).map_err(std::io::Error::other)?;
+        file.write_all(line.as_bytes())?;
+        file.write_all(b"\n")?;
+    }
+    file.flush()?;
+    Ok(path)
 }
 
 async fn persist_exploration_finding(
@@ -4599,9 +4660,18 @@ mod tests {
         let (tx, _rx) = tokio::sync::broadcast::channel(4);
         let gate = StaticEscapeSuiteGate::green();
 
-        let report = drive_ai_exploration_pass(&runtime, &store, &bundle, &workspaces, &gate, tx)
-            .await
-            .unwrap();
+        let traces_root = tempfile::tempdir().unwrap();
+        let report = drive_ai_exploration_pass(
+            &runtime,
+            &store,
+            &bundle,
+            &workspaces,
+            &gate,
+            tx,
+            traces_root.path(),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(report.explorations_dispatched, 1);
         assert_eq!(report.findings_quarantined, 1);
@@ -4666,9 +4736,18 @@ mod tests {
             "wrote /tmp/escaped during regression suite",
         );
 
-        let report = drive_ai_exploration_pass(&runtime, &store, &bundle, &workspaces, &gate, tx)
-            .await
-            .unwrap();
+        let traces_root = tempfile::tempdir().unwrap();
+        let report = drive_ai_exploration_pass(
+            &runtime,
+            &store,
+            &bundle,
+            &workspaces,
+            &gate,
+            tx,
+            traces_root.path(),
+        )
+        .await
+        .unwrap();
         assert_eq!(report.halted_escape_suite_red, 1);
         assert_eq!(report.explorations_dispatched, 0);
         assert_eq!(report.findings_quarantined, 0);
@@ -4737,9 +4816,18 @@ mod tests {
         let (tx, _rx) = tokio::sync::broadcast::channel(4);
         let gate = StaticEscapeSuiteGate::green();
 
-        let report = drive_ai_exploration_pass(&runtime, &store, &bundle, &workspaces, &gate, tx)
-            .await
-            .unwrap();
+        let traces_root = tempfile::tempdir().unwrap();
+        let report = drive_ai_exploration_pass(
+            &runtime,
+            &store,
+            &bundle,
+            &workspaces,
+            &gate,
+            tx,
+            traces_root.path(),
+        )
+        .await
+        .unwrap();
         assert_eq!(report.findings_quarantined, 3);
         assert_eq!(report.spend_usd_micros, cost);
 
@@ -4807,14 +4895,129 @@ mod tests {
         let (tx, _rx) = tokio::sync::broadcast::channel(4);
         let gate = StaticEscapeSuiteGate::green();
 
-        let report = drive_ai_exploration_pass(&runtime, &store, &bundle, &workspaces, &gate, tx)
-            .await
-            .unwrap();
+        let traces_root = tempfile::tempdir().unwrap();
+        let report = drive_ai_exploration_pass(
+            &runtime,
+            &store,
+            &bundle,
+            &workspaces,
+            &gate,
+            tx,
+            traces_root.path(),
+        )
+        .await
+        .unwrap();
         assert_eq!(report.findings_quarantined, 0);
 
         let rows = store.agent_traces().list_by_task_kind("Exploration").await.unwrap();
         assert_eq!(rows.len(), 1, "expected a single parent row, no per-finding rows");
         assert!(rows[0].finding_id.is_none());
         assert_eq!(rows[0].cost_usd_micros, cost);
+        // Audit was empty (no extracted items), so no JSONL gets stamped.
+        assert!(rows[0].conversation_jsonl_path.is_none());
+    }
+
+    #[tokio::test]
+    async fn drive_ai_exploration_writes_audit_jsonl_and_stamps_trace_path() {
+        // Acceptance: when the agent reports tool invocations, the
+        // exploration pass writes one JSONL entry per `AuditEntry` under
+        // `<traces_dir>/<run_id>/<task_id>.jsonl` and stamps the path on
+        // the parent `agent_traces.conversation_jsonl_path` column.
+        let tmp_db = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp_db.path()).await.unwrap();
+        store.repos().upsert(&seed_repo("repo-audit")).await.unwrap();
+        let mut run_row = seed_run("run-audit");
+        run_row.id = "run-audit".into();
+        store.runs().insert(&run_row).await.unwrap();
+
+        let workspace = tempfile::tempdir().unwrap();
+        let mut workspaces = HashMap::new();
+        workspaces.insert(
+            "repo-audit".to_string(),
+            WorkspaceHandle::for_local_path_test(
+                "repo-audit",
+                workspace.path().to_path_buf(),
+            ),
+        );
+
+        let mut result = empty_exploration_result();
+        // One ExplorationFinding (audit: "record_exploration_finding"),
+        // one ExplorationEvent (audit: "<other>"). Two JSONL lines
+        // expected.
+        result.extracted.push(nyctos_types::agent::ExtractedAgentResult::ExplorationFinding {
+            path: "<api:/api/users/me>".into(),
+            line: None,
+            cap: "AUTH_BYPASS".into(),
+            rationale: "Endpoint accepts no token".into(),
+            endpoint: Some("GET /api/users/me".into()),
+            suggested_payload_hint: None,
+        });
+        result.extracted.push(nyctos_types::agent::ExtractedAgentResult::ExplorationEvent {
+            message: "probed /api/health and saw 200".into(),
+        });
+
+        let tracker = Arc::new(InMemoryBudgetTracker::new());
+        tracker.set_cap("run-audit", BudgetKind::AgentLoop, 10_000_000);
+        let runtime =
+            ScriptedExplorationRuntime::new(vec![Ok(result)], 100_000, tracker.clone());
+
+        let bundle = make_bundle("run-audit", "repo-audit", Vec::new());
+        let (tx, _rx) = tokio::sync::broadcast::channel(4);
+        let gate = StaticEscapeSuiteGate::green();
+
+        let traces_root = tempfile::tempdir().unwrap();
+        let report = drive_ai_exploration_pass(
+            &runtime,
+            &store,
+            &bundle,
+            &workspaces,
+            &gate,
+            tx,
+            traces_root.path(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(report.findings_quarantined, 1);
+
+        let expected_path =
+            traces_root.path().join("run-audit").join("expl-repo-audit.jsonl");
+        assert!(expected_path.exists(), "expected {} to exist", expected_path.display());
+
+        let body = std::fs::read_to_string(&expected_path).expect("read jsonl");
+        let lines: Vec<&str> = body.lines().collect();
+        assert_eq!(lines.len(), 2, "expected two JSONL audit lines, got {}", lines.len());
+        let first: serde_json::Value = serde_json::from_str(lines[0]).expect("line 0 json");
+        assert_eq!(first["action"], "record_exploration_finding");
+        assert!(first["summary"].as_str().unwrap().contains("<api:/api/users/me>"));
+        let second: serde_json::Value = serde_json::from_str(lines[1]).expect("line 1 json");
+        assert_eq!(second["action"], "<other>");
+
+        let parent_rows: Vec<_> = store
+            .agent_traces()
+            .list_by_task_kind("Exploration")
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|t| t.finding_id.is_none())
+            .collect();
+        assert_eq!(parent_rows.len(), 1, "expected one parent Exploration trace row");
+        assert_eq!(
+            parent_rows[0].conversation_jsonl_path.as_deref(),
+            Some(expected_path.to_string_lossy().as_ref()),
+            "parent trace must stamp the JSONL path"
+        );
+
+        // Per-finding child rows must NOT stamp the path; the audit log
+        // is a per-call artefact, not per-finding.
+        let per_finding_rows: Vec<_> = store
+            .agent_traces()
+            .list_by_task_kind("Exploration")
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|t| t.finding_id.is_some())
+            .collect();
+        assert_eq!(per_finding_rows.len(), 1);
+        assert!(per_finding_rows[0].conversation_jsonl_path.is_none());
     }
 }

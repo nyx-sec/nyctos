@@ -39,6 +39,7 @@ use nyctos_types::agent::{
     AgentResult, AgentTask, AgentTraceMetrics, AiError, Budget, BudgetKind, ExtractedAgentResult,
 };
 use nyctos_types::event::{AgentEvent, AiEvent, EventSink};
+use serde::Serialize;
 
 use crate::runtime::AiRuntime;
 
@@ -166,9 +167,10 @@ pub trait EscapeSuiteGate: Send + Sync {
 
 /// Typed view of one tool invocation the agent took. Built directly
 /// from the [`AgentResult::extracted`] list. Ships as the audit log
-/// surface; the binary persists it alongside the run's
-/// `agent_traces` row when the trace viewer wires that up.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// surface; the binary persists one row per entry as JSONL under
+/// `<state>/traces/<run_id>/<task_id>.jsonl` and stamps the path on
+/// the parent `agent_traces.conversation_jsonl_path` column.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AuditEntry {
     /// Recognised tool name (`http.probe`, `record_exploration_finding`,
     /// ...). Unknown tools fold to `"<other>"` with the raw input

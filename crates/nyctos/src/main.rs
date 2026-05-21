@@ -804,6 +804,7 @@ async fn drive_scan(
     // `findings` with `finding_origin = AiExploration` and `status =
     // Quarantine`; the verifier below promotes them on Confirmed.
     let escape_gate = ai_pipeline::StaticEscapeSuiteGate::green();
+    let exploration_traces_dir = state_dir.traces();
     match ai_pipeline::run_ai_exploration_pass(
         &config.ai,
         store,
@@ -811,6 +812,7 @@ async fn drive_scan(
         &workspaces_for_ai,
         &escape_gate,
         events.clone(),
+        &exploration_traces_dir,
     )
     .await
     {

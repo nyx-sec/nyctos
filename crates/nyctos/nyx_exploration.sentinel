@@ -10,6 +10,14 @@ re-anchored 2026-05-20 (session-0013 deferred branch, HEAD 982529c):
   check_query_token at :142; pre-existing findings still apply
   unchanged. Three new findings appended below (PATH_TRAVERSAL,
   TIMING_SIDE_CHANNEL, SSRF via git transport). Total: 9 findings.
+re-anchored 2026-05-21 (session-0027 deferred branch, HEAD a027b2e):
+  diff adds `<state>/traces/<run_id>/<task_id>.jsonl` audit-log writer
+  (ai_pipeline.rs:2664-2688) and new `traces` SUBDIR (state.rs:11).
+  Three new findings appended at tail (#21 PATH_TRAVERSAL via unchecked
+  Path::join on operator-influenced run_id/task_id; #22
+  SYMLINK_FOLLOW_TOCTOU on truncating open without O_NOFOLLOW/O_EXCL;
+  #23 INSECURE_FILE_PERMISSIONS because traces SUBDIR inherits 0755
+  unlike the 0700 secrets dir). Total: 23 findings.
 
 ---
 record_exploration_finding
@@ -369,3 +377,46 @@ record_exploration_finding
 }
 
 Inventory: 20.
+
+---- session 2026-05-21 expl-demo (phase23.exploration.v1) ----
+ALLOWED HOSTS: (none) — no HTTP probes issued
+TARGETS: (none) — survey-only of recent diff (src/ai_pipeline.rs, ../nyctos-core/src/state.rs)
+findings emitted: 5
+  1. crates/nyctos/src/ai_pipeline.rs:2667  PATH_TRAVERSAL  write_exploration_audit_jsonl joins run_id/task_id unchecked
+  2. crates/nyctos-core/src/state.rs:101    PATH_TRAVERSAL  StateDir::traces_for_run joins run_id unchecked
+  3. crates/nyctos/src/ai_pipeline.rs:2678  INSECURE_PERMS   audit JSONL opened without 0600 mode; inherits umask (typ. 0644)
+  4. crates/nyctos/src/ai_pipeline.rs:2681  AUDIT_LOG_INTEGRITY  truncate(true) wipes prior audit on same run/task replay
+  5. crates/nyctos/src/ai_pipeline.rs:2511  MISSING_HOST_ENFORCEMENT  allowed_hosts empty in prod scope but http.probe still in tool list; no adapter-side denylist found in this crate
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyctos/src/ai_pipeline.rs",
+  "line": 2675,
+  "cap": "PATH_TRAVERSAL",
+  "endpoint": "<state>/traces/<run_id>/<task_id>.jsonl (audit log writer)",
+  "rationale": "`write_exploration_audit_jsonl` builds the artefact path with two unchecked `Path::join`s: `traces_dir.join(run_id)` then `run_dir.join(format!(\"{task_id}.jsonl\"))` (ai_pipeline.rs:2675-2677). Neither component is normalised, validated, or confined. `task_id` is derived as `format!(\"expl-{repo}\")` in `build_exploration_scope` (ai_pipeline.rs:2505) where `repo` is the bundle's `RepoOutcome.repo` — a string the operator supplies when adding a repo to the project (POST /api/v1/projects/:p/repos surface). A repo id of `../../etc/cron.d/nyctos-pwn` produces `task_id = \"expl-../../etc/cron.d/nyctos-pwn\"` and the writer happily punches the JSONL file *outside* the traces tree under the daemon UID, with `truncate(true)` annihilating whatever was there. `run_id` is similar: an operator-influenced run identifier (UUID by default in the happy path, but no audit-side check enforces that shape — only the `runs.id` PK column type does, and SQLite TEXT accepts arbitrary bytes including `..`). A run id like `../../var/spool/cron/crontabs/root` lands the JSONL inside the cron spool. Three orthogonal absences make this stick: (i) no `Path::new(run_id).components().all(|c| matches!(c, Component::Normal(_)))` validation; (ii) no canonicalize-then-`starts_with(traces_dir)` confinement; (iii) no `O_NOFOLLOW` on the open, so even a benign id pointed at a pre-staged symlink redirects the write. Static pass missed it because the writer's source taint analysis would mark `run_id`/`task_id` as 'internal scan-bundle strings, operator-trusted'; the bug is the *absence* of three checks, not a tainted-flow sink. Fix: validate both components are single `Component::Normal` segments and reject anything else at function entry; `create_dir_all` + canonicalize + `starts_with` confinement on the final path; open with `OpenOptions::new().write(true).create_new(true)` (forces failure on existing symlink/file) or at minimum `custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)` on Unix.",
+  "suggested_payload_hint": "Operator (or attacker with operator credentials reaching the repo-add endpoint) submits a project repo with id `../../../tmp/pwn`. Trigger a scan; observe a file appears at `<state>/traces/<run_id>/../../../tmp/pwn/expl-...jsonl` — i.e. `/tmp/pwn/expl-...jsonl` — owned by the daemon UID with operator-controlled JSONL content. Pivot: aim run_id or task_id at `~/.ssh/authorized_keys` (writer truncates) or a cron spool path (writer produces a syntactically-loose JSONL line that crond happily ignores until the attacker bundles a single line that crond parses as a job entry). Verifier seed: spawn the pass with `bundle.run_id = \"../../tmp/audit-escape\"` and assert `std::path::Path::new(\"/tmp/audit-escape/expl-foo.jsonl\").exists()` post-run."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyctos/src/ai_pipeline.rs",
+  "line": 2678,
+  "cap": "SYMLINK_FOLLOW_TOCTOU",
+  "endpoint": "<state>/traces/<run_id>/<task_id>.jsonl (audit log writer)",
+  "rationale": "`write_exploration_audit_jsonl` opens the JSONL via `OpenOptions::new().write(true).create(true).truncate(true).open(&path)` (ai_pipeline.rs:2678-2682) with no `O_NOFOLLOW`, no `O_EXCL` / `create_new`, and no symlink_metadata check on either the `run_dir` or `path`. `create_dir_all(&run_dir)` (ai_pipeline.rs:2674) also follows symlinks for the intermediate components. On a multi-tenant host (or any host where another local process can race to plant a symlink under `<state>/traces/<run_id>/` between two scan invocations), a pre-staged symlink at `<state>/traces/<run_id>/expl-<repo>.jsonl` → `/home/victim/.ssh/authorized_keys` causes the next scan's audit write to truncate and overwrite the target with attacker-influenced JSONL content (operator-visible exploration audit lines: `{\"action\":\"record_exploration_finding\",\"summary\":\"...\"}`). Even single-tenant, `<state>` is typically `~/.local/share/nyctos` (or wherever StateDir.ensure points) — group-or-world traversable if umask permits — so any local user who can read the traces directory tree can race the write. The `truncate(true)` makes this a *destructive* primitive, not just a confidentiality one: even if the attacker can't read the symlink target afterward, they can wipe arbitrary daemon-readable files (config, sqlite db at `<state>/runs/nyctos.db`, the operator's vouched-pubkey files in `<state>/secrets/`). Static pass missed it because (i) Rust's `OpenOptions` API hides the `O_NOFOLLOW` knob behind the `std::os::unix::fs::OpenOptionsExt::custom_flags` extension trait; the dataflow rule for File::create has no symlink awareness; (ii) the relevant secrets directory has 0700 (state.rs:secrets — confirmed elsewhere in the diff history) but the *new* `traces` SUBDIR has no analogous mode hardening — state.rs:11 just appends `\"traces\"` to SUBDIRS and inherits the default 0755 from `create_dir_all`. Fix: `OpenOptions::new().write(true).create_new(true).custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC).open(&path)`; if the file legitimately needs to be overwritten across re-runs, `fs::remove_file(&path).ok()` first inside a directory whose metadata has been verified (open the run_dir with O_DIRECTORY|O_NOFOLLOW then `*at` syscalls). Pair with explicit 0700 on the `traces` SUBDIR in `StateDir::ensure`.",
+  "suggested_payload_hint": "On a shared host, as a non-daemon UID, `mkdir -p <state>/traces/<predicted-run-id> && ln -s /home/daemon/.ssh/authorized_keys <state>/traces/<predicted-run-id>/expl-<predicted-repo>.jsonl`. Trigger a scan via the normal operator path. Post-run: `cat /home/daemon/.ssh/authorized_keys` shows JSONL audit lines, original key contents gone. For race-mode (no predictable id): inotify-watch `<state>/traces` and `ln -sfT /target <state>/traces/$NEW_RUN_ID/expl-<r>.jsonl` between `create_dir_all` and the open call. Verifier seed: pre-create a symlink at the expected JSONL path pointing to a tempfile, run the pass, assert the tempfile contents now match the audit log lines (proving symlink followed)."
+}
+
+---
+record_exploration_finding
+{
+  "path": "crates/nyctos-core/src/state.rs",
+  "line": 11,
+  "cap": "INSECURE_FILE_PERMISSIONS",
+  "endpoint": "<state>/traces directory tree",
+  "rationale": "`SUBDIRS` adds `\"traces\"` (state.rs:11-12) and `StateDir::ensure` creates it via the same generic `create_dir_all` loop the other subdirs use — inheriting the default 0755 mode (umask-dependent). The `secrets` subdir gets explicit 0700 hardening elsewhere in `StateDir::ensure` because it holds credentials; `traces` now holds the AI exploration audit JSONL files, which encode every endpoint the agent probed, every finding rationale (including suggested payload hints — full attack recipes), and the full sequence of `record_exploration_finding` summaries. That body is at least as sensitive as a scanner finding row (the operator-side `findings` table is sqlite-only, not world-readable), and arguably more so because it includes payload hints that haven't been promoted through Quarantine yet (the verifier may discard them later, but the audit log keeps them). With default 0755 on `<state>/traces/<run_id>/` and 0644 on each `<task_id>.jsonl`, any local user on the host can `find <state>/traces -name '*.jsonl' -exec cat {} +` and harvest the entire exploration history — including the payload hints needed to mount the same attacks the agent surfaced. Compounds findings #21 and #22 above: even when the path-traversal and symlink-follow vectors are blocked, the *intended* artefact path is still world-readable. Static pass missed it because there's no mode literal to grep on — it's the *absence* of a `set_permissions(0o700)` call after `create_dir_all`, mirroring the secrets-subdir treatment. Fix: extend `StateDir::ensure` to apply `std::os::unix::fs::PermissionsExt::set_mode(0o700)` on the `traces` subdir at creation; in `write_exploration_audit_jsonl`, set `OpenOptions::mode(0o600)` (Unix ext) before opening. Document the threat model: 'audit JSONL is operator-confidential; assume single-tenant host or harden filesystem ACLs'.",
+  "suggested_payload_hint": "As a non-daemon local UID after a scan completes: `ls -la <state>/traces/` (expect mode 0755), `cat <state>/traces/<any-run-id>/<any-task-id>.jsonl` succeeds and dumps full audit log incl. payload hints. Verifier-side: assert that after `StateDir::ensure`, `std::fs::metadata(state.traces())?.permissions().mode() & 0o777 == 0o700` — currently false. Same assertion for any JSONL file post-write."
+}
