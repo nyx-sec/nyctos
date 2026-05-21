@@ -7,7 +7,8 @@
 
 import { type QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import type { AgentEvent } from "./types.gen";
+import type { AgentEvent, ChainRecord, RepoRecord } from "./types.gen";
+export type { ChainRecord, RepoRecord };
 
 const API_BASE = "/api/v1";
 
@@ -70,25 +71,10 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 // ---- record shapes ---------------------------------------------------------
 //
-// These mirror the `*Record` structs in `nyctos_core::store`. The
-// shared schema will move into `nyctos-types` once the type-hoist
-// deferred item lands.
-
-export interface RepoRecord {
-  name: string;
-  project_id: string;
-  source_kind: string;
-  source_url_or_path: string;
-  branch: string | null;
-  auth_ref: string | null;
-  i_own_this: boolean;
-  last_scan_run_id: string | null;
-  // Joined `runs.finished_at` for the run named by `last_scan_run_id`.
-  // Distinct from `updated_at`, which a PATCH on this repo also bumps.
-  last_scan_finished_at: number | null;
-  created_at: number;
-  updated_at: number;
-}
+// These mirror the `*Record` structs in `nyctos_core::store`. Shapes
+// already hoisted into `nyctos-types` are re-exported above via
+// `./types.gen`; the rest still live here until the DTO-drop deferred
+// item retires them.
 
 export interface ProjectRecord {
   id: string;
@@ -165,16 +151,6 @@ export interface RunFindingsResponse {
   run_id: string;
   prior_run_id: string | null;
   items: FindingWithDiff[];
-}
-
-export interface ChainRecord {
-  id: string;
-  run_id: string;
-  cross_repo: boolean;
-  member_ids: string;
-  rationale_blob: string | null;
-  attack_provenance: string | null;
-  prompt_version: string | null;
 }
 
 export type QuarantineKind = "finding" | "candidate";

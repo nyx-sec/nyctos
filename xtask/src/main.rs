@@ -23,11 +23,12 @@ use nyctos_types::{
         AgentResult, AgentTask, Budget, BudgetKind, CacheStats, CostEstimate, ExtractedAgentResult,
         HaltReason, Prompt, Response, TokenUsage,
     },
+    chain::ChainRecord,
     event::{
         AgentEvent, AiEvent, BudgetEvent, FindingEvent, QuarantineEvent, RepoOutcomeTag,
         ReproEvent, RunEvent, SandboxEvent,
     },
-    repo::{GitAuth, Repo, RepoSource},
+    repo::{GitAuth, Repo, RepoRecord, RepoSource},
 };
 use ts_rs::TS;
 
@@ -111,6 +112,8 @@ fn render() -> String {
         decl_of::<GitAuth>(),
         decl_of::<RepoSource>(),
         decl_of::<Repo>(),
+        decl_of::<RepoRecord>(),
+        decl_of::<ChainRecord>(),
     ];
 
     for decl in decls {

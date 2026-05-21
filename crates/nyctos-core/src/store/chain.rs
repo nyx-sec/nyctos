@@ -1,20 +1,10 @@
 //! `chains` table - cross-finding rationales produced by chain reasoner.
 
-use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 
-use crate::store::StoreError;
+pub use nyctos_types::chain::ChainRecord;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ChainRecord {
-    pub id: String,
-    pub run_id: String,
-    pub cross_repo: bool,
-    pub member_ids: String,
-    pub rationale_blob: Option<String>,
-    pub attack_provenance: Option<String>,
-    pub prompt_version: Option<String>,
-}
+use crate::store::StoreError;
 
 pub struct ChainStore<'a> {
     pool: &'a SqlitePool,

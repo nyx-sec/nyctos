@@ -1,14 +1,21 @@
-//! AI-derived chain-reasoning schemas.
+//! AI-derived chain-reasoning schemas + persisted `chains` row.
 //!
-//! On-the-wire types the ChainReasoning task produces. The model is
-//! handed a compact graph (nodes + edges) drawn from the run's
-//! static-pass findings and asked to rank up to K candidate exploit
-//! chains by exploitability, with a written rationale per chain.
+//! Two distinct surfaces share this module:
 //!
-//! These types are plain serde and do not derive `ts-rs`; the chains
-//! explorer reaches them through a separate surface.
+//! 1. The on-the-wire types the ChainReasoning task produces. The model
+//!    is handed a compact graph (nodes + edges) drawn from the run's
+//!    static-pass findings and asked to rank up to K candidate exploit
+//!    chains by exploitability, with a written rationale per chain.
+//!    These types are plain serde (no `ts-rs`); the chains explorer
+//!    reaches them through a separate surface.
+//!
+//! 2. [`ChainRecord`] — the on-the-wire shape of a `chains` table row.
+//!    Derives `ts-rs` so the SPA's chains explorer can name it
+//!    directly. The store-side `nyctos_core::store::chain::ChainStore`
+//!    reads and writes this shape.
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 /// Node kind tag the prompt carries so the model can distinguish the
 /// role each finding plays in a candidate chain. Conventional values:
@@ -97,6 +104,22 @@ pub const CHAIN_REASONING_DEFAULT_MAX: u32 = 10;
 /// whenever the prompt body changes; the task records this on every
 /// chain row and AgentTrace so trail-back is unambiguous.
 pub const CHAIN_REASONING_PROMPT_VERSION: &str = "phase16.chain_reasoning.v1";
+
+/// On-the-wire shape of a `chains` table row. `member_ids` is the
+/// stored comma-joined string column (the chains explorer splits it
+/// client-side in `frontend/src/pages/Chains/memberIds.ts`); the
+/// nullable blob columns carry the model's rationale and the
+/// provenance tags the chain reasoner stamped at apply time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ChainRecord {
+    pub id: String,
+    pub run_id: String,
+    pub cross_repo: bool,
+    pub member_ids: String,
+    pub rationale_blob: Option<String>,
+    pub attack_provenance: Option<String>,
+    pub prompt_version: Option<String>,
+}
 
 #[cfg(test)]
 mod tests {

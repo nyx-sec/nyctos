@@ -149,3 +149,15 @@ export type RepoSource = { "Git": { url: string, branch: string | null, auth: Gi
 
 export type Repo = { name: string, source: RepoSource, i_own_this: boolean, project_id: string, };
 
+export type RepoRecord = { name: string, project_id: string, source_kind: string, source_url_or_path: string, branch: string | null, auth_ref: string | null, i_own_this: boolean, last_scan_run_id: string | null, 
+/**
+ * `runs.finished_at` for the run pointed to by `last_scan_run_id`,
+ * resolved through a `LEFT JOIN` on read. `None` when no scan has
+ * completed yet (no row in `runs` with that id, or the run is still
+ * in flight). Distinct from `updated_at`, which a `PATCH` on this
+ * row also bumps.
+ */
+last_scan_finished_at: number | null, created_at: number, updated_at: number, };
+
+export type ChainRecord = { id: string, run_id: string, cross_repo: boolean, member_ids: string, rationale_blob: string | null, attack_provenance: string | null, prompt_version: string | null, };
+

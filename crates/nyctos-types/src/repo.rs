@@ -64,3 +64,34 @@ impl GitAuth {
         }
     }
 }
+
+/// On-the-wire shape of a `repos` table row. Denormalised: the four
+/// columns `source_kind`, `source_url_or_path`, `branch`, and
+/// `auth_ref` are the persisted form, distinct from the structured
+/// [`Repo`] / [`RepoSource`] / [`GitAuth`] runtime descriptors above.
+/// The store-side `nyctos_core::store::repo::RepoStore` reads and
+/// writes this shape; the API and SPA share the same field layout
+/// end-to-end via `#[derive(TS)]`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct RepoRecord {
+    pub name: String,
+    pub project_id: String,
+    pub source_kind: String,
+    pub source_url_or_path: String,
+    pub branch: Option<String>,
+    pub auth_ref: Option<String>,
+    pub i_own_this: bool,
+    pub last_scan_run_id: Option<String>,
+    /// `runs.finished_at` for the run pointed to by `last_scan_run_id`,
+    /// resolved through a `LEFT JOIN` on read. `None` when no scan has
+    /// completed yet (no row in `runs` with that id, or the run is still
+    /// in flight). Distinct from `updated_at`, which a `PATCH` on this
+    /// row also bumps.
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub last_scan_finished_at: Option<i64>,
+    #[ts(type = "number")]
+    pub created_at: i64,
+    #[ts(type = "number")]
+    pub updated_at: i64,
+}

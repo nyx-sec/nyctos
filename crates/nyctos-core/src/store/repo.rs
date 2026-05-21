@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 
+pub use nyctos_types::repo::RepoRecord;
+
 use crate::store::StoreError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -23,27 +25,6 @@ impl SourceKind {
             SourceKind::GitLab => "gitlab",
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RepoRecord {
-    pub name: String,
-    pub project_id: String,
-    pub source_kind: String,
-    pub source_url_or_path: String,
-    pub branch: Option<String>,
-    pub auth_ref: Option<String>,
-    pub i_own_this: bool,
-    pub last_scan_run_id: Option<String>,
-    /// `runs.finished_at` for the run pointed to by `last_scan_run_id`,
-    /// resolved through a `LEFT JOIN` on read. `None` when no scan has
-    /// completed yet (no row in `runs` with that id, or the run is still
-    /// in flight). Distinct from `updated_at`, which a `PATCH` on this
-    /// row also bumps.
-    #[serde(default)]
-    pub last_scan_finished_at: Option<i64>,
-    pub created_at: i64,
-    pub updated_at: i64,
 }
 
 /// Tri-state for `PATCH` semantics on a nullable field: leave existing
