@@ -14,7 +14,11 @@ export function TopBar() {
   const { pathname } = useLocation();
   const title =
     TITLE_BY_PATH[pathname] ??
-    (pathname.startsWith("/projects/") ? "Project" : "Nyx");
+    (pathname.startsWith("/projects/")
+      ? "Project"
+      : pathname.startsWith("/chains/")
+        ? "Chain"
+        : "Nyx");
 
   return (
     <header className="app-layout__topbar">

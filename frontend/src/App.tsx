@@ -2,6 +2,7 @@ import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { AppLayout } from "@/components/AppLayout";
 import { Card } from "@/components/Card";
 import { Spinner } from "@/components/Spinner";
+import { ChainDetail, ChainList } from "@/pages/Chains";
 import { FindingList } from "@/pages/Findings";
 import { Placeholder } from "@/pages/Placeholder";
 import { ProjectDetail, ProjectList } from "@/pages/Projects";
@@ -53,7 +54,8 @@ export function App() {
         <Route path="/runs" element={<Placeholder />} />
         <Route path="/runs/:runId" element={<LiveScanView />} />
         <Route path="/findings" element={<FindingList />} />
-        <Route path="/chains" element={<Placeholder />} />
+        <Route path="/chains" element={<ChainList />} />
+        <Route path="/chains/:chainId" element={<ChainDetail />} />
         <Route
           path="/quarantine"
           element={advanced ? <QuarantineList /> : <Navigate to="/settings" replace />}

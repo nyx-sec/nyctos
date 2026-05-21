@@ -321,3 +321,20 @@ record_exploration_finding
 }
 
 Inventory: 19.
+
+---
+session-appended 2026-05-21 expl-demo follow-up #11 (HEAD b6037b6 session-0023 re-anchor). Committed delta vs session-0022 = 3 frontend vitest render files (AiTraceViewer.test.tsx, QuarantineList.test.tsx, Settings.test.tsx) + sentinel notes. Production-surface delta committed = zero.
+
+Working-tree (uncommitted) diff: frontend/src/App.tsx promotes `/chains` and `/chains/:chainId` from <Placeholder /> to real ChainList/ChainDetail components; TopBar.tsx adds title resolution for `/chains/` paths; styles/components.css adds the .chain-detail__* rules; new untracked frontend/src/pages/Chains/ dir (ChainList.tsx, ChainDetail.tsx, memberIds.ts + matching .test.tsx files + index.ts).
+
+All 19 prior findings re-confirmed against HEAD b6037b6 with anchors unchanged (router.rs build_router :48, auth_layer :100-120, is_always_open :122, check_query_token :142, constant_eq :155-164, submit_setup :293, validate_git_auth_ref :867, delete_project_repo :906, test_repo_connectivity :976, read_local_git_remote :1088, scan_project :1132, list_chains :1347, get_chain :1358, events_ws :1730, create_repro_bundle :1881, ensure_bundle_path_inside_root :1942, extract_ustar :2173; webhook.rs webhook_git :617, peer_ip_from_request :612; ai_pipeline.rs runtime gate :193; main.rs report_webhook :1904; repo/git.rs apply_env :209-216, token-env :86-99).
+
+No new finding promoted this session. Surfaces traced and ruled out:
+  (a) ChainList/ChainDetail render `chain.rationale_blob` via extractChainRationale → React text node (FindingList.tsx:288, ChainDetail.tsx:83); `chain.run_id`, `chain.prompt_version`, `chain.id` rendered inside React text/<code> nodes — all escaped. No XSS sink.
+  (b) ChainList.tsx:153 wraps `chain.id` in <Link to={`/chains/${encodeURIComponent(chain.id)}`}> — safe.
+  (c) ChainDetail.tsx:124 fires useFinding(memberId) per member id inside members.map(...), reintroducing an N+1 against /api/v1/findings/:id on every chain detail view. Member ids originate from ai_pipeline.rs::apply_chain_outcome (AI output) → DB → wire. Bearer-gated; standard `request` (client.ts:50) uses the Authorization header (NOT the ?token= branch — confirmed at client.ts:59-60), so this does NOT amplify findings #4/#5 (query-token logging). Worst case is operator-self-DoS when an AI-output chain row carries thousands of member ids (AI-poisoning angle via attacker-controlled source under scan); judged too far below the bar to emit as a standalone finding given (i) bearer-gated, (ii) self-triggered, (iii) browser concurrency caps absorb most of the impact.
+  (d) useRunChains (client.ts:681) on the new /chains route makes the previously-deferred unbounded GET /api/v1/chains?run_id= read (sentinel session-0016 (d)) materially more reachable — every visit to the now-real /chains nav target fires it. Still bearer-gated and still operator-side. Reachability bump worth noting; primitive class unchanged.
+  (e) memberIds.ts (parseMemberIds) defensively JSON.parses + Array.isArray-guards + filters to string — no prototype-pollution / no XSS via crafted blob.
+  (f) styles/components.css diff is layout-only — no url(), @import, or expression().
+
+Inventory stays at 19.
