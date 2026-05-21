@@ -243,4 +243,50 @@ mod tests {
         let meta = fs::symlink_metadata(dst.join("link")).unwrap();
         assert!(meta.file_type().is_symlink());
     }
+
+    // Pins the contract that whichever backend the host picks (Clonefile
+    // on macOS, FICLONE reflink on Linux btrfs/xfs, or the Copy fallback
+    // everywhere else) preserves the `.git` subtree. The sandbox's COW
+    // snapshot is the only path through which a running repo's git
+    // metadata reaches a sandboxed child; a backend that silently dropped
+    // `.git` would surface as "git" calls inside the sandbox failing with
+    // "not a git repository" instead of as a snapshot error.
+    #[test]
+    fn snapshot_preserves_dotgit_tree() {
+        let scratch = tempdir().unwrap();
+        let src = scratch.path().join("src");
+        fs::create_dir(&src).unwrap();
+        fs::write(src.join("README.md"), b"workspace").unwrap();
+
+        let git_dir = src.join(".git");
+        fs::create_dir(&git_dir).unwrap();
+        fs::write(git_dir.join("HEAD"), b"ref: refs/heads/main\n").unwrap();
+        fs::write(
+            git_dir.join("config"),
+            b"[core]\n\trepositoryformatversion = 0\n",
+        )
+        .unwrap();
+        let refs = git_dir.join("refs").join("heads");
+        fs::create_dir_all(&refs).unwrap();
+        fs::write(refs.join("main"), b"deadbeefcafef00d\n").unwrap();
+
+        let dst = scratch.path().join("snapshot");
+        snapshot(&src, &dst).unwrap();
+
+        let dst_git = dst.join(".git");
+        assert!(
+            dst_git.is_dir(),
+            "snapshot dropped the .git directory entirely",
+        );
+        assert_eq!(
+            fs::read(dst_git.join("HEAD")).unwrap(),
+            b"ref: refs/heads/main\n",
+        );
+        let config = fs::read(dst_git.join("config")).unwrap();
+        assert!(config.starts_with(b"[core]"));
+        assert_eq!(
+            fs::read(dst_git.join("refs").join("heads").join("main")).unwrap(),
+            b"deadbeefcafef00d\n",
+        );
+    }
 }
