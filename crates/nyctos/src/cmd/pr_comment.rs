@@ -22,6 +22,19 @@ use super::scan_report::{ReportChain, ReportFinding, ScanReport};
 /// without colliding with an in-flight comment from an older binary.
 pub const COMMENT_MARKER: &str = "<!-- nyctos:pr-comment v1 -->";
 
+/// Markers the reader still recognises when scanning an existing PR
+/// for the agent's comment. The current marker MUST sit at index 0;
+/// retired versions follow in newest-to-oldest order. A binary that
+/// emits `v2` keeps `v1` here so an older comment authored by a
+/// previous release gets PATCHed in place rather than orphaned.
+pub const KNOWN_COMMENT_MARKERS: &[&str] = &[COMMENT_MARKER];
+
+/// First marker in [`KNOWN_COMMENT_MARKERS`] present in `body`, or
+/// `None` if the body carries no recognised marker.
+fn matched_marker(body: &str) -> Option<&'static str> {
+    KNOWN_COMMENT_MARKERS.iter().copied().find(|m| body.contains(*m))
+}
+
 /// Default GitHub REST base. Override via `--gh-api` for GHE.
 pub const DEFAULT_GH_API_BASE: &str = "https://api.github.com";
 
@@ -484,7 +497,7 @@ async fn find_existing_comment(
             return Ok(None);
         }
         for c in &comments {
-            let has_marker = c.body.as_deref().map(|b| b.contains(COMMENT_MARKER)).unwrap_or(false);
+            let has_marker = c.body.as_deref().and_then(matched_marker).is_some();
             if has_marker && comment_owned_by_known_bot(c) {
                 return Ok(Some(c.id));
             }
@@ -684,6 +697,25 @@ mod tests {
         let leading = code_safe("`leading");
         assert!(leading.starts_with("`` "));
         assert!(leading.ends_with(" ``"));
+    }
+
+    #[test]
+    fn known_comment_markers_lists_current_marker_first() {
+        assert!(!KNOWN_COMMENT_MARKERS.is_empty(), "list must always carry the current marker");
+        assert_eq!(KNOWN_COMMENT_MARKERS[0], COMMENT_MARKER);
+    }
+
+    #[test]
+    fn matched_marker_finds_current_and_any_retired_marker() {
+        assert_eq!(matched_marker(COMMENT_MARKER), Some(COMMENT_MARKER));
+        assert_eq!(
+            matched_marker(&format!("{COMMENT_MARKER}\nrest of body")),
+            Some(COMMENT_MARKER)
+        );
+        assert_eq!(matched_marker("no marker here"), None);
+        for m in KNOWN_COMMENT_MARKERS {
+            assert_eq!(matched_marker(m), Some(*m), "every listed marker must be recognised");
+        }
     }
 
     #[test]

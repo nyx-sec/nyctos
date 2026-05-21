@@ -55,6 +55,11 @@ pub struct ReportChain {
 
 pub const REPORT_SCHEMA_VERSION: u32 = 1;
 
+/// Schema versions this binary knows how to read. A future minor /
+/// compatible bump can append here so older readers refuse loudly
+/// rather than silently dropping fields they cannot parse.
+pub const SUPPORTED_REPORT_SCHEMA_VERSIONS: &[u32] = &[1];
+
 #[derive(Debug, thiserror::Error)]
 pub enum ScanReportError {
     #[error("io error writing report to {path}: {source}")]
@@ -65,6 +70,11 @@ pub enum ScanReportError {
     Json(#[from] serde_json::Error),
     #[error("store error: {0}")]
     Store(#[from] StoreError),
+    #[error(
+        "report schema_version {found} not supported by this binary (supported: {supported:?}); \
+         upgrade `nyctos` to read this report"
+    )]
+    UnsupportedSchemaVersion { found: u32, supported: Vec<u32> },
 }
 
 impl ScanReport {
@@ -72,7 +82,14 @@ impl ScanReport {
     pub fn load(path: &Path) -> Result<Self, ScanReportError> {
         let bytes = std::fs::read(path)
             .map_err(|source| ScanReportError::Read { path: path.display().to_string(), source })?;
-        Ok(serde_json::from_slice(&bytes)?)
+        let report: Self = serde_json::from_slice(&bytes)?;
+        if !SUPPORTED_REPORT_SCHEMA_VERSIONS.contains(&report.schema_version) {
+            return Err(ScanReportError::UnsupportedSchemaVersion {
+                found: report.schema_version,
+                supported: SUPPORTED_REPORT_SCHEMA_VERSIONS.to_vec(),
+            });
+        }
+        Ok(report)
     }
 
     /// Drop every row the PR-comment surface would not render. Mirrors
@@ -366,6 +383,37 @@ mod tests {
         assert_eq!(report.chains.len(), 1);
         assert_eq!(report.chains[0].id, "c-cross");
         assert_eq!(report.repos, vec!["alpha", "beta"]);
+    }
+
+    #[test]
+    fn load_refuses_unsupported_schema_version() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("report.json");
+        let report = ScanReport {
+            schema_version: 9999,
+            run_id: "run-1".into(),
+            started_at: 0,
+            finished_at: None,
+            status: "Succeeded".into(),
+            triggered_by: "ci".into(),
+            repos: vec![],
+            since_ref: None,
+            findings: vec![],
+            chains: vec![],
+        };
+        std::fs::write(&path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+        match ScanReport::load(&path) {
+            Err(ScanReportError::UnsupportedSchemaVersion { found, supported }) => {
+                assert_eq!(found, 9999);
+                assert_eq!(supported, SUPPORTED_REPORT_SCHEMA_VERSIONS.to_vec());
+            }
+            other => panic!("expected UnsupportedSchemaVersion, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn supported_schema_versions_includes_current_constant() {
+        assert!(SUPPORTED_REPORT_SCHEMA_VERSIONS.contains(&REPORT_SCHEMA_VERSION));
     }
 
     #[test]
