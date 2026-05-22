@@ -13,7 +13,7 @@ use tokio::sync::{Mutex, RwLock};
 
 use nyctos_core::store::StoreError;
 use nyctos_core::{Config, SecretStore, Store};
-use nyctos_types::event::{AgentEvent, EventSink, RunEvent};
+use nyctos_types::event::{AgentEvent, AiEvent, EventSink, RunEvent, SandboxEvent};
 
 /// Future returned by [`ScanTrigger::trigger`]. Boxed so the trait can be
 /// object-safe.
@@ -231,6 +231,11 @@ fn run_id_for_event(ev: &AgentEvent) -> Option<&str> {
             | RunEvent::RepoFinished { run_id, .. }
             | RunEvent::ProjectFinished { run_id, .. }
             | RunEvent::RunFinished { run_id, .. } => Some(run_id.as_str()),
+        },
+        AgentEvent::Ai { data: AiEvent::BudgetTick { run_id, .. } } => Some(run_id.as_str()),
+        AgentEvent::Sandbox { data } => match data {
+            SandboxEvent::VerifierStarted { run_id, .. }
+            | SandboxEvent::VerifierFinished { run_id, .. } => Some(run_id.as_str()),
         },
         _ => None,
     }

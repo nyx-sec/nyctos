@@ -186,6 +186,13 @@ pub struct AgentTask {
     pub system: String,
     pub objective: String,
     pub tools: Vec<String>,
+    /// Optional working directory for CLI-backed agent loops. When set,
+    /// adapters launch the agent from this directory so native file,
+    /// search, and shell tools operate on the target repository rather
+    /// than the daemon's process cwd.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub working_directory: Option<String>,
     pub max_turns: u32,
 }
 

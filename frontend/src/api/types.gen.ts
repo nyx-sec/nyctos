@@ -259,6 +259,11 @@ ai_model?: string,
  */
 ai_api_base?: string, 
 /**
+ * Configured per-run AI budget cap in USD micros. `None` means
+ * runs are uncapped.
+ */
+default_run_budget_usd_micros?: number, 
+/**
  * Currently-configured sandbox backend (matches `[sandbox].backend`).
  */
 sandbox_backend: string, 
@@ -317,6 +322,11 @@ local_llm_url?: string,
  * the keychain.
  */
 local_llm_token?: string, 
+/**
+ * Optional per-run AI budget cap in USD micros. `None` disables
+ * the cap; a positive value enables it.
+ */
+default_run_budget_usd_micros?: number | null, 
 /**
  * Sandbox backend: `auto` | `process` | `birdcage` | `libkrun`
  * | `firecracker` | `docker`.

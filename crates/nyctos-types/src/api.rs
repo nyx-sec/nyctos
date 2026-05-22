@@ -58,6 +58,11 @@ pub struct SetupStatusResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub ai_api_base: Option<String>,
+    /// Configured per-run AI budget cap in USD micros. `None` means
+    /// runs are uncapped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub default_run_budget_usd_micros: Option<i64>,
     /// Currently-configured sandbox backend (matches `[sandbox].backend`).
     pub sandbox_backend: String,
     /// Whether sandboxing is enabled globally.
@@ -106,6 +111,11 @@ pub struct SetupRequest {
     #[serde(default)]
     #[ts(optional)]
     pub local_llm_token: Option<String>,
+    /// Optional per-run AI budget cap in USD micros. `None` disables
+    /// the cap; a positive value enables it.
+    #[serde(default)]
+    #[ts(optional)]
+    pub default_run_budget_usd_micros: Option<i64>,
     /// Sandbox backend: `auto` | `process` | `birdcage` | `libkrun`
     /// | `firecracker` | `docker`.
     pub sandbox_backend: String,

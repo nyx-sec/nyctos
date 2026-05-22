@@ -81,6 +81,8 @@ export function Settings() {
   const [anthropicApiKey, setAnthropicApiKey] = useState("");
   const [localLlmUrl, setLocalLlmUrl] = useState("");
   const [localLlmToken, setLocalLlmToken] = useState("");
+  const [budgetEnabled, setBudgetEnabled] = useState(false);
+  const [budgetUsd, setBudgetUsd] = useState("25");
   const [savedMessage, setSavedMessage] = useState<string | null>(null);
 
   useEffect(() => {
@@ -90,6 +92,13 @@ export function Settings() {
     setLocalLlmUrl(status.data.ai_api_base ?? "");
     setAnthropicApiKey("");
     setLocalLlmToken("");
+    const budgetMicros = status.data.default_run_budget_usd_micros;
+    setBudgetEnabled(typeof budgetMicros === "number" && budgetMicros > 0);
+    setBudgetUsd(
+      typeof budgetMicros === "number" && budgetMicros > 0
+        ? formatBudgetInput(budgetMicros)
+        : "25",
+    );
   }, [status.data]);
 
   if (status.isPending) {
@@ -124,6 +133,8 @@ export function Settings() {
     currentRuntime,
     anthropicApiKey,
     localLlmUrl,
+    budgetEnabled,
+    budgetUsd,
   );
   const dirty = hasChanges(data, currentRuntime, currentBackend, {
     aiRuntime,
@@ -131,6 +142,8 @@ export function Settings() {
     anthropicApiKey,
     localLlmUrl,
     localLlmToken,
+    budgetEnabled,
+    budgetUsd,
   });
   const canSave = dirty && !validationMessage && !submit.isPending;
 
@@ -141,10 +154,12 @@ export function Settings() {
       anthropic_api_key?: string;
       local_llm_url?: string;
       local_llm_token?: string;
+      default_run_budget_usd_micros?: number | null;
       sandbox_backend: SandboxBackendChoice;
       i_own_this: boolean;
     } = {
       ai_runtime: aiRuntime,
+      default_run_budget_usd_micros: budgetEnabled ? budgetUsdToMicros(budgetUsd) : null,
       sandbox_backend: sandboxBackend,
       i_own_this: true,
     };
@@ -209,6 +224,11 @@ export function Settings() {
             label="API"
             value={data?.ui_listen_addr ?? "127.0.0.1:8765"}
             detail={data?.ui_open_browser === false ? "Browser launch off" : "Browser launch on"}
+          />
+          <SummaryTile
+            label="AI budget"
+            value={budgetSummary(data)}
+            detail={budgetDetail(data)}
           />
           <SummaryTile label="Scan limits" value={scanLimit(data)} detail={stateDetail(data)} />
         </div>
@@ -339,6 +359,48 @@ export function Settings() {
         </div>
       </Card>
 
+      <Card title="AI Budget" subtitle="Optional run-level spend guard for AI work.">
+        <section className="settings-page__section">
+          <header className="settings-page__row">
+            <div>
+              <h3 className="settings-page__row-title">Run budget cap</h3>
+              <p className="settings-page__row-help">
+                Default is unlimited. Enable this only when you want Nyctos to stop AI review after
+                a fixed dollar amount.
+              </p>
+            </div>
+            <label className="settings-page__toggle">
+              <input
+                type="checkbox"
+                checked={budgetEnabled}
+                onChange={(e) => setBudgetEnabled(e.target.checked)}
+                aria-label="Limit AI budget"
+              />
+              <span className="settings-page__switch" aria-hidden="true">
+                <span />
+              </span>
+              <span>{budgetEnabled ? "Limited" : "Unlimited"}</span>
+            </label>
+          </header>
+          {budgetEnabled && (
+            <div className="settings-budget-row">
+              <div className="setup-field">
+                <label htmlFor="settings-ai-budget-usd">Budget per run (USD)</label>
+                <input
+                  id="settings-ai-budget-usd"
+                  type="number"
+                  min="0.01"
+                  step="0.01"
+                  inputMode="decimal"
+                  value={budgetUsd}
+                  onChange={(e) => setBudgetUsd(e.target.value)}
+                />
+              </div>
+            </div>
+          )}
+        </section>
+      </Card>
+
       <Card title="Local Settings" subtitle="Preferences and local daemon details for this host.">
         <section className="settings-page__section">
           <header className="settings-page__row">
@@ -446,6 +508,16 @@ function stateDetail(data: SetupStatusResponse | undefined): string {
   return data?.state_dir ? "Custom state directory" : "Default state directory";
 }
 
+function budgetSummary(data: SetupStatusResponse | undefined): string {
+  const micros = data?.default_run_budget_usd_micros;
+  return typeof micros === "number" && micros > 0 ? formatBudgetUsd(micros) : "Unlimited";
+}
+
+function budgetDetail(data: SetupStatusResponse | undefined): string {
+  const micros = data?.default_run_budget_usd_micros;
+  return typeof micros === "number" && micros > 0 ? "Stops AI review at cap" : "No Nyctos cap";
+}
+
 function scanLimit(data: SetupStatusResponse | undefined): string {
   const scans = data?.max_parallel_scans ?? 4;
   const timeout = data?.scan_timeout_secs ?? 600;
@@ -457,6 +529,8 @@ function validateRuntimeForm(
   currentRuntime: AiRuntimeChoice,
   anthropicApiKey: string,
   localLlmUrl: string,
+  budgetEnabled: boolean,
+  budgetUsd: string,
 ): string | null {
   if (
     aiRuntime === "anthropic" &&
@@ -467,6 +541,9 @@ function validateRuntimeForm(
   }
   if (aiRuntime === "local-llm" && localLlmUrl.trim().length === 0) {
     return "Enter a local OpenAI-compatible URL before saving.";
+  }
+  if (budgetEnabled && budgetUsdToMicros(budgetUsd) <= 0) {
+    return "Enter an AI budget greater than $0.";
   }
   return null;
 }
@@ -481,14 +558,35 @@ function hasChanges(
     anthropicApiKey: string;
     localLlmUrl: string;
     localLlmToken: string;
+    budgetEnabled: boolean;
+    budgetUsd: string;
   },
 ): boolean {
+  const currentBudget = data?.default_run_budget_usd_micros;
+  const currentBudgetEnabled = typeof currentBudget === "number" && currentBudget > 0;
+  const nextBudget = form.budgetEnabled ? budgetUsdToMicros(form.budgetUsd) : null;
   return (
     form.aiRuntime !== currentRuntime ||
     form.sandboxBackend !== currentBackend ||
+    form.budgetEnabled !== currentBudgetEnabled ||
+    (form.budgetEnabled && nextBudget !== currentBudget) ||
     (form.aiRuntime === "anthropic" && form.anthropicApiKey.trim().length > 0) ||
     (form.aiRuntime === "local-llm" &&
       (form.localLlmUrl.trim() !== (data?.ai_api_base ?? "") ||
         form.localLlmToken.trim().length > 0))
   );
+}
+
+function budgetUsdToMicros(value: string): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+  return Math.round(parsed * 1_000_000);
+}
+
+function formatBudgetInput(micros: number): string {
+  return (micros / 1_000_000).toFixed(2).replace(/\.00$/, "");
+}
+
+function formatBudgetUsd(micros: number): string {
+  return `$${(micros / 1_000_000).toFixed(2)}`;
 }

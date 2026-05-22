@@ -236,7 +236,7 @@ Two implementations ship:
   by adapter tests and any future in-memory dispatcher.
 - `BudgetStoreTracker` lives in the binary glue and forwards into
   `nyctos_core::store::BudgetStore`. The wizard picks a per-run
-  cap (default `$5.00` from `AiConfig::DEFAULT_RUN_BUDGET_USD_MICROS`)
+  cap (default unlimited from `AiConfig::DEFAULT_RUN_BUDGET_USD_MICROS`)
   and the tracker auto-creates the row on first `add_spend`.
 
 `Budget` (`agent.rs:138`) is the per-call envelope:
@@ -432,7 +432,8 @@ provider = "anthropic"
 model = "claude-opus-4-7"
 runtime = "anthropic"               # none | anthropic | local-llm | claude-code
 max_concurrent_one_shot = 4
-default_run_budget_usd_micros = 5_000_000   # $5.00 default
+# Optional. Omit for unlimited AI runs.
+default_run_budget_usd_micros = 25_000_000  # $25.00 per run
 ```
 
 | Field                            | Default                                | Notes                                                |
@@ -442,7 +443,7 @@ default_run_budget_usd_micros = 5_000_000   # $5.00 default
 | `api_base`                       | `None`                                 | Endpoint URL for `local-llm`.                        |
 | `runtime`                        | `none`                                 | One of `none`, `anthropic`, `local-llm`, `claude-code`. |
 | `max_concurrent_one_shot`        | `4`                                    | In-flight one-shot fan-out. Floored to `1`.          |
-| `default_run_budget_usd_micros`  | `5_000_000` (`$5.00`)                  | Per-run cap stamped on auto-created budget rows.     |
+| `default_run_budget_usd_micros`  | unset (unlimited)                      | Optional per-run cap stamped on auto-created budget rows. |
 
 Secrets do not live in TOML. The wizard stashes the API key in the
 OS keychain under `secrets::ACCOUNT_AI_ANTHROPIC` (Anthropic) or

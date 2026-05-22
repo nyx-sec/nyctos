@@ -34,7 +34,7 @@ use nyctos_ai::{
 };
 use nyctos_core::store::{
     AgentTraceRecord, CandidateFindingRecord, CandidateStatus, ChainRecord, FindingOrigin,
-    FindingRecord, HarnessSpecRecord, PayloadRecord, Store, TaskKind,
+    FindingRecord, HarnessSpecRecord, PayloadRecord, PentestCandidateRecord, Store, TaskKind,
 };
 use nyctos_core::{
     ids::short_token, now_epoch_ms, AiConfig, AiRuntime as ConfigAiRuntime, RepoOutcome, RunBundle,
@@ -43,7 +43,7 @@ use nyctos_core::{
 use nyctos_nyx::Diag;
 use nyctos_sandbox::payload_runner::{HarnessSource, HarnessSpecInput, PayloadRun, PayloadRunner};
 use nyctos_sandbox::BackendKind;
-use nyctos_types::agent::{AgentTraceMetrics, AiError, BudgetKind};
+use nyctos_types::agent::{AgentTraceMetrics, AiError, Budget, BudgetKind, Prompt};
 use nyctos_types::chain::{
     ChainReasoningEdge, ChainReasoningInput, ChainReasoningNode, CHAIN_REASONING_DEFAULT_MAX,
     CHAIN_REASONING_PROMPT_VERSION, NODE_KIND_ENTRY, NODE_KIND_FRAMEWORK, NODE_KIND_SINK,
@@ -80,6 +80,9 @@ const SPEC_DERIVATION_EXCERPT_RADIUS: u32 = 4;
 /// prompt. Capped at three relevant files (call site, sink, framework
 /// binding) so the prompt envelope stays bounded.
 const SPEC_DERIVATION_MAX_EXCERPTS: usize = 3;
+
+const LIVE_TEST_PLAN_PROMPT_VERSION: &str = "phase24.live_test_plan.v1";
+const LIVE_TEST_PLAN_EXCERPT_RADIUS: u32 = 18;
 
 /// `BudgetTracker` impl backed by the SQLite `budgets` table.
 ///
@@ -657,6 +660,330 @@ async fn persist_trace_row(store: &Store, row: AgentTraceRecord) {
             "failed to persist agent trace row"
         );
     }
+}
+
+/// Counts surfaced by [`run_live_test_plan_synthesis_pass`].
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct LiveTestPlanSynthesisPassReport {
+    pub candidates_seen: u32,
+    pub planned: u32,
+    pub no_plan: u32,
+    pub failed: u32,
+    pub attempts: u32,
+    pub spend_usd_micros: i64,
+}
+
+/// Convert static `PentestCandidate` rows into executable HTTP plans
+/// before the live verifier runs. This is the missing bridge between
+/// Nyx's source signal and the local dev site: the verifier deliberately
+/// refuses to guess at routes unless an AI pass has turned source context
+/// into method/url/body/oracle JSON.
+pub async fn run_live_test_plan_synthesis_pass(
+    config: &AiConfig,
+    store: &Store,
+    secrets: &SecretStore,
+    bundle: &RunBundle<Diag>,
+    workspaces: &HashMap<String, WorkspaceHandle>,
+    target_urls: &[String],
+    events: EventSink,
+) -> anyhow::Result<LiveTestPlanSynthesisPassReport> {
+    let mut report = LiveTestPlanSynthesisPassReport::default();
+    if target_urls.is_empty() {
+        return Ok(report);
+    }
+
+    let candidates = store.pentest_candidates().list_by_run(&bundle.run_id).await?;
+    let candidates: Vec<_> = candidates
+        .into_iter()
+        .filter(|c| matches!(c.status.as_str(), "Proposed" | "NeedsLiveTest"))
+        .filter(|c| !candidate_has_executable_live_plan(c, target_urls))
+        .collect();
+    if candidates.is_empty() {
+        return Ok(report);
+    }
+    report.candidates_seen = candidates.len() as u32;
+
+    let adapter = match selected_one_shot_runtime(
+        config,
+        store,
+        secrets,
+        config.default_run_budget_usd_micros_resolved(),
+        "live test plan synthesis",
+    )
+    .await?
+    {
+        Some(adapter) => adapter,
+        None => return Ok(report),
+    };
+
+    let runtime_name = adapter.name();
+    let runtime_model = adapter.default_model().to_string();
+    for candidate in candidates {
+        let started_at = now_epoch_ms();
+        let prompt = build_live_test_plan_prompt(&candidate, workspaces, target_urls);
+        let budget = Budget {
+            run_id: bundle.run_id.clone(),
+            kind: BudgetKind::OneShot,
+            cap_usd_micros: config.default_run_budget_usd_micros_resolved(),
+        };
+        let resp = match adapter.one_shot(prompt, budget, events.clone()).await {
+            Ok(resp) => resp,
+            Err(err) => {
+                tracing::warn!(
+                    candidate_id = %candidate.id,
+                    error = %err,
+                    "live test plan synthesis call failed"
+                );
+                report.failed += 1;
+                if matches!(err, AiError::BudgetExceeded { .. }) {
+                    break;
+                }
+                continue;
+            }
+        };
+        let finished_at = now_epoch_ms();
+        report.attempts += 1;
+        report.spend_usd_micros += resp.cost_usd_micros;
+        let metrics = AgentTraceMetrics::from_response(&resp);
+        let trace = build_trace_row(
+            TaskKind::LiveTestPlan,
+            None,
+            runtime_name,
+            &runtime_model,
+            &resp.prompt_version,
+            resp.cost_usd_micros,
+            started_at,
+            finished_at,
+            Some(&metrics),
+        );
+        let trace_id = trace.id.clone();
+        persist_trace_row(store, trace).await;
+
+        match normalise_live_test_plan(&resp.content, target_urls) {
+            Ok(Some(plan)) => {
+                let plan_blob = serde_json::to_string(&plan)?;
+                store
+                    .pentest_candidates()
+                    .set_test_plan(
+                        &candidate.id,
+                        &plan_blob,
+                        "Proposed",
+                        Some(&trace_id),
+                        finished_at,
+                    )
+                    .await?;
+                report.planned += 1;
+            }
+            Ok(None) => {
+                report.no_plan += 1;
+            }
+            Err(err) => {
+                tracing::warn!(
+                    candidate_id = %candidate.id,
+                    error = %err,
+                    response = %resp.content,
+                    "live test plan synthesis returned an unusable plan"
+                );
+                report.failed += 1;
+            }
+        }
+    }
+    Ok(report)
+}
+
+fn build_live_test_plan_prompt(
+    candidate: &PentestCandidateRecord,
+    workspaces: &HashMap<String, WorkspaceHandle>,
+    target_urls: &[String],
+) -> Prompt {
+    let excerpt = candidate_source_excerpt(candidate, workspaces)
+        .map(|ex| {
+            format!(
+                "path: {path}\nline: {line}\nkind: {kind}\n```\n{body}```",
+                path = ex.path,
+                line = ex.line.map(|l| l.to_string()).unwrap_or_else(|| "unknown".to_string()),
+                kind = ex.kind,
+                body = ex.body,
+            )
+        })
+        .unwrap_or_else(|| {
+            "source excerpt unavailable; infer only from candidate metadata".to_string()
+        });
+    let components = serde_json::to_string_pretty(&candidate.affected_components)
+        .unwrap_or_else(|_| "[]".to_string());
+    let source_ids = serde_json::to_string_pretty(&candidate.source_ids).unwrap_or_default();
+    let targets = target_urls.iter().map(|u| format!("- {u}")).collect::<Vec<_>>().join("\n");
+    let system = r#"You are Nyctos's live-test-plan synthesizer. Work like a senior application security tester converting a static signal into one safe, executable HTTP verification plan for a local development app.
+
+Return exactly one JSON object and no Markdown. Prefer harmless probes that demonstrate reachability, authorization bypass, reflection, unsafe redirect, exposed data, or other vulnerability-specific evidence without destroying data. Use only the supplied target base URLs.
+
+If you cannot derive a meaningful live test from the source context, return {"no_plan_reason":"..."}.
+
+Executable plan schema:
+{
+  "method": "GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS",
+  "url": "absolute URL under one supplied target base URL",
+  "path": "optional path, useful for audit only",
+  "headers": {"Header": "value"},
+  "body": "optional raw request body",
+  "json": {"optional": "JSON request body"},
+  "expect_status": 200,
+  "status_range": "2xx|3xx|4xx|5xx",
+  "body_contains": "string or array of strings that must appear",
+  "body_not_contains": "string or array of strings that must not appear",
+  "header_contains": {"Header": "substring"},
+  "rationale": "brief reason this would confirm or reject the candidate"
+}
+
+At least one oracle is required: expect_status, status_range, body_contains, body_not_contains, or header_contains. Do not return generic homepage checks."#
+        .to_string();
+    let user = format!(
+        "TARGET BASE URLS\n{targets}\n\nCANDIDATE\nid: {id}\ntitle: {title}\nclass: {vuln_class}\nseverity: {severity}\nstatus: {status}\nhypothesis: {hypothesis}\nsource_ids: {source_ids}\naffected_components:\n{components}\n\nSOURCE EXCERPT\n{excerpt}\n",
+        id = candidate.id,
+        title = candidate.title,
+        vuln_class = candidate.vuln_class,
+        severity = candidate.severity_guess,
+        status = candidate.status,
+        hypothesis = candidate.hypothesis,
+    );
+    Prompt {
+        prompt_version: LIVE_TEST_PLAN_PROMPT_VERSION.to_string(),
+        task_id: format!("live-plan-{}", short_candidate_id(&candidate.id)),
+        model: None,
+        system,
+        user,
+        max_output_tokens: 1600,
+        temperature: 0.0,
+        seed: None,
+    }
+}
+
+fn candidate_source_excerpt(
+    candidate: &PentestCandidateRecord,
+    workspaces: &HashMap<String, WorkspaceHandle>,
+) -> Option<nyctos_types::spec::FileExcerpt> {
+    for component in &candidate.affected_components {
+        let Some(obj) = component.as_object() else {
+            continue;
+        };
+        let Some(path) = obj.get("path").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let repo = obj.get("repo").and_then(|v| v.as_str());
+        let Some(workspace) = repo.and_then(|r| workspaces.get(r)).or_else(|| {
+            if workspaces.len() == 1 {
+                workspaces.values().next()
+            } else {
+                None
+            }
+        }) else {
+            continue;
+        };
+        let line = obj.get("line").and_then(|v| v.as_i64()).and_then(|v| {
+            if v > 0 {
+                Some(v as u32)
+            } else {
+                None
+            }
+        });
+        if let Some(excerpt) = read_spec_excerpt(
+            workspace.workspace(),
+            path,
+            line,
+            "candidate",
+            LIVE_TEST_PLAN_EXCERPT_RADIUS,
+        ) {
+            return Some(excerpt);
+        }
+    }
+    None
+}
+
+fn candidate_has_executable_live_plan(
+    candidate: &PentestCandidateRecord,
+    target_urls: &[String],
+) -> bool {
+    normalise_live_test_plan(&candidate.test_plan, target_urls).ok().flatten().is_some()
+}
+
+fn normalise_live_test_plan(
+    raw: &str,
+    target_urls: &[String],
+) -> Result<Option<serde_json::Value>, String> {
+    let raw = strip_json_fence(raw);
+    let value: serde_json::Value =
+        serde_json::from_str(raw).map_err(|e| format!("plan is not JSON: {e}"))?;
+    let value = value.get("plan").cloned().unwrap_or(value);
+    if value.get("no_plan_reason").is_some() || value.get("inconclusive_reason").is_some() {
+        return Ok(None);
+    }
+    let mut obj =
+        value.as_object().cloned().ok_or_else(|| "plan JSON must be an object".to_string())?;
+
+    let method =
+        obj.get("method").and_then(|v| v.as_str()).unwrap_or("GET").trim().to_ascii_uppercase();
+    if !matches!(method.as_str(), "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS")
+    {
+        return Err(format!("unsupported HTTP method `{method}`"));
+    }
+    obj.insert("method".to_string(), serde_json::Value::String(method));
+
+    let url = obj
+        .get("url")
+        .and_then(|v| v.as_str())
+        .or_else(|| obj.get("path").and_then(|v| v.as_str()))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "plan needs url or path".to_string())?;
+    let url = resolve_plan_url(url, target_urls)
+        .ok_or_else(|| format!("plan URL `{url}` is outside supplied target base URLs"))?;
+    if !target_urls.iter().any(|target| url_is_under_target(&url, target)) {
+        return Err(format!("plan URL `{url}` is outside supplied target base URLs"));
+    }
+    obj.insert("url".to_string(), serde_json::Value::String(url));
+
+    if !plan_has_oracle(&obj) {
+        return Err("plan has no explicit oracle".to_string());
+    }
+    Ok(Some(serde_json::Value::Object(obj)))
+}
+
+fn strip_json_fence(raw: &str) -> &str {
+    let s = raw.trim();
+    if !s.starts_with("```") {
+        return s;
+    }
+    let after_opening = s.split_once('\n').map(|(_, rest)| rest).unwrap_or(s);
+    after_opening.trim().trim_end_matches("```").trim()
+}
+
+fn resolve_plan_url(value: &str, target_urls: &[String]) -> Option<String> {
+    if value.starts_with("http://") || value.starts_with("https://") {
+        return Some(value.to_string());
+    }
+    let base = target_urls.first()?.trim_end_matches('/');
+    if value.starts_with('/') {
+        Some(format!("{base}{value}"))
+    } else {
+        Some(format!("{base}/{value}"))
+    }
+}
+
+fn url_is_under_target(url: &str, target: &str) -> bool {
+    let target = target.trim_end_matches('/');
+    url == target
+        || url.starts_with(&format!("{target}/"))
+        || url.starts_with(&format!("{target}?"))
+}
+
+fn plan_has_oracle(obj: &serde_json::Map<String, serde_json::Value>) -> bool {
+    ["expect_status", "status_range", "body_contains", "body_not_contains", "header_contains"]
+        .iter()
+        .any(|key| obj.get(*key).is_some_and(|v| !v.is_null()))
+}
+
+fn short_candidate_id(id: &str) -> String {
+    id.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').take(48).collect()
 }
 
 /// Counts surfaced by [`run_spec_derivation_pass`].
@@ -2681,12 +3008,13 @@ pub(crate) async fn drive_ai_exploration_pass<R: AiRuntime + ?Sized>(
         let RepoOutcome::Success(_) = &repo_bundle.outcome else {
             continue;
         };
-        if !workspaces.contains_key(&repo_bundle.repo) {
+        let Some(workspace) = workspaces.get(&repo_bundle.repo) else {
             continue;
-        }
+        };
         let scope = build_exploration_scope(
             &bundle.run_id,
             &repo_bundle.repo,
+            workspace.workspace(),
             target_urls,
             soft_cap_usd_micros,
             run_cap_usd_micros,
@@ -2725,11 +3053,13 @@ pub(crate) async fn drive_ai_exploration_pass<R: AiRuntime + ?Sized>(
 fn build_exploration_scope(
     run_id: &str,
     repo: &str,
+    workspace_root: &std::path::Path,
     target_urls: &[String],
     soft_cap_usd_micros: i64,
     run_cap_usd_micros: i64,
 ) -> ExplorationScope {
     let mut scope = ExplorationScope::new(run_id, format!("expl-{repo}"));
+    scope.workspace_root = Some(workspace_root.to_string_lossy().to_string());
     scope.allowed_hosts = target_urls.iter().filter_map(|url| host_from_url(url)).collect();
     scope.target_endpoints = target_urls
         .iter()
@@ -2987,6 +3317,29 @@ mod tests {
             stderr: vec![],
             duration_ms: 1,
         }
+    }
+
+    #[test]
+    fn live_test_plan_normalises_relative_url_and_requires_oracle() {
+        let targets = vec!["http://localhost:8787".to_string()];
+        let raw =
+            r#"{"method":"post","path":"/api/search","json":{"q":"test"},"status_range":"2xx"}"#;
+        let plan = normalise_live_test_plan(raw, &targets).expect("valid").expect("plan");
+        assert_eq!(plan["method"], "POST");
+        assert_eq!(plan["url"], "http://localhost:8787/api/search");
+
+        let raw_without_oracle = r#"{"method":"GET","path":"/"}"#;
+        let err = normalise_live_test_plan(raw_without_oracle, &targets).expect_err("oracle");
+        assert!(err.contains("no explicit oracle"));
+    }
+
+    #[test]
+    fn live_test_plan_rejects_urls_outside_target_base() {
+        let targets = vec!["http://localhost:8787".to_string()];
+        let raw =
+            r#"{"method":"GET","url":"http://localhost:8787.evil.test/","expect_status":200}"#;
+        let err = normalise_live_test_plan(raw, &targets).expect_err("outside target");
+        assert!(err.contains("outside supplied target"));
     }
 
     #[test]

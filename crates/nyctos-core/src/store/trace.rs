@@ -11,6 +11,7 @@ pub use nyctos_types::trace::AgentTraceRecord;
 pub enum TaskKind {
     PayloadSynthesis,
     SpecDerivation,
+    LiveTestPlan,
     ChainReasoning,
     NovelFindings,
     Exploration,
@@ -26,6 +27,7 @@ impl TaskKind {
         match self {
             TaskKind::PayloadSynthesis => "PayloadSynthesis",
             TaskKind::SpecDerivation => "SpecDerivation",
+            TaskKind::LiveTestPlan => "LiveTestPlan",
             TaskKind::ChainReasoning => "ChainReasoning",
             TaskKind::NovelFindings => "NovelFindings",
             TaskKind::Exploration => "Exploration",

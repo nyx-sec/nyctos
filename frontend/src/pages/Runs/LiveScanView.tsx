@@ -48,7 +48,7 @@ const PHASE_LABEL: Record<RepoPhase, string> = {
   static: "Static",
   "static-done": "Static done",
   "dynamic-done": "Dynamic done",
-  finished: "Finished",
+  finished: "Source done",
   failed: "Failed",
 };
 
@@ -99,7 +99,9 @@ export function LiveScanView() {
             ? `Finished in ${summary.wallClockMs ?? "-"}ms · ${summary.succeeded ?? 0} ok / ${
                 summary.inconclusive ?? 0
               } inconclusive / ${summary.failed ?? 0} failed`
-            : `${finishedRepos}/${totalRepos || "?"} code sources finished`
+            : finishedRepos === totalRepos && totalRepos > 0
+              ? `${finishedRepos}/${totalRepos} code sources scanned · AI/live phases still running`
+              : `${finishedRepos}/${totalRepos || "?"} code sources scanned`
         }
         actions={
           <div className="live-scan__actions">
@@ -369,7 +371,7 @@ function describeRunEvent(data: RunEvent): string | undefined {
     case "RepoDynamicDone":
       return `[${data.repo}] dynamic pass done in ${data.elapsed_ms}ms.`;
     case "RepoFinished":
-      return `[${data.repo}] finished: ${data.outcome} (${data.elapsed_ms}ms).`;
+      return `[${data.repo}] source scan finished: ${data.outcome} (${data.elapsed_ms}ms).`;
     case "RepoFailed":
       return `[${data.repo}] failed: ${data.message}`;
     case "RunFinished":
@@ -390,12 +392,21 @@ function describeAiEvent(data: AiEvent): string | undefined {
     case "TaskHalted":
       return `[AI ${data.task_id}] halted: ${data.reason}.`;
     case "TokenReceived":
-      return data.token.startsWith("[soft-cap]") ? `[AI ${data.task_id}] ${data.token}` : undefined;
+      return `[AI ${data.task_id}] ${truncateLogToken(data.token)}`;
     case "CacheHit":
+      return `[AI ${data.task_id}] cache hit: ${data.tokens} token(s).`;
     case "CacheMiss":
+      return `[AI ${data.task_id}] cache miss: ${data.tokens} token(s).`;
     case "BudgetTick":
-      return undefined;
+      return `[AI ${data.task_id}] budget spent: $${(data.spent_usd_micros / 1_000_000).toFixed(
+        6,
+      )}.`;
   }
+}
+
+function truncateLogToken(token: string): string {
+  const compact = token.replace(/\s+/g, " ").trim();
+  return compact.length > 280 ? `${compact.slice(0, 277)}...` : compact;
 }
 
 function describeSandboxEvent(data: SandboxEvent): string | undefined {

@@ -66,7 +66,7 @@ pub const DEFAULT_EXPLORATION_WALL_CLOCK: Duration = Duration::from_secs(15 * 60
 /// Default tool count exposed to the agent. Mirrors the four tool
 /// names this task registers under the agent loop.
 pub const DEFAULT_EXPLORATION_TOOL_NAMES: &[&str] =
-    &["http.probe", "fs.write_sentinel", "shell.exec", "record_exploration_finding"];
+    &["Bash", "Read", "Grep", "record_exploration_finding"];
 
 /// Configuration for one exploration run.
 #[derive(Debug, Clone)]
@@ -85,6 +85,9 @@ pub struct ExplorationScope {
     /// free-form description per endpoint so the prompt can hand the
     /// agent a structured starting point.
     pub target_endpoints: Vec<ExplorationEndpoint>,
+    /// Repository workspace root for CLI-native file/search/shell
+    /// tools. The adapter also uses this as the subprocess cwd.
+    pub workspace_root: Option<String>,
     /// Hard ceiling on tool invocations. The adapter's `max_turns`
     /// flag is the primary bound; this is the upper limit the
     /// exploration prompt advertises so the model self-paces.
@@ -116,6 +119,7 @@ impl ExplorationScope {
             task_id: task_id.into(),
             allowed_hosts: Vec::new(),
             target_endpoints: Vec::new(),
+            workspace_root: None,
             max_actions: 24,
             max_wall_clock: DEFAULT_EXPLORATION_WALL_CLOCK,
             sentinel_path: "nyx_exploration.sentinel".to_string(),
@@ -349,6 +353,8 @@ fn build_agent_task(scope: &ExplorationScope) -> AgentTask {
             .collect::<Vec<_>>()
             .join("\n")
     };
+    let workspace_root =
+        scope.workspace_root.as_deref().unwrap_or("(adapter cwd; no explicit workspace root)");
     let max_secs = scope.max_wall_clock.as_secs();
 
     // Prompt bodies live at
@@ -365,6 +371,7 @@ fn build_agent_task(scope: &ExplorationScope) -> AgentTask {
         include_str!("../prompts/exploration.v1.objective.md"),
         allowed = allowed,
         targets = targets,
+        workspace_root = workspace_root,
         max_actions = scope.max_actions,
         max_secs = max_secs,
         sentinel = scope.sentinel_path,
@@ -376,6 +383,7 @@ fn build_agent_task(scope: &ExplorationScope) -> AgentTask {
         system,
         objective,
         tools: DEFAULT_EXPLORATION_TOOL_NAMES.iter().map(|s| s.to_string()).collect(),
+        working_directory: scope.workspace_root.clone(),
         max_turns: scope.max_actions,
     }
 }
@@ -567,6 +575,7 @@ mod tests {
     fn sample_scope() -> ExplorationScope {
         let mut s = ExplorationScope::new("run-expl", "task-expl");
         s.allowed_hosts.push("http://127.0.0.1:3000".to_string());
+        s.workspace_root = Some("/tmp/nyctos-target".to_string());
         s.target_endpoints.push(ExplorationEndpoint {
             method: "GET".into(),
             url: "http://127.0.0.1:3000/rest/products".into(),
@@ -764,12 +773,14 @@ mod tests {
         assert!(task.system.contains("record_exploration_finding"));
         assert!(task.objective.contains("http://127.0.0.1:3000"));
         assert!(task.objective.contains("juice-shop REST list"));
+        assert!(task.objective.contains("/tmp/nyctos-target"));
         assert!(task.objective.contains("max_actions:  4"));
         assert!(task.objective.contains("nyx_exploration.sentinel"));
+        assert_eq!(task.working_directory.as_deref(), Some("/tmp/nyctos-target"));
         assert_eq!(task.tools.len(), DEFAULT_EXPLORATION_TOOL_NAMES.len());
         assert!(task.tools.iter().any(|t| t == "record_exploration_finding"));
-        assert!(task.tools.iter().any(|t| t == "http.probe"));
-        assert!(task.tools.iter().any(|t| t == "fs.write_sentinel"));
-        assert!(task.tools.iter().any(|t| t == "shell.exec"));
+        assert!(task.tools.iter().any(|t| t == "Bash"));
+        assert!(task.tools.iter().any(|t| t == "Read"));
+        assert!(task.tools.iter().any(|t| t == "Grep"));
     }
 }

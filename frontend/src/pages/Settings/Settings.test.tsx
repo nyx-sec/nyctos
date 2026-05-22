@@ -21,6 +21,7 @@ function defaultStatus(): Record<string, unknown> {
     ai_provider: null,
     ai_model: null,
     ai_api_base: null,
+    default_run_budget_usd_micros: null,
     sandbox_backend: "auto",
     sandbox_enabled: true,
     sandbox_allow_network: false,
@@ -111,6 +112,7 @@ describe("Settings page", () => {
     expect(screen.getAllByText(/Claude Code CLI/).length).toBeGreaterThan(0);
     expect(screen.getAllByText("Birdcage").length).toBeGreaterThan(0);
     expect(screen.getByText("127.0.0.1:9999")).toBeInTheDocument();
+    expect(screen.getAllByText("Unlimited").length).toBeGreaterThan(0);
     expect(screen.getByText("7 parallel / 42s")).toBeInTheDocument();
     expect(screen.getByText("/tmp/nyctos-state")).toBeInTheDocument();
   });
@@ -168,6 +170,7 @@ describe("Settings page", () => {
     const submit = recorded.find((call) => call.method === "POST" && call.url.endsWith("/setup"))!;
     expect(JSON.parse(submit.body!)).toEqual({
       ai_runtime: "claude-code",
+      default_run_budget_usd_micros: null,
       sandbox_backend: "docker",
       i_own_this: true,
     });
@@ -188,8 +191,29 @@ describe("Settings page", () => {
     const submit = recorded.find((call) => call.method === "POST" && call.url.endsWith("/setup"))!;
     expect(JSON.parse(submit.body!)).toEqual({
       ai_runtime: "codex",
+      default_run_budget_usd_micros: null,
       sandbox_backend: "auto",
       i_own_this: true,
+    });
+  });
+
+  it("lets the operator enable and save an AI budget cap", async () => {
+    renderSettings();
+    await waitForSettings();
+
+    fireEvent.click(screen.getByLabelText("Limit AI budget"));
+    fireEvent.change(screen.getByLabelText("Budget per run (USD)"), {
+      target: { value: "42.50" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    const submit = await waitFor(() => {
+      const call = recorded.find((call) => call.method === "POST" && call.url.endsWith("/setup"));
+      expect(call).toBeDefined();
+      return call!;
+    });
+    expect(JSON.parse(submit.body!)).toMatchObject({
+      default_run_budget_usd_micros: 42_500_000,
     });
   });
 
@@ -286,6 +310,7 @@ describe("Settings page", () => {
     const submit = recorded.find((call) => call.method === "POST" && call.url.endsWith("/setup"))!;
     expect(JSON.parse(submit.body!)).toEqual({
       ai_runtime: "local-llm",
+      default_run_budget_usd_micros: null,
       local_llm_url: "http://127.0.0.1:1234/v1",
       sandbox_backend: "auto",
       i_own_this: true,

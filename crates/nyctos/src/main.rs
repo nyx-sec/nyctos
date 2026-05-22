@@ -1056,6 +1056,44 @@ async fn drive_scan(
             tracing::warn!(error = %err, "ai exploration pass failed");
         }
     }
+
+    // Static candidates need an executable HTTP plan before the live
+    // verifier can touch the already-running app. This pass is the
+    // bridge from "Nyx found a risky source location" to "try this
+    // concrete method/url/body/oracle against localhost".
+    match ai_pipeline::run_live_test_plan_synthesis_pass(
+        &config.ai,
+        store,
+        &secrets,
+        &bundle,
+        &workspaces_for_ai,
+        &live_target_urls,
+        events.clone(),
+    )
+    .await
+    {
+        Ok(report) => {
+            agent_review_notes.push(format!(
+                "live test planning: {} planned, {} no-plan, {} failed",
+                report.planned, report.no_plan, report.failed
+            ));
+            if verbose && (report.planned > 0 || report.no_plan > 0 || report.failed > 0) {
+                println!(
+                    "scan: live test planning - {} candidates seen, {} planned, {} no-plan, {} failed ({} attempts, ${:.6})",
+                    report.candidates_seen,
+                    report.planned,
+                    report.no_plan,
+                    report.failed,
+                    report.attempts,
+                    report.spend_usd_micros as f64 / 1_000_000.0,
+                );
+            }
+        }
+        Err(err) => {
+            agent_review_notes.push(format!("live test planning failed: {err}"));
+            tracing::warn!(error = %err, "live test planning pass failed");
+        }
+    }
     emit_phase(
         &events,
         &run.id,
@@ -1900,51 +1938,260 @@ async fn execute_candidate_test_plan(
             reason: "candidate has no executable structured live test plan".to_string(),
         });
     };
-    let method = plan.get("method").and_then(|v| v.as_str()).unwrap_or("GET");
-    if !method.eq_ignore_ascii_case("GET") {
+    let plan = plan.get("plan").unwrap_or(&plan);
+    if let Some(reason) = plan
+        .get("no_plan_reason")
+        .or_else(|| plan.get("inconclusive_reason"))
+        .and_then(|v| v.as_str())
+    {
         return Ok(VerificationOutcome::Inconclusive {
-            reason: format!("verification method `{method}` is not implemented yet"),
+            reason: format!("candidate has no executable structured live test plan: {reason}"),
         });
     }
-    let url = plan
-        .get("url")
-        .and_then(|v| v.as_str())
-        .map(str::to_string)
-        .or_else(|| target_urls.first().cloned());
-    let Some(url) = url else {
+    let Some(plan_obj) = plan.as_object() else {
         return Ok(VerificationOutcome::Inconclusive {
-            reason: "no target URL available for live verification".to_string(),
+            reason: "candidate live test plan is not a JSON object".to_string(),
         });
     };
-    if !target_urls.is_empty() && !target_urls.iter().any(|target| url.starts_with(target)) {
+    if !candidate_plan_has_oracle(plan_obj) {
+        return Ok(VerificationOutcome::Inconclusive {
+            reason: "structured live test plan has no oracle".to_string(),
+        });
+    }
+
+    let method_raw = plan.get("method").and_then(|v| v.as_str()).unwrap_or("GET").trim();
+    let method = match reqwest::Method::from_bytes(method_raw.as_bytes()) {
+        Ok(method) => method,
+        Err(_) => {
+            return Ok(VerificationOutcome::Inconclusive {
+                reason: format!("verification method `{method_raw}` is invalid"),
+            });
+        }
+    };
+    if !matches!(method.as_str(), "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS")
+    {
+        return Ok(VerificationOutcome::Inconclusive {
+            reason: format!("verification method `{method_raw}` is not supported"),
+        });
+    }
+
+    let url_raw = plan
+        .get("url")
+        .and_then(|v| v.as_str())
+        .or_else(|| plan.get("path").and_then(|v| v.as_str()));
+    let url = match resolve_candidate_plan_url(url_raw, target_urls) {
+        Ok(url) => url,
+        Err(reason) => return Ok(VerificationOutcome::Inconclusive { reason }),
+    };
+    if !target_urls.is_empty()
+        && !target_urls.iter().any(|target| candidate_url_under_target(&url, target))
+    {
         return Ok(VerificationOutcome::Inconclusive {
             reason: format!("candidate URL `{url}` is outside configured target URLs"),
         });
     }
-    let expect_status = plan.get("expect_status").and_then(|v| v.as_u64()).map(|v| v as u16);
-    let body_contains = plan.get("body_contains").and_then(|v| v.as_str()).map(str::to_string);
+
+    let expect_status = expected_statuses(plan);
+    let status_range = plan.get("status_range").and_then(|v| v.as_str()).map(str::to_string);
+    let body_contains = string_or_string_array(plan.get("body_contains"));
+    let body_not_contains = string_or_string_array(plan.get("body_not_contains"));
+    let header_contains = header_contains_expectations(plan.get("header_contains"));
+    let request_headers = request_headers_from_plan(plan.get("headers"))?;
+    let request_body = plan.get("body").and_then(|v| v.as_str()).map(str::to_string);
+    let json_body = plan.get("json").filter(|v| !v.is_null()).cloned();
+
     let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(10)).build()?;
-    let resp = client.get(&url).send().await?;
+    let mut request_builder = client.request(method.clone(), &url);
+    for (name, value) in &request_headers {
+        request_builder = request_builder.header(name, value);
+    }
+    if let Some(json_body) = &json_body {
+        request_builder = request_builder.json(json_body);
+    } else if let Some(request_body) = &request_body {
+        request_builder = request_builder.body(request_body.clone());
+    }
+    let resp = request_builder.send().await?;
     let status = resp.status().as_u16();
+    let headers = resp.headers().clone();
     let body = resp.text().await.unwrap_or_default();
-    let status_ok = expect_status.map(|s| s == status).unwrap_or((200..400).contains(&status));
-    let body_ok = body_contains.as_ref().map(|needle| body.contains(needle)).unwrap_or(true);
-    let request = serde_json::json!({ "method": "GET", "url": url });
+    let status_ok = if expect_status.is_empty() {
+        status_range
+            .as_deref()
+            .map(|range| status_matches_range(status, range))
+            .unwrap_or((200..400).contains(&status))
+    } else {
+        expect_status.iter().any(|s| *s == status)
+    };
+    let body_contains_ok = body_contains.iter().all(|needle| body.contains(needle));
+    let body_not_contains_ok = body_not_contains.iter().all(|needle| !body.contains(needle));
+    let header_contains_ok = header_contains
+        .iter()
+        .all(|(name, needle)| response_header_contains(&headers, name, needle));
+    let request = serde_json::json!({
+        "method": method.as_str(),
+        "url": url,
+        "headers": request_headers_json(&request_headers),
+        "body_preview": request_body_preview(request_body.as_deref(), json_body.as_ref()),
+    });
     let response = serde_json::json!({
         "status": status,
+        "headers": response_headers_json(&headers),
         "body_preview": body.chars().take(512).collect::<String>(),
     });
     let oracle = serde_json::json!({
         "expect_status": expect_status,
+        "status_range": status_range,
         "body_contains": body_contains,
+        "body_not_contains": body_not_contains,
+        "header_contains": header_contains,
         "status_ok": status_ok,
-        "body_ok": body_ok,
+        "body_contains_ok": body_contains_ok,
+        "body_not_contains_ok": body_not_contains_ok,
+        "header_contains_ok": header_contains_ok,
     });
-    if status_ok && body_ok {
+    if status_ok && body_contains_ok && body_not_contains_ok && header_contains_ok {
         Ok(VerificationOutcome::Confirmed { request, response, oracle })
     } else {
         Ok(VerificationOutcome::Rejected { request, response, oracle })
     }
+}
+
+fn resolve_candidate_plan_url(raw: Option<&str>, target_urls: &[String]) -> Result<String, String> {
+    let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return target_urls
+            .first()
+            .cloned()
+            .ok_or_else(|| "no target URL available for live verification".to_string());
+    };
+    if raw.starts_with("http://") || raw.starts_with("https://") {
+        return Ok(raw.to_string());
+    }
+    let Some(base) = target_urls.first() else {
+        return Err(
+            "relative live test plan URL cannot be resolved without a target URL".to_string()
+        );
+    };
+    let base = base.trim_end_matches('/');
+    if raw.starts_with('/') {
+        Ok(format!("{base}{raw}"))
+    } else {
+        Ok(format!("{base}/{raw}"))
+    }
+}
+
+fn candidate_url_under_target(url: &str, target: &str) -> bool {
+    let target = target.trim_end_matches('/');
+    url == target
+        || url.starts_with(&format!("{target}/"))
+        || url.starts_with(&format!("{target}?"))
+}
+
+fn candidate_plan_has_oracle(obj: &serde_json::Map<String, serde_json::Value>) -> bool {
+    ["expect_status", "status_range", "body_contains", "body_not_contains", "header_contains"]
+        .iter()
+        .any(|key| obj.get(*key).is_some_and(|v| !v.is_null()))
+}
+
+fn expected_statuses(plan: &serde_json::Value) -> Vec<u16> {
+    match plan.get("expect_status") {
+        Some(serde_json::Value::Number(n)) => {
+            n.as_u64().and_then(|v| u16::try_from(v).ok()).into_iter().collect()
+        }
+        Some(serde_json::Value::String(s)) => s.trim().parse::<u16>().ok().into_iter().collect(),
+        Some(serde_json::Value::Array(items)) => items
+            .iter()
+            .filter_map(|v| match v {
+                serde_json::Value::Number(n) => n.as_u64().and_then(|v| u16::try_from(v).ok()),
+                serde_json::Value::String(s) => s.trim().parse::<u16>().ok(),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn status_matches_range(status: u16, range: &str) -> bool {
+    match range.trim().to_ascii_lowercase().as_str() {
+        "1xx" => (100..200).contains(&status),
+        "2xx" => (200..300).contains(&status),
+        "3xx" => (300..400).contains(&status),
+        "4xx" => (400..500).contains(&status),
+        "5xx" => (500..600).contains(&status),
+        _ => false,
+    }
+}
+
+fn string_or_string_array(value: Option<&serde_json::Value>) -> Vec<String> {
+    match value {
+        Some(serde_json::Value::String(s)) => vec![s.clone()],
+        Some(serde_json::Value::Array(items)) => {
+            items.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn header_contains_expectations(value: Option<&serde_json::Value>) -> Vec<(String, String)> {
+    let Some(obj) = value.and_then(|v| v.as_object()) else {
+        return Vec::new();
+    };
+    obj.iter()
+        .filter_map(|(name, needle)| needle.as_str().map(|s| (name.clone(), s.to_string())))
+        .collect()
+}
+
+fn request_headers_from_plan(
+    value: Option<&serde_json::Value>,
+) -> anyhow::Result<Vec<(String, String)>> {
+    let Some(obj) = value.and_then(|v| v.as_object()) else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::with_capacity(obj.len());
+    for (name, value) in obj {
+        let Some(value) = value.as_str() else {
+            anyhow::bail!("request header `{name}` value must be a string");
+        };
+        out.push((name.clone(), value.to_string()));
+    }
+    Ok(out)
+}
+
+fn response_header_contains(
+    headers: &reqwest::header::HeaderMap,
+    name: &str,
+    needle: &str,
+) -> bool {
+    headers.get(name).and_then(|v| v.to_str().ok()).map(|v| v.contains(needle)).unwrap_or(false)
+}
+
+fn request_headers_json(headers: &[(String, String)]) -> serde_json::Value {
+    let mut obj = serde_json::Map::new();
+    for (name, value) in headers {
+        obj.insert(name.clone(), serde_json::Value::String(value.clone()));
+    }
+    serde_json::Value::Object(obj)
+}
+
+fn response_headers_json(headers: &reqwest::header::HeaderMap) -> serde_json::Value {
+    let mut obj = serde_json::Map::new();
+    for (name, value) in headers {
+        if let Ok(value) = value.to_str() {
+            obj.insert(name.as_str().to_string(), serde_json::Value::String(value.to_string()));
+        }
+    }
+    serde_json::Value::Object(obj)
+}
+
+fn request_body_preview(
+    raw_body: Option<&str>,
+    json_body: Option<&serde_json::Value>,
+) -> Option<String> {
+    let body = match (json_body, raw_body) {
+        (Some(json), _) => serde_json::to_string(json).ok()?,
+        (None, Some(raw)) => raw.to_string(),
+        (None, None) => return None,
+    };
+    Some(body.chars().take(512).collect())
 }
 
 fn vulnerability_from_candidate(

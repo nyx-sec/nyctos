@@ -602,6 +602,7 @@ mod tests {
             system: "s".to_string(),
             objective: "o".to_string(),
             tools: vec!["fs.read".to_string()],
+            working_directory: None,
             max_turns: 3,
         };
         let err = adapter

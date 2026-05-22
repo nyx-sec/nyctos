@@ -981,6 +981,52 @@ async fn setup_submit_keeps_existing_anthropic_key_when_updating_other_settings(
 }
 
 #[tokio::test]
+async fn setup_submit_persists_optional_ai_budget_cap() {
+    let trigger: Arc<dyn ScanTrigger> =
+        Arc::new(StubScanTrigger { run_id: "irrelevant".to_string() });
+    let srv = TestServer::start_with_options(trigger, false, false).await;
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/v1/setup", srv.base()))
+        .json(&serde_json::json!({
+            "ai_runtime": "claude-code",
+            "default_run_budget_usd_micros": 42_500_000,
+            "sandbox_backend": "process",
+            "i_own_this": true,
+        }))
+        .send()
+        .await
+        .expect("post");
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+
+    let after: Value = reqwest::get(format!("{}/api/v1/setup/status", srv.base()))
+        .await
+        .expect("get")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(after["default_run_budget_usd_micros"], 42_500_000);
+}
+
+#[tokio::test]
+async fn setup_submit_rejects_non_positive_ai_budget_cap() {
+    let trigger: Arc<dyn ScanTrigger> =
+        Arc::new(StubScanTrigger { run_id: "irrelevant".to_string() });
+    let srv = TestServer::start_with_options(trigger, false, false).await;
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/v1/setup", srv.base()))
+        .json(&serde_json::json!({
+            "ai_runtime": "claude-code",
+            "default_run_budget_usd_micros": 0,
+            "sandbox_backend": "process",
+            "i_own_this": true,
+        }))
+        .send()
+        .await
+        .expect("post");
+    assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn setup_doctor_fails_anthropic_when_key_is_missing() {
     let trigger: Arc<dyn ScanTrigger> =
         Arc::new(StubScanTrigger { run_id: "irrelevant".to_string() });

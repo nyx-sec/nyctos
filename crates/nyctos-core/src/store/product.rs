@@ -364,6 +364,35 @@ impl<'a> PentestCandidateStore<'a> {
         Ok(())
     }
 
+    pub async fn set_test_plan(
+        &self,
+        id: &str,
+        test_plan: &str,
+        status: &str,
+        trace_id: Option<&str>,
+        updated_at: i64,
+    ) -> Result<(), StoreError> {
+        sqlx::query(
+            r#"
+            UPDATE pentest_candidates
+            SET test_plan = ?,
+                status = ?,
+                trace_id = COALESCE(?, trace_id),
+                rejection_reason = NULL,
+                updated_at = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(test_plan)
+        .bind(status)
+        .bind(trace_id)
+        .bind(updated_at)
+        .bind(id)
+        .execute(self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn list_by_run(
         &self,
         run_id: &str,

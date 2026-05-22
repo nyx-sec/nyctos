@@ -132,7 +132,12 @@ impl CodexCliAdapter {
         })
     }
 
-    async fn run_exec(&self, prompt_body: &str, model: Option<&str>) -> Result<CodexRun, AiError> {
+    async fn run_exec(
+        &self,
+        prompt_body: &str,
+        model: Option<&str>,
+        working_directory: Option<&str>,
+    ) -> Result<CodexRun, AiError> {
         let mut cmd = Command::new(&self.binary.path);
         cmd.arg("exec")
             .arg("--json")
@@ -145,6 +150,9 @@ impl CodexCliAdapter {
             .arg("--dangerously-bypass-approvals-and-sandbox");
         if let Some(model) = model.filter(|m| !m.trim().is_empty()) {
             cmd.arg("--model").arg(model);
+        }
+        if let Some(dir) = working_directory.filter(|d| !d.trim().is_empty()) {
+            cmd.current_dir(dir);
         }
         cmd.arg("-");
 
@@ -266,7 +274,7 @@ impl AiRuntime for CodexCliAdapter {
             });
         }
 
-        let run = self.run_exec(&render_one_shot_prompt(&prompt), model.as_deref()).await?;
+        let run = self.run_exec(&render_one_shot_prompt(&prompt), model.as_deref(), None).await?;
         for text in &run.messages {
             let _ = sink.send(AgentEvent::Ai {
                 data: AiEvent::TokenReceived {
@@ -342,7 +350,9 @@ impl AiRuntime for CodexCliAdapter {
             });
         }
 
-        let run = self.run_exec(&render_agent_prompt(&task), None).await?;
+        let run = self
+            .run_exec(&render_agent_prompt(&task), None, task.working_directory.as_deref())
+            .await?;
         for text in &run.messages {
             let _ = sink.send(AgentEvent::Ai {
                 data: AiEvent::TokenReceived { task_id: task.task_id.clone(), token: text.clone() },
@@ -430,6 +440,7 @@ fn render_agent_prompt(task: &AgentTask) -> String {
          \n\
          prompt_version: {pv}\n\
          task_id: {tid}\n\
+         working_directory: {working_directory}\n\
          max_turns: {max_turns}\n\
          \n\
          ## System\n{system}\n\
@@ -443,6 +454,8 @@ fn render_agent_prompt(task: &AgentTask) -> String {
          Use the listed tool name as the `tool` value and place its arguments in `input`.\n",
         pv = task.prompt_version,
         tid = task.task_id,
+        working_directory =
+            task.working_directory.as_deref().unwrap_or("(adapter current directory)"),
         max_turns = task.max_turns,
         system = task.system,
         objective = task.objective,
@@ -754,6 +767,7 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens
             system: "s".to_string(),
             objective: "o".to_string(),
             tools: vec!["record_exploration_finding".to_string()],
+            working_directory: None,
             max_turns: 1,
         };
 

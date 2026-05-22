@@ -226,10 +226,8 @@ pub struct AiConfig {
     pub max_concurrent_one_shot: u32,
     /// Per-run AI budget cap (in USD micros) stamped on brand-new
     /// `(run_id, kind)` rows the `BudgetStoreTracker` auto-creates.
-    /// `None` falls back to the built-in
-    /// [`AiConfig::DEFAULT_RUN_BUDGET_USD_MICROS`]. Operators raise or
-    /// lower this via `[ai] default_run_budget_usd_micros` in
-    /// `nyctos.toml`.
+    /// `None` leaves the run uncapped. Operators can enable a cap via
+    /// `[ai] default_run_budget_usd_micros` in `nyctos.toml`.
     #[serde(default)]
     pub default_run_budget_usd_micros: Option<i64>,
     /// Optional per-model pricing overrides. Each entry maps an exact
@@ -244,7 +242,7 @@ pub struct AiConfig {
     /// adapter checks the call against `min(per_call_cap, run_cap -
     /// spent_so_far)`, so this knob lets an operator clamp a single
     /// PayloadSynthesis call below the shared per-run bucket. `None`
-    /// falls back to [`AiConfig::DEFAULT_RUN_BUDGET_USD_MICROS`].
+    /// leaves the call uncapped.
     /// Configured via
     /// `[ai] payload_synthesis_per_call_cap_usd_micros`.
     #[serde(default)]
@@ -322,10 +320,11 @@ fn default_max_concurrent_one_shot() -> u32 {
 }
 
 impl AiConfig {
-    /// Built-in fallback per-run AI budget cap ($5.00 in USD micros).
-    /// Used when the operator did not set
-    /// `[ai] default_run_budget_usd_micros`.
-    pub const DEFAULT_RUN_BUDGET_USD_MICROS: i64 = 5_000_000;
+    /// Sentinel used for the built-in uncapped AI budget. The budget
+    /// plumbing still stores an integer cap, so `i64::MAX` gives the
+    /// existing adapters a practical "unlimited" ceiling without a
+    /// schema migration.
+    pub const DEFAULT_RUN_BUDGET_USD_MICROS: i64 = i64::MAX;
 
     /// Floored fan-out used by run-time dispatchers. A configured `0`
     /// would deadlock a semaphore acquire so we floor to `1`.
@@ -334,8 +333,8 @@ impl AiConfig {
     }
 
     /// Resolved per-run AI budget cap, honouring the operator override
-    /// when set. Negative or zero overrides fall back to the built-in
-    /// default rather than disabling the cap.
+    /// when set. Missing, negative, or zero values resolve to the
+    /// built-in uncapped sentinel.
     pub fn default_run_budget_usd_micros_resolved(&self) -> i64 {
         match self.default_run_budget_usd_micros {
             Some(v) if v > 0 => v,
@@ -1047,6 +1046,13 @@ mod tests {
                    garbage = true\n";
         let err = Config::parse(raw, &PathBuf::from("<test>")).expect_err("must reject");
         assert!(matches!(err, ConfigError::Parse { .. }));
+    }
+
+    #[test]
+    fn ai_run_budget_defaults_to_uncapped_sentinel() {
+        let cfg = Config::parse("", &PathBuf::from("<test>")).expect("parse");
+        assert!(cfg.ai.default_run_budget_usd_micros.is_none());
+        assert_eq!(cfg.ai.default_run_budget_usd_micros_resolved(), i64::MAX);
     }
 
     #[test]

@@ -438,8 +438,8 @@ impl AiRuntime for ClaudeCodeAdapter {
             .await
             .map_err(|e| AiError::Transport(format!("write agent_task.md: {e}")))?;
 
-        let mut child = Command::new(&self.binary.path)
-            .arg("--print")
+        let mut cmd = Command::new(&self.binary.path);
+        cmd.arg("--print")
             .arg("--output-format")
             .arg("stream-json")
             .arg("--verbose")
@@ -459,9 +459,12 @@ impl AiRuntime for ClaudeCodeAdapter {
             // path drops `child` before `wait().await` runs. The timeout arm
             // below calls `kill().await` (which reaps), but `kill_on_drop`
             // covers panic/early-return paths too.
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| AiError::Transport(format!("spawn claude: {e}")))?;
+            .kill_on_drop(true);
+        if let Some(dir) = task.working_directory.as_deref() {
+            cmd.current_dir(dir);
+        }
+        let mut child =
+            cmd.spawn().map_err(|e| AiError::Transport(format!("spawn claude: {e}")))?;
 
         if let Some(mut stdin) = child.stdin.take() {
             stdin
@@ -615,6 +618,8 @@ impl AiRuntime for ClaudeCodeAdapter {
             }
         }
 
+        extracted.extend(extract_tool_markers_from_text(&final_message));
+
         Ok(AgentResult {
             prompt_version: task.prompt_version,
             task_id: task.task_id,
@@ -687,11 +692,14 @@ fn render_task_markdown(task: &AgentTask) -> String {
     } else {
         task.tools.iter().map(|t| format!("- {t}")).collect::<Vec<_>>().join("\n")
     };
+    let working_directory =
+        task.working_directory.as_deref().unwrap_or("(not set; adapter process cwd will be used)");
     format!(
         "# Agent task\n\
          \n\
          **prompt_version**: `{pv}`  \n\
          **task_id**: `{tid}`  \n\
+         **working_directory**: `{working_directory}`  \n\
          **max_turns**: {max_turns}\n\
          \n\
          ## System\n{system}\n\
@@ -701,11 +709,44 @@ fn render_task_markdown(task: &AgentTask) -> String {
          ## Tools available\n{tools}\n",
         pv = task.prompt_version,
         tid = task.task_id,
+        working_directory = working_directory,
         max_turns = task.max_turns,
         system = task.system,
         objective = task.objective,
         tools = tools_block,
     )
+}
+
+fn extract_tool_markers_from_text(text: &str) -> Vec<ExtractedAgentResult> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with('{') {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+            continue;
+        };
+        extract_tool_marker_value(&value, &mut out);
+    }
+    out
+}
+
+fn extract_tool_marker_value(value: &serde_json::Value, out: &mut Vec<ExtractedAgentResult>) {
+    if let Some(calls) = value.get("tool_calls").and_then(|v| v.as_array()) {
+        for call in calls {
+            extract_tool_marker_value(call, out);
+        }
+        return;
+    }
+    let Some(name) = value.get("tool").or_else(|| value.get("name")).and_then(|v| v.as_str())
+    else {
+        return;
+    };
+    let input = value.get("input").cloned().unwrap_or_else(|| serde_json::json!({}));
+    if let Some(result) = classify_tool_use(name, &input) {
+        out.push(result);
+    }
 }
 
 fn render_one_shot_prompt(prompt: &Prompt) -> String {
@@ -832,6 +873,7 @@ mod tests {
             system: "you are a static analysis exploration agent".to_string(),
             objective: "enumerate sinks in fixture.py".to_string(),
             tools: vec!["fs.read".to_string(), "record_payload".to_string()],
+            working_directory: None,
             max_turns: 3,
         }
     }

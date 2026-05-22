@@ -45,7 +45,7 @@ use nyctos_types::api::{
     HealthResponse, QuarantineItem, QuarantineKind, RunFindingsResponse, SetupRequest,
     SetupStatusResponse,
 };
-use nyctos_types::event::{AgentEvent, ReproEvent, RunEvent};
+use nyctos_types::event::{AgentEvent, AiEvent, ReproEvent, RunEvent, SandboxEvent};
 use nyctos_types::product::{
     ProjectLaunchProfileInput, StartPentestResponse, TestLaunchTargetRequest,
     TestLaunchTargetResponse,
@@ -305,6 +305,7 @@ async fn setup_status(State(s): State<ServerState>) -> Result<Json<SetupStatusRe
         ai_provider: cfg.ai.provider.clone(),
         ai_model: cfg.ai.model.clone(),
         ai_api_base: cfg.ai.api_base.clone(),
+        default_run_budget_usd_micros: cfg.ai.default_run_budget_usd_micros,
         sandbox_backend: sandbox_backend_label(cfg.sandbox.backend).to_string(),
         sandbox_enabled: cfg.sandbox.enabled,
         sandbox_allow_network: cfg.sandbox.allow_network,
@@ -356,6 +357,10 @@ async fn submit_setup(
 
     let ai_runtime = parse_ai_runtime(&req.ai_runtime)?;
     let sandbox_backend = parse_sandbox_backend(&req.sandbox_backend)?;
+    let default_run_budget_usd_micros = parse_optional_positive_micros(
+        req.default_run_budget_usd_micros,
+        "default_run_budget_usd_micros",
+    )?;
     let mut cfg = s.setup.config.read().await.clone();
     let anthropic_api_key =
         req.anthropic_api_key.as_deref().map(str::trim).filter(|v| !v.is_empty());
@@ -422,6 +427,7 @@ async fn submit_setup(
         }
         _ => cfg.ai.api_base.clone(),
     };
+    cfg.ai.default_run_budget_usd_micros = default_run_budget_usd_micros;
     cfg.sandbox.backend = sandbox_backend;
 
     let rendered =
@@ -441,6 +447,15 @@ fn parse_ai_runtime(raw: &str) -> Result<AiRuntime, ApiError> {
         "claude-code" => Ok(AiRuntime::ClaudeCode),
         "codex" => Ok(AiRuntime::Codex),
         other => Err(ApiError::BadRequest(format!("unknown ai_runtime `{other}`"))),
+    }
+}
+
+fn parse_optional_positive_micros(raw: Option<i64>, field: &str) -> Result<Option<i64>, ApiError> {
+    match raw {
+        Some(v) if v <= 0 => {
+            Err(ApiError::BadRequest(format!("{field} must be a positive integer or null")))
+        }
+        other => Ok(other),
     }
 }
 
@@ -2219,26 +2234,35 @@ async fn handle_events_ws(
 
 fn run_matches(ev: &AgentEvent, run_filter: Option<&str>) -> bool {
     let Some(want) = run_filter else { return true };
-    if let AgentEvent::Run { data } = ev {
-        let id = match data {
-            RunEvent::Heartbeat { .. } => return true,
-            RunEvent::RunStarted { run_id, .. }
-            | RunEvent::ProjectStarted { run_id, .. }
-            | RunEvent::PhaseStarted { run_id, .. }
-            | RunEvent::PhaseFinished { run_id, .. }
-            | RunEvent::EnvironmentStatus { run_id, .. }
-            | RunEvent::RepoStarted { run_id, .. }
-            | RunEvent::RepoStaticDone { run_id, .. }
-            | RunEvent::RepoDynamicDone { run_id, .. }
-            | RunEvent::RepoFailed { run_id, .. }
-            | RunEvent::RepoIngestFailed { run_id, .. }
-            | RunEvent::RepoFinished { run_id, .. }
-            | RunEvent::ProjectFinished { run_id, .. }
-            | RunEvent::RunFinished { run_id, .. } => run_id.as_str(),
-        };
-        id == want
-    } else {
-        true
+    match ev {
+        AgentEvent::Run { data } => {
+            let id = match data {
+                RunEvent::Heartbeat { .. } => return true,
+                RunEvent::RunStarted { run_id, .. }
+                | RunEvent::ProjectStarted { run_id, .. }
+                | RunEvent::PhaseStarted { run_id, .. }
+                | RunEvent::PhaseFinished { run_id, .. }
+                | RunEvent::EnvironmentStatus { run_id, .. }
+                | RunEvent::RepoStarted { run_id, .. }
+                | RunEvent::RepoStaticDone { run_id, .. }
+                | RunEvent::RepoDynamicDone { run_id, .. }
+                | RunEvent::RepoFailed { run_id, .. }
+                | RunEvent::RepoIngestFailed { run_id, .. }
+                | RunEvent::RepoFinished { run_id, .. }
+                | RunEvent::ProjectFinished { run_id, .. }
+                | RunEvent::RunFinished { run_id, .. } => run_id.as_str(),
+            };
+            id == want
+        }
+        AgentEvent::Ai { data: AiEvent::BudgetTick { run_id, .. } } => run_id == want,
+        AgentEvent::Sandbox { data } => {
+            let run_id = match data {
+                SandboxEvent::VerifierStarted { run_id, .. }
+                | SandboxEvent::VerifierFinished { run_id, .. } => run_id.as_str(),
+            };
+            run_id == want
+        }
+        _ => true,
     }
 }
 

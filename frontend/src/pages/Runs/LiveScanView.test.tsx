@@ -135,8 +135,9 @@ describe("LiveScanView", () => {
         },
       }),
     );
-    expect(await screen.findByText("Finished")).toBeInTheDocument();
+    expect(await screen.findByText("Source done")).toBeInTheDocument();
     expect(screen.getByText("Success")).toBeInTheDocument();
+    expect(screen.getByText("[alpha] source scan finished: Success (420ms).")).toBeInTheDocument();
   });
 
   it("renders the RunFinished tally and unlocks the Open-vulnerabilities link", async () => {

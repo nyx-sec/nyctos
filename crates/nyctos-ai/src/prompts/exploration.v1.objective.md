@@ -6,6 +6,9 @@ ALLOWED HOSTS
 TARGETS
 {targets}
 
+WORKSPACE ROOT
+{workspace_root}
+
 CONSTRAINTS
 - max_actions:  {max_actions}
 - max_wall_clock: {max_secs}s

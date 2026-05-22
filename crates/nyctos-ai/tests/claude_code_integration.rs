@@ -54,6 +54,7 @@ async fn agent_loop_round_trips_when_claude_on_path() {
         system: "respond with a single sentence.".to_string(),
         objective: "reply with exactly the word OK".to_string(),
         tools: vec![],
+        working_directory: None,
         max_turns: 1,
     };
 
