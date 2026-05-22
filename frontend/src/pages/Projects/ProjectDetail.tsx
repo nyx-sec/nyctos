@@ -2,13 +2,15 @@ import { useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   type AgentEventLike,
+  type ProjectLaunchProfile,
   type RepoRecord,
   useAgentEvents,
   useDeleteProject,
   useDeleteProjectRepo,
   useProject,
   useProjectRepos,
-  useTriggerScan,
+  useProjectVulnerabilities,
+  useStartPentest,
 } from "@/api/client";
 import { Badge, type BadgeTone } from "@/components/Badge";
 import { Button } from "@/components/Button";
@@ -19,6 +21,7 @@ import { Spinner } from "@/components/Spinner";
 import { RepoAddModal } from "../Repos/RepoAddModal";
 import { RepoEditModal } from "../Repos/RepoEditModal";
 import { applyEvent, type RepoLiveState, type RepoLiveStatus } from "../Repos/repoStatus";
+import { ProjectProfileModal } from "./ProjectProfileModal";
 
 type LiveMap = Record<string, RepoLiveState>;
 
@@ -34,12 +37,14 @@ export function ProjectDetail() {
   const navigate = useNavigate();
   const project = useProject(projectId);
   const repos = useProjectRepos(projectId);
-  const triggerScan = useTriggerScan(projectId ?? "");
+  const startPentest = useStartPentest(projectId ?? "");
+  const vulnerabilities = useProjectVulnerabilities(projectId);
   const deleteRepo = useDeleteProjectRepo(projectId ?? "");
   const deleteProject = useDeleteProject();
   const [live, setLive] = useState<LiveMap>({});
   const [banner, setBanner] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
+  const [showProfileEdit, setShowProfileEdit] = useState(false);
   const [editTarget, setEditTarget] = useState<RepoRecord | null>(null);
   const [removeTarget, setRemoveTarget] = useState<RepoRecord | null>(null);
 
@@ -50,27 +55,14 @@ export function ProjectDetail() {
     },
   });
 
-  async function onScanOne(name: string) {
-    setBanner(`Triggering scan for ${name}…`);
-    setLive((cur) => ({ ...cur, [name]: { status: "Running", runId: null } }));
+  async function onStartPentest() {
+    setBanner("Starting pentest for this project...");
     try {
-      const { run_id } = await triggerScan.mutateAsync(name);
-      setBanner(`Scan started for ${name} (run ${run_id}).`);
+      const { run_id } = await startPentest.mutateAsync();
+      setBanner(`Pentest started (run ${run_id}).`);
       navigate(`/runs/${encodeURIComponent(run_id)}`);
     } catch (err) {
-      setBanner(`Scan for ${name} failed: ${String(err)}`);
-      setLive((cur) => ({ ...cur, [name]: { status: "Failed", runId: null } }));
-    }
-  }
-
-  async function onScanAll() {
-    setBanner("Triggering scan across every repo in this project…");
-    try {
-      const { run_id } = await triggerScan.mutateAsync(undefined);
-      setBanner(`Scan started (run ${run_id}).`);
-      navigate(`/runs/${encodeURIComponent(run_id)}`);
-    } catch (err) {
-      setBanner(`Scan-all failed: ${String(err)}`);
+      setBanner(`Could not start pentest: ${String(err)}`);
     }
   }
 
@@ -141,6 +133,11 @@ export function ProjectDetail() {
   }
 
   const p = project.data;
+  const launchProfile = p.default_launch_profile;
+  const runtimeTarget = launchProfile?.target_urls[0] ?? p.target_base_url;
+  const runtimeStatus = launchProfileStatus(launchProfile);
+  const canStartPentest = rows.length > 0 && launchProfile?.readiness === "Ready";
+  const verifiedCount = vulnerabilities.data?.length ?? 0;
 
   return (
     <>
@@ -151,6 +148,9 @@ export function ProjectDetail() {
           subtitle={p.description || undefined}
           actions={
             <div className="repo-list__actions">
+              <Button variant="ghost" onClick={() => setShowProfileEdit(true)}>
+                Edit launch profile
+              </Button>
               <Button variant="ghost" onClick={onDeleteProject} disabled={deleteProject.isPending}>
                 Delete project
               </Button>
@@ -166,9 +166,46 @@ export function ProjectDetail() {
             </div>
             <div>
               <dt>Target base URL</dt>
-              <dd>{p.target_base_url ? <code>{p.target_base_url}</code> : "-"}</dd>
+              <dd>{runtimeTarget ? <code>{runtimeTarget}</code> : "-"}</dd>
+            </div>
+            <div>
+              <dt>Launch profile</dt>
+              <dd>
+                <Badge tone={runtimeStatus.tone}>{runtimeStatus.label}</Badge>
+              </dd>
+            </div>
+            <div>
+              <dt>Build commands</dt>
+              <dd>{formatCommandCount(launchProfile?.build_steps.length ?? 0)}</dd>
+            </div>
+            <div>
+              <dt>Start commands</dt>
+              <dd>{formatCommandCount(launchProfile?.start_steps.length ?? 0)}</dd>
+            </div>
+            <div>
+              <dt>Health check</dt>
+              <dd>{formatHealthCheck(launchProfile)}</dd>
+            </div>
+            <div>
+              <dt>Verified vulnerabilities</dt>
+              <dd>{verifiedCount}</dd>
             </div>
           </dl>
+          <RuntimeProfileSummary profile={launchProfile} />
+          <div className="project-primary-action">
+            <Button
+              variant="primary"
+              onClick={onStartPentest}
+              disabled={!canStartPentest || startPentest.isPending}
+            >
+              Start pentest
+            </Button>
+            {!canStartPentest && (
+              <span className="project-primary-action__hint">
+                Complete the launch profile and add at least one repo.
+              </span>
+            )}
+          </div>
         </Card>
 
         <Card
@@ -176,12 +213,8 @@ export function ProjectDetail() {
           subtitle={`${rows.length} ${rows.length === 1 ? "repository" : "repositories"}`}
           actions={
             <div className="repo-list__actions">
-              <Button
-                variant="ghost"
-                onClick={onScanAll}
-                disabled={triggerScan.isPending || rows.length === 0}
-              >
-                Scan all
+              <Button variant="ghost" onClick={() => setShowProfileEdit(true)}>
+                Launch profile
               </Button>
               <Button variant="primary" onClick={() => setShowAdd(true)}>
                 Add repo
@@ -223,7 +256,7 @@ export function ProjectDetail() {
                     <th scope="col">Kind</th>
                     <th scope="col">Source</th>
                     <th scope="col">Status</th>
-                    <th scope="col">Last scan</th>
+                    <th scope="col">Last pentest</th>
                     <th scope="col" className="repo-list__col--actions">
                       Actions
                     </th>
@@ -235,10 +268,9 @@ export function ProjectDetail() {
                       key={repo.name}
                       repo={repo}
                       live={live[repo.name] ?? { status: "Idle", runId: null }}
-                      onScan={() => onScanOne(repo.name)}
                       onEdit={() => setEditTarget(repo)}
                       onDelete={() => setRemoveTarget(repo)}
-                      busy={triggerScan.isPending || deleteRepo.isPending}
+                      busy={startPentest.isPending || deleteRepo.isPending}
                     />
                   ))}
                 </tbody>
@@ -254,7 +286,7 @@ export function ProjectDetail() {
           onClose={() => setShowAdd(false)}
           onAdded={(name) => {
             setShowAdd(false);
-            setBanner(`Added ${name}. Trigger a scan when ready.`);
+            setBanner(`Added ${name}. Start a pentest when ready.`);
           }}
         />
       )}
@@ -267,6 +299,17 @@ export function ProjectDetail() {
           onSaved={(next) => {
             setEditTarget(null);
             setBanner(`Saved changes to ${next.name}.`);
+          }}
+        />
+      )}
+
+      {showProfileEdit && (
+        <ProjectProfileModal
+          project={p}
+          onClose={() => setShowProfileEdit(false)}
+          onSaved={(next) => {
+            setShowProfileEdit(false);
+            setBanner(`Saved launch profile for ${next.name}.`);
           }}
         />
       )}
@@ -296,16 +339,96 @@ export function ProjectDetail() {
   );
 }
 
+function RuntimeProfileSummary({ profile }: { profile: ProjectLaunchProfile | null }) {
+  if (!profile) return null;
+  return (
+    <div className="runtime-profile-summary">
+      <CommandSummary title="Build" commands={profile.build_steps} />
+      <CommandSummary title="Start" commands={profile.start_steps} />
+      <div>
+        <h3>Environment</h3>
+        <p>{formatEnvironment(profile)}</p>
+      </div>
+    </div>
+  );
+}
+
+function CommandSummary({
+  title,
+  commands,
+}: {
+  title: string;
+  commands: ProjectLaunchProfile["build_steps"];
+}) {
+  if (commands.length === 0) {
+    return (
+      <div>
+        <h3>{title}</h3>
+        <p>-</p>
+      </div>
+    );
+  }
+  return (
+    <div>
+      <h3>{title}</h3>
+      <ul className="runtime-profile-command-list">
+        {commands.map((cmd, index) => (
+          <li key={`${title}-${index}`}>
+            <code>{cmd.command}</code>
+            {cmd.repo_name && <span>{cmd.repo_name}</span>}
+            {cmd.working_directory && <span>{cmd.working_directory}</span>}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function launchProfileStatus(profile: ProjectLaunchProfile | null): {
+  label: string;
+  tone: BadgeTone;
+} {
+  if (!profile) return { label: "Not configured", tone: "neutral" };
+  if (profile.readiness === "Ready") return { label: "Ready", tone: "success" };
+  if (profile.readiness === "NeedsHealthCheck")
+    return { label: "Needs health check", tone: "info" };
+  if (profile.readiness === "NeedsTarget") return { label: "Needs target URL", tone: "info" };
+  return { label: "Needs start command", tone: "neutral" };
+}
+
+function formatCommandCount(count: number): string {
+  if (count === 0) return "-";
+  return `${count} ${count === 1 ? "command" : "commands"}`;
+}
+
+function formatHealthCheck(profile: ProjectLaunchProfile | null): string {
+  if (!profile) return "-";
+  const check = profile.health_checks[0];
+  if (check?.url) return check.url;
+  if (check?.command) return check.command.command;
+  return "-";
+}
+
+function formatEnvironment(profile: ProjectLaunchProfile): string {
+  const parts: string[] = [];
+  if (profile.env_refs.length > 0) {
+    const names = profile.env_refs.map((entry) =>
+      entry.secret ? `${entry.value} (secret)` : entry.value,
+    );
+    parts.push(names.join(", "));
+  }
+  return parts.length > 0 ? parts.join(" · ") : "-";
+}
+
 interface RepoRowProps {
   repo: RepoRecord;
   live: RepoLiveState;
-  onScan: () => void;
   onEdit: () => void;
   onDelete: () => void;
   busy: boolean;
 }
 
-function RepoRow({ repo, live, onScan, onEdit, onDelete, busy }: RepoRowProps) {
+function RepoRow({ repo, live, onEdit, onDelete, busy }: RepoRowProps) {
   const kindTone: BadgeTone = repo.source_kind === "git" ? "info" : "accent";
   return (
     <tr>
@@ -331,9 +454,6 @@ function RepoRow({ repo, live, onScan, onEdit, onDelete, busy }: RepoRowProps) {
         <time className="repo-list__last-scan">{formatLastScan(repo)}</time>
       </td>
       <td className="repo-list__col--actions">
-        <Button size="sm" onClick={onScan} disabled={busy || live.status === "Running"}>
-          Scan now
-        </Button>
         <Button size="sm" variant="ghost" onClick={onEdit} disabled={busy}>
           Edit
         </Button>

@@ -27,7 +27,7 @@ function wrap(children: ReactNode, path: string) {
 }
 
 function makeChain(overrides: Partial<ChainRecord> = {}): ChainRecord {
-  return {
+  const base: ChainRecord = {
     id: "chain-xrep",
     run_id: "run-1",
     cross_repo: true,
@@ -35,8 +35,12 @@ function makeChain(overrides: Partial<ChainRecord> = {}): ChainRecord {
     rationale_blob: '{"rationale":"controller in repo-a reaches sink in repo-b"}',
     attack_provenance: "ChainReasoning",
     prompt_version: "chain-reasoning/v1",
-    ...overrides,
+    status: "Proposed",
+    verification_attempt_id: null,
+    evidence_blob: null,
+    severity: null,
   };
+  return { ...base, ...overrides };
 }
 
 function makeFinding(overrides: Partial<FindingRecord> = {}): FindingRecord {

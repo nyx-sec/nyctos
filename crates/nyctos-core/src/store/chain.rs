@@ -1,6 +1,6 @@
 //! `chains` table - cross-finding rationales produced by chain reasoner.
 
-use sqlx::SqlitePool;
+use sqlx::{Row, SqlitePool};
 
 pub use nyctos_types::chain::ChainRecord;
 
@@ -16,82 +16,83 @@ impl<'a> ChainStore<'a> {
     }
 
     pub async fn insert(&self, c: &ChainRecord) -> Result<(), StoreError> {
-        let cross_repo = i64::from(c.cross_repo);
-        sqlx::query!(
+        let cross_repo = if c.cross_repo { 1_i64 } else { 0_i64 };
+        sqlx::query(
             r#"
             INSERT INTO chains (
                 id, run_id, cross_repo, member_ids, rationale_blob,
-                attack_provenance, prompt_version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                attack_provenance, prompt_version, status, verification_attempt_id,
+                evidence_blob, severity
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
-            c.id,
-            c.run_id,
-            cross_repo,
-            c.member_ids,
-            c.rationale_blob,
-            c.attack_provenance,
-            c.prompt_version,
         )
+        .bind(&c.id)
+        .bind(&c.run_id)
+        .bind(cross_repo)
+        .bind(&c.member_ids)
+        .bind(&c.rationale_blob)
+        .bind(&c.attack_provenance)
+        .bind(&c.prompt_version)
+        .bind(&c.status)
+        .bind(&c.verification_attempt_id)
+        .bind(&c.evidence_blob)
+        .bind(&c.severity)
         .execute(self.pool)
         .await?;
         Ok(())
     }
 
     pub async fn get(&self, id: &str) -> Result<Option<ChainRecord>, StoreError> {
-        let row = sqlx::query!(
+        let row = sqlx::query(
             r#"
-            SELECT id AS "id!", run_id AS "run_id!",
-                   cross_repo AS "cross_repo!: i64",
-                   member_ids AS "member_ids!",
-                   rationale_blob, attack_provenance, prompt_version
+            SELECT id, run_id, cross_repo, member_ids,
+                   rationale_blob, attack_provenance, prompt_version,
+                   status, verification_attempt_id, evidence_blob, severity
             FROM chains WHERE id = ?
             "#,
-            id
         )
+        .bind(id)
         .fetch_optional(self.pool)
         .await?;
-        Ok(row.map(|r| ChainRecord {
-            id: r.id,
-            run_id: r.run_id,
-            cross_repo: r.cross_repo != 0,
-            member_ids: r.member_ids,
-            rationale_blob: r.rationale_blob,
-            attack_provenance: r.attack_provenance,
-            prompt_version: r.prompt_version,
-        }))
+        row.map(row_to_chain_record).transpose()
     }
 
     pub async fn delete(&self, id: &str) -> Result<u64, StoreError> {
-        let res = sqlx::query!("DELETE FROM chains WHERE id = ?", id).execute(self.pool).await?;
+        let res =
+            sqlx::query("DELETE FROM chains WHERE id = ?").bind(id).execute(self.pool).await?;
         Ok(res.rows_affected())
     }
 
     pub async fn list_by_run(&self, run_id: &str) -> Result<Vec<ChainRecord>, StoreError> {
-        let rows = sqlx::query!(
+        let rows = sqlx::query(
             r#"
-            SELECT id AS "id!", run_id AS "run_id!",
-                   cross_repo AS "cross_repo!: i64",
-                   member_ids AS "member_ids!",
-                   rationale_blob, attack_provenance, prompt_version
+            SELECT id, run_id, cross_repo, member_ids,
+                   rationale_blob, attack_provenance, prompt_version,
+                   status, verification_attempt_id, evidence_blob, severity
             FROM chains WHERE run_id = ?
             "#,
-            run_id
         )
+        .bind(run_id)
         .fetch_all(self.pool)
         .await?;
-        Ok(rows
-            .into_iter()
-            .map(|r| ChainRecord {
-                id: r.id,
-                run_id: r.run_id,
-                cross_repo: r.cross_repo != 0,
-                member_ids: r.member_ids,
-                rationale_blob: r.rationale_blob,
-                attack_provenance: r.attack_provenance,
-                prompt_version: r.prompt_version,
-            })
-            .collect())
+        rows.into_iter().map(row_to_chain_record).collect()
     }
+}
+
+fn row_to_chain_record(row: sqlx::sqlite::SqliteRow) -> Result<ChainRecord, StoreError> {
+    Ok(ChainRecord {
+        id: row.try_get("id")?,
+        run_id: row.try_get("run_id")?,
+        cross_repo: row.try_get::<i64, _>("cross_repo")? != 0,
+        member_ids: row.try_get("member_ids")?,
+        rationale_blob: row.try_get("rationale_blob")?,
+        attack_provenance: row.try_get("attack_provenance")?,
+        prompt_version: row.try_get("prompt_version")?,
+        status: row.try_get("status")?,
+        verification_attempt_id: row.try_get("verification_attempt_id")?,
+        evidence_blob: row.try_get("evidence_blob")?,
+        severity: row.try_get("severity")?,
+    })
 }
 
 #[cfg(test)]

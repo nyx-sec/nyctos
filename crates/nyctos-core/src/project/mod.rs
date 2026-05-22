@@ -10,4 +10,6 @@
 //! for back-compat with existing `crate::project::{Project, ProjectId}`
 //! call sites.
 
-pub use nyctos_types::project::{Project, ProjectId};
+pub use nyctos_types::project::{
+    Project, ProjectId, ProjectRuntimeCommand, ProjectRuntimeEnvVar, ProjectRuntimeProfile,
+};

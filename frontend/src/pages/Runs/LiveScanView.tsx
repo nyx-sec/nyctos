@@ -1,6 +1,11 @@
 import { useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { type AgentEventLike, useAgentEvents } from "@/api/client";
+import {
+  type AgentEventLike,
+  useAgentEvents,
+  useRunEnvironmentRuns,
+  useRunVulnerabilities,
+} from "@/api/client";
 import type { RunEvent } from "@/api/types.gen";
 import { Badge, type BadgeTone } from "@/components/Badge";
 import { Button } from "@/components/Button";
@@ -62,7 +67,8 @@ export function LiveScanView() {
   const [repos, setRepos] = useState<Record<string, RepoProgress>>({});
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [summary, setSummary] = useState<RunSummary>({ done: false });
-  const [cancelling, setCancelling] = useState(false);
+  const environmentRuns = useRunEnvironmentRuns(runId);
+  const vulnerabilities = useRunVulnerabilities(runId);
 
   useAgentEvents({
     runId,
@@ -84,22 +90,6 @@ export function LiveScanView() {
     (r) => r.phase === "finished" || r.phase === "failed",
   ).length;
 
-  function appendLog(text: string, level: LogLine["level"] = "info") {
-    setLogs((prev) => prev.concat({ ts: Date.now(), level, text }).slice(-500));
-  }
-
-  async function onCancel() {
-    if (!window.confirm(`Cancel run ${runId}? In-flight repos may still finish out.`)) return;
-    setCancelling(true);
-    appendLog(`Cancel requested for ${runId}.`, "warn");
-    // Phase 11 ships the cancel button but the daemon does not yet
-    // expose a stop endpoint; the action is best-effort and the UI
-    // surfaces that limitation explicitly so the operator is not
-    // surprised when in-flight repos still finish.
-    appendLog("Daemon cancel endpoint not wired yet. In-flight repos will finish out.", "warn");
-    setCancelling(false);
-  }
-
   return (
     <div className="live-scan">
       <Card
@@ -115,20 +105,31 @@ export function LiveScanView() {
           <div className="live-scan__actions">
             <Button
               variant="ghost"
-              onClick={() => navigate(`/findings?run_id=${encodeURIComponent(runId)}`)}
+              onClick={() => navigate(`/vulnerabilities?run_id=${encodeURIComponent(runId)}`)}
             >
-              View findings
-            </Button>
-            <Button variant="danger" onClick={onCancel} disabled={summary.done || cancelling}>
-              Cancel run
+              View vulnerabilities
             </Button>
           </div>
         }
       >
         {!summary.done && totalRepos === 0 && (
           <div className="live-scan__pending">
-            <Spinner /> Waiting for RunStarted…
+            <Spinner /> Preparing pentest…
           </div>
+        )}
+
+        {environmentRuns.data && environmentRuns.data.length > 0 && (
+          <section className="live-scan__environment">
+            <h3 className="live-scan__h3">Environment</h3>
+            {environmentRuns.data.map((env) => (
+              <div key={env.id} className="live-scan__env-row">
+                <Badge tone={environmentTone(env.status)}>{env.status}</Badge>
+                <span>
+                  {env.target_urls.length > 0 ? env.target_urls.join(", ") : "No target URLs"}
+                </span>
+              </div>
+            ))}
+          </section>
         )}
 
         {orderedRepos.length > 0 && (
@@ -157,8 +158,10 @@ export function LiveScanView() {
 
         {summary.done && (
           <p className="live-scan__cta">
-            Run finished.{" "}
-            <Link to={`/findings?run_id=${encodeURIComponent(runId)}`}>Open findings →</Link>
+            Run finished with {vulnerabilities.data?.length ?? 0} verified vulnerabilities.{" "}
+            <Link to={`/vulnerabilities?run_id=${encodeURIComponent(runId)}`}>
+              Open vulnerabilities →
+            </Link>
           </p>
         )}
       </Card>
@@ -181,7 +184,7 @@ function RepoProgressRow({ repo }: RepoProgressRowProps) {
           <Badge tone={repo.outcome === "Success" ? "success" : "warning"}>{repo.outcome}</Badge>
         )}
         {repo.nDiags !== undefined && (
-          <span className="live-scan__repo-count">{repo.nDiags} diag(s)</span>
+          <span className="live-scan__repo-count">{repo.nDiags} signal(s)</span>
         )}
         {repo.elapsedMs !== undefined && (
           <span className="live-scan__repo-elapsed">{repo.elapsedMs}ms</span>
@@ -223,6 +226,13 @@ function phaseToPercent(phase: RepoPhase): number {
     case "failed":
       return 100;
   }
+}
+
+function environmentTone(status: string): BadgeTone {
+  if (status === "Ready") return "success";
+  if (status === "Failed") return "danger";
+  if (status === "Stopped") return "neutral";
+  return "info";
 }
 
 type RepoMap = Record<string, RepoProgress>;
@@ -325,12 +335,22 @@ function describeRunEvent(data: RunEvent): string | undefined {
   switch (data.kind) {
     case "Heartbeat":
       return undefined;
+    case "ProjectStarted":
+      return `Project ${data.project_name} started.`;
+    case "PhaseStarted":
+      return `${data.phase} started.`;
+    case "PhaseFinished":
+      return data.message ? `${data.phase}: ${data.message}` : `${data.phase} finished.`;
+    case "EnvironmentStatus":
+      return data.message
+        ? `Environment ${data.status}: ${data.message}`
+        : `Environment ${data.status}.`;
     case "RunStarted":
-      return `Run ${data.run_id} started over ${data.repos.length} repo(s).`;
+      return `Pentest ${data.run_id} started over ${data.repos.length} repo(s).`;
     case "RepoStarted":
       return `[${data.repo}] static pass started.`;
     case "RepoStaticDone":
-      return `[${data.repo}] static pass produced ${data.n_diags} diag(s) in ${data.elapsed_ms}ms.`;
+      return `[${data.repo}] Nyx signal pass recorded ${data.n_diags} signal(s) in ${data.elapsed_ms}ms.`;
     case "RepoDynamicDone":
       return `[${data.repo}] dynamic pass done in ${data.elapsed_ms}ms.`;
     case "RepoFinished":
@@ -338,7 +358,11 @@ function describeRunEvent(data: RunEvent): string | undefined {
     case "RepoFailed":
       return `[${data.repo}] failed: ${data.message}`;
     case "RunFinished":
-      return `Run ${data.run_id} finished in ${data.wall_clock_ms}ms: ${data.succeeded} ok, ${data.inconclusive} inconclusive, ${data.failed} failed.`;
+      return `Pentest ${data.run_id} finished in ${data.wall_clock_ms}ms.`;
+    case "RepoIngestFailed":
+      return `[${data.repo}] ingest failed: ${data.message}`;
+    case "ProjectFinished":
+      return `Project phase finished.`;
   }
 }
 

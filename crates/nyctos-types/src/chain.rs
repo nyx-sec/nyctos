@@ -119,6 +119,10 @@ pub struct ChainRecord {
     pub rationale_blob: Option<String>,
     pub attack_provenance: Option<String>,
     pub prompt_version: Option<String>,
+    pub status: String,
+    pub verification_attempt_id: Option<String>,
+    pub evidence_blob: Option<String>,
+    pub severity: Option<String>,
 }
 
 #[cfg(test)]

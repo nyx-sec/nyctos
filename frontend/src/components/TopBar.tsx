@@ -3,9 +3,10 @@ import { useLocation } from "react-router-dom";
 const TITLE_BY_PATH: Record<string, string> = {
   "/setup": "Setup",
   "/projects": "Projects",
-  "/runs": "Runs",
-  "/findings": "Findings",
-  "/chains": "Chains",
+  "/runs": "Pentest Runs",
+  "/vulnerabilities": "Vulnerabilities",
+  "/findings": "Legacy Findings",
+  "/chains": "Raw Chains",
   "/quarantine": "Quarantine",
   "/settings": "Settings",
 };

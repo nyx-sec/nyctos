@@ -109,6 +109,7 @@ impl Drop for TestServer {
 
 fn sample_repo(name: &str) -> RepoRecord {
     RepoRecord {
+        id: format!("repo-default-{name}"),
         name: name.to_string(),
         project_id: DEFAULT_PROJECT_ID.to_string(),
         source_kind: "local-path".to_string(),
@@ -126,6 +127,8 @@ fn sample_repo(name: &str) -> RepoRecord {
 fn sample_run(id: &str) -> RunRecord {
     RunRecord {
         id: id.to_string(),
+        project_id: None,
+        kind: "Scan".to_string(),
         started_at: 2_000,
         finished_at: None,
         status: "Running".to_string(),
@@ -173,6 +176,10 @@ fn sample_chain(id: &str, run_id: &str, members: &[&str]) -> ChainRecord {
         rationale_blob: None,
         attack_provenance: None,
         prompt_version: None,
+        status: "Proposed".to_string(),
+        verification_attempt_id: None,
+        evidence_blob: None,
+        severity: None,
     }
 }
 
@@ -703,12 +710,13 @@ async fn chains_list_endpoint_filters_by_run_id() {
         .await
         .expect("chain-B-1");
 
-    let got: Vec<ChainRecord> = reqwest::get(format!("{}/api/v1/chains?run_id=run-A", srv.base()))
-        .await
-        .expect("get")
-        .json()
-        .await
-        .expect("json");
+    let got: Vec<ChainRecord> =
+        reqwest::get(format!("{}/api/v1/chains?run_id=run-A&include_proposed=true", srv.base()))
+            .await
+            .expect("get")
+            .json()
+            .await
+            .expect("json");
     let mut ids: Vec<_> = got.iter().map(|c| c.id.clone()).collect();
     ids.sort();
     assert_eq!(ids, vec!["chain-A-1".to_string(), "chain-A-2".to_string()]);
@@ -2373,6 +2381,22 @@ async fn projects_crud_roundtrip() {
             "description": "Acme web product",
             "target_base_url": "http://localhost:3000",
             "env_config": { "NODE_ENV": "test" },
+            "runtime_profile": {
+                "build_commands": [
+                    { "command": "npm ci", "repo_name": "web", "timeout_seconds": 120 }
+                ],
+                "start_commands": [
+                    { "command": "npm run dev", "repo_name": "web" }
+                ],
+                "health_check_url": "http://localhost:3000/health",
+                "target_base_url": "http://localhost:3000",
+                "allowed_hosts": ["localhost", "127.0.0.1"],
+                "env_vars": [
+                    { "name": "NODE_ENV", "value": "test", "secret": false }
+                ],
+                "env_file": ".env.test",
+                "timeout_seconds": 300
+            },
         }))
         .send()
         .await
@@ -2393,10 +2417,27 @@ async fn projects_crud_roundtrip() {
         .expect("json");
     assert_eq!(got["id"], id);
     assert_eq!(got["target_base_url"], "http://localhost:3000");
+    assert_eq!(got["runtime_profile"]["build_commands"][0]["command"], "npm ci");
+    assert_eq!(got["runtime_profile"]["start_commands"][0]["command"], "npm run dev");
+    assert_eq!(got["runtime_profile"]["health_check_url"], "http://localhost:3000/health");
+    assert_eq!(got["runtime_profile"]["allowed_hosts"][0], "localhost");
 
     let patched: Value = client
         .patch(format!("{}/api/v1/projects/{id}", srv.base()))
-        .json(&serde_json::json!({ "description": "rev2" }))
+        .json(&serde_json::json!({
+            "description": "rev2",
+            "runtime_profile": {
+                "build_commands": [],
+                "start_commands": [
+                    { "command": "cargo run", "working_directory": "server" }
+                ],
+                "health_check_command": { "command": "curl -f http://localhost:8000/health" },
+                "target_base_url": "http://localhost:8000",
+                "allowed_hosts": ["localhost"],
+                "env_vars": [],
+                "timeout_seconds": 180
+            }
+        }))
         .send()
         .await
         .expect("patch")
@@ -2404,6 +2445,12 @@ async fn projects_crud_roundtrip() {
         .await
         .expect("json");
     assert_eq!(patched["description"], "rev2");
+    assert_eq!(patched["target_base_url"], "http://localhost:8000");
+    assert_eq!(patched["runtime_profile"]["start_commands"][0]["working_directory"], "server");
+    assert_eq!(
+        patched["runtime_profile"]["health_check_command"]["command"],
+        "curl -f http://localhost:8000/health"
+    );
 
     let del =
         client.delete(format!("{}/api/v1/projects/{id}", srv.base())).send().await.expect("del");

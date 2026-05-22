@@ -78,6 +78,7 @@ impl GitAuth {
 /// end-to-end via `#[derive(TS)]`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct RepoRecord {
+    pub id: String,
     pub name: String,
     pub project_id: String,
     pub source_kind: String,

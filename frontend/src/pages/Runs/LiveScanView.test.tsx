@@ -40,7 +40,7 @@ function wrap(children: ReactNode, initial = "/runs/run-1") {
       <MemoryRouter initialEntries={[initial]}>
         <Routes>
           <Route path="/runs/:runId" element={children} />
-          <Route path="/findings" element={<div>findings-route</div>} />
+          <Route path="/vulnerabilities" element={<div>vulnerabilities-route</div>} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>
@@ -62,7 +62,7 @@ describe("LiveScanView", () => {
   it("shows the waiting-for-RunStarted placeholder before any frame arrives", async () => {
     render(wrap(<LiveScanView />));
     expect(await screen.findByText(/Run run-1/)).toBeInTheDocument();
-    expect(screen.getByText(/Waiting for RunStarted/)).toBeInTheDocument();
+    expect(screen.getByText(/Preparing pentest/)).toBeInTheDocument();
     expect(FakeWebSocket.instances).toHaveLength(1);
   });
 
@@ -117,7 +117,7 @@ describe("LiveScanView", () => {
       }),
     );
     expect(await screen.findByText("Static done")).toBeInTheDocument();
-    expect(screen.getByText("3 diag(s)")).toBeInTheDocument();
+    expect(screen.getByText("3 signal(s)")).toBeInTheDocument();
 
     act(() =>
       ws.emit({
@@ -136,7 +136,7 @@ describe("LiveScanView", () => {
     expect(screen.getByText("Success")).toBeInTheDocument();
   });
 
-  it("renders the RunFinished tally and unlocks the Open-findings link", async () => {
+  it("renders the RunFinished tally and unlocks the Open-vulnerabilities link", async () => {
     render(wrap(<LiveScanView />));
     await screen.findByText(/Run run-1/);
     const ws = FakeWebSocket.instances[0];
@@ -175,7 +175,7 @@ describe("LiveScanView", () => {
         screen.getByText(/Finished in 4321ms · 2 ok \/ 1 inconclusive \/ 0 failed/),
       ).toBeInTheDocument(),
     );
-    expect(screen.getByRole("link", { name: /Open findings/ })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Open vulnerabilities/ })).toBeInTheDocument();
   });
 
   it("surfaces a RepoFailed frame as the failed phase with the daemon message", async () => {

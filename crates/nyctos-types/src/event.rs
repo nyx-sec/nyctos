@@ -49,6 +49,32 @@ pub enum RunEvent {
         #[ts(type = "number")]
         started_at_ms: i64,
     },
+    PhaseStarted {
+        run_id: String,
+        project_id: String,
+        phase: String,
+        #[ts(type = "number")]
+        started_at_ms: i64,
+    },
+    PhaseFinished {
+        run_id: String,
+        project_id: String,
+        phase: String,
+        status: String,
+        message: Option<String>,
+        #[ts(type = "number")]
+        finished_at_ms: i64,
+    },
+    EnvironmentStatus {
+        run_id: String,
+        project_id: String,
+        environment_run_id: String,
+        status: String,
+        message: Option<String>,
+        target_urls: Vec<String>,
+        #[ts(type = "number")]
+        ts_ms: i64,
+    },
     /// Per-repo lifecycle: a rayon job picked up `repo` and the static
     /// pass is running.
     RepoStarted {

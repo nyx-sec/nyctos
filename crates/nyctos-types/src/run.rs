@@ -21,6 +21,11 @@ use ts_rs::TS;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct RunRecord {
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub kind: String,
     #[ts(type = "number")]
     pub started_at: i64,
     #[ts(type = "number | null")]

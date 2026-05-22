@@ -57,6 +57,8 @@ const PROJECTS: ProjectRecord[] = [
     description: null,
     target_base_url: null,
     env_config_json: null,
+    runtime_profile: null,
+    default_launch_profile: null,
     created_at: 0,
     updated_at: 0,
   },
@@ -64,6 +66,7 @@ const PROJECTS: ProjectRecord[] = [
 
 const REPOS: RepoRecord[] = [
   {
+    id: "repo-alpha",
     name: "alpha",
     project_id: "p-1",
     source_kind: "git",

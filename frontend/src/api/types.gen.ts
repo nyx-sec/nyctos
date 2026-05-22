@@ -4,7 +4,7 @@
 
 export type RepoOutcomeTag = "Success" | "Inconclusive" | "Failed";
 
-export type RunEvent = { "kind": "Heartbeat", ts: number, } | { "kind": "RunStarted", run_id: string, project_id: string, repos: Array<string>, started_at_ms: number, } | { "kind": "ProjectStarted", run_id: string, project_id: string, project_name: string, started_at_ms: number, } | { "kind": "RepoStarted", run_id: string, project_id: string, repo: string, started_at_ms: number, } | { "kind": "RepoStaticDone", run_id: string, project_id: string, repo: string, n_diags: number, elapsed_ms: number, } | { "kind": "RepoDynamicDone", run_id: string, project_id: string, repo: string, elapsed_ms: number, } | { "kind": "RepoFailed", run_id: string, project_id: string, repo: string, message: string, elapsed_ms: number, } | { "kind": "RepoIngestFailed", run_id: string, project_id: string, repo: string, message: string, } | { "kind": "RepoFinished", run_id: string, project_id: string, repo: string, outcome: RepoOutcomeTag, elapsed_ms: number, } | { "kind": "ProjectFinished", run_id: string, project_id: string, finished_at_ms: number, } | { "kind": "RunFinished", run_id: string, project_id: string, finished_at_ms: number, wall_clock_ms: number, succeeded: number, inconclusive: number, failed: number, };
+export type RunEvent = { "kind": "Heartbeat", ts: number, } | { "kind": "RunStarted", run_id: string, project_id: string, repos: Array<string>, started_at_ms: number, } | { "kind": "ProjectStarted", run_id: string, project_id: string, project_name: string, started_at_ms: number, } | { "kind": "PhaseStarted", run_id: string, project_id: string, phase: string, started_at_ms: number, } | { "kind": "PhaseFinished", run_id: string, project_id: string, phase: string, status: string, message: string | null, finished_at_ms: number, } | { "kind": "EnvironmentStatus", run_id: string, project_id: string, environment_run_id: string, status: string, message: string | null, target_urls: Array<string>, ts_ms: number, } | { "kind": "RepoStarted", run_id: string, project_id: string, repo: string, started_at_ms: number, } | { "kind": "RepoStaticDone", run_id: string, project_id: string, repo: string, n_diags: number, elapsed_ms: number, } | { "kind": "RepoDynamicDone", run_id: string, project_id: string, repo: string, elapsed_ms: number, } | { "kind": "RepoFailed", run_id: string, project_id: string, repo: string, message: string, elapsed_ms: number, } | { "kind": "RepoIngestFailed", run_id: string, project_id: string, repo: string, message: string, } | { "kind": "RepoFinished", run_id: string, project_id: string, repo: string, outcome: RepoOutcomeTag, elapsed_ms: number, } | { "kind": "ProjectFinished", run_id: string, project_id: string, finished_at_ms: number, } | { "kind": "RunFinished", run_id: string, project_id: string, finished_at_ms: number, wall_clock_ms: number, succeeded: number, inconclusive: number, failed: number, };
 
 export type HaltReason = "BudgetCapReached" | "OperatorCancelled" | "UpstreamRefused";
 
@@ -149,7 +149,7 @@ export type RepoSource = { "Git": { url: string, branch: string | null, auth: Gi
 
 export type Repo = { name: string, source: RepoSource, i_own_this: boolean, project_id: string, };
 
-export type RepoRecord = { name: string, project_id: string, source_kind: string, source_url_or_path: string, branch: string | null, auth_ref: string | null, i_own_this: boolean, last_scan_run_id: string | null, 
+export type RepoRecord = { id: string, name: string, project_id: string, source_kind: string, source_url_or_path: string, branch: string | null, auth_ref: string | null, i_own_this: boolean, last_scan_run_id: string | null, 
 /**
  * `runs.finished_at` for the run pointed to by `last_scan_run_id`,
  * resolved through a `LEFT JOIN` on read. `None` when no scan has
@@ -167,9 +167,9 @@ export type TestRepoRequest = { source_kind: string, source_url_or_path: string,
 
 export type TestRepoResponse = { ok: boolean, message: string, on_disk_git_remote?: string, };
 
-export type RunRecord = { id: string, started_at: number, finished_at: number | null, status: string, triggered_by: string, git_ref: string | null, parent_run_id: string | null, wall_clock_ms: number | null, total_ai_spend_usd_micros: number, };
+export type RunRecord = { id: string, project_id?: string, kind: string, started_at: number, finished_at: number | null, status: string, triggered_by: string, git_ref: string | null, parent_run_id: string | null, wall_clock_ms: number | null, total_ai_spend_usd_micros: number, };
 
-export type ChainRecord = { id: string, run_id: string, cross_repo: boolean, member_ids: string, rationale_blob: string | null, attack_provenance: string | null, prompt_version: string | null, };
+export type ChainRecord = { id: string, run_id: string, cross_repo: boolean, member_ids: string, rationale_blob: string | null, attack_provenance: string | null, prompt_version: string | null, status: string, verification_attempt_id: string | null, evidence_blob: string | null, severity: string | null, };
 
 export type FindingRecord = { id: string, run_id: string, repo: string, path: string, line: number | null, cap: string, rule: string, severity: string, status: string, finding_origin: string, first_seen: number, last_seen: number, superseded_by: string | null, triage_state: string, triage_assigned_to: string | null, verdict_blob: string | null, repro_path: string | null, attack_provenance: string | null, prompt_version: string | null, chain_id: string | null, 
 /**
@@ -179,16 +179,51 @@ export type FindingRecord = { id: string, run_id: string, repo: string, path: st
  */
 spec_id: string | null, };
 
-export type ProjectRecord = { id: string, name: string, description: string | null, target_base_url: string | null, env_config_json: string | null, created_at: number, updated_at: number, };
+export type ProjectRuntimeCommand = { command: string, repo_name?: string, working_directory?: string, timeout_seconds?: number, };
 
-export type CreateProjectRequest = { name: string, description?: string, target_base_url?: string, env_config?: unknown, };
+export type ProjectRuntimeEnvVar = { name: string, value: string, secret: boolean, };
+
+export type ProjectRuntimeProfile = { build_commands: Array<ProjectRuntimeCommand>, start_commands: Array<ProjectRuntimeCommand>, health_check_url?: string, health_check_command?: ProjectRuntimeCommand, target_base_url?: string, allowed_hosts: Array<string>, env_vars: Array<ProjectRuntimeEnvVar>, env_file?: string, timeout_seconds?: number, };
+
+export type LaunchStep = { command: string, repo_id?: string, repo_name?: string, working_directory?: string, timeout_seconds?: number, };
+
+export type LaunchHealthCheck = { kind: string, url?: string, host?: string, port?: number, command?: LaunchStep, timeout_seconds?: number, };
+
+export type LaunchEnvRef = { kind: string, value: string, secret: boolean, };
+
+export type LaunchWorkingDir = { repo_id?: string, repo_name?: string, path: string, };
+
+export type ProjectLaunchProfile = { id: string, project_id: string, name: string, mode: string, build_steps: Array<LaunchStep>, start_steps: Array<LaunchStep>, stop_steps: Array<LaunchStep>, health_checks: Array<LaunchHealthCheck>, target_urls: Array<string>, env_refs: Array<LaunchEnvRef>, working_dirs: Array<LaunchWorkingDir>, readiness: string, created_at: number, updated_at: number, is_default: boolean, };
+
+export type ProjectLaunchProfileInput = { name: string | null, mode: string | null, build_steps: Array<LaunchStep>, start_steps: Array<LaunchStep>, stop_steps: Array<LaunchStep>, health_checks: Array<LaunchHealthCheck>, target_urls: Array<string>, env_refs: Array<LaunchEnvRef>, working_dirs: Array<LaunchWorkingDir>, };
+
+export type EnvironmentRunRecord = { id: string, run_id: string, project_id: string, profile_id: string, status: string, started_at: number | null, ready_at: number | null, stopped_at: number | null, target_urls: Array<string>, health?: unknown, logs_dir?: string, teardown?: unknown, };
+
+export type NyxSignalRecord = { id: string, run_id: string, project_id: string, repo_id: string, repo: string, path: string, line: number | null, cap: string, rule: string, severity: string, message?: string, evidence?: unknown, signal_kind: string, meaningful: boolean, suppressed_reason?: string, agent_candidate_id?: string, created_at: number, };
+
+export type PentestCandidateRecord = { id: string, run_id: string, project_id: string, source: string, source_ids: Array<string>, title: string, vuln_class: string, severity_guess: string, affected_components: Array<unknown>, hypothesis: string, test_plan: string, status: string, rejection_reason?: string, confidence: number, trace_id?: string, created_at: number, updated_at: number, };
+
+export type VerificationAttemptRecord = { id: string, run_id: string, project_id: string, environment_run_id: string, candidate_id?: string, chain_id?: string, method: string, status: string, started_at: number, finished_at: number | null, duration_ms: number | null, request?: unknown, response?: unknown, oracle?: unknown, artifact_paths: Array<string>, error?: string, replay_stable?: boolean, };
+
+export type VerifiedVulnerabilityRecord = { id: string, run_id: string, project_id: string, title: string, severity: string, confidence: number, vuln_class: string, affected_components: Array<unknown>, business_impact: string, evidence_summary: string, repro_steps: string, remediation: string, source_candidate_ids: Array<string>, source_signal_ids: Array<string>, verification_attempt_ids: Array<string>, chain_id?: string, status: string, first_seen: number, last_seen: number, };
+
+export type StartPentestResponse = { run_id: string, };
+
+export type ProjectRecord = { id: string, name: string, description: string | null, target_base_url: string | null, env_config_json: string | null, runtime_profile: ProjectRuntimeProfile | null, default_launch_profile: ProjectLaunchProfile | null, created_at: number, updated_at: number, };
+
+export type CreateProjectRequest = { name: string, description?: string, target_base_url?: string, env_config?: unknown, runtime_profile?: ProjectRuntimeProfile, default_launch_profile?: ProjectLaunchProfileInput, };
 
 export type PatchProjectRequest = { description?: string | null, target_base_url?: string | null, 
 /**
  * Tri-state JSON value: omitted = no change, `null` = clear, value =
  * set. The body is re-serialized verbatim into `env_config_json`.
  */
-env_config?: unknown, };
+env_config?: unknown, 
+/**
+ * Tri-state runtime profile: omitted = no change, `null` = clear,
+ * value = set. Serialized into the project row's JSON column.
+ */
+runtime_profile?: ProjectRuntimeProfile | null, };
 
 export type HealthResponse = { status: string, version: string, };
 

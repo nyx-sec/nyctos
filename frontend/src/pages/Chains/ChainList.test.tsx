@@ -23,8 +23,10 @@ function wrap(children: ReactNode, route = "/chains") {
 }
 
 function makeRun(overrides: Partial<RunRecord> = {}): RunRecord {
-  return {
+  const base: RunRecord = {
     id: "run-1",
+    project_id: "p-1",
+    kind: "Pentest",
     started_at: 1000,
     finished_at: 2000,
     status: "Succeeded",
@@ -33,12 +35,12 @@ function makeRun(overrides: Partial<RunRecord> = {}): RunRecord {
     parent_run_id: null,
     wall_clock_ms: 1000,
     total_ai_spend_usd_micros: 0,
-    ...overrides,
   };
+  return { ...base, ...overrides };
 }
 
 function makeChain(overrides: Partial<ChainRecord> = {}): ChainRecord {
-  return {
+  const base: ChainRecord = {
     id: "chain-run-1-00-abc-deadbeef",
     run_id: "run-1",
     cross_repo: false,
@@ -46,8 +48,12 @@ function makeChain(overrides: Partial<ChainRecord> = {}): ChainRecord {
     rationale_blob: null,
     attack_provenance: null,
     prompt_version: null,
-    ...overrides,
+    status: "Proposed",
+    verification_attempt_id: null,
+    evidence_blob: null,
+    severity: null,
   };
+  return { ...base, ...overrides };
 }
 
 describe("ChainList", () => {
@@ -61,7 +67,7 @@ describe("ChainList", () => {
       if (url === "/api/v1/runs?status=Succeeded") {
         return jsonResponse([makeRun({ id: "run-newest" })]);
       }
-      if (url === "/api/v1/chains?run_id=run-newest") {
+      if (url === "/api/v1/chains?run_id=run-newest&include_proposed=true") {
         return jsonResponse([
           makeChain({
             id: "chain-xrep",
@@ -90,7 +96,7 @@ describe("ChainList", () => {
       if (url === "/api/v1/runs?status=Succeeded") {
         return jsonResponse([makeRun({ id: "run-empty" })]);
       }
-      if (url === "/api/v1/chains?run_id=run-empty") {
+      if (url === "/api/v1/chains?run_id=run-empty&include_proposed=true") {
         return jsonResponse([]);
       }
       throw new Error(`unexpected url ${url}`);
@@ -119,7 +125,7 @@ describe("ChainList", () => {
       if (url === "/api/v1/runs?status=Succeeded") {
         return jsonResponse([makeRun({ id: "run-newer" }), makeRun({ id: "run-older" })]);
       }
-      if (url === "/api/v1/chains?run_id=run-older") {
+      if (url === "/api/v1/chains?run_id=run-older&include_proposed=true") {
         return jsonResponse([makeChain({ id: "chain-pinned", run_id: "run-older" })]);
       }
       throw new Error(`unexpected url ${url}`);

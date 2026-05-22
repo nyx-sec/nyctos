@@ -26,12 +26,13 @@ describe("AppLayout", () => {
     );
 
     expect(screen.getByRole("img", { name: "Nyx" })).toBeInTheDocument();
-    for (const label of ["Projects", "Runs", "Findings", "Chains", "Settings"]) {
+    for (const label of ["Projects", "Pentest Runs", "Vulnerabilities", "Settings"]) {
       expect(screen.getByRole("link", { name: new RegExp(label) })).toBeInTheDocument();
     }
     expect(screen.queryByRole("link", { name: /Setup/ })).toBeNull();
-    // Phase 24: Quarantine is hidden until Settings → Show advanced is on.
-    expect(screen.queryByRole("link", { name: /Quarantine/ })).toBeNull();
+    expect(screen.queryByRole("link", { name: /Legacy Findings/ })).toBeNull();
+    expect(screen.queryByRole("link", { name: /Raw Chains/ })).toBeNull();
+    expect(screen.queryByRole("link", { name: /Candidate Queue/ })).toBeNull();
     expect(screen.getByTestId("child")).toHaveTextContent("child content");
     expect(screen.getByText("Daemon ready")).toBeInTheDocument();
   });
@@ -48,7 +49,7 @@ describe("AppLayout", () => {
     expect(screen.getByRole("link", { name: /Setup/ })).toBeInTheDocument();
   });
 
-  it("reveals Quarantine when advanced mode is enabled", () => {
+  it("reveals debug surfaces when advanced mode is enabled", () => {
     setAdvancedPref("on");
     render(
       <MemoryRouter initialEntries={["/projects"]}>
@@ -57,18 +58,20 @@ describe("AppLayout", () => {
         </AppLayout>
       </MemoryRouter>,
     );
-    expect(screen.getByRole("link", { name: /Quarantine/ })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Legacy Findings/ })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Raw Chains/ })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Candidate Queue/ })).toBeInTheDocument();
   });
 
   it("highlights the current route", () => {
     render(
-      <MemoryRouter initialEntries={["/findings"]}>
+      <MemoryRouter initialEntries={["/vulnerabilities"]}>
         <AppLayout>
           <span />
         </AppLayout>
       </MemoryRouter>,
     );
-    const findings = screen.getByRole("link", { name: /Findings/ });
-    expect(findings.getAttribute("aria-current")).toBe("page");
+    const vulnerabilities = screen.getByRole("link", { name: /Vulnerabilities/ });
+    expect(vulnerabilities.getAttribute("aria-current")).toBe("page");
   });
 });

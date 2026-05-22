@@ -16,13 +16,23 @@ import type {
   CreateRepoRequest,
   DoctorCheck,
   DoctorResponse,
+  EnvironmentRunRecord,
   FindingDiffStatus,
   FindingRecord,
   FindingWithDiff,
   HealthResponse,
+  LaunchEnvRef,
+  LaunchHealthCheck,
+  LaunchStep,
+  NyxSignalRecord,
   PatchProjectRequest,
   PatchRepoRequest,
+  ProjectLaunchProfile,
+  ProjectLaunchProfileInput,
   ProjectRecord,
+  ProjectRuntimeCommand,
+  ProjectRuntimeEnvVar,
+  ProjectRuntimeProfile,
   QuarantineItem,
   QuarantineKind,
   ReplayEvent,
@@ -34,7 +44,9 @@ import type {
   SetupStatusResponse,
   TestRepoRequest,
   TestRepoResponse,
+  VerifiedVulnerabilityRecord,
 } from "./types.gen";
+
 export type {
   AgentTraceRow,
   BundleManifest,
@@ -43,13 +55,23 @@ export type {
   CreateRepoRequest,
   DoctorCheck,
   DoctorResponse,
+  EnvironmentRunRecord,
   FindingDiffStatus,
   FindingRecord,
   FindingWithDiff,
   HealthResponse,
+  LaunchEnvRef,
+  LaunchHealthCheck,
+  LaunchStep,
+  NyxSignalRecord,
   PatchProjectRequest,
   PatchRepoRequest,
+  ProjectLaunchProfile,
+  ProjectLaunchProfileInput,
   ProjectRecord,
+  ProjectRuntimeCommand,
+  ProjectRuntimeEnvVar,
+  ProjectRuntimeProfile,
   QuarantineItem,
   QuarantineKind,
   ReplayEvent,
@@ -61,6 +83,7 @@ export type {
   SetupStatusResponse,
   TestRepoRequest,
   TestRepoResponse,
+  VerifiedVulnerabilityRecord,
 };
 
 const API_BASE = "/api/v1";
@@ -182,6 +205,12 @@ export const qk = {
   allRepos: () => ["projects", "_all", "repos"] as const,
   runs: (status?: string) => ["runs", status ?? "Running"] as const,
   run: (id: string) => ["runs", id] as const,
+  runEnvironment: (id: string) => ["runs", id, "environment-runs"] as const,
+  runVulnerabilities: (id: string) => ["runs", id, "vulnerabilities"] as const,
+  vulnerabilities: () => ["vulnerabilities"] as const,
+  projectVulnerabilities: (id: string) => ["projects", id, "vulnerabilities"] as const,
+  runSignals: (id: string, meaningfulOnly: boolean) =>
+    ["runs", id, "signals", meaningfulOnly] as const,
   findings: (params: FindingsQuery) =>
     [
       "findings",
@@ -213,6 +242,8 @@ export const qk = {
   runChains: (run_id: string) => ["runs", run_id, "chains"] as const,
   quarantine: () => ["quarantine"] as const,
   findingTraces: (id: string) => ["findings", id, "traces"] as const,
+  defaultLaunchProfile: (projectId: string) =>
+    ["projects", projectId, "launch-profile", "default"] as const,
 };
 
 // ---- hooks -----------------------------------------------------------------
@@ -297,6 +328,38 @@ export function usePatchProject() {
     onSuccess: (_data, vars) => {
       invalidateProjectLists(qc);
       qc.invalidateQueries({ queryKey: qk.project(vars.id) });
+    },
+  });
+}
+
+export function useDefaultLaunchProfile(projectId: string | undefined) {
+  return useQuery({
+    queryKey: projectId
+      ? qk.defaultLaunchProfile(projectId)
+      : ["projects", "_disabled", "launch-profile", "default"],
+    queryFn: () =>
+      request<ProjectLaunchProfile>(
+        `/projects/${encodeURIComponent(projectId!)}/launch-profile/default`,
+      ),
+    enabled: Boolean(projectId),
+  });
+}
+
+export function usePatchDefaultLaunchProfile(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: ProjectLaunchProfileInput) =>
+      request<ProjectLaunchProfile>(
+        `/projects/${encodeURIComponent(projectId)}/launch-profile/default`,
+        {
+          method: "PATCH",
+          body: JSON.stringify(body),
+        },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.defaultLaunchProfile(projectId) });
+      qc.invalidateQueries({ queryKey: qk.project(projectId) });
+      qc.invalidateQueries({ queryKey: qk.projects() });
     },
   });
 }
@@ -403,6 +466,20 @@ export function useTriggerScan(projectId: string) {
   });
 }
 
+export function useStartPentest(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      request<{ run_id: string }>(`/projects/${encodeURIComponent(projectId)}/pentest`, {
+        method: "POST",
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["runs"] });
+      qc.invalidateQueries({ queryKey: qk.project(projectId) });
+    },
+  });
+}
+
 export function useRuns(status?: string) {
   return useQuery({
     queryKey: qk.runs(status),
@@ -417,6 +494,55 @@ export function useRun(id: string | undefined) {
   return useQuery({
     queryKey: id ? qk.run(id) : ["runs", "_disabled"],
     queryFn: () => request<RunRecord>(`/runs/${encodeURIComponent(id!)}`),
+    enabled: Boolean(id),
+  });
+}
+
+export function useRunEnvironmentRuns(id: string | undefined) {
+  return useQuery({
+    queryKey: id ? qk.runEnvironment(id) : ["runs", "_disabled", "environment-runs"],
+    queryFn: () =>
+      request<EnvironmentRunRecord[]>(`/runs/${encodeURIComponent(id!)}/environment-runs`),
+    enabled: Boolean(id),
+  });
+}
+
+export function useRunVulnerabilities(id: string | undefined) {
+  return useQuery({
+    queryKey: id ? qk.runVulnerabilities(id) : ["runs", "_disabled", "vulnerabilities"],
+    queryFn: () =>
+      request<VerifiedVulnerabilityRecord[]>(`/runs/${encodeURIComponent(id!)}/vulnerabilities`),
+    enabled: Boolean(id),
+  });
+}
+
+export function useVulnerabilities() {
+  return useQuery({
+    queryKey: qk.vulnerabilities(),
+    queryFn: () => request<VerifiedVulnerabilityRecord[]>("/vulnerabilities"),
+  });
+}
+
+export function useProjectVulnerabilities(projectId: string | undefined) {
+  return useQuery({
+    queryKey: projectId
+      ? qk.projectVulnerabilities(projectId)
+      : ["projects", "_disabled", "vulnerabilities"],
+    queryFn: () =>
+      request<VerifiedVulnerabilityRecord[]>(
+        `/projects/${encodeURIComponent(projectId!)}/vulnerabilities`,
+      ),
+    enabled: Boolean(projectId),
+  });
+}
+
+export function useRunSignals(id: string | undefined, meaningfulOnly = false) {
+  return useQuery({
+    queryKey: id ? qk.runSignals(id, meaningfulOnly) : ["runs", "_disabled", "signals"],
+    queryFn: () => {
+      const qs = meaningfulOnly ? "?meaningful_only=true" : "";
+      return request<NyxSignalRecord[]>(`/runs/${encodeURIComponent(id!)}/signals${qs}`);
+    },
     enabled: Boolean(id),
   });
 }
@@ -490,7 +616,8 @@ export function useChain(id: string | undefined) {
 export function useRunChains(runId: string | undefined) {
   return useQuery({
     queryKey: runId ? qk.runChains(runId) : ["runs", "_disabled", "chains"],
-    queryFn: () => request<ChainRecord[]>(`/chains?run_id=${encodeURIComponent(runId!)}`),
+    queryFn: () =>
+      request<ChainRecord[]>(`/chains?run_id=${encodeURIComponent(runId!)}&include_proposed=true`),
     enabled: Boolean(runId),
   });
 }

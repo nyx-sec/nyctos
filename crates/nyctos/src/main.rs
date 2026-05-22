@@ -11,8 +11,9 @@ use nyctos_api::{
     ServerState, SetupContext, WebhookConfig, WebhookSecretResolver,
 };
 use nyctos_core::store::{
-    finding_id_hash, FindingRecord, ProjectRecord, RepoOutcomeLabel, RepoRecord, RunRecord,
-    RunRepoOutcomeRecord,
+    finding_id_hash, NyxSignalRecord, PentestCandidateRecord, ProjectRecord, RepoOutcomeLabel,
+    RepoRecord, RunRecord, RunRepoOutcomeRecord, VerificationAttemptRecord,
+    VerifiedVulnerabilityRecord,
 };
 use nyctos_core::{
     ingest, now_epoch_ms, repo_from_config, Config, InconclusiveReason, IngestError, IngestedRepo,
@@ -28,9 +29,11 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 mod ai_pipeline;
 mod banner;
 mod cmd;
+mod launch;
 mod scheduler;
 
 use banner::print_startup_banner;
+use launch::{ConservativeLaunchProfileRunner, LaunchContext, LaunchProfileRunner};
 
 #[derive(Debug, Parser)]
 #[command(name = "nyctos", version, about = "Nyctos repository agent", propagate_version = true)]
@@ -458,7 +461,7 @@ async fn scan(
     let mut reports: Vec<ScanReport> = Vec::with_capacity(targets.len());
     for (project, repos) in targets {
         let run = Run::new();
-        let run_record = build_run_record(&run, triggered_by);
+        let run_record = build_run_record(&run, Some(project.id.as_str()), "Pentest", triggered_by);
         store.runs().insert(&run_record).await?;
 
         let result = drive_scan(
@@ -525,9 +528,16 @@ fn print_scan_report(project: &Project, r: &ScanReport) {
     }
 }
 
-fn build_run_record(run: &Run, triggered_by: &str) -> RunRecord {
+fn build_run_record(
+    run: &Run,
+    project_id: Option<&str>,
+    kind: &str,
+    triggered_by: &str,
+) -> RunRecord {
     RunRecord {
         id: run.id.clone(),
+        project_id: project_id.map(str::to_string),
+        kind: kind.to_string(),
         started_at: run.started_at_ms,
         finished_at: None,
         status: "Running".to_string(),
@@ -644,6 +654,68 @@ async fn drive_scan(
     let workspaces_for_ai: HashMap<String, WorkspaceHandle> =
         workspaces.iter().map(|w| (w.name().to_string(), w.clone())).collect();
 
+    emit_phase(&events, &run.id, project.id.as_str(), "EnvironmentBuildStarted", true, None);
+    let launcher = ConservativeLaunchProfileRunner;
+    let mut environment = match store.launch_profiles().get_default(project.id.as_str()).await? {
+        Some(profile) => match launcher
+            .start(LaunchContext {
+                store,
+                state_dir,
+                project,
+                run_id: &run.id,
+                profile: &profile,
+                workspaces: &workspaces_for_ai,
+                events: events.clone(),
+            })
+            .await
+        {
+            Ok(env) => {
+                emit_phase(
+                    &events,
+                    &run.id,
+                    project.id.as_str(),
+                    "EnvironmentReady",
+                    false,
+                    Some("local app is ready".to_string()),
+                );
+                Some(env)
+            }
+            Err(err) => {
+                emit_phase(
+                    &events,
+                    &run.id,
+                    project.id.as_str(),
+                    "EnvironmentBuildStarted",
+                    false,
+                    Some(err.to_string()),
+                );
+                finalise_run(store, &run.id, run.started_at_ms, 0, "Failed").await?;
+                return Ok(ScanReport {
+                    run_id: run.id.clone(),
+                    wall_clock_ms: 0,
+                    succeeded: 0,
+                    inconclusive: 0,
+                    failed: 0,
+                    success: false,
+                    per_repo: Vec::new(),
+                });
+            }
+        },
+        None => {
+            emit_phase(
+                &events,
+                &run.id,
+                project.id.as_str(),
+                "EnvironmentBuildStarted",
+                false,
+                Some("no default launch profile; running static-only scan".to_string()),
+            );
+            None
+        }
+    };
+    let live_target_urls =
+        environment.as_ref().map(|env| env.target_urls.clone()).unwrap_or_default();
+
     let dispatcher =
         RunDispatcher::from_config(&config.performance, workspaces.len(), Some(events.clone()))
             .with_attempted_repos(attempted_repo_names.clone());
@@ -664,12 +736,18 @@ async fn drive_scan(
     let bundle: RunBundle<Diag> = match dispatch_handle.await {
         Ok(b) => b,
         Err(join_err) => {
+            if let Some(env) = environment.take() {
+                let _ = env.stop().await;
+            }
             let _ = finalise_run(store, &run.id, run.started_at_ms, 0, "Failed").await;
             return Err(anyhow::anyhow!("dispatch join error: {join_err}"));
         }
     };
 
     if let Err(err) = persist_run_results(store, &bundle).await {
+        if let Some(env) = environment.take() {
+            let _ = env.stop().await;
+        }
         let _ =
             finalise_run(store, &run.id, run.started_at_ms, bundle.wall_clock_ms, "Failed").await;
         return Err(err);
@@ -813,6 +891,7 @@ async fn drive_scan(
         store,
         &bundle,
         &workspaces_for_ai,
+        &live_target_urls,
         &escape_gate,
         events.clone(),
         &exploration_traces_dir,
@@ -877,9 +956,41 @@ async fn drive_scan(
         Err(err) => tracing::warn!(error = %err, "verifier pass failed"),
     }
 
+    if let Some(env) = environment.as_ref() {
+        match verify_pentest_candidates(
+            store,
+            &run.id,
+            project.id.as_str(),
+            &env.environment_run_id,
+            &live_target_urls,
+        )
+        .await
+        {
+            Ok(report) => {
+                if verbose
+                    && (report.confirmed > 0
+                        || report.rejected > 0
+                        || report.inconclusive > 0
+                        || report.errored > 0)
+                {
+                    println!(
+                        "pentest verification - {} confirmed, {} rejected, {} inconclusive, {} errored",
+                        report.confirmed, report.rejected, report.inconclusive, report.errored,
+                    );
+                }
+            }
+            Err(err) => tracing::warn!(error = %err, "pentest candidate verification failed"),
+        }
+    }
+
     let counts = bundle.counts();
     let success = counts.failed == 0 && ingest_failures.is_empty();
     let final_status = if success { "Succeeded" } else { "Failed" };
+    if let Some(env) = environment.take() {
+        if let Err(err) = env.stop().await {
+            tracing::warn!(error = %err, "environment teardown failed");
+        }
+    }
     finalise_run(store, &run.id, run.started_at_ms, bundle.wall_clock_ms, final_status).await?;
 
     if let Some(path) = output_path {
@@ -1220,7 +1331,8 @@ async fn run_scan_for_api(
     // dispatcher per project in sequence on a background task.
     let run = Run::new();
     let triggered_by = source.as_run_record_string();
-    let run_record = build_run_record(&run, &triggered_by);
+    let project_id_for_run = targets.first().map(|(project, _)| project.id.as_str());
+    let run_record = build_run_record(&run, project_id_for_run, "Pentest", &triggered_by);
     store.runs().insert(&run_record).await.map_err(internal_string)?;
 
     let run_id_out = run.id.clone();
@@ -1268,7 +1380,15 @@ async fn upsert_repo_record(
     project_id: &ProjectId,
     now_ms: i64,
 ) -> anyhow::Result<()> {
+    let existing =
+        store.repos().get_by_project_and_name(project_id.as_str(), &ingested.name).await?;
     let rec = RepoRecord {
+        id: existing.as_ref().map(|r| r.id.clone()).unwrap_or_else(|| {
+            format!(
+                "repo-{}",
+                project_id_slug(&format!("{}-{}", project_id.as_str(), ingested.name), now_ms)
+            )
+        }),
         name: ingested.name.clone(),
         project_id: project_id.as_str().to_string(),
         source_kind: source_kind_str(&ingested.source).to_string(),
@@ -1276,9 +1396,9 @@ async fn upsert_repo_record(
         branch: branch_of(&ingested.source),
         auth_ref: auth_descriptor_of(&ingested.source),
         i_own_this: true,
-        last_scan_run_id: None,
+        last_scan_run_id: existing.as_ref().and_then(|r| r.last_scan_run_id.clone()),
         last_scan_finished_at: None,
-        created_at: now_ms,
+        created_at: existing.as_ref().map(|r| r.created_at).unwrap_or(now_ms),
         updated_at: now_ms,
     };
     store.repos().upsert(&rec).await?;
@@ -1295,13 +1415,23 @@ fn project_from_record(rec: ProjectRecord) -> Project {
         description: rec.description,
         target_base_url: rec.target_base_url,
         env_config: rec.env_config_json.as_deref().and_then(|s| serde_json::from_str(s).ok()),
+        runtime_profile: rec.runtime_profile,
+        default_launch_profile: rec.default_launch_profile,
     }
 }
 
 async fn persist_run_results(store: &Store, bundle: &RunBundle<Diag>) -> anyhow::Result<()> {
     let now_ms = now_epoch_ms();
     for repo_bundle in &bundle.per_repo {
-        store.repos().set_last_scan(&repo_bundle.repo, &bundle.run_id, now_ms).await?;
+        store
+            .repos()
+            .set_last_scan_for_project(
+                &bundle.project_id,
+                &repo_bundle.repo,
+                &bundle.run_id,
+                now_ms,
+            )
+            .await?;
         let (outcome_label, reason) = match &repo_bundle.outcome {
             RepoOutcome::Success(_) => (RepoOutcomeLabel::Success, None),
             RepoOutcome::Inconclusive(InconclusiveReason::StaticPassTimeout) => {
@@ -1320,39 +1450,54 @@ async fn persist_run_results(store: &Store, bundle: &RunBundle<Diag>) -> anyhow:
             })
             .await?;
         if let RepoOutcome::Success(diags) = &repo_bundle.outcome {
+            let repo = store
+                .repos()
+                .get_by_project_and_name(&bundle.project_id, &repo_bundle.repo)
+                .await?
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "repo `{}` in project `{}` vanished before signal persistence",
+                        repo_bundle.repo,
+                        bundle.project_id
+                    )
+                })?;
             for diag in diags {
                 let line = i64::from(diag.line);
-                let id = finding_id_hash(
+                let signal_id = nyx_signal_id(
+                    &bundle.project_id,
+                    &repo.id,
                     &repo_bundle.repo,
                     &diag.path,
                     Some(line),
                     &diag.cap,
                     &diag.rule,
                 );
-                let rec = FindingRecord {
-                    id,
+                let (signal_kind, meaningful, suppressed_reason) = classify_nyx_signal(diag);
+                let rec = NyxSignalRecord {
+                    id: signal_id.clone(),
                     run_id: bundle.run_id.clone(),
+                    project_id: bundle.project_id.clone(),
+                    repo_id: repo.id.clone(),
                     repo: repo_bundle.repo.clone(),
                     path: diag.path.clone(),
                     line: Some(line),
                     cap: diag.cap.clone(),
                     rule: diag.rule.clone(),
                     severity: diag.severity.clone(),
-                    status: "Open".to_string(),
-                    finding_origin: "Static".to_string(),
-                    first_seen: now_ms,
-                    last_seen: now_ms,
-                    superseded_by: None,
-                    triage_state: "Open".to_string(),
-                    triage_assigned_to: None,
-                    verdict_blob: Some(render_static_verdict_blob(diag)),
-                    repro_path: None,
-                    attack_provenance: None,
-                    prompt_version: None,
-                    chain_id: None,
-                    spec_id: None,
+                    message: diag.message.clone(),
+                    evidence: Some(render_static_evidence_value(diag)),
+                    signal_kind,
+                    meaningful,
+                    suppressed_reason,
+                    agent_candidate_id: None,
+                    created_at: now_ms,
                 };
-                store.findings().upsert(&rec).await?;
+                store.nyx_signals().insert(&rec).await?;
+                if meaningful {
+                    let candidate = candidate_from_signal(&rec, diag, now_ms);
+                    store.pentest_candidates().insert(&candidate).await?;
+                    store.nyx_signals().set_candidate(&rec.id, &candidate.id).await?;
+                }
             }
         }
     }
@@ -1368,7 +1513,12 @@ async fn persist_run_results(store: &Store, bundle: &RunBundle<Diag>) -> anyhow:
 /// top-level object, which mirrors the upstream `nyx scan` evidence
 /// shape, so we surface the full payload here rather than dropping
 /// everything except `message`.
+#[cfg(test)]
 fn render_static_verdict_blob(diag: &Diag) -> String {
+    serde_json::to_string(&render_static_evidence_value(diag)).expect("serialize verdict blob")
+}
+
+fn render_static_evidence_value(diag: &Diag) -> serde_json::Value {
     let mut value = match diag.evidence.clone() {
         serde_json::Value::Object(map) => serde_json::Value::Object(map),
         serde_json::Value::Null => serde_json::Value::Object(serde_json::Map::new()),
@@ -1384,7 +1534,295 @@ fn render_static_verdict_blob(diag: &Diag) -> String {
             obj.entry("message").or_insert_with(|| serde_json::Value::String(msg.clone()));
         }
     }
-    serde_json::to_string(&value).expect("serialize verdict blob")
+    value
+}
+
+fn nyx_signal_id(
+    project_id: &str,
+    repo_id: &str,
+    repo: &str,
+    path: &str,
+    line: Option<i64>,
+    cap: &str,
+    rule: &str,
+) -> String {
+    format!("sig-{}-{}-{}", project_id, repo_id, finding_id_hash(repo, path, line, cap, rule))
+}
+
+fn classify_nyx_signal(diag: &Diag) -> (String, bool, Option<String>) {
+    let severity = diag.severity.to_ascii_lowercase();
+    let cap_rule = format!("{} {}", diag.cap, diag.rule).to_ascii_lowercase();
+    let signal_kind = if severity == "info" {
+        "info"
+    } else if cap_rule.contains("quality")
+        || cap_rule.contains("lint")
+        || cap_rule.contains("style")
+        || cap_rule.contains("dead-code")
+    {
+        "code-quality"
+    } else {
+        "security"
+    };
+    let meaningful =
+        signal_kind == "security" && matches!(severity.as_str(), "medium" | "high" | "critical");
+    let suppressed_reason = if meaningful {
+        None
+    } else if signal_kind == "code-quality" {
+        Some("code-quality".to_string())
+    } else {
+        Some("below-threshold".to_string())
+    };
+    (signal_kind.to_string(), meaningful, suppressed_reason)
+}
+
+fn candidate_from_signal(
+    signal: &NyxSignalRecord,
+    diag: &Diag,
+    now_ms: i64,
+) -> PentestCandidateRecord {
+    let id = format!("pc-{}", signal.id.trim_start_matches("sig-"));
+    PentestCandidateRecord {
+        id,
+        run_id: signal.run_id.clone(),
+        project_id: signal.project_id.clone(),
+        source: "NyxSignal".to_string(),
+        source_ids: vec![signal.id.clone()],
+        title: diag.message.clone().unwrap_or_else(|| format!("{} in {}", signal.cap, signal.path)),
+        vuln_class: signal.cap.clone(),
+        severity_guess: signal.severity.clone(),
+        affected_components: vec![serde_json::json!({
+            "repo_id": signal.repo_id,
+            "repo": signal.repo,
+            "path": signal.path,
+            "line": signal.line,
+            "rule": signal.rule,
+        })],
+        hypothesis: format!(
+            "Nyx reported a {} signal at {}:{}; live verification is required before surfacing it.",
+            signal.severity,
+            signal.path,
+            signal.line.map(|l: i64| l.to_string()).unwrap_or_else(|| "?".to_string())
+        ),
+        test_plan: "Derive a live HTTP/browser test from the affected route before confirmation."
+            .to_string(),
+        status: "NeedsLiveTest".to_string(),
+        rejection_reason: None,
+        confidence: 0.55,
+        trace_id: None,
+        created_at: now_ms,
+        updated_at: now_ms,
+    }
+}
+
+#[derive(Debug, Default)]
+struct CandidateVerificationReport {
+    confirmed: u32,
+    rejected: u32,
+    inconclusive: u32,
+    errored: u32,
+}
+
+async fn verify_pentest_candidates(
+    store: &Store,
+    run_id: &str,
+    project_id: &str,
+    environment_run_id: &str,
+    target_urls: &[String],
+) -> anyhow::Result<CandidateVerificationReport> {
+    let candidates = store.pentest_candidates().list_by_run(run_id).await?;
+    let mut report = CandidateVerificationReport::default();
+    for candidate in
+        candidates.into_iter().filter(|c| matches!(c.status.as_str(), "Proposed" | "NeedsLiveTest"))
+    {
+        let started = now_epoch_ms();
+        let outcome = execute_candidate_test_plan(&candidate, target_urls).await;
+        let finished = now_epoch_ms();
+        let (status, request, response, oracle, error) = match outcome {
+            Ok(VerificationOutcome::Confirmed { request, response, oracle }) => {
+                report.confirmed += 1;
+                ("Confirmed", Some(request), Some(response), Some(oracle), None)
+            }
+            Ok(VerificationOutcome::Rejected { request, response, oracle }) => {
+                report.rejected += 1;
+                ("Rejected", Some(request), Some(response), Some(oracle), None)
+            }
+            Ok(VerificationOutcome::Inconclusive { reason }) => {
+                report.inconclusive += 1;
+                ("Inconclusive", None, None, None, Some(reason))
+            }
+            Err(err) => {
+                report.errored += 1;
+                ("Errored", None, None, None, Some(err.to_string()))
+            }
+        };
+        let attempt_id = format!("va-{}-{}", candidate.id, finished);
+        let attempt = VerificationAttemptRecord {
+            id: attempt_id.clone(),
+            run_id: run_id.to_string(),
+            project_id: project_id.to_string(),
+            environment_run_id: environment_run_id.to_string(),
+            candidate_id: Some(candidate.id.clone()),
+            chain_id: None,
+            method: "http".to_string(),
+            status: status.to_string(),
+            started_at: started,
+            finished_at: Some(finished),
+            duration_ms: Some(finished - started),
+            request,
+            response,
+            oracle,
+            artifact_paths: Vec::new(),
+            error: error.clone(),
+            replay_stable: None,
+        };
+        store.verification_attempts().insert(&attempt).await?;
+        match status {
+            "Confirmed" => {
+                store
+                    .pentest_candidates()
+                    .set_status(&candidate.id, "Verified", None, finished)
+                    .await?;
+                let vuln = vulnerability_from_candidate(&candidate, &attempt_id, finished);
+                store.verified_vulnerabilities().upsert(&vuln).await?;
+            }
+            "Rejected" => {
+                store
+                    .pentest_candidates()
+                    .set_status(&candidate.id, "Rejected", error.as_deref(), finished)
+                    .await?;
+            }
+            "Errored" => {
+                store
+                    .pentest_candidates()
+                    .set_status(&candidate.id, "Errored", error.as_deref(), finished)
+                    .await?;
+            }
+            _ => {}
+        }
+    }
+    Ok(report)
+}
+
+enum VerificationOutcome {
+    Confirmed { request: serde_json::Value, response: serde_json::Value, oracle: serde_json::Value },
+    Rejected { request: serde_json::Value, response: serde_json::Value, oracle: serde_json::Value },
+    Inconclusive { reason: String },
+}
+
+async fn execute_candidate_test_plan(
+    candidate: &PentestCandidateRecord,
+    target_urls: &[String],
+) -> anyhow::Result<VerificationOutcome> {
+    let Ok(plan) = serde_json::from_str::<serde_json::Value>(&candidate.test_plan) else {
+        return Ok(VerificationOutcome::Inconclusive {
+            reason: "candidate has no executable structured live test plan".to_string(),
+        });
+    };
+    let method = plan.get("method").and_then(|v| v.as_str()).unwrap_or("GET");
+    if !method.eq_ignore_ascii_case("GET") {
+        return Ok(VerificationOutcome::Inconclusive {
+            reason: format!("verification method `{method}` is not implemented yet"),
+        });
+    }
+    let url = plan
+        .get("url")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .or_else(|| target_urls.first().cloned());
+    let Some(url) = url else {
+        return Ok(VerificationOutcome::Inconclusive {
+            reason: "no target URL available for live verification".to_string(),
+        });
+    };
+    if !target_urls.is_empty() && !target_urls.iter().any(|target| url.starts_with(target)) {
+        return Ok(VerificationOutcome::Inconclusive {
+            reason: format!("candidate URL `{url}` is outside configured target URLs"),
+        });
+    }
+    let expect_status = plan.get("expect_status").and_then(|v| v.as_u64()).map(|v| v as u16);
+    let body_contains = plan.get("body_contains").and_then(|v| v.as_str()).map(str::to_string);
+    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(10)).build()?;
+    let resp = client.get(&url).send().await?;
+    let status = resp.status().as_u16();
+    let body = resp.text().await.unwrap_or_default();
+    let status_ok = expect_status.map(|s| s == status).unwrap_or((200..400).contains(&status));
+    let body_ok = body_contains.as_ref().map(|needle| body.contains(needle)).unwrap_or(true);
+    let request = serde_json::json!({ "method": "GET", "url": url });
+    let response = serde_json::json!({
+        "status": status,
+        "body_preview": body.chars().take(512).collect::<String>(),
+    });
+    let oracle = serde_json::json!({
+        "expect_status": expect_status,
+        "body_contains": body_contains,
+        "status_ok": status_ok,
+        "body_ok": body_ok,
+    });
+    if status_ok && body_ok {
+        Ok(VerificationOutcome::Confirmed { request, response, oracle })
+    } else {
+        Ok(VerificationOutcome::Rejected { request, response, oracle })
+    }
+}
+
+fn vulnerability_from_candidate(
+    candidate: &PentestCandidateRecord,
+    attempt_id: &str,
+    now_ms: i64,
+) -> VerifiedVulnerabilityRecord {
+    let source_signal_ids: Vec<String> =
+        candidate.source_ids.iter().filter(|id| id.starts_with("sig-")).cloned().collect();
+    VerifiedVulnerabilityRecord {
+        id: format!("vuln-{}", candidate.id.trim_start_matches("pc-")),
+        run_id: candidate.run_id.clone(),
+        project_id: candidate.project_id.clone(),
+        title: candidate.title.clone(),
+        severity: candidate.severity_guess.clone(),
+        confidence: 0.95,
+        vuln_class: candidate.vuln_class.clone(),
+        affected_components: candidate.affected_components.clone(),
+        business_impact: candidate.hypothesis.clone(),
+        evidence_summary: "Live verification attempt confirmed the candidate against the running local app."
+            .to_string(),
+        repro_steps: candidate.test_plan.clone(),
+        remediation: "Review the affected component and apply the framework-specific fix for this vulnerability class."
+            .to_string(),
+        source_candidate_ids: vec![candidate.id.clone()],
+        source_signal_ids,
+        verification_attempt_ids: vec![attempt_id.to_string()],
+        chain_id: None,
+        status: "Open".to_string(),
+        first_seen: now_ms,
+        last_seen: now_ms,
+    }
+}
+
+fn emit_phase(
+    events: &EventSink,
+    run_id: &str,
+    project_id: &str,
+    phase: &str,
+    started: bool,
+    message: Option<String>,
+) {
+    let data = if started {
+        RunEvent::PhaseStarted {
+            run_id: run_id.to_string(),
+            project_id: project_id.to_string(),
+            phase: phase.to_string(),
+            started_at_ms: now_epoch_ms(),
+        }
+    } else {
+        RunEvent::PhaseFinished {
+            run_id: run_id.to_string(),
+            project_id: project_id.to_string(),
+            phase: phase.to_string(),
+            status: if message.is_some() { "Finished".to_string() } else { "Finished".to_string() },
+            message,
+            finished_at_ms: now_epoch_ms(),
+        }
+    };
+    let _ = events.send(AgentEvent::Run { data });
 }
 
 async fn finalise_run(
@@ -1839,17 +2277,12 @@ async fn project_add_repo(
         eprintln!("project add-repo: project `{project_name}` not found");
         return Ok(ExitCode::from(1));
     };
-    if let Some(existing) = store.repos().get(repo_name).await? {
-        if existing.project_id != project.id {
-            eprintln!(
-                "project add-repo: repo `{repo_name}` already belongs to project `{}`",
-                existing.project_id
-            );
-            return Ok(ExitCode::from(1));
-        }
-    }
+    let existing = store.repos().get_by_project_and_name(&project.id, repo_name).await?;
     let now = now_epoch_ms();
     let rec = RepoRecord {
+        id: existing.as_ref().map(|r| r.id.clone()).unwrap_or_else(|| {
+            format!("repo-{}", project_id_slug(&format!("{}-{repo_name}", project.id), now))
+        }),
         name: repo_name.to_string(),
         project_id: project.id.clone(),
         source_kind: source_kind.to_string(),
@@ -1857,9 +2290,9 @@ async fn project_add_repo(
         branch: branch.map(str::to_string),
         auth_ref: auth.map(str::to_string),
         i_own_this,
-        last_scan_run_id: None,
+        last_scan_run_id: existing.as_ref().and_then(|r| r.last_scan_run_id.clone()),
         last_scan_finished_at: None,
-        created_at: now,
+        created_at: existing.as_ref().map(|r| r.created_at).unwrap_or(now),
         updated_at: now,
     };
     store.repos().upsert(&rec).await?;
@@ -2180,6 +2613,7 @@ mod tests {
         store
             .repos()
             .upsert(&RepoRecord {
+                id: "repo-proj-prism-website".to_string(),
                 name: "website".to_string(),
                 project_id: project.id.clone(),
                 source_kind: "local-path".to_string(),

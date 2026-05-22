@@ -1148,6 +1148,10 @@ async fn apply_chain_outcome(
                     rationale_blob: Some(rationale_blob),
                     attack_provenance: Some(provenance.clone()),
                     prompt_version: Some(prompt_version.clone()),
+                    status: "Proposed".to_string(),
+                    verification_attempt_id: None,
+                    evidence_blob: None,
+                    severity: None,
                 };
                 store.chains().insert(&rec).await?;
                 report.chains_persisted += 1;
@@ -2534,6 +2538,7 @@ pub async fn run_ai_exploration_pass(
     store: &Store,
     bundle: &RunBundle<Diag>,
     workspaces: &HashMap<String, WorkspaceHandle>,
+    target_urls: &[String],
     escape_gate: &dyn EscapeSuiteGate,
     events: EventSink,
     traces_dir: &std::path::Path,
@@ -2568,6 +2573,7 @@ pub async fn run_ai_exploration_pass(
         store,
         bundle,
         workspaces,
+        target_urls,
         escape_gate,
         events,
         traces_dir,
@@ -2587,6 +2593,7 @@ pub(crate) async fn drive_ai_exploration_pass<R: AiRuntime + ?Sized>(
     store: &Store,
     bundle: &RunBundle<Diag>,
     workspaces: &HashMap<String, WorkspaceHandle>,
+    target_urls: &[String],
     escape_gate: &dyn EscapeSuiteGate,
     events: EventSink,
     traces_dir: &std::path::Path,
@@ -2606,6 +2613,7 @@ pub(crate) async fn drive_ai_exploration_pass<R: AiRuntime + ?Sized>(
         let scope = build_exploration_scope(
             &bundle.run_id,
             &repo_bundle.repo,
+            target_urls,
             soft_cap_usd_micros,
             run_cap_usd_micros,
         );
@@ -2647,20 +2655,29 @@ fn make_exploration_tracker(store: &Store, run_cap_usd_micros: i64) -> SharedBud
 fn build_exploration_scope(
     run_id: &str,
     repo: &str,
+    target_urls: &[String],
     soft_cap_usd_micros: i64,
     run_cap_usd_micros: i64,
 ) -> ExplorationScope {
     let mut scope = ExplorationScope::new(run_id, format!("expl-{repo}"));
-    // Endpoint discovery is the env-builder's job. Until that wiring
-    // lands, the agent receives an empty target list and
-    // the prompt instructs it to survey the workspace before probing.
-    // The allowed-host list stays empty by default; operators wire
-    // real hosts through the settings page once it ships.
-    scope.allowed_hosts = Vec::new();
-    scope.target_endpoints = Vec::<ExplorationEndpoint>::new();
+    scope.allowed_hosts = target_urls.iter().filter_map(|url| host_from_url(url)).collect();
+    scope.target_endpoints = target_urls
+        .iter()
+        .map(|url| ExplorationEndpoint {
+            method: "GET".to_string(),
+            url: url.clone(),
+            description: Some("launch profile target".to_string()),
+        })
+        .collect();
     scope.soft_cap_usd_micros = soft_cap_usd_micros;
     scope.run_cap_usd_micros = run_cap_usd_micros;
     scope
+}
+
+fn host_from_url(url: &str) -> Option<String> {
+    let after_scheme = url.split_once("://")?.1;
+    let host_port = after_scheme.split('/').next().unwrap_or(after_scheme);
+    Some(host_port.to_string())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2969,6 +2986,7 @@ mod tests {
     fn make_bundle(run_id: &str, repo: &str, diags: Vec<Diag>) -> RunBundle<Diag> {
         RunBundle {
             run_id: run_id.to_string(),
+            project_id: "default-project".to_string(),
             started_at_ms: 0,
             finished_at_ms: 0,
             wall_clock_ms: 0,
@@ -3082,6 +3100,7 @@ mod tests {
         let workspaces: HashMap<String, WorkspaceHandle> = HashMap::new();
         let bundle = RunBundle::<Diag> {
             run_id: "r".to_string(),
+            project_id: "default-project".to_string(),
             started_at_ms: 0,
             finished_at_ms: 0,
             wall_clock_ms: 0,
@@ -3105,6 +3124,8 @@ mod tests {
         // Seed a run row; budgets FK requires it.
         let run = nyctos_core::store::RunRecord {
             id: "run-bt".to_string(),
+            project_id: None,
+            kind: "Scan".to_string(),
             started_at: 0,
             finished_at: None,
             status: "Running".to_string(),
@@ -3141,6 +3162,8 @@ mod tests {
         let store = Store::open(tmp.path()).await.unwrap();
         let run = nyctos_core::store::RunRecord {
             id: "run-cc".to_string(),
+            project_id: None,
+            kind: "Scan".to_string(),
             started_at: 0,
             finished_at: None,
             status: "Running".to_string(),
@@ -3177,6 +3200,7 @@ mod tests {
         let workspaces: HashMap<String, WorkspaceHandle> = HashMap::new();
         let bundle = RunBundle::<Diag> {
             run_id: "r".to_string(),
+            project_id: "default-project".to_string(),
             started_at_ms: 0,
             finished_at_ms: 0,
             wall_clock_ms: 0,
@@ -3200,6 +3224,7 @@ mod tests {
         let workspaces: HashMap<String, WorkspaceHandle> = HashMap::new();
         let bundle = RunBundle::<Diag> {
             run_id: "r".to_string(),
+            project_id: "default-project".to_string(),
             started_at_ms: 0,
             finished_at_ms: 0,
             wall_clock_ms: 0,
@@ -3301,6 +3326,7 @@ mod tests {
         let workspaces: HashMap<String, WorkspaceHandle> = HashMap::new();
         let bundle = RunBundle::<Diag> {
             run_id: "r".to_string(),
+            project_id: "default-project".to_string(),
             started_at_ms: 0,
             finished_at_ms: 0,
             wall_clock_ms: 0,
@@ -3324,6 +3350,7 @@ mod tests {
         let workspaces: HashMap<String, WorkspaceHandle> = HashMap::new();
         let bundle = RunBundle::<Diag> {
             run_id: "r".to_string(),
+            project_id: "default-project".to_string(),
             started_at_ms: 0,
             finished_at_ms: 0,
             wall_clock_ms: 0,
@@ -3346,6 +3373,7 @@ mod tests {
         let workspaces: HashMap<String, WorkspaceHandle> = HashMap::new();
         let bundle = RunBundle::<Diag> {
             run_id: "r".to_string(),
+            project_id: "default-project".to_string(),
             started_at_ms: 0,
             finished_at_ms: 0,
             wall_clock_ms: 0,
@@ -3363,6 +3391,8 @@ mod tests {
     fn seed_run(id: &str) -> nyctos_core::store::RunRecord {
         nyctos_core::store::RunRecord {
             id: id.to_string(),
+            project_id: None,
+            kind: "Scan".to_string(),
             started_at: 0,
             finished_at: None,
             status: "Running".to_string(),
@@ -3376,6 +3406,7 @@ mod tests {
 
     fn seed_repo(name: &str) -> nyctos_core::store::RepoRecord {
         nyctos_core::store::RepoRecord {
+            id: format!("repo-default-{name}"),
             name: name.to_string(),
             project_id: nyctos_core::store::DEFAULT_PROJECT_ID.to_string(),
             source_kind: "local".to_string(),
@@ -3739,6 +3770,7 @@ mod tests {
         );
         RunBundle {
             run_id: "run-X".to_string(),
+            project_id: "default-project".to_string(),
             started_at_ms: 0,
             finished_at_ms: 0,
             wall_clock_ms: 0,
@@ -3804,6 +3836,7 @@ mod tests {
     fn build_chain_input_returns_none_below_two_nodes() {
         let bundle = RunBundle::<Diag> {
             run_id: "r".to_string(),
+            project_id: "default-project".to_string(),
             started_at_ms: 0,
             finished_at_ms: 0,
             wall_clock_ms: 0,
@@ -4382,6 +4415,7 @@ mod tests {
         let workspaces: HashMap<String, WorkspaceHandle> = HashMap::new();
         let bundle = RunBundle::<Diag> {
             run_id: "r".to_string(),
+            project_id: "default-project".to_string(),
             started_at_ms: 0,
             finished_at_ms: 0,
             wall_clock_ms: 0,
@@ -4405,6 +4439,7 @@ mod tests {
         let workspaces: HashMap<String, WorkspaceHandle> = HashMap::new();
         let bundle = RunBundle::<Diag> {
             run_id: "r".to_string(),
+            project_id: "default-project".to_string(),
             started_at_ms: 0,
             finished_at_ms: 0,
             wall_clock_ms: 0,
@@ -4476,6 +4511,7 @@ mod tests {
     fn empty_bundle(run_id: &str) -> RunBundle<Diag> {
         RunBundle {
             run_id: run_id.to_string(),
+            project_id: "default-project".to_string(),
             started_at_ms: 0,
             finished_at_ms: 0,
             wall_clock_ms: 0,
@@ -5289,6 +5325,7 @@ mod tests {
             &store,
             &bundle,
             &workspaces,
+            &[],
             &gate,
             tx,
             traces_root.path(),
@@ -5367,6 +5404,7 @@ mod tests {
             &store,
             &bundle,
             &workspaces,
+            &[],
             &gate,
             tx,
             traces_root.path(),
@@ -5449,6 +5487,7 @@ mod tests {
             &store,
             &bundle,
             &workspaces,
+            &[],
             &gate,
             tx,
             traces_root.path(),
@@ -5530,6 +5569,7 @@ mod tests {
             &store,
             &bundle,
             &workspaces,
+            &[],
             &gate,
             tx,
             traces_root.path(),
@@ -5598,6 +5638,7 @@ mod tests {
             &store,
             &bundle,
             &workspaces,
+            &[],
             &gate,
             tx,
             traces_root.path(),

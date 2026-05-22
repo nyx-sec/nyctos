@@ -17,6 +17,8 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use crate::product::{ProjectLaunchProfile, ProjectLaunchProfileInput};
+
 /// Stable identifier for a [`Project`]. Wraps the row id from the
 /// `projects` table.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -46,6 +48,68 @@ pub struct Project {
     pub description: Option<String>,
     pub target_base_url: Option<String>,
     pub env_config: Option<serde_json::Value>,
+    pub runtime_profile: Option<ProjectRuntimeProfile>,
+    pub default_launch_profile: Option<ProjectLaunchProfile>,
+}
+
+/// One command in the project runtime profile. Commands are intentionally
+/// stored as operator-authored command lines for this first profile
+/// version; the future launcher can decide whether to execute through a
+/// shell, split arguments, or translate into compose/devcontainer steps.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ProjectRuntimeCommand {
+    pub command: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub repo_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub working_directory: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub timeout_seconds: Option<u64>,
+}
+
+/// Environment variable material for the local test launch. Values are
+/// persisted because this is still a local-dev profile, but callers can
+/// mark sensitive entries so the UI and later loggers know to mask them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ProjectRuntimeEnvVar {
+    pub name: String,
+    pub value: String,
+    #[serde(default)]
+    pub secret: bool,
+}
+
+/// Project-level build/run profile for launching the full local app before
+/// pentest exploration and live verification. Stored in SQLite as JSON for
+/// now, but kept as a typed API contract so the later normalized launch
+/// profile table can reuse the same surface.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ProjectRuntimeProfile {
+    #[serde(default)]
+    pub build_commands: Vec<ProjectRuntimeCommand>,
+    #[serde(default)]
+    pub start_commands: Vec<ProjectRuntimeCommand>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub health_check_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub health_check_command: Option<ProjectRuntimeCommand>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub target_base_url: Option<String>,
+    #[serde(default)]
+    pub allowed_hosts: Vec<String>,
+    #[serde(default)]
+    pub env_vars: Vec<ProjectRuntimeEnvVar>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub env_file: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub timeout_seconds: Option<u64>,
 }
 
 /// On-the-wire shape of a `projects` table row. `created_at` and
@@ -59,6 +123,8 @@ pub struct ProjectRecord {
     pub description: Option<String>,
     pub target_base_url: Option<String>,
     pub env_config_json: Option<String>,
+    pub runtime_profile: Option<ProjectRuntimeProfile>,
+    pub default_launch_profile: Option<ProjectLaunchProfile>,
     #[ts(type = "number")]
     pub created_at: i64,
     #[ts(type = "number")]
@@ -80,6 +146,12 @@ pub struct CreateProjectRequest {
     #[serde(default)]
     #[ts(optional, type = "unknown")]
     pub env_config: Option<serde_json::Value>,
+    #[serde(default)]
+    #[ts(optional)]
+    pub runtime_profile: Option<ProjectRuntimeProfile>,
+    #[serde(default)]
+    #[ts(optional)]
+    pub default_launch_profile: Option<ProjectLaunchProfileInput>,
 }
 
 /// Request body for `PATCH /api/v1/projects/:project_id`. Nullable
@@ -101,6 +173,11 @@ pub struct PatchProjectRequest {
     #[serde(default, with = "tri_state_json")]
     #[ts(optional, type = "unknown")]
     pub env_config: TriStateJson,
+    /// Tri-state runtime profile: omitted = no change, `null` = clear,
+    /// value = set. Serialized into the project row's JSON column.
+    #[serde(default, with = "tri_state_runtime_profile")]
+    #[ts(optional, type = "ProjectRuntimeProfile | null")]
+    pub runtime_profile: TriStateProjectRuntimeProfile,
 }
 
 /// Tri-state wire shape used by [`PatchProjectRequest::env_config`].
@@ -110,6 +187,15 @@ pub enum TriStateJson {
     Unset,
     Null,
     Value(serde_json::Value),
+}
+
+/// Tri-state wire shape used by [`PatchProjectRequest::runtime_profile`].
+#[derive(Debug, Default)]
+pub enum TriStateProjectRuntimeProfile {
+    #[default]
+    Unset,
+    Null,
+    Value(ProjectRuntimeProfile),
 }
 
 /// Distinguish a missing JSON key (outer `None`) from `null`
@@ -156,5 +242,74 @@ pub(crate) mod tri_state_json {
         D: serde::Deserializer<'de>,
     {
         super::deserialize_tri_state_json(d)
+    }
+}
+
+pub fn deserialize_tri_state_runtime_profile<'de, D>(
+    d: D,
+) -> Result<TriStateProjectRuntimeProfile, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<ProjectRuntimeProfile>::deserialize(d)?;
+    Ok(match value {
+        None => TriStateProjectRuntimeProfile::Null,
+        Some(v) => TriStateProjectRuntimeProfile::Value(v),
+    })
+}
+
+pub(crate) mod tri_state_runtime_profile {
+    pub(crate) fn deserialize<'de, D>(
+        d: D,
+    ) -> Result<super::TriStateProjectRuntimeProfile, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        super::deserialize_tri_state_runtime_profile(d)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_profile_deserializes_with_default_arrays() {
+        let parsed: ProjectRuntimeProfile = serde_json::from_str(
+            r#"{
+                "target_base_url": "http://localhost:3000",
+                "health_check_url": "http://localhost:3000/health"
+            }"#,
+        )
+        .expect("profile");
+
+        assert_eq!(parsed.target_base_url.as_deref(), Some("http://localhost:3000"));
+        assert_eq!(parsed.health_check_url.as_deref(), Some("http://localhost:3000/health"));
+        assert!(parsed.build_commands.is_empty());
+        assert!(parsed.start_commands.is_empty());
+        assert!(parsed.allowed_hosts.is_empty());
+        assert!(parsed.env_vars.is_empty());
+    }
+
+    #[test]
+    fn patch_runtime_profile_preserves_tri_state_semantics() {
+        let missing: PatchProjectRequest =
+            serde_json::from_str(r#"{"description":"only desc"}"#).expect("missing");
+        assert!(matches!(missing.runtime_profile, TriStateProjectRuntimeProfile::Unset));
+
+        let cleared: PatchProjectRequest =
+            serde_json::from_str(r#"{"runtime_profile":null}"#).expect("null");
+        assert!(matches!(cleared.runtime_profile, TriStateProjectRuntimeProfile::Null));
+
+        let set: PatchProjectRequest = serde_json::from_str(
+            r#"{"runtime_profile":{"start_commands":[{"command":"npm run dev"}]}}"#,
+        )
+        .expect("set");
+        match set.runtime_profile {
+            TriStateProjectRuntimeProfile::Value(profile) => {
+                assert_eq!(profile.start_commands[0].command, "npm run dev");
+            }
+            other => panic!("expected profile value, got {other:?}"),
+        }
     }
 }

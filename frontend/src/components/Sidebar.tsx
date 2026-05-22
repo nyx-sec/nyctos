@@ -24,12 +24,19 @@ interface NavItem {
 const NAV: NavItem[] = [
   { to: "/setup", label: "Setup", Icon: SetupIcon, group: "primary" },
   { to: "/projects", label: "Projects", Icon: ReposIcon, group: "primary" },
-  { to: "/runs", label: "Runs", Icon: RunsIcon, group: "primary" },
-  { to: "/findings", label: "Findings", Icon: FindingsIcon, group: "primary" },
-  { to: "/chains", label: "Chains", Icon: ChainsIcon, group: "secondary" },
+  { to: "/runs", label: "Pentest Runs", Icon: RunsIcon, group: "primary" },
+  { to: "/vulnerabilities", label: "Vulnerabilities", Icon: FindingsIcon, group: "primary" },
+  {
+    to: "/findings",
+    label: "Legacy Findings",
+    Icon: FindingsIcon,
+    group: "secondary",
+    advanced: true,
+  },
+  { to: "/chains", label: "Raw Chains", Icon: ChainsIcon, group: "secondary", advanced: true },
   {
     to: "/quarantine",
-    label: "Quarantine",
+    label: "Candidate Queue",
     Icon: QuarantineIcon,
     group: "secondary",
     advanced: true,

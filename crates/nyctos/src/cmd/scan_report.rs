@@ -327,6 +327,10 @@ mod tests {
             rationale_blob: Some(r#"{"rationale":"controller reaches sink"}"#.into()),
             attack_provenance: None,
             prompt_version: None,
+            status: "Proposed".into(),
+            verification_attempt_id: None,
+            evidence_blob: None,
+            severity: None,
         };
         let mapped = map_chain(raw);
         assert_eq!(mapped.member_ids, vec!["a", "b", "c"]);
@@ -427,6 +431,10 @@ mod tests {
             rationale_blob: Some("opaque blob".into()),
             attack_provenance: None,
             prompt_version: None,
+            status: "Proposed".into(),
+            verification_attempt_id: None,
+            evidence_blob: None,
+            severity: None,
         };
         let mapped = map_chain(raw);
         assert_eq!(mapped.member_ids, vec!["a", "b", "c"]);

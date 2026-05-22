@@ -3,7 +3,7 @@ import type { ChainRecord } from "@/api/client";
 import { buildChainSummaryIndex, chainLabelFor, extractChainRationale } from "./FindingList";
 
 function makeChain(overrides: Partial<ChainRecord> = {}): ChainRecord {
-  return {
+  const base: ChainRecord = {
     id: "chain-abc",
     run_id: "run-1",
     cross_repo: false,
@@ -11,8 +11,12 @@ function makeChain(overrides: Partial<ChainRecord> = {}): ChainRecord {
     rationale_blob: null,
     attack_provenance: null,
     prompt_version: null,
-    ...overrides,
+    status: "Proposed",
+    verification_attempt_id: null,
+    evidence_blob: null,
+    severity: null,
   };
+  return { ...base, ...overrides };
 }
 
 describe("FindingList chain summary helpers", () => {

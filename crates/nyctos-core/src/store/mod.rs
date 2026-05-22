@@ -23,6 +23,7 @@ pub mod chain;
 pub mod feedback;
 pub mod finding;
 pub mod payload;
+pub mod product;
 pub mod project;
 pub mod repo;
 pub mod repro;
@@ -46,9 +47,15 @@ pub use finding::{
     TriageState,
 };
 pub use payload::{PayloadRecord, PayloadStore};
+pub use product::{
+    EnvironmentRunRecord, EnvironmentRunStore, LaunchProfileStore, NyxSignalRecord, NyxSignalStore,
+    PentestCandidateRecord, PentestCandidateStore, ProjectLaunchProfile, ProjectLaunchProfileInput,
+    VerificationAttemptRecord, VerificationAttemptStore, VerifiedVulnerabilityRecord,
+    VerifiedVulnerabilityStore,
+};
 pub use project::{
-    ProjectPatch, ProjectPatchOption, ProjectRecord, ProjectStore, DEFAULT_PROJECT_ID,
-    DEFAULT_PROJECT_NAME,
+    ProjectPatch, ProjectPatchOption, ProjectRecord, ProjectRuntimeProfile, ProjectStore,
+    DEFAULT_PROJECT_ID, DEFAULT_PROJECT_NAME,
 };
 pub use repo::{PatchOption, RepoPatch, RepoRecord, RepoStore, SourceKind};
 pub use repro::{ReproBundleRecord, ReproBundleStore};
@@ -74,6 +81,8 @@ pub enum StoreError {
     Migrate(#[from] sqlx::migrate::MigrateError),
     #[error("database error: {0}")]
     Sqlx(#[from] sqlx::Error),
+    #[error("invalid project runtime profile JSON: {0}")]
+    ProjectRuntimeProfileJson(#[from] serde_json::Error),
 }
 
 /// Connected, migrated SQLite store. Cloning is cheap (pool is `Arc`).
@@ -232,6 +241,24 @@ impl Store {
     }
     pub fn payloads(&self) -> PayloadStore<'_> {
         PayloadStore::new(&self.pool)
+    }
+    pub fn launch_profiles(&self) -> LaunchProfileStore<'_> {
+        LaunchProfileStore::new(&self.pool)
+    }
+    pub fn environment_runs(&self) -> EnvironmentRunStore<'_> {
+        EnvironmentRunStore::new(&self.pool)
+    }
+    pub fn nyx_signals(&self) -> NyxSignalStore<'_> {
+        NyxSignalStore::new(&self.pool)
+    }
+    pub fn pentest_candidates(&self) -> PentestCandidateStore<'_> {
+        PentestCandidateStore::new(&self.pool)
+    }
+    pub fn verification_attempts(&self) -> VerificationAttemptStore<'_> {
+        VerificationAttemptStore::new(&self.pool)
+    }
+    pub fn verified_vulnerabilities(&self) -> VerifiedVulnerabilityStore<'_> {
+        VerifiedVulnerabilityStore::new(&self.pool)
     }
     pub fn candidate_findings(&self) -> CandidateFindingStore<'_> {
         CandidateFindingStore::new(&self.pool)

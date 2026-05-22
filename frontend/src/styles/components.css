@@ -357,7 +357,9 @@
   color: var(--text);
 }
 
-.setup-field input {
+.setup-field input,
+.setup-field textarea,
+.setup-field select {
   padding: 8px 12px;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-sm);
@@ -366,7 +368,14 @@
   color: var(--text);
 }
 
-.setup-field input:focus {
+.setup-field textarea {
+  min-height: 72px;
+  resize: vertical;
+}
+
+.setup-field input:focus,
+.setup-field textarea:focus,
+.setup-field select:focus {
   outline: none;
   box-shadow: var(--focus-ring);
   border-color: var(--accent);
@@ -602,6 +611,52 @@
   overflow-wrap: anywhere;
 }
 
+.runtime-profile-summary {
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: var(--space-5);
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  margin-top: var(--space-5);
+  padding-top: var(--space-5);
+}
+
+.runtime-profile-summary h3 {
+  color: var(--text);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  margin: 0 0 var(--space-2);
+}
+
+.runtime-profile-summary p {
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.runtime-profile-command-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.runtime-profile-command-list li {
+  align-items: flex-start;
+  color: var(--text-secondary);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.runtime-profile-command-list code {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
 .settings-page {
   display: flex;
   flex-direction: column;
@@ -827,6 +882,10 @@
   max-height: 80vh;
 }
 
+.modal--wide {
+  width: min(920px, 100%);
+}
+
 .modal__header {
   display: flex;
   align-items: center;
@@ -950,6 +1009,95 @@
   margin: 0;
   color: var(--text-secondary);
   font-size: var(--text-sm);
+}
+
+.runtime-profile-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.runtime-profile-section {
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding-top: var(--space-4);
+}
+
+.runtime-profile-section:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.runtime-profile-section h3,
+.runtime-profile-section h4 {
+  color: var(--text);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  margin: 0;
+}
+
+.runtime-profile-section__header {
+  align-items: center;
+  display: flex;
+  gap: var(--space-3);
+  justify-content: space-between;
+}
+
+.runtime-profile-grid {
+  display: grid;
+  gap: var(--space-3);
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+
+.runtime-profile-grid--narrow {
+  grid-template-columns: minmax(160px, 220px) minmax(260px, 1fr);
+}
+
+.runtime-profile-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.runtime-profile-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.runtime-command-fields {
+  align-items: end;
+  display: grid;
+  gap: var(--space-3);
+  grid-template-columns:
+    minmax(220px, 2fr) minmax(120px, 1fr) minmax(140px, 1fr)
+    minmax(96px, 0.7fr);
+}
+
+.runtime-command-fields__command {
+  min-width: 0;
+}
+
+.runtime-profile-row__remove {
+  align-self: flex-start;
+}
+
+.runtime-env-row {
+  align-items: end;
+  display: grid;
+  gap: var(--space-3);
+  grid-template-columns: minmax(140px, 1fr) minmax(180px, 1.4fr) auto auto;
+}
+
+.runtime-env-row__secret {
+  align-items: center;
+  color: var(--text-secondary);
+  display: inline-flex;
+  font-size: var(--text-sm);
+  gap: var(--space-2);
+  min-height: 38px;
 }
 
 /* Findings page */
@@ -1382,6 +1530,34 @@
   gap: var(--space-3);
 }
 
+.live-scan__environment {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-3);
+  margin-bottom: var(--space-4);
+  background: var(--bg-secondary);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.live-scan__env-row {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  align-items: center;
+  gap: var(--space-3);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  min-width: 0;
+}
+
+.live-scan__env-row span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .live-scan__repo {
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -1508,6 +1684,12 @@
 @media (max-width: 760px) {
   .card {
     padding: var(--space-4);
+  }
+
+  .runtime-profile-grid--narrow,
+  .runtime-command-fields,
+  .runtime-env-row {
+    grid-template-columns: 1fr;
   }
 
   .card__header,

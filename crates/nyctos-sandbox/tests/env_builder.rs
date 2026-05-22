@@ -34,6 +34,8 @@ fn make_project(name: &str) -> Project {
         description: None,
         target_base_url: None,
         env_config: None,
+        runtime_profile: None,
+        default_launch_profile: None,
     }
 }
 

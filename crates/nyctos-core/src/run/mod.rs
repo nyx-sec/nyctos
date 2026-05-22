@@ -127,6 +127,7 @@ pub struct CrossRepoEdge {
 #[derive(Debug, Clone)]
 pub struct RunBundle<D> {
     pub run_id: String,
+    pub project_id: String,
     pub started_at_ms: i64,
     pub finished_at_ms: i64,
     pub wall_clock_ms: i64,
@@ -379,6 +380,7 @@ impl RunDispatcher {
 
         RunBundle {
             run_id: run.id,
+            project_id,
             started_at_ms: run.started_at_ms,
             finished_at_ms,
             wall_clock_ms,
@@ -560,6 +562,8 @@ mod tests {
             description: None,
             target_base_url: None,
             env_config: None,
+            runtime_profile: None,
+            default_launch_profile: None,
         }
     }
 

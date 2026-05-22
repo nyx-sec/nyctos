@@ -6,12 +6,12 @@ import { Card } from "@/components/Card";
 import { Spinner } from "@/components/Spinner";
 import { ChainDetail, ChainList } from "@/pages/Chains";
 import { FindingList } from "@/pages/Findings";
-import { Placeholder } from "@/pages/Placeholder";
 import { ProjectDetail, ProjectList } from "@/pages/Projects";
 import { QuarantineList } from "@/pages/Quarantine";
-import { LiveScanView } from "@/pages/Runs";
+import { LiveScanView, RunList } from "@/pages/Runs";
 import { Settings } from "@/pages/Settings";
 import { SetupWizard } from "@/pages/Setup";
+import { VulnerabilityList } from "@/pages/Vulnerabilities";
 
 export function App() {
   const status = useSetupStatus();
@@ -51,11 +51,21 @@ export function App() {
         <Route path="/setup" element={<SetupWizard />} />
         <Route path="/projects" element={<ProjectList />} />
         <Route path="/projects/:projectId" element={<ProjectDetail />} />
-        <Route path="/runs" element={<Placeholder />} />
+        <Route path="/runs" element={<RunList />} />
         <Route path="/runs/:runId" element={<LiveScanView />} />
-        <Route path="/findings" element={<FindingList />} />
-        <Route path="/chains" element={<ChainList />} />
-        <Route path="/chains/:chainId" element={<ChainDetail />} />
+        <Route path="/vulnerabilities" element={<VulnerabilityList />} />
+        <Route
+          path="/findings"
+          element={advanced ? <FindingList /> : <Navigate to="/settings" replace />}
+        />
+        <Route
+          path="/chains"
+          element={advanced ? <ChainList /> : <Navigate to="/settings" replace />}
+        />
+        <Route
+          path="/chains/:chainId"
+          element={advanced ? <ChainDetail /> : <Navigate to="/settings" replace />}
+        />
         <Route
           path="/quarantine"
           element={advanced ? <QuarantineList /> : <Navigate to="/settings" replace />}

@@ -34,7 +34,7 @@ use nyctos_core::report::{
 };
 use nyctos_core::store::{
     CandidateFindingRecord, CandidateStatus, ChainRecord, FindingFilter, FindingRecord,
-    PatchOption, ProjectPatch, ProjectPatchOption, ProjectRecord, RepoPatch, RepoRecord, RunRecord,
+    ProjectPatch, ProjectPatchOption, ProjectRecord, RepoRecord, RunRecord,
 };
 use nyctos_core::{
     now_epoch_ms, parse_git_auth, AiRuntime, IngestError, SandboxBackend, ACCOUNT_AI_ANTHROPIC,
@@ -46,7 +46,11 @@ use nyctos_types::api::{
     SetupStatusResponse,
 };
 use nyctos_types::event::{AgentEvent, ReproEvent, RunEvent};
-use nyctos_types::project::{CreateProjectRequest, PatchProjectRequest, TriStateJson};
+use nyctos_types::product::{ProjectLaunchProfileInput, StartPentestResponse};
+use nyctos_types::project::{
+    CreateProjectRequest, PatchProjectRequest, ProjectRuntimeProfile, TriStateJson,
+    TriStateProjectRuntimeProfile,
+};
 use nyctos_types::repo::{CreateRepoRequest, PatchRepoRequest, TestRepoRequest, TestRepoResponse};
 
 use crate::state::{ApiError, ScanTriggerSource, ServerState};
@@ -73,13 +77,23 @@ pub fn build_router(state: ServerState) -> Router {
             get(get_project_repo).patch(patch_project_repo).delete(delete_project_repo),
         )
         .route("/api/v1/projects/{project_id}/scan", post(scan_project))
+        .route("/api/v1/projects/{project_id}/pentest", post(start_pentest_project))
+        .route(
+            "/api/v1/projects/{project_id}/launch-profile/default",
+            get(get_default_launch_profile).patch(patch_default_launch_profile),
+        )
+        .route("/api/v1/projects/{project_id}/vulnerabilities", get(project_vulnerabilities))
         .route("/api/v1/runs", get(list_runs))
         .route("/api/v1/runs/{id}", get(get_run))
         .route("/api/v1/runs/{id}/findings", get(findings_for_run))
+        .route("/api/v1/runs/{id}/signals", get(signals_for_run))
+        .route("/api/v1/runs/{id}/environment-runs", get(environment_runs_for_run))
+        .route("/api/v1/runs/{id}/vulnerabilities", get(run_vulnerabilities))
         .route("/api/v1/runs/{id}/summary", get(run_summary))
         .route("/api/v1/runs/{id}/summary.md", get(run_summary_markdown))
         .route("/api/v1/runs/{id}/summary.html", get(run_summary_html))
         .route("/api/v1/findings", get(list_findings))
+        .route("/api/v1/vulnerabilities", get(list_vulnerabilities))
         .route("/api/v1/findings/{id}", get(get_finding))
         .route("/api/v1/findings/{id}/repro-bundle", post(create_repro_bundle))
         .route("/api/v1/findings/{id}/repro-bundle.tar", get(download_repro_bundle))
@@ -483,18 +497,42 @@ async fn create_project(
         })?),
         None => None,
     };
-    let rec = s
+    let mut runtime_profile = req.runtime_profile;
+    let target_base_url =
+        normalize_create_target_base_url(req.target_base_url, &mut runtime_profile)?;
+    let launch_profile = req.default_launch_profile.or_else(|| {
+        runtime_profile
+            .as_ref()
+            .map(|profile| launch_profile_input_from_runtime(profile, target_base_url.as_deref()))
+    });
+    let runtime_profile_json = match runtime_profile.as_ref() {
+        Some(v) => Some(serde_json::to_string(v).map_err(|e| {
+            ApiError::BadRequest(format!("runtime_profile must serialize to JSON: {e}"))
+        })?),
+        None => None,
+    };
+    let _rec = s
         .store
         .projects()
-        .create(
+        .create_with_runtime_profile(
             &id,
             name,
             req.description.as_deref(),
-            req.target_base_url.as_deref(),
+            target_base_url.as_deref(),
             env_config_json.as_deref(),
+            runtime_profile_json.as_deref(),
             now_epoch_ms(),
         )
         .await?;
+    if let Some(input) = launch_profile.as_ref() {
+        s.store.launch_profiles().upsert_default(&id, input, now_epoch_ms()).await?;
+    }
+    let rec = s
+        .store
+        .projects()
+        .get(&id)
+        .await?
+        .ok_or_else(|| ApiError::Internal("project vanished after create".to_string()))?;
     Ok(Json(rec))
 }
 
@@ -523,22 +561,68 @@ async fn patch_project(
         })?),
         _ => None,
     };
-    let env_config_patch: ProjectPatchOption<Option<&str>> = match &req.env_config {
+    let env_config_patch: ProjectPatchOption<Option<String>> = match &req.env_config {
         TriStateJson::Unset => ProjectPatchOption::Unset,
         TriStateJson::Null => ProjectPatchOption::Set(None),
-        TriStateJson::Value(_) => ProjectPatchOption::Set(Some(
-            owned_env_json.as_deref().expect("Value branch sets owned_env_json"),
-        )),
+        TriStateJson::Value(_) => ProjectPatchOption::Set(owned_env_json),
+    };
+    let mut target_base_url_patch = project_patch_for(&req.target_base_url);
+    let mut launch_profile_from_runtime: Option<ProjectLaunchProfileInput> = None;
+    let runtime_profile_patch: ProjectPatchOption<Option<String>> = match req.runtime_profile {
+        TriStateProjectRuntimeProfile::Unset => ProjectPatchOption::Unset,
+        TriStateProjectRuntimeProfile::Null => ProjectPatchOption::Set(None),
+        TriStateProjectRuntimeProfile::Value(mut profile) => {
+            match &req.target_base_url {
+                Some(Some(target)) => {
+                    let target = normalize_optional_string(Some(target.as_str()));
+                    if let (Some(profile_target), Some(top_level_target)) = (
+                        normalize_optional_string(profile.target_base_url.as_deref()),
+                        target.as_deref(),
+                    ) {
+                        if profile_target != top_level_target {
+                            return Err(ApiError::BadRequest(
+                                "runtime_profile.target_base_url must match target_base_url"
+                                    .to_string(),
+                            ));
+                        }
+                    }
+                    profile.target_base_url = target;
+                }
+                Some(None) => {
+                    profile.target_base_url = None;
+                }
+                None => {
+                    if let Some(profile_target) =
+                        normalize_optional_string(profile.target_base_url.as_deref())
+                    {
+                        target_base_url_patch = ProjectPatchOption::Set(Some(profile_target));
+                    }
+                }
+            }
+            let runtime_profile_json = serde_json::to_string(&profile).map_err(|e| {
+                ApiError::BadRequest(format!("runtime_profile must serialize to JSON: {e}"))
+            })?;
+            let target = match &req.target_base_url {
+                Some(Some(value)) => Some(value.as_str()),
+                _ => profile.target_base_url.as_deref(),
+            };
+            launch_profile_from_runtime = Some(launch_profile_input_from_runtime(&profile, target));
+            ProjectPatchOption::Set(Some(runtime_profile_json))
+        }
     };
     let now = now_epoch_ms();
     let patch = ProjectPatch {
         description: project_patch_for(&req.description),
-        target_base_url: project_patch_for(&req.target_base_url),
+        target_base_url: target_base_url_patch,
         env_config_json: env_config_patch,
+        runtime_profile_json: runtime_profile_patch,
         updated_at: now,
     };
     if !s.store.projects().update(&id, &patch).await? {
         return Err(ApiError::NotFound(format!("project `{id}` not found")));
+    }
+    if let Some(input) = launch_profile_from_runtime.as_ref() {
+        s.store.launch_profiles().upsert_default(&id, &input, now).await?;
     }
     let row = s
         .store
@@ -549,11 +633,115 @@ async fn patch_project(
     Ok(Json(row))
 }
 
-fn project_patch_for(opt: &Option<Option<String>>) -> ProjectPatchOption<Option<&str>> {
+fn project_patch_for(opt: &Option<Option<String>>) -> ProjectPatchOption<Option<String>> {
     match opt {
         None => ProjectPatchOption::Unset,
         Some(None) => ProjectPatchOption::Set(None),
-        Some(Some(v)) => ProjectPatchOption::Set(Some(v.as_str())),
+        Some(Some(v)) => ProjectPatchOption::Set(Some(v.clone())),
+    }
+}
+
+fn normalize_create_target_base_url(
+    target_base_url: Option<String>,
+    runtime_profile: &mut Option<ProjectRuntimeProfile>,
+) -> Result<Option<String>, ApiError> {
+    let target_base_url = normalize_optional_string(target_base_url.as_deref());
+    let profile_target = runtime_profile
+        .as_ref()
+        .and_then(|profile| normalize_optional_string(profile.target_base_url.as_deref()));
+
+    if let (Some(top_level), Some(profile_target)) = (&target_base_url, &profile_target) {
+        if top_level != profile_target {
+            return Err(ApiError::BadRequest(
+                "runtime_profile.target_base_url must match target_base_url".to_string(),
+            ));
+        }
+    }
+
+    let resolved = target_base_url.or(profile_target);
+    if let Some(profile) = runtime_profile.as_mut() {
+        profile.target_base_url = resolved.clone();
+    }
+    Ok(resolved)
+}
+
+fn normalize_optional_string(value: Option<&str>) -> Option<String> {
+    value.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string)
+}
+
+fn launch_profile_input_from_runtime(
+    profile: &ProjectRuntimeProfile,
+    fallback_target: Option<&str>,
+) -> ProjectLaunchProfileInput {
+    let build_steps = profile.build_commands.iter().map(runtime_command_to_launch_step).collect();
+    let start_steps = profile.start_commands.iter().map(runtime_command_to_launch_step).collect();
+    let mut health_checks = Vec::new();
+    if let Some(url) = normalize_optional_string(profile.health_check_url.as_deref()) {
+        health_checks.push(nyctos_types::product::LaunchHealthCheck {
+            kind: "http".to_string(),
+            url: Some(url),
+            host: None,
+            port: None,
+            command: None,
+            timeout_seconds: profile.timeout_seconds,
+        });
+    }
+    if let Some(cmd) = &profile.health_check_command {
+        health_checks.push(nyctos_types::product::LaunchHealthCheck {
+            kind: "command".to_string(),
+            url: None,
+            host: None,
+            port: None,
+            command: Some(runtime_command_to_launch_step(cmd)),
+            timeout_seconds: cmd.timeout_seconds.or(profile.timeout_seconds),
+        });
+    }
+    let mut target_urls = Vec::new();
+    if let Some(target) = normalize_optional_string(profile.target_base_url.as_deref())
+        .or_else(|| normalize_optional_string(fallback_target))
+    {
+        target_urls.push(target);
+    }
+    let mut env_refs = Vec::new();
+    if let Some(env_file) = normalize_optional_string(profile.env_file.as_deref()) {
+        env_refs.push(nyctos_types::product::LaunchEnvRef {
+            kind: "env-file".to_string(),
+            value: env_file,
+            secret: true,
+        });
+    }
+    for var in &profile.env_vars {
+        if var.name.trim().is_empty() {
+            continue;
+        }
+        env_refs.push(nyctos_types::product::LaunchEnvRef {
+            kind: "env-var".to_string(),
+            value: var.name.trim().to_string(),
+            secret: var.secret,
+        });
+    }
+    ProjectLaunchProfileInput {
+        name: Some("local dev".to_string()),
+        mode: Some("custom-commands".to_string()),
+        build_steps,
+        start_steps,
+        stop_steps: Vec::new(),
+        health_checks,
+        target_urls,
+        env_refs,
+        working_dirs: Vec::new(),
+    }
+}
+
+fn runtime_command_to_launch_step(
+    cmd: &nyctos_types::project::ProjectRuntimeCommand,
+) -> nyctos_types::product::LaunchStep {
+    nyctos_types::product::LaunchStep {
+        command: cmd.command.clone(),
+        repo_id: None,
+        repo_name: cmd.repo_name.clone(),
+        working_directory: cmd.working_directory.clone(),
+        timeout_seconds: cmd.timeout_seconds,
     }
 }
 
@@ -595,6 +783,62 @@ async fn require_project(s: &ServerState, project_id: &str) -> Result<ProjectRec
         .ok_or_else(|| ApiError::NotFound(format!("project `{project_id}` not found")))
 }
 
+async fn get_default_launch_profile(
+    State(s): State<ServerState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<nyctos_types::product::ProjectLaunchProfile>, ApiError> {
+    require_project(&s, &project_id).await?;
+    s.store.launch_profiles().get_default(&project_id).await?.map(Json).ok_or_else(|| {
+        ApiError::NotFound(format!("default launch profile for project `{project_id}` not found"))
+    })
+}
+
+async fn patch_default_launch_profile(
+    State(s): State<ServerState>,
+    Path(project_id): Path<String>,
+    Json(input): Json<ProjectLaunchProfileInput>,
+) -> Result<Json<nyctos_types::product::ProjectLaunchProfile>, ApiError> {
+    require_project(&s, &project_id).await?;
+    validate_launch_profile_input(&input)?;
+    let row = s.store.launch_profiles().upsert_default(&project_id, &input, now_epoch_ms()).await?;
+    Ok(Json(row))
+}
+
+fn validate_launch_profile_input(input: &ProjectLaunchProfileInput) -> Result<(), ApiError> {
+    let mode = input.mode.as_deref().unwrap_or("custom-commands");
+    if !matches!(mode, "custom-commands" | "docker-compose" | "devcontainer") {
+        return Err(ApiError::BadRequest(format!("unknown launch profile mode `{mode}`")));
+    }
+    for url in &input.target_urls {
+        if !is_local_http_url(url) {
+            return Err(ApiError::BadRequest(format!(
+                "target URL `{url}` must be a local http:// or https:// URL"
+            )));
+        }
+    }
+    for check in &input.health_checks {
+        if let Some(url) = check.url.as_deref() {
+            if !is_local_http_url(url) {
+                return Err(ApiError::BadRequest(format!(
+                    "health check URL `{url}` must be local"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn is_local_http_url(raw: &str) -> bool {
+    let raw = raw.trim();
+    if !(raw.starts_with("http://") || raw.starts_with("https://")) {
+        return false;
+    }
+    raw.contains("localhost")
+        || raw.contains("127.0.0.1")
+        || raw.contains("[::1]")
+        || raw.contains("0.0.0.0")
+}
+
 // ---- /projects/:project_id/repos --------------------------------------------
 
 async fn list_project_repos(
@@ -625,7 +869,7 @@ async fn create_project_repo(
     }
     validate_git_auth_ref(&req.source_kind, req.auth_ref.as_deref())?;
     let now = now_epoch_ms();
-    let existing = s.store.repos().get(&req.name).await?;
+    let existing = s.store.repos().get_by_project_and_name(&project_id, &req.name).await?;
     // Refuse re-POST against a different project so an operator cannot
     // silently re-home an existing repo via a same-name create call.
     if let Some(row) = &existing {
@@ -637,6 +881,9 @@ async fn create_project_repo(
         }
     }
     let rec = RepoRecord {
+        id: existing.as_ref().map(|r| r.id.clone()).unwrap_or_else(|| {
+            format!("repo-{}", uuid_like(&format!("{project_id}-{}", req.name), now))
+        }),
         name: req.name,
         project_id: project_id.clone(),
         source_kind: req.source_kind,
@@ -661,7 +908,7 @@ async fn get_project_repo(
     let row = s
         .store
         .repos()
-        .get(&name)
+        .get_by_project_and_name(&project_id, &name)
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("repo `{name}` not found")))?;
     if row.project_id != project_id {
@@ -681,7 +928,7 @@ async fn patch_project_repo(
     let existing = s
         .store
         .repos()
-        .get(&name)
+        .get_by_project_and_name(&project_id, &name)
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("repo `{name}` not found")))?;
     if existing.project_id != project_id {
@@ -707,25 +954,31 @@ async fn patch_project_repo(
     };
     validate_git_auth_ref(effective_source_kind, effective_auth_ref)?;
     let now = now_epoch_ms();
-    let branch = patch_option_for(&req.branch);
-    let auth_ref = patch_option_for(&req.auth_ref);
-    let patch = RepoPatch {
-        name: &name,
-        source_kind: req.source_kind.as_deref(),
-        source_url_or_path: req.source_url_or_path.as_deref(),
-        branch,
-        auth_ref,
-        i_own_this: req.i_own_this,
+    let rec = RepoRecord {
+        id: existing.id,
+        name: existing.name,
+        project_id: existing.project_id,
+        source_kind: req.source_kind.unwrap_or(existing.source_kind),
+        source_url_or_path: req.source_url_or_path.unwrap_or(existing.source_url_or_path),
+        branch: match req.branch {
+            None => existing.branch,
+            Some(next) => next,
+        },
+        auth_ref: match req.auth_ref {
+            None => existing.auth_ref,
+            Some(next) => next,
+        },
+        i_own_this: req.i_own_this.unwrap_or(existing.i_own_this),
+        last_scan_run_id: existing.last_scan_run_id,
+        last_scan_finished_at: existing.last_scan_finished_at,
+        created_at: existing.created_at,
         updated_at: now,
     };
-    let applied = s.store.repos().update(&patch).await?;
-    if !applied {
-        return Err(ApiError::NotFound(format!("repo `{name}` not found")));
-    }
+    s.store.repos().upsert(&rec).await?;
     let row = s
         .store
         .repos()
-        .get(&name)
+        .get_by_project_and_name(&project_id, &name)
         .await?
         .ok_or_else(|| ApiError::Internal("repo vanished after update".to_string()))?;
     Ok(Json(row))
@@ -756,14 +1009,6 @@ fn validate_git_auth_ref(source_kind: &str, auth_ref: Option<&str>) -> Result<()
     Ok(())
 }
 
-fn patch_option_for(opt: &Option<Option<String>>) -> PatchOption<Option<&str>> {
-    match opt {
-        None => PatchOption::Unset,
-        Some(None) => PatchOption::Set(None),
-        Some(Some(v)) => PatchOption::Set(Some(v.as_str())),
-    }
-}
-
 async fn delete_project_repo(
     State(s): State<ServerState>,
     Path((project_id, name)): Path<(String, String)>,
@@ -772,7 +1017,7 @@ async fn delete_project_repo(
     let existing = s
         .store
         .repos()
-        .get(&name)
+        .get_by_project_and_name(&project_id, &name)
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("repo `{name}` not found")))?;
     if existing.project_id != project_id {
@@ -780,7 +1025,7 @@ async fn delete_project_repo(
             "repo `{name}` not found in project `{project_id}`"
         )));
     }
-    let affected = s.store.repos().delete(&name).await?;
+    let affected = s.store.repos().delete_by_project_and_name(&project_id, &name).await?;
     if affected == 0 {
         return Err(ApiError::NotFound(format!("repo `{name}` not found")));
     }
@@ -984,6 +1229,26 @@ async fn scan_project(
     Ok(Json(ScanResponse { run_id }))
 }
 
+async fn start_pentest_project(
+    State(s): State<ServerState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<StartPentestResponse>, ApiError> {
+    let project = require_project(&s, &project_id).await?;
+    let profile = project.default_launch_profile.ok_or_else(|| {
+        ApiError::BadRequest(
+            "configure a default launch profile before starting a pentest".to_string(),
+        )
+    })?;
+    if profile.readiness != "Ready" {
+        return Err(ApiError::BadRequest(format!(
+            "default launch profile is not ready ({})",
+            profile.readiness
+        )));
+    }
+    let run_id = s.scan.trigger(ScanTriggerSource::Manual, Some(project_id), None).await?;
+    Ok(Json(StartPentestResponse { run_id }))
+}
+
 // ---- /runs ------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
@@ -1011,6 +1276,55 @@ async fn get_run(
         .await?
         .map(Json)
         .ok_or_else(|| ApiError::NotFound(format!("run `{id}` not found")))
+}
+
+async fn environment_runs_for_run(
+    State(s): State<ServerState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<nyctos_types::product::EnvironmentRunRecord>>, ApiError> {
+    require_run(&s, &id).await?;
+    Ok(Json(s.store.environment_runs().list_by_run(&id).await?))
+}
+
+#[derive(Debug, Deserialize)]
+struct SignalsQuery {
+    #[serde(default)]
+    meaningful_only: bool,
+}
+
+async fn signals_for_run(
+    State(s): State<ServerState>,
+    Path(id): Path<String>,
+    Query(q): Query<SignalsQuery>,
+) -> Result<Json<Vec<nyctos_types::product::NyxSignalRecord>>, ApiError> {
+    require_run(&s, &id).await?;
+    Ok(Json(s.store.nyx_signals().list_by_run(&id, q.meaningful_only).await?))
+}
+
+async fn run_vulnerabilities(
+    State(s): State<ServerState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<nyctos_types::product::VerifiedVulnerabilityRecord>>, ApiError> {
+    require_run(&s, &id).await?;
+    Ok(Json(s.store.verified_vulnerabilities().list_by_run(&id).await?))
+}
+
+async fn project_vulnerabilities(
+    State(s): State<ServerState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Vec<nyctos_types::product::VerifiedVulnerabilityRecord>>, ApiError> {
+    require_project(&s, &project_id).await?;
+    Ok(Json(s.store.verified_vulnerabilities().list_by_project(&project_id).await?))
+}
+
+async fn list_vulnerabilities(
+    State(s): State<ServerState>,
+) -> Result<Json<Vec<nyctos_types::product::VerifiedVulnerabilityRecord>>, ApiError> {
+    Ok(Json(s.store.verified_vulnerabilities().list_all().await?))
+}
+
+async fn require_run(s: &ServerState, id: &str) -> Result<RunRecord, ApiError> {
+    s.store.runs().get(id).await?.ok_or_else(|| ApiError::NotFound(format!("run `{id}` not found")))
 }
 
 // ---- /findings --------------------------------------------------------------
@@ -1257,6 +1571,8 @@ fn row_passes_filter(record: &FindingRecord, q: &RunFindingsQuery) -> bool {
 #[derive(Debug, Deserialize)]
 struct ChainListQuery {
     run_id: Option<String>,
+    #[serde(default)]
+    include_proposed: bool,
 }
 
 async fn list_chains(
@@ -1266,7 +1582,10 @@ async fn list_chains(
     let run_id = q
         .run_id
         .ok_or_else(|| ApiError::BadRequest("missing `run_id` query parameter".to_string()))?;
-    let rows = s.store.chains().list_by_run(&run_id).await?;
+    let mut rows = s.store.chains().list_by_run(&run_id).await?;
+    if !q.include_proposed {
+        rows.retain(|row| row.status == "Verified");
+    }
     Ok(Json(rows))
 }
 
@@ -1675,6 +1994,9 @@ fn run_matches(ev: &AgentEvent, run_filter: Option<&str>) -> bool {
             RunEvent::Heartbeat { .. } => return true,
             RunEvent::RunStarted { run_id, .. }
             | RunEvent::ProjectStarted { run_id, .. }
+            | RunEvent::PhaseStarted { run_id, .. }
+            | RunEvent::PhaseFinished { run_id, .. }
+            | RunEvent::EnvironmentStatus { run_id, .. }
             | RunEvent::RepoStarted { run_id, .. }
             | RunEvent::RepoStaticDone { run_id, .. }
             | RunEvent::RepoDynamicDone { run_id, .. }

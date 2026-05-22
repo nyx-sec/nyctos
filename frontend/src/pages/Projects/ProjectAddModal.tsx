@@ -1,15 +1,21 @@
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 import { type CreateProjectRequest, useCreateProject } from "@/api/client";
 import { Button } from "@/components/Button";
 import { Spinner } from "@/components/Spinner";
+import {
+  emptyRuntimeProfileDraft,
+  launchProfileDraftError,
+  launchProfileFromDraft,
+  ProjectRuntimeProfileForm,
+  type RuntimeProfileDraft,
+} from "./ProjectRuntimeProfileForm";
 
 interface FormValues {
   name: string;
   description: string;
-  target_base_url: string;
 }
 
 const NAME_PATTERN = /^[A-Za-z0-9_.-]{1,64}$/;
@@ -21,12 +27,6 @@ const schema = z.object({
     .max(64)
     .regex(NAME_PATTERN, "Letters, numbers, dot, dash, underscore (max 64 chars)"),
   description: z.string().max(512),
-  target_base_url: z
-    .string()
-    .refine(
-      (v) => v.trim().length === 0 || /^https?:\/\//.test(v.trim()),
-      "Must start with http:// or https://",
-    ),
 });
 
 interface Props {
@@ -37,11 +37,14 @@ interface Props {
 export function ProjectAddModal({ onClose, onAdded }: Props) {
   const create = useCreateProject();
   const firstInputRef = useRef<HTMLInputElement | null>(null);
+  const [profileDraft, setProfileDraft] = useState<RuntimeProfileDraft>(() =>
+    emptyRuntimeProfileDraft(),
+  );
 
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
     mode: "onBlur",
-    defaultValues: { name: "", description: "", target_base_url: "" },
+    defaultValues: { name: "", description: "" },
   });
   const { register, handleSubmit, formState, setError, reset } = form;
   const nameReg = register("name");
@@ -54,11 +57,20 @@ export function ProjectAddModal({ onClose, onAdded }: Props) {
     const body: CreateProjectRequest = { name: values.name.trim() };
     const description = values.description.trim();
     if (description) body.description = description;
-    const target = values.target_base_url.trim();
-    if (target) body.target_base_url = target;
+    const profileError = launchProfileDraftError(profileDraft);
+    if (profileError) {
+      setError("root", { type: "profile", message: profileError });
+      return;
+    }
+    const launchProfile = launchProfileFromDraft(profileDraft);
+    if (launchProfile) {
+      body.default_launch_profile = launchProfile;
+      if (launchProfile.target_urls[0]) body.target_base_url = launchProfile.target_urls[0];
+    }
     try {
       const row = await create.mutateAsync(body);
       reset();
+      setProfileDraft(emptyRuntimeProfileDraft());
       onAdded(row.name);
     } catch (err) {
       setError("root", { type: "server", message: String(err) });
@@ -75,7 +87,7 @@ export function ProjectAddModal({ onClose, onAdded }: Props) {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="modal">
+      <div className="modal modal--wide">
         <header className="modal__header">
           <h2 id="project-add-title" className="modal__title">
             New project
@@ -122,21 +134,7 @@ export function ProjectAddModal({ onClose, onAdded }: Props) {
               <FieldError msg={formState.errors.description?.message} />
             </div>
 
-            <div className="setup-field">
-              <label htmlFor="project-target">Target base URL (optional)</label>
-              <input
-                id="project-target"
-                type="text"
-                autoComplete="off"
-                placeholder="http://localhost:3000"
-                {...register("target_base_url")}
-              />
-              <p className="setup-hint">
-                Used by the sandbox env-builder to point chains at the right origin when the project
-                spans multiple repos.
-              </p>
-              <FieldError msg={formState.errors.target_base_url?.message} />
-            </div>
+            <ProjectRuntimeProfileForm value={profileDraft} onChange={setProfileDraft} />
 
             {formState.errors.root && (
               <p className="repo-add__error" role="alert">

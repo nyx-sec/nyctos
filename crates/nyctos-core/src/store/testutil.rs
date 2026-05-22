@@ -25,6 +25,7 @@ pub fn sample_repo(name: &str) -> RepoRecord {
 
 pub fn sample_repo_for_project(name: &str, project_id: &str) -> RepoRecord {
     RepoRecord {
+        id: format!("repo-{project_id}-{name}"),
         name: name.to_string(),
         project_id: project_id.to_string(),
         source_kind: "local".to_string(),
@@ -42,6 +43,8 @@ pub fn sample_repo_for_project(name: &str, project_id: &str) -> RepoRecord {
 pub fn sample_run(id: &str) -> RunRecord {
     RunRecord {
         id: id.to_string(),
+        project_id: None,
+        kind: "Scan".to_string(),
         started_at: 2_000,
         finished_at: None,
         status: "Running".to_string(),
@@ -104,6 +107,10 @@ pub fn sample_chain(id: &str, run_id: &str, members: &[&str]) -> ChainRecord {
         rationale_blob: Some("{\"because\":\"chain\"}".to_string()),
         attack_provenance: None,
         prompt_version: Some("p:0002".to_string()),
+        status: "Proposed".to_string(),
+        verification_attempt_id: None,
+        evidence_blob: None,
+        severity: None,
     }
 }
 

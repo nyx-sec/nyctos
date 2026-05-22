@@ -1,7 +1,7 @@
 //! `repos` table - one row per repository the agent is configured to scan.
 
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
+use sqlx::{Row, SqlitePool};
 
 pub use nyctos_types::repo::RepoRecord;
 
@@ -61,14 +61,13 @@ impl<'a> RepoStore<'a> {
 
     pub async fn upsert(&self, r: &RepoRecord) -> Result<(), StoreError> {
         let i_own = i64::from(r.i_own_this);
-        sqlx::query!(
+        sqlx::query(
             r#"
             INSERT INTO repos (
-                name, project_id, source_kind, source_url_or_path, branch, auth_ref,
+                id, name, project_id, source_kind, source_url_or_path, branch, auth_ref,
                 i_own_this, last_scan_run_id, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(name) DO UPDATE SET
-                project_id         = excluded.project_id,
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(project_id, name) DO UPDATE SET
                 source_kind        = excluded.source_kind,
                 source_url_or_path = excluded.source_url_or_path,
                 branch             = excluded.branch,
@@ -77,132 +76,139 @@ impl<'a> RepoStore<'a> {
                 last_scan_run_id   = excluded.last_scan_run_id,
                 updated_at         = excluded.updated_at
             "#,
-            r.name,
-            r.project_id,
-            r.source_kind,
-            r.source_url_or_path,
-            r.branch,
-            r.auth_ref,
-            i_own,
-            r.last_scan_run_id,
-            r.created_at,
-            r.updated_at,
         )
+        .bind(&r.id)
+        .bind(&r.name)
+        .bind(&r.project_id)
+        .bind(&r.source_kind)
+        .bind(&r.source_url_or_path)
+        .bind(&r.branch)
+        .bind(&r.auth_ref)
+        .bind(i_own)
+        .bind(&r.last_scan_run_id)
+        .bind(r.created_at)
+        .bind(r.updated_at)
         .execute(self.pool)
         .await?;
         Ok(())
     }
 
+    /// Legacy name lookup. If duplicate display names exist across
+    /// projects, this returns the oldest matching row. New code should
+    /// prefer [`Self::get_by_project_and_name`] or [`Self::get_by_id`].
     pub async fn get(&self, name: &str) -> Result<Option<RepoRecord>, StoreError> {
-        let row = sqlx::query!(
+        let row = sqlx::query(
             r#"
-            SELECT repos.name AS "name!", repos.project_id AS "project_id!",
-                   repos.source_kind AS "source_kind!",
-                   repos.source_url_or_path AS "source_url_or_path!",
+            SELECT repos.id, repos.name, repos.project_id,
+                   repos.source_kind,
+                   repos.source_url_or_path,
                    repos.branch, repos.auth_ref,
-                   repos.i_own_this AS "i_own_this!: i64",
+                   repos.i_own_this,
                    repos.last_scan_run_id,
-                   runs.finished_at AS "last_scan_finished_at: i64",
-                   repos.created_at AS "created_at!: i64",
-                   repos.updated_at AS "updated_at!: i64"
+                   runs.finished_at AS last_scan_finished_at,
+                   repos.created_at,
+                   repos.updated_at
             FROM repos
             LEFT JOIN runs ON runs.id = repos.last_scan_run_id
             WHERE repos.name = ?
+            ORDER BY repos.created_at
+            LIMIT 1
             "#,
-            name
         )
+        .bind(name)
         .fetch_optional(self.pool)
         .await?;
-        Ok(row.map(|r| RepoRecord {
-            name: r.name,
-            project_id: r.project_id,
-            source_kind: r.source_kind,
-            source_url_or_path: r.source_url_or_path,
-            branch: r.branch,
-            auth_ref: r.auth_ref,
-            i_own_this: r.i_own_this != 0,
-            last_scan_run_id: r.last_scan_run_id,
-            last_scan_finished_at: r.last_scan_finished_at,
-            created_at: r.created_at,
-            updated_at: r.updated_at,
-        }))
+        row.map(row_to_repo_record).transpose()
+    }
+
+    pub async fn get_by_id(&self, id: &str) -> Result<Option<RepoRecord>, StoreError> {
+        let row = sqlx::query(
+            r#"
+            SELECT repos.id, repos.name, repos.project_id,
+                   repos.source_kind, repos.source_url_or_path,
+                   repos.branch, repos.auth_ref, repos.i_own_this,
+                   repos.last_scan_run_id, runs.finished_at AS last_scan_finished_at,
+                   repos.created_at, repos.updated_at
+            FROM repos
+            LEFT JOIN runs ON runs.id = repos.last_scan_run_id
+            WHERE repos.id = ?
+            "#,
+        )
+        .bind(id)
+        .fetch_optional(self.pool)
+        .await?;
+        row.map(row_to_repo_record).transpose()
+    }
+
+    pub async fn get_by_project_and_name(
+        &self,
+        project_id: &str,
+        name: &str,
+    ) -> Result<Option<RepoRecord>, StoreError> {
+        let row = sqlx::query(
+            r#"
+            SELECT repos.id, repos.name, repos.project_id,
+                   repos.source_kind, repos.source_url_or_path,
+                   repos.branch, repos.auth_ref, repos.i_own_this,
+                   repos.last_scan_run_id, runs.finished_at AS last_scan_finished_at,
+                   repos.created_at, repos.updated_at
+            FROM repos
+            LEFT JOIN runs ON runs.id = repos.last_scan_run_id
+            WHERE repos.project_id = ? AND repos.name = ?
+            "#,
+        )
+        .bind(project_id)
+        .bind(name)
+        .fetch_optional(self.pool)
+        .await?;
+        row.map(row_to_repo_record).transpose()
     }
 
     pub async fn list(&self) -> Result<Vec<RepoRecord>, StoreError> {
-        let rows = sqlx::query!(
+        let rows = sqlx::query(
             r#"
-            SELECT repos.name AS "name!", repos.project_id AS "project_id!",
-                   repos.source_kind AS "source_kind!",
-                   repos.source_url_or_path AS "source_url_or_path!",
+            SELECT repos.id, repos.name, repos.project_id,
+                   repos.source_kind,
+                   repos.source_url_or_path,
                    repos.branch, repos.auth_ref,
-                   repos.i_own_this AS "i_own_this!: i64",
+                   repos.i_own_this,
                    repos.last_scan_run_id,
-                   runs.finished_at AS "last_scan_finished_at: i64",
-                   repos.created_at AS "created_at!: i64",
-                   repos.updated_at AS "updated_at!: i64"
+                   runs.finished_at AS last_scan_finished_at,
+                   repos.created_at,
+                   repos.updated_at
             FROM repos
             LEFT JOIN runs ON runs.id = repos.last_scan_run_id
-            ORDER BY repos.name
-            "#
+            ORDER BY repos.name, repos.project_id
+            "#,
         )
         .fetch_all(self.pool)
         .await?;
-        Ok(rows
-            .into_iter()
-            .map(|r| RepoRecord {
-                name: r.name,
-                project_id: r.project_id,
-                source_kind: r.source_kind,
-                source_url_or_path: r.source_url_or_path,
-                branch: r.branch,
-                auth_ref: r.auth_ref,
-                i_own_this: r.i_own_this != 0,
-                last_scan_run_id: r.last_scan_run_id,
-                last_scan_finished_at: r.last_scan_finished_at,
-                created_at: r.created_at,
-                updated_at: r.updated_at,
-            })
-            .collect())
+        rows.into_iter().map(row_to_repo_record).collect()
     }
 
     /// Repos attached to a specific project, alphabetical by name.
     pub async fn list_by_project(&self, project_id: &str) -> Result<Vec<RepoRecord>, StoreError> {
-        let rows = sqlx::query!(
+        let rows = sqlx::query(
             r#"
-            SELECT repos.name AS "name!", repos.project_id AS "project_id!",
-                   repos.source_kind AS "source_kind!",
-                   repos.source_url_or_path AS "source_url_or_path!",
+            SELECT repos.id, repos.name, repos.project_id,
+                   repos.source_kind,
+                   repos.source_url_or_path,
                    repos.branch, repos.auth_ref,
-                   repos.i_own_this AS "i_own_this!: i64",
+                   repos.i_own_this,
                    repos.last_scan_run_id,
-                   runs.finished_at AS "last_scan_finished_at: i64",
-                   repos.created_at AS "created_at!: i64",
-                   repos.updated_at AS "updated_at!: i64"
+                   runs.finished_at AS last_scan_finished_at,
+                   repos.created_at,
+                   repos.updated_at
             FROM repos
             LEFT JOIN runs ON runs.id = repos.last_scan_run_id
             WHERE repos.project_id = ?
             ORDER BY repos.name
             "#,
-            project_id
         )
+        .bind(project_id)
         .fetch_all(self.pool)
         .await?;
-        Ok(rows
-            .into_iter()
-            .map(|r| RepoRecord {
-                name: r.name,
-                project_id: r.project_id,
-                source_kind: r.source_kind,
-                source_url_or_path: r.source_url_or_path,
-                branch: r.branch,
-                auth_ref: r.auth_ref,
-                i_own_this: r.i_own_this != 0,
-                last_scan_run_id: r.last_scan_run_id,
-                last_scan_finished_at: r.last_scan_finished_at,
-                created_at: r.created_at,
-                updated_at: r.updated_at,
-            })
-            .collect())
+        rows.into_iter().map(row_to_repo_record).collect()
     }
 
     /// Partial update of mutable repo fields. Returns `Ok(false)` if no
@@ -214,6 +220,7 @@ impl<'a> RepoStore<'a> {
             return Ok(false);
         };
         let merged = RepoRecord {
+            id: existing.id,
             name: existing.name,
             project_id: existing.project_id,
             source_kind: patch.source_kind.map(str::to_string).unwrap_or(existing.source_kind),
@@ -245,21 +252,89 @@ impl<'a> RepoStore<'a> {
         run_id: &str,
         updated_at: i64,
     ) -> Result<(), StoreError> {
-        sqlx::query!(
-            "UPDATE repos SET last_scan_run_id = ?, updated_at = ? WHERE name = ?",
-            run_id,
-            updated_at,
-            name
+        sqlx::query("UPDATE repos SET last_scan_run_id = ?, updated_at = ? WHERE name = ?")
+            .bind(run_id)
+            .bind(updated_at)
+            .bind(name)
+            .execute(self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn set_last_scan_for_project(
+        &self,
+        project_id: &str,
+        name: &str,
+        run_id: &str,
+        updated_at: i64,
+    ) -> Result<(), StoreError> {
+        sqlx::query(
+            "UPDATE repos SET last_scan_run_id = ?, updated_at = ? WHERE project_id = ? AND name = ?",
         )
+        .bind(run_id)
+        .bind(updated_at)
+        .bind(project_id)
+        .bind(name)
         .execute(self.pool)
         .await?;
         Ok(())
     }
 
     pub async fn delete(&self, name: &str) -> Result<u64, StoreError> {
-        let res = sqlx::query!("DELETE FROM repos WHERE name = ?", name).execute(self.pool).await?;
+        let res =
+            sqlx::query("DELETE FROM repos WHERE name = ?").bind(name).execute(self.pool).await?;
+        self.delete_legacy_name_refs_if_orphaned(name).await?;
         Ok(res.rows_affected())
     }
+
+    pub async fn delete_by_project_and_name(
+        &self,
+        project_id: &str,
+        name: &str,
+    ) -> Result<u64, StoreError> {
+        let res = sqlx::query("DELETE FROM repos WHERE project_id = ? AND name = ?")
+            .bind(project_id)
+            .bind(name)
+            .execute(self.pool)
+            .await?;
+        self.delete_legacy_name_refs_if_orphaned(name).await?;
+        Ok(res.rows_affected())
+    }
+
+    async fn delete_legacy_name_refs_if_orphaned(&self, name: &str) -> Result<(), StoreError> {
+        let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM repos WHERE name = ?")
+            .bind(name)
+            .fetch_one(self.pool)
+            .await?;
+        if remaining == 0 {
+            sqlx::query("DELETE FROM schedules WHERE repo = ?")
+                .bind(name)
+                .execute(self.pool)
+                .await?;
+            sqlx::query("DELETE FROM webhooks WHERE repo = ?")
+                .bind(name)
+                .execute(self.pool)
+                .await?;
+        }
+        Ok(())
+    }
+}
+
+fn row_to_repo_record(row: sqlx::sqlite::SqliteRow) -> Result<RepoRecord, StoreError> {
+    Ok(RepoRecord {
+        id: row.try_get("id")?,
+        name: row.try_get("name")?,
+        project_id: row.try_get("project_id")?,
+        source_kind: row.try_get("source_kind")?,
+        source_url_or_path: row.try_get("source_url_or_path")?,
+        branch: row.try_get("branch")?,
+        auth_ref: row.try_get("auth_ref")?,
+        i_own_this: row.try_get::<i64, _>("i_own_this")? != 0,
+        last_scan_run_id: row.try_get("last_scan_run_id")?,
+        last_scan_finished_at: row.try_get("last_scan_finished_at")?,
+        created_at: row.try_get::<i64, _>("created_at")?,
+        updated_at: row.try_get::<i64, _>("updated_at")?,
+    })
 }
 
 #[cfg(test)]

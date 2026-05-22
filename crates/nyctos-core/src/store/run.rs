@@ -1,7 +1,7 @@
 //! `runs` table - one row per scan execution.
 
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
+use sqlx::{Row, SqlitePool};
 
 pub use nyctos_types::run::RunRecord;
 
@@ -59,64 +59,64 @@ impl<'a> RunStore<'a> {
     }
 
     pub async fn insert(&self, r: &RunRecord) -> Result<(), StoreError> {
-        sqlx::query!(
+        sqlx::query(
             r#"
             INSERT INTO runs (
-                id, started_at, finished_at, status, triggered_by,
+                id, project_id, kind, started_at, finished_at, status, triggered_by,
                 git_ref, parent_run_id, wall_clock_ms, total_ai_spend_usd_micros
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
-            r.id,
-            r.started_at,
-            r.finished_at,
-            r.status,
-            r.triggered_by,
-            r.git_ref,
-            r.parent_run_id,
-            r.wall_clock_ms,
-            r.total_ai_spend_usd_micros,
         )
+        .bind(&r.id)
+        .bind(&r.project_id)
+        .bind(if r.kind.is_empty() { "Scan" } else { r.kind.as_str() })
+        .bind(r.started_at)
+        .bind(r.finished_at)
+        .bind(&r.status)
+        .bind(&r.triggered_by)
+        .bind(&r.git_ref)
+        .bind(&r.parent_run_id)
+        .bind(r.wall_clock_ms)
+        .bind(r.total_ai_spend_usd_micros)
         .execute(self.pool)
         .await?;
         Ok(())
     }
 
     pub async fn get(&self, id: &str) -> Result<Option<RunRecord>, StoreError> {
-        let row = sqlx::query_as!(
-            RunRecord,
+        let row = sqlx::query(
             r#"
-            SELECT id            AS "id!",
-                   started_at    AS "started_at!: i64",
-                   finished_at, status         AS "status!",
-                   triggered_by  AS "triggered_by!",
+            SELECT id, project_id, kind,
+                   started_at,
+                   finished_at, status,
+                   triggered_by,
                    git_ref, parent_run_id, wall_clock_ms,
-                   total_ai_spend_usd_micros AS "total_ai_spend_usd_micros!: i64"
+                   total_ai_spend_usd_micros
             FROM runs WHERE id = ?
             "#,
-            id
         )
+        .bind(id)
         .fetch_optional(self.pool)
         .await?;
-        Ok(row)
+        row.map(row_to_run_record).transpose()
     }
 
     pub async fn list_by_status(&self, status: &str) -> Result<Vec<RunRecord>, StoreError> {
-        let rows = sqlx::query_as!(
-            RunRecord,
+        let rows = sqlx::query(
             r#"
-            SELECT id            AS "id!",
-                   started_at    AS "started_at!: i64",
-                   finished_at, status         AS "status!",
-                   triggered_by  AS "triggered_by!",
+            SELECT id, project_id, kind,
+                   started_at,
+                   finished_at, status,
+                   triggered_by,
                    git_ref, parent_run_id, wall_clock_ms,
-                   total_ai_spend_usd_micros AS "total_ai_spend_usd_micros!: i64"
+                   total_ai_spend_usd_micros
             FROM runs WHERE status = ? ORDER BY started_at DESC
             "#,
-            status
         )
+        .bind(status)
         .fetch_all(self.pool)
         .await?;
-        Ok(rows)
+        rows.into_iter().map(row_to_run_record).collect()
     }
 
     pub async fn finish(
@@ -126,7 +126,7 @@ impl<'a> RunStore<'a> {
         status: &str,
         wall_clock_ms: i64,
     ) -> Result<(), StoreError> {
-        sqlx::query!(
+        sqlx::query(
             r#"
             UPDATE runs
                SET finished_at   = ?,
@@ -134,22 +134,22 @@ impl<'a> RunStore<'a> {
                    wall_clock_ms = ?
              WHERE id = ?
             "#,
-            finished_at,
-            status,
-            wall_clock_ms,
-            id,
         )
+        .bind(finished_at)
+        .bind(status)
+        .bind(wall_clock_ms)
+        .bind(id)
         .execute(self.pool)
         .await?;
         Ok(())
     }
 
     pub async fn add_spend(&self, id: &str, micros: i64) -> Result<(), StoreError> {
-        sqlx::query!(
+        sqlx::query(
             "UPDATE runs SET total_ai_spend_usd_micros = total_ai_spend_usd_micros + ? WHERE id = ?",
-            micros,
-            id
         )
+        .bind(micros)
+        .bind(id)
         .execute(self.pool)
         .await?;
         Ok(())
@@ -162,24 +162,40 @@ impl<'a> RunStore<'a> {
         run_id: &str,
         started_at: i64,
     ) -> Result<Option<String>, StoreError> {
-        let row = sqlx::query!(
+        let row = sqlx::query(
             r#"
-            SELECT id AS "id!" FROM runs
+            SELECT id FROM runs
             WHERE started_at < ? AND id != ?
             ORDER BY started_at DESC LIMIT 1
             "#,
-            started_at,
-            run_id,
         )
+        .bind(started_at)
+        .bind(run_id)
         .fetch_optional(self.pool)
         .await?;
-        Ok(row.map(|r| r.id))
+        Ok(row.map(|r| r.get("id")))
     }
 
     pub async fn delete(&self, id: &str) -> Result<u64, StoreError> {
-        let res = sqlx::query!("DELETE FROM runs WHERE id = ?", id).execute(self.pool).await?;
+        let res = sqlx::query("DELETE FROM runs WHERE id = ?").bind(id).execute(self.pool).await?;
         Ok(res.rows_affected())
     }
+}
+
+fn row_to_run_record(row: sqlx::sqlite::SqliteRow) -> Result<RunRecord, StoreError> {
+    Ok(RunRecord {
+        id: row.try_get("id")?,
+        project_id: row.try_get("project_id")?,
+        kind: row.try_get("kind")?,
+        started_at: row.try_get::<i64, _>("started_at")?,
+        finished_at: row.try_get("finished_at")?,
+        status: row.try_get("status")?,
+        triggered_by: row.try_get("triggered_by")?,
+        git_ref: row.try_get("git_ref")?,
+        parent_run_id: row.try_get("parent_run_id")?,
+        wall_clock_ms: row.try_get("wall_clock_ms")?,
+        total_ai_spend_usd_micros: row.try_get::<i64, _>("total_ai_spend_usd_micros")?,
+    })
 }
 
 #[cfg(test)]
