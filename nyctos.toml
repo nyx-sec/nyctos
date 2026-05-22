@@ -29,6 +29,9 @@ on_pr = false
 
 [run]
 replay_stable_check = false
+enable_zap_baseline = true
+enable_nuclei = true
+enable_aggressive_sqlmap = false
 
 # Declare projects below. Each project groups one or more repos.
 # Scan, run dispatcher, sandbox env-builder, and chain runner all

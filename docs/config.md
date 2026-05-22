@@ -28,7 +28,7 @@ sections parsed.
 | `[ui]`           | HTTP listen address, browser auto-open.                          |
 | `[triggers]`     | Push/PR triggers + webhook secret + branch filter.               |
 | `[nyx]`          | Override the discovered `nyx` binary or its minimum version.     |
-| `[run]`          | Verifier knobs (e.g. replay stability check).                    |
+| `[run]`          | Verifier knobs and optional scanner orchestration.                |
 | `[[project]]`    | One block per product; declares repos.                           |
 | `[[schedule]]`   | One cron-driven scan entry; repeated for multiple schedules.     |
 
@@ -135,9 +135,25 @@ See `docs/triggers/webhook.md` for the full handler contract.
 
 ## `[run]`
 
-| Field                  | Type | Default | Description                                                                                              |
-|------------------------|------|---------|----------------------------------------------------------------------------------------------------------|
-| `replay_stable_check`  | bool | `false` | When `true`, the deterministic payload runner re-executes each `(vuln, benign)` pair a second time and stamps `replay_stable` on the resulting `VerifyResult`. Adds roughly 2x cost per verify. |
+| Field                              | Type | Default | Description                                                                                              |
+|------------------------------------|------|---------|----------------------------------------------------------------------------------------------------------|
+| `replay_stable_check`              | bool | `false` | When `true`, the deterministic payload runner re-executes each `(vuln, benign)` pair a second time and stamps `replay_stable` on the resulting `VerifyResult`. Adds roughly 2x cost per verify. |
+| `allow_state_changing_live_probes` | bool | `false` | Allow live verification plans to use HTTP methods likely to mutate target state (`POST`, `PUT`, `PATCH`, `DELETE`). |
+| `browser_checks_enabled`           | bool | `false` | Allow browser-driven verification and auth-session acquisition when the local runtime is available. |
+| `enable_zap_baseline`              | bool | `true`  | Run `zap-baseline.py` against live target URLs when the binary is present on PATH. Missing binaries are skipped. |
+| `enable_nuclei`                    | bool | `true`  | Run `nuclei` against live target URLs when the binary is present on PATH. Missing binaries are skipped. |
+| `enable_aggressive_sqlmap`         | bool | `false` | Reserved for explicit sqlmap use. sqlmap is not auto-enabled because it is aggressive and has GPL/proprietary-integration constraints. |
+
+Optional scanner findings are persisted as pentest candidates and must
+still pass live verification before surfacing as verified vulnerabilities.
+Nyctos does not bundle these scanners; it invokes local executables on
+PATH when available.
+
+| Tool | Upstream license | Commercial use note |
+|------|------------------|---------------------|
+| OWASP ZAP / `zap-baseline.py` | Apache-2.0 | Generally compatible with commercial products when notices and other Apache-2.0 conditions are preserved. |
+| Nuclei | MIT | Generally compatible with commercial products when the MIT copyright and permission notice are preserved. |
+| sqlmap | GPL-2.0-or-later with project clarifications / optional commercial license | Internal use is usually different from redistribution, but embedding or parsing sqlmap results in proprietary software is treated by sqlmap upstream as requiring GPL compliance or a separate sqlmap commercial license. Get legal review before shipping this path. |
 
 ## `[[project]]`
 

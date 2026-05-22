@@ -488,8 +488,12 @@ pub enum EnvPullPolicy {
     Never,
 }
 
+fn default_optional_scanner_enabled() -> bool {
+    true
+}
+
 /// `[run]` section: verifier knobs.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RunConfig {
     /// When `true`, the deterministic payload runner re-executes each
@@ -508,18 +512,32 @@ pub struct RunConfig {
     /// an explicit reason.
     #[serde(default)]
     pub browser_checks_enabled: bool,
-    /// Optional passive ZAP baseline orchestration. The binary is only
-    /// used when present on PATH; findings become candidates.
-    #[serde(default)]
+    /// Optional passive ZAP baseline orchestration. Enabled by default,
+    /// but the binary is only used when present on PATH; findings become
+    /// candidates.
+    #[serde(default = "default_optional_scanner_enabled")]
     pub enable_zap_baseline: bool,
-    /// Optional Nuclei orchestration. The binary is only used when
-    /// present on PATH; findings become candidates.
-    #[serde(default)]
+    /// Optional Nuclei orchestration. Enabled by default, but the binary
+    /// is only used when present on PATH; findings become candidates.
+    #[serde(default = "default_optional_scanner_enabled")]
     pub enable_nuclei: bool,
     /// Aggressive external tooling is off unless this explicit gate is
     /// true. Nyctos does not run sqlmap by default.
     #[serde(default)]
     pub enable_aggressive_sqlmap: bool,
+}
+
+impl Default for RunConfig {
+    fn default() -> Self {
+        Self {
+            replay_stable_check: false,
+            allow_state_changing_live_probes: false,
+            browser_checks_enabled: false,
+            enable_zap_baseline: true,
+            enable_nuclei: true,
+            enable_aggressive_sqlmap: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -707,6 +725,14 @@ mod tests {
         let rendered = cfg.to_toml_string().expect("serialise defaults");
         let parsed = Config::parse(&rendered, &PathBuf::from("<test>")).expect("parse defaults");
         assert_eq!(parsed, cfg);
+    }
+
+    #[test]
+    fn run_defaults_enable_passive_optional_scanners_only() {
+        let cfg = Config::parse("[run]\n", &PathBuf::from("<test>")).expect("parse run defaults");
+        assert!(cfg.run.enable_zap_baseline);
+        assert!(cfg.run.enable_nuclei);
+        assert!(!cfg.run.enable_aggressive_sqlmap);
     }
 
     #[test]

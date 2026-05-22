@@ -883,13 +883,28 @@ async fn drive_scan(
     }
 
     emit_phase(&events, &run.id, project.id.as_str(), "OptionalScannersStarted", true, None);
+    let scanner_summary = match pentest_tools::run_optional_scanners(
+        store,
+        &run.id,
+        project.id.as_str(),
+        &live_target_urls,
+        &config.run,
+    )
+    .await
+    {
+        Ok(report) => report.summary(),
+        Err(err) => {
+            tracing::warn!(error = %err, "optional scanner pass failed");
+            format!("optional scanner pass failed: {err}")
+        }
+    };
     emit_phase(
         &events,
         &run.id,
         project.id.as_str(),
         "OptionalScannersStarted",
         false,
-        Some(pentest_tools::scanner_availability(&config.run).join("; ")),
+        Some(scanner_summary),
     );
 
     emit_phase(&events, &run.id, project.id.as_str(), "AgentReviewStarted", true, None);
