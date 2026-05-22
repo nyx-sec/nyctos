@@ -4,7 +4,7 @@
 
 export type RepoOutcomeTag = "Success" | "Inconclusive" | "Failed";
 
-export type RunEvent = { "kind": "Heartbeat", ts: number, } | { "kind": "RunStarted", run_id: string, project_id: string, repos: Array<string>, started_at_ms: number, } | { "kind": "ProjectStarted", run_id: string, project_id: string, project_name: string, started_at_ms: number, } | { "kind": "PhaseStarted", run_id: string, project_id: string, phase: string, started_at_ms: number, } | { "kind": "PhaseFinished", run_id: string, project_id: string, phase: string, status: string, message: string | null, finished_at_ms: number, } | { "kind": "EnvironmentStatus", run_id: string, project_id: string, environment_run_id: string, status: string, message: string | null, target_urls: Array<string>, ts_ms: number, } | { "kind": "RepoStarted", run_id: string, project_id: string, repo: string, started_at_ms: number, } | { "kind": "RepoStaticDone", run_id: string, project_id: string, repo: string, n_diags: number, elapsed_ms: number, } | { "kind": "RepoDynamicDone", run_id: string, project_id: string, repo: string, elapsed_ms: number, } | { "kind": "RepoFailed", run_id: string, project_id: string, repo: string, message: string, elapsed_ms: number, } | { "kind": "RepoIngestFailed", run_id: string, project_id: string, repo: string, message: string, } | { "kind": "RepoFinished", run_id: string, project_id: string, repo: string, outcome: RepoOutcomeTag, elapsed_ms: number, } | { "kind": "ProjectFinished", run_id: string, project_id: string, finished_at_ms: number, } | { "kind": "RunFinished", run_id: string, project_id: string, finished_at_ms: number, wall_clock_ms: number, succeeded: number, inconclusive: number, failed: number, };
+export type RunEvent = { "kind": "Heartbeat", ts: number, } | { "kind": "RunStarted", run_id: string, project_id: string, repos: Array<string>, started_at_ms: number, } | { "kind": "ProjectStarted", run_id: string, project_id: string, project_name: string, started_at_ms: number, } | { "kind": "PhaseStarted", run_id: string, project_id: string, phase: string, started_at_ms: number, } | { "kind": "PhaseFinished", run_id: string, project_id: string, phase: string, status: string, message: string | null, finished_at_ms: number, } | { "kind": "EnvironmentStatus", run_id: string, project_id: string, environment_run_id: string, status: string, message: string | null, target_urls: Array<string>, ts_ms: number, } | { "kind": "AuthSessionStatus", run_id: string, project_id: string, role: string, status: string, acquired_by: string, message: string | null, ts_ms: number, } | { "kind": "RepoStarted", run_id: string, project_id: string, repo: string, started_at_ms: number, } | { "kind": "RepoStaticDone", run_id: string, project_id: string, repo: string, n_diags: number, elapsed_ms: number, } | { "kind": "RepoDynamicDone", run_id: string, project_id: string, repo: string, elapsed_ms: number, } | { "kind": "RepoFailed", run_id: string, project_id: string, repo: string, message: string, elapsed_ms: number, } | { "kind": "RepoIngestFailed", run_id: string, project_id: string, repo: string, message: string, } | { "kind": "RepoFinished", run_id: string, project_id: string, repo: string, outcome: RepoOutcomeTag, elapsed_ms: number, } | { "kind": "ProjectFinished", run_id: string, project_id: string, finished_at_ms: number, } | { "kind": "RunFinished", run_id: string, project_id: string, finished_at_ms: number, wall_clock_ms: number, succeeded: number, inconclusive: number, failed: number, };
 
 export type HaltReason = "BudgetCapReached" | "OperatorCancelled" | "UpstreamRefused";
 
@@ -192,12 +192,22 @@ export type ProjectRuntimeEnvVar = { name: string, value: string, secret: boolea
 
 export type ProjectAuthHeaderRef = { name: string, value_env?: string, value_secret_ref?: string, };
 
+export type ProjectAuthMode = "anonymous" | "header_injection" | "browser_login" | "manual_sso" | "session_import" | "otp_email_manual" | "otp_email_mailbox" | "ai_auto" | "oidc_device" | "custom_command";
+
+export type ProjectOtpSourceKind = "manual" | "mailbox" | "imap";
+
+export type ProjectOtpSourceConfig = { kind: ProjectOtpSourceKind, mailbox_url?: string, email_env?: string, subject_contains?: string, body_regex?: string, imap_url_env?: string, imap_username_env?: string, imap_password_env?: string, };
+
+export type ProjectAuthAssertionKind = "url_contains" | "dom_text_contains" | "cookie_exists" | "http_status";
+
+export type ProjectAuthAssertion = { kind: ProjectAuthAssertionKind, value?: string, status?: number, };
+
 export type ProjectAuthProfile = { 
 /**
  * Stable role name used by live plans, e.g. `anonymous`, `user`,
  * `admin`, `user_a`, or `user_b`.
  */
-role: string, label?: string, login_url?: string, username?: string, password_env?: string, password_secret_ref?: string, cookie_env?: string, bearer_token_env?: string, headers: Array<ProjectAuthHeaderRef>, post_login_assertion?: string, };
+role: string, mode: ProjectAuthMode, label?: string, session_cache_ttl_seconds?: number, session_import_path?: string, login_url?: string, username?: string, username_env?: string, login_email_env?: string, password_env?: string, password_secret_ref?: string, cookie_env?: string, bearer_token_env?: string, headers: Array<ProjectAuthHeaderRef>, otp_source?: ProjectOtpSourceConfig, post_login_assertions: Array<ProjectAuthAssertion>, post_login_assertion?: string, custom_command?: string, };
 
 export type ProjectRuntimeProfile = { build_commands: Array<ProjectRuntimeCommand>, start_commands: Array<ProjectRuntimeCommand>, health_check_url?: string, health_check_command?: ProjectRuntimeCommand, target_base_url?: string, allowed_hosts: Array<string>, env_vars: Array<ProjectRuntimeEnvVar>, auth_profiles: Array<ProjectAuthProfile>, env_file?: string, timeout_seconds?: number, };
 

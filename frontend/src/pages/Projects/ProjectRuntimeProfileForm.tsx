@@ -35,15 +35,58 @@ export interface RuntimeEnvDraft {
   secret: boolean;
 }
 
+export type AuthMode =
+  | "anonymous"
+  | "header_injection"
+  | "browser_login"
+  | "manual_sso"
+  | "session_import"
+  | "otp_email_manual"
+  | "otp_email_mailbox"
+  | "ai_auto"
+  | "oidc_device"
+  | "custom_command";
+
+export type OtpSourceKind = "manual" | "mailbox" | "imap";
+export type AuthAssertionKind =
+  | "url_contains"
+  | "dom_text_contains"
+  | "cookie_exists"
+  | "http_status";
+
+export interface AuthHeaderDraft {
+  name: string;
+  value_env: string;
+}
+
+export interface AuthAssertionDraft {
+  kind: AuthAssertionKind;
+  value: string;
+  status: string;
+}
+
 export interface AuthProfileDraft {
   role: string;
+  mode: AuthMode;
   label: string;
+  session_cache_ttl_seconds: string;
+  session_import_path: string;
   login_url: string;
   username: string;
+  username_env: string;
+  login_email_env: string;
   password_env: string;
   cookie_env: string;
   bearer_token_env: string;
+  headers: AuthHeaderDraft[];
+  otp_source_kind: OtpSourceKind;
+  otp_mailbox_url: string;
+  otp_email_env: string;
+  otp_subject_contains: string;
+  otp_body_regex: string;
   post_login_assertion: string;
+  post_login_assertions: AuthAssertionDraft[];
+  custom_command: string;
 }
 
 export interface RuntimeProfileDraft {
@@ -74,6 +117,25 @@ const READINESS_KINDS: Array<{ value: ReadinessKind; label: string }> = [
   { value: "skip", label: "Skip" },
 ];
 
+const AUTH_MODE_OPTIONS: Array<{ value: AuthMode; label: string }> = [
+  { value: "header_injection", label: "Headers" },
+  { value: "browser_login", label: "Browser login" },
+  { value: "manual_sso", label: "Manual SSO" },
+  { value: "session_import", label: "Import session" },
+  { value: "otp_email_manual", label: "Manual OTP" },
+  { value: "otp_email_mailbox", label: "Mailbox OTP" },
+  { value: "ai_auto", label: "AI auto" },
+  { value: "oidc_device", label: "OIDC device" },
+  { value: "custom_command", label: "Custom command" },
+];
+
+const ASSERTION_OPTIONS: Array<{ value: AuthAssertionKind; label: string }> = [
+  { value: "cookie_exists", label: "Cookie exists" },
+  { value: "http_status", label: "HTTP status" },
+  { value: "url_contains", label: "URL contains" },
+  { value: "dom_text_contains", label: "DOM text" },
+];
+
 const blankCommand = (): RuntimeCommandDraft => ({
   command: "",
   repo_name: "",
@@ -83,15 +145,36 @@ const blankCommand = (): RuntimeCommandDraft => ({
 
 const blankEnv = (): RuntimeEnvDraft => ({ name: "", value: "", secret: false });
 
+const blankHeader = (): AuthHeaderDraft => ({ name: "", value_env: "" });
+
+const blankAssertion = (): AuthAssertionDraft => ({
+  kind: "cookie_exists",
+  value: "",
+  status: "",
+});
+
 const blankAuthProfile = (): AuthProfileDraft => ({
   role: "",
+  mode: "header_injection",
   label: "",
+  session_cache_ttl_seconds: "",
+  session_import_path: "",
   login_url: "",
   username: "",
+  username_env: "",
+  login_email_env: "",
   password_env: "",
   cookie_env: "",
   bearer_token_env: "",
+  headers: [],
+  otp_source_kind: "manual",
+  otp_mailbox_url: "",
+  otp_email_env: "",
+  otp_subject_contains: "",
+  otp_body_regex: "",
   post_login_assertion: "",
+  post_login_assertions: [],
+  custom_command: "",
 });
 
 export function emptyRuntimeProfileDraft(targetBaseUrl = ""): RuntimeProfileDraft {
@@ -201,6 +284,9 @@ export function runtimeProfileDraftError(draft: RuntimeProfileDraft): string | n
   }
   if (draft.auth_profiles.some((p) => p.role.trim().toLowerCase() === "anonymous")) {
     return "Anonymous is built in; use a named role for auth profiles";
+  }
+  if (draft.auth_profiles.some((p) => isInvalidPositiveInteger(p.session_cache_ttl_seconds))) {
+    return "Session TTL must be whole seconds greater than zero";
   }
   return null;
 }
@@ -713,15 +799,17 @@ function AuthProfileRows({
   rows: AuthProfileDraft[];
   onChange: (rows: AuthProfileDraft[]) => void;
 }) {
+  const update = (index: number, patch: Partial<AuthProfileDraft>) =>
+    onChange(replaceAt(rows, index, { ...rows[index], ...patch }));
+
   return (
     <div className="runtime-profile-list">
       <div className="runtime-profile-section__header">
-        <h4>Roles</h4>
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={() => onChange([...rows, blankAuthProfile()])}
-        >
+        <div>
+          <h4>Roles</h4>
+          <p className="runtime-profile-note">Secrets use env refs only.</p>
+        </div>
+        <Button size="sm" variant="ghost" onClick={() => onChange([...rows, blankAuthProfile()])}>
           Add role
         </Button>
       </div>
@@ -735,74 +823,174 @@ function AuthProfileRows({
               autoComplete="off"
               placeholder="user_a"
               value={row.role}
-              onChange={(e) => onChange(replaceAt(rows, index, { ...row, role: e.target.value }))}
+              onChange={(e) => update(index, { role: e.target.value })}
             />
           </div>
           <div className="setup-field">
-            <label htmlFor={`runtime-auth-login-${index}`}>Login URL</label>
-            <input
-              id={`runtime-auth-login-${index}`}
-              type="text"
-              autoComplete="off"
-              placeholder="/login"
-              value={row.login_url}
-              onChange={(e) =>
-                onChange(replaceAt(rows, index, { ...row, login_url: e.target.value }))
-              }
-            />
+            <label htmlFor={`runtime-auth-mode-${index}`}>Mode</label>
+            <select
+              id={`runtime-auth-mode-${index}`}
+              value={row.mode}
+              onChange={(e) => update(index, { mode: e.target.value as AuthMode })}
+            >
+              {AUTH_MODE_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
           </div>
-          <div className="setup-field">
-            <label htmlFor={`runtime-auth-username-${index}`}>Username</label>
-            <input
-              id={`runtime-auth-username-${index}`}
-              type="text"
-              autoComplete="off"
-              placeholder="alice@example.test"
-              value={row.username}
-              onChange={(e) =>
-                onChange(replaceAt(rows, index, { ...row, username: e.target.value }))
-              }
-            />
-          </div>
-          <div className="setup-field">
-            <label htmlFor={`runtime-auth-password-env-${index}`}>Password env</label>
-            <input
-              id={`runtime-auth-password-env-${index}`}
-              type="text"
-              autoComplete="off"
-              placeholder="NYCTOS_USER_A_PASSWORD"
-              value={row.password_env}
-              onChange={(e) =>
-                onChange(replaceAt(rows, index, { ...row, password_env: e.target.value }))
-              }
-            />
-          </div>
-          <div className="setup-field">
-            <label htmlFor={`runtime-auth-cookie-env-${index}`}>Cookie env</label>
-            <input
-              id={`runtime-auth-cookie-env-${index}`}
-              type="text"
-              autoComplete="off"
-              placeholder="NYCTOS_USER_A_COOKIE"
-              value={row.cookie_env}
-              onChange={(e) =>
-                onChange(replaceAt(rows, index, { ...row, cookie_env: e.target.value }))
-              }
-            />
-          </div>
-          <div className="setup-field">
-            <label htmlFor={`runtime-auth-bearer-env-${index}`}>Bearer env</label>
-            <input
-              id={`runtime-auth-bearer-env-${index}`}
-              type="text"
-              autoComplete="off"
-              placeholder="NYCTOS_USER_A_TOKEN"
-              value={row.bearer_token_env}
-              onChange={(e) =>
-                onChange(replaceAt(rows, index, { ...row, bearer_token_env: e.target.value }))
-              }
-            />
-          </div>
+          <TimeoutField
+            id={`runtime-auth-ttl-${index}`}
+            label="Session TTL"
+            value={row.session_cache_ttl_seconds}
+            onChange={(session_cache_ttl_seconds) => update(index, { session_cache_ttl_seconds })}
+          />
+
+          {row.mode === "session_import" && (
+            <div className="setup-field">
+              <label htmlFor={`runtime-auth-import-${index}`}>Session path</label>
+              <input
+                id={`runtime-auth-import-${index}`}
+                type="text"
+                autoComplete="off"
+                placeholder="sessions/user_a.json"
+                value={row.session_import_path}
+                onChange={(e) => update(index, { session_import_path: e.target.value })}
+              />
+            </div>
+          )}
+
+          {authModeUsesLogin(row.mode) && (
+            <div className="setup-field">
+              <label htmlFor={`runtime-auth-login-${index}`}>Login URL</label>
+              <input
+                id={`runtime-auth-login-${index}`}
+                type="text"
+                autoComplete="off"
+                placeholder="/login"
+                value={row.login_url}
+                onChange={(e) => update(index, { login_url: e.target.value })}
+              />
+            </div>
+          )}
+
+          {authModeUsesLogin(row.mode) && row.mode !== "manual_sso" && (
+            <>
+              <div className="setup-field">
+                <label htmlFor={`runtime-auth-username-env-${index}`}>Username env</label>
+                <input
+                  id={`runtime-auth-username-env-${index}`}
+                  type="text"
+                  autoComplete="off"
+                  placeholder="NYCTOS_USER_A_EMAIL"
+                  value={row.username_env}
+                  onChange={(e) => update(index, { username_env: e.target.value })}
+                />
+              </div>
+              <div className="setup-field">
+                <label htmlFor={`runtime-auth-password-env-${index}`}>Password env</label>
+                <input
+                  id={`runtime-auth-password-env-${index}`}
+                  type="text"
+                  autoComplete="off"
+                  placeholder="NYCTOS_USER_A_PASSWORD"
+                  value={row.password_env}
+                  onChange={(e) => update(index, { password_env: e.target.value })}
+                />
+              </div>
+            </>
+          )}
+
+          {row.mode === "header_injection" && (
+            <>
+              <div className="setup-field">
+                <label htmlFor={`runtime-auth-cookie-env-${index}`}>Cookie env</label>
+                <input
+                  id={`runtime-auth-cookie-env-${index}`}
+                  type="text"
+                  autoComplete="off"
+                  placeholder="NYCTOS_USER_A_COOKIE"
+                  value={row.cookie_env}
+                  onChange={(e) => update(index, { cookie_env: e.target.value })}
+                />
+              </div>
+              <div className="setup-field">
+                <label htmlFor={`runtime-auth-bearer-env-${index}`}>Bearer env</label>
+                <input
+                  id={`runtime-auth-bearer-env-${index}`}
+                  type="text"
+                  autoComplete="off"
+                  placeholder="NYCTOS_USER_A_TOKEN"
+                  value={row.bearer_token_env}
+                  onChange={(e) => update(index, { bearer_token_env: e.target.value })}
+                />
+              </div>
+            </>
+          )}
+
+          {row.mode === "otp_email_mailbox" && (
+            <>
+              <div className="setup-field">
+                <label htmlFor={`runtime-auth-otp-mailbox-${index}`}>Mailbox URL</label>
+                <input
+                  id={`runtime-auth-otp-mailbox-${index}`}
+                  type="text"
+                  autoComplete="off"
+                  placeholder="http://127.0.0.1:8025"
+                  value={row.otp_mailbox_url}
+                  onChange={(e) => update(index, { otp_mailbox_url: e.target.value })}
+                />
+              </div>
+              <div className="setup-field">
+                <label htmlFor={`runtime-auth-otp-email-${index}`}>Email env</label>
+                <input
+                  id={`runtime-auth-otp-email-${index}`}
+                  type="text"
+                  autoComplete="off"
+                  placeholder="NYCTOS_USER_A_EMAIL"
+                  value={row.otp_email_env}
+                  onChange={(e) => update(index, { otp_email_env: e.target.value })}
+                />
+              </div>
+              <div className="setup-field">
+                <label htmlFor={`runtime-auth-otp-subject-${index}`}>Subject contains</label>
+                <input
+                  id={`runtime-auth-otp-subject-${index}`}
+                  type="text"
+                  autoComplete="off"
+                  placeholder="login code"
+                  value={row.otp_subject_contains}
+                  onChange={(e) => update(index, { otp_subject_contains: e.target.value })}
+                />
+              </div>
+            </>
+          )}
+
+          {row.mode === "custom_command" && (
+            <div className="setup-field runtime-auth-row__wide">
+              <label htmlFor={`runtime-auth-custom-command-${index}`}>Command</label>
+              <input
+                id={`runtime-auth-custom-command-${index}`}
+                type="text"
+                autoComplete="off"
+                placeholder="scripts/nyctos-auth-session"
+                value={row.custom_command}
+                onChange={(e) => update(index, { custom_command: e.target.value })}
+              />
+            </div>
+          )}
+
+          <HeaderRows
+            rows={row.headers}
+            prefix={`runtime-auth-header-${index}`}
+            onChange={(headers) => update(index, { headers })}
+          />
+          <AssertionRows
+            rows={row.post_login_assertions}
+            prefix={`runtime-auth-assertion-${index}`}
+            onChange={(post_login_assertions) => update(index, { post_login_assertions })}
+          />
           <Button
             size="sm"
             variant="ghost"
@@ -814,6 +1002,145 @@ function AuthProfileRows({
         </div>
       ))}
     </div>
+  );
+}
+
+function HeaderRows({
+  rows,
+  prefix,
+  onChange,
+}: {
+  rows: AuthHeaderDraft[];
+  prefix: string;
+  onChange: (rows: AuthHeaderDraft[]) => void;
+}) {
+  return (
+    <details className="runtime-auth-advanced">
+      <summary>Headers</summary>
+      <div className="runtime-auth-nested-list">
+        <Button size="sm" variant="ghost" onClick={() => onChange([...rows, blankHeader()])}>
+          Add header
+        </Button>
+        {rows.map((row, index) => (
+          <div className="runtime-auth-nested-row" key={`${prefix}-${index}`}>
+            <div className="setup-field">
+              <label htmlFor={`${prefix}-name-${index}`}>Name</label>
+              <input
+                id={`${prefix}-name-${index}`}
+                type="text"
+                autoComplete="off"
+                placeholder="X-Test-Role"
+                value={row.name}
+                onChange={(e) => onChange(replaceAt(rows, index, { ...row, name: e.target.value }))}
+              />
+            </div>
+            <div className="setup-field">
+              <label htmlFor={`${prefix}-env-${index}`}>Value env</label>
+              <input
+                id={`${prefix}-env-${index}`}
+                type="text"
+                autoComplete="off"
+                placeholder="NYCTOS_USER_A_ROLE"
+                value={row.value_env}
+                onChange={(e) =>
+                  onChange(replaceAt(rows, index, { ...row, value_env: e.target.value }))
+                }
+              />
+            </div>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => onChange(rows.filter((_, i) => i !== index))}
+            >
+              Remove
+            </Button>
+          </div>
+        ))}
+      </div>
+    </details>
+  );
+}
+
+function AssertionRows({
+  rows,
+  prefix,
+  onChange,
+}: {
+  rows: AuthAssertionDraft[];
+  prefix: string;
+  onChange: (rows: AuthAssertionDraft[]) => void;
+}) {
+  return (
+    <details className="runtime-auth-advanced">
+      <summary>Assertions</summary>
+      <div className="runtime-auth-nested-list">
+        <Button size="sm" variant="ghost" onClick={() => onChange([...rows, blankAssertion()])}>
+          Add assertion
+        </Button>
+        {rows.map((row, index) => (
+          <div className="runtime-auth-nested-row" key={`${prefix}-${index}`}>
+            <div className="setup-field">
+              <label htmlFor={`${prefix}-kind-${index}`}>Kind</label>
+              <select
+                id={`${prefix}-kind-${index}`}
+                value={row.kind}
+                onChange={(e) =>
+                  onChange(
+                    replaceAt(rows, index, { ...row, kind: e.target.value as AuthAssertionKind }),
+                  )
+                }
+              >
+                {ASSERTION_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {row.kind === "http_status" ? (
+              <TimeoutField
+                id={`${prefix}-status-${index}`}
+                label="Status"
+                value={row.status}
+                onChange={(status) => onChange(replaceAt(rows, index, { ...row, status }))}
+              />
+            ) : (
+              <div className="setup-field">
+                <label htmlFor={`${prefix}-value-${index}`}>Value</label>
+                <input
+                  id={`${prefix}-value-${index}`}
+                  type="text"
+                  autoComplete="off"
+                  placeholder={row.kind === "cookie_exists" ? "sid" : "Dashboard"}
+                  value={row.value}
+                  onChange={(e) =>
+                    onChange(replaceAt(rows, index, { ...row, value: e.target.value }))
+                  }
+                />
+              </div>
+            )}
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => onChange(rows.filter((_, i) => i !== index))}
+            >
+              Remove
+            </Button>
+          </div>
+        ))}
+      </div>
+    </details>
+  );
+}
+
+function authModeUsesLogin(mode: AuthMode): boolean {
+  return (
+    mode === "browser_login" ||
+    mode === "manual_sso" ||
+    mode === "otp_email_manual" ||
+    mode === "otp_email_mailbox" ||
+    mode === "ai_auto" ||
+    mode === "oidc_device"
   );
 }
 
@@ -832,13 +1159,33 @@ function envDrafts(vars: ProjectRuntimeEnvVar[]): RuntimeEnvDraft[] {
 function authDrafts(profiles: ProjectAuthProfile[]): AuthProfileDraft[] {
   return profiles.map((profile) => ({
     role: profile.role,
+    mode: (profile.mode ?? "header_injection") as AuthMode,
     label: profile.label ?? "",
+    session_cache_ttl_seconds: profile.session_cache_ttl_seconds?.toString() ?? "",
+    session_import_path: profile.session_import_path ?? "",
     login_url: profile.login_url ?? "",
     username: profile.username ?? "",
+    username_env: profile.username_env ?? "",
+    login_email_env: profile.login_email_env ?? "",
     password_env: profile.password_env ?? "",
     cookie_env: profile.cookie_env ?? "",
     bearer_token_env: profile.bearer_token_env ?? "",
+    headers: (profile.headers ?? []).map((header) => ({
+      name: header.name,
+      value_env: header.value_env ?? "",
+    })),
+    otp_source_kind: (profile.otp_source?.kind ?? "manual") as OtpSourceKind,
+    otp_mailbox_url: profile.otp_source?.mailbox_url ?? "",
+    otp_email_env: profile.otp_source?.email_env ?? "",
+    otp_subject_contains: profile.otp_source?.subject_contains ?? "",
+    otp_body_regex: profile.otp_source?.body_regex ?? "",
     post_login_assertion: profile.post_login_assertion ?? "",
+    post_login_assertions: (profile.post_login_assertions ?? []).map((assertion) => ({
+      kind: assertion.kind as AuthAssertionKind,
+      value: assertion.value ?? "",
+      status: assertion.status?.toString() ?? "",
+    })),
+    custom_command: profile.custom_command ?? "",
   }));
 }
 
@@ -905,21 +1252,73 @@ function envFromDraft(draft: RuntimeEnvDraft): ProjectRuntimeEnvVar | undefined 
 function authFromDraft(draft: AuthProfileDraft): ProjectAuthProfile | undefined {
   const role = trimOrUndefined(draft.role);
   if (!role) return undefined;
-  const out: ProjectAuthProfile = { role, headers: [] };
+  const out: ProjectAuthProfile = {
+    role,
+    mode: draft.mode,
+    headers: [],
+    post_login_assertions: [],
+  };
   const label = trimOrUndefined(draft.label);
+  const session_cache_ttl_seconds = positiveIntOrUndefined(draft.session_cache_ttl_seconds);
+  const session_import_path = trimOrUndefined(draft.session_import_path);
   const login_url = trimOrUndefined(draft.login_url);
   const username = trimOrUndefined(draft.username);
+  const username_env = trimOrUndefined(draft.username_env);
+  const login_email_env = trimOrUndefined(draft.login_email_env);
   const password_env = trimOrUndefined(draft.password_env);
   const cookie_env = trimOrUndefined(draft.cookie_env);
   const bearer_token_env = trimOrUndefined(draft.bearer_token_env);
   const post_login_assertion = trimOrUndefined(draft.post_login_assertion);
+  const custom_command = trimOrUndefined(draft.custom_command);
   if (label) out.label = label;
+  if (session_cache_ttl_seconds !== undefined) {
+    out.session_cache_ttl_seconds = session_cache_ttl_seconds;
+  }
+  if (session_import_path) out.session_import_path = session_import_path;
   if (login_url) out.login_url = login_url;
   if (username) out.username = username;
+  if (username_env) out.username_env = username_env;
+  if (login_email_env) out.login_email_env = login_email_env;
   if (password_env) out.password_env = password_env;
   if (cookie_env) out.cookie_env = cookie_env;
   if (bearer_token_env) out.bearer_token_env = bearer_token_env;
+  out.headers = draft.headers
+    .map((header) => {
+      const name = trimOrUndefined(header.name);
+      const value_env = trimOrUndefined(header.value_env);
+      return name && value_env ? { name, value_env } : undefined;
+    })
+    .filter(isDefined);
+  const mailbox_url = trimOrUndefined(draft.otp_mailbox_url);
+  const otp_email_env = trimOrUndefined(draft.otp_email_env);
+  const subject_contains = trimOrUndefined(draft.otp_subject_contains);
+  const body_regex = trimOrUndefined(draft.otp_body_regex);
+  if (
+    draft.mode === "otp_email_manual" ||
+    draft.mode === "otp_email_mailbox" ||
+    mailbox_url ||
+    otp_email_env ||
+    subject_contains ||
+    body_regex
+  ) {
+    out.otp_source = { kind: draft.otp_source_kind };
+    if (mailbox_url) out.otp_source.mailbox_url = mailbox_url;
+    if (otp_email_env) out.otp_source.email_env = otp_email_env;
+    if (subject_contains) out.otp_source.subject_contains = subject_contains;
+    if (body_regex) out.otp_source.body_regex = body_regex;
+  }
+  out.post_login_assertions = draft.post_login_assertions
+    .map((assertion) => {
+      const value = trimOrUndefined(assertion.value);
+      const status = positiveIntOrUndefined(assertion.status);
+      if (assertion.kind === "http_status") {
+        return status !== undefined ? { kind: assertion.kind, status } : undefined;
+      }
+      return value ? { kind: assertion.kind, value } : undefined;
+    })
+    .filter(isDefined);
   if (post_login_assertion) out.post_login_assertion = post_login_assertion;
+  if (custom_command) out.custom_command = custom_command;
   return out;
 }
 

@@ -333,6 +333,38 @@ describe("LiveScanView", () => {
     );
 
     expect(await screen.findByText("Browser verification")).toBeInTheDocument();
-    expect(screen.getByText("browser verification skipped: disabled by run config")).toBeInTheDocument();
+    expect(
+      screen.getByText("browser verification skipped: disabled by run config"),
+    ).toBeInTheDocument();
+  });
+
+  it("renders auth session acquisition statuses without secret material", async () => {
+    render(wrap(<LiveScanView />));
+    await screen.findByText(/Run run-1/);
+    const ws = FakeWebSocket.instances[0];
+
+    act(() =>
+      ws.emit({
+        kind: "Run",
+        data: {
+          kind: "AuthSessionStatus",
+          run_id: "run-1",
+          project_id: "p-1",
+          role: "user_a",
+          status: "skipped",
+          acquired_by: "manual_sso",
+          message: "manual SSO skipped: Playwright runtime unavailable",
+          ts_ms: 2200,
+        },
+      }),
+    );
+
+    expect(await screen.findByText("Auth sessions")).toBeInTheDocument();
+    expect(screen.getByText("user_a")).toBeInTheDocument();
+    expect(screen.getByText("manual_sso")).toBeInTheDocument();
+    expect(
+      screen.getByText("manual SSO skipped: Playwright runtime unavailable"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/token|cookie|otp/i)).not.toBeInTheDocument();
   });
 });

@@ -2257,6 +2257,7 @@ fn run_matches(ev: &AgentEvent, run_filter: Option<&str>) -> bool {
                 | RunEvent::PhaseStarted { run_id, .. }
                 | RunEvent::PhaseFinished { run_id, .. }
                 | RunEvent::EnvironmentStatus { run_id, .. }
+                | RunEvent::AuthSessionStatus { run_id, .. }
                 | RunEvent::RepoStarted { run_id, .. }
                 | RunEvent::RepoStaticDone { run_id, .. }
                 | RunEvent::RepoDynamicDone { run_id, .. }

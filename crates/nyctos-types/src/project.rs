@@ -98,20 +98,116 @@ pub struct ProjectAuthHeaderRef {
     pub value_secret_ref: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectAuthMode {
+    Anonymous,
+    HeaderInjection,
+    BrowserLogin,
+    ManualSso,
+    SessionImport,
+    OtpEmailManual,
+    OtpEmailMailbox,
+    AiAuto,
+    OidcDevice,
+    CustomCommand,
+}
+
+impl Default for ProjectAuthMode {
+    fn default() -> Self {
+        Self::HeaderInjection
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectOtpSourceKind {
+    Manual,
+    Mailbox,
+    Imap,
+}
+
+impl Default for ProjectOtpSourceKind {
+    fn default() -> Self {
+        Self::Manual
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ProjectOtpSourceConfig {
+    #[serde(default)]
+    pub kind: ProjectOtpSourceKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub mailbox_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub email_env: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub subject_contains: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub body_regex: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub imap_url_env: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub imap_username_env: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub imap_password_env: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectAuthAssertionKind {
+    UrlContains,
+    DomTextContains,
+    CookieExists,
+    HttpStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ProjectAuthAssertion {
+    pub kind: ProjectAuthAssertionKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub value: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub status: Option<u16>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct ProjectAuthProfile {
     /// Stable role name used by live plans, e.g. `anonymous`, `user`,
     /// `admin`, `user_a`, or `user_b`.
     pub role: String,
+    #[serde(default)]
+    pub mode: ProjectAuthMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub session_cache_ttl_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub session_import_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub login_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub username: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub username_env: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub login_email_env: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub password_env: Option<String>,
@@ -128,7 +224,15 @@ pub struct ProjectAuthProfile {
     pub headers: Vec<ProjectAuthHeaderRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
+    pub otp_source: Option<ProjectOtpSourceConfig>,
+    #[serde(default)]
+    pub post_login_assertions: Vec<ProjectAuthAssertion>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub post_login_assertion: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub custom_command: Option<String>,
 }
 
 /// Project-level build/run profile for launching the full local app before
@@ -341,6 +445,72 @@ mod tests {
         assert!(parsed.start_commands.is_empty());
         assert!(parsed.allowed_hosts.is_empty());
         assert!(parsed.env_vars.is_empty());
+    }
+
+    #[test]
+    fn auth_profile_mode_defaults_to_header_injection_for_legacy_profiles() {
+        let parsed: ProjectRuntimeProfile = serde_json::from_str(
+            r#"{
+                "auth_profiles": [{
+                    "role": "user_a",
+                    "bearer_token_env": "NYCTOS_USER_A_TOKEN"
+                }]
+            }"#,
+        )
+        .expect("profile");
+
+        assert_eq!(parsed.auth_profiles[0].mode, ProjectAuthMode::HeaderInjection);
+        assert_eq!(
+            parsed.auth_profiles[0].bearer_token_env.as_deref(),
+            Some("NYCTOS_USER_A_TOKEN")
+        );
+    }
+
+    #[test]
+    fn auth_profile_serializes_explicit_modes_and_assertions() {
+        let profile = ProjectAuthProfile {
+            role: "user_a".to_string(),
+            mode: ProjectAuthMode::SessionImport,
+            label: None,
+            session_cache_ttl_seconds: Some(600),
+            session_import_path: Some("sessions/user_a.json".to_string()),
+            login_url: None,
+            username: None,
+            username_env: Some("NYCTOS_USER_A_EMAIL".to_string()),
+            login_email_env: None,
+            password_env: None,
+            password_secret_ref: None,
+            cookie_env: None,
+            bearer_token_env: None,
+            headers: vec![ProjectAuthHeaderRef {
+                name: "X-Test-Role".to_string(),
+                value_env: Some("NYCTOS_USER_A_ROLE".to_string()),
+                value_secret_ref: None,
+            }],
+            otp_source: Some(ProjectOtpSourceConfig {
+                kind: ProjectOtpSourceKind::Mailbox,
+                mailbox_url: Some("http://127.0.0.1:8025".to_string()),
+                email_env: Some("NYCTOS_USER_A_EMAIL".to_string()),
+                subject_contains: None,
+                body_regex: None,
+                imap_url_env: None,
+                imap_username_env: None,
+                imap_password_env: None,
+            }),
+            post_login_assertions: vec![ProjectAuthAssertion {
+                kind: ProjectAuthAssertionKind::CookieExists,
+                value: Some("sid".to_string()),
+                status: None,
+            }],
+            post_login_assertion: None,
+            custom_command: None,
+        };
+
+        let value = serde_json::to_value(&profile).expect("json");
+        assert_eq!(value["mode"], "session_import");
+        assert_eq!(value["post_login_assertions"][0]["kind"], "cookie_exists");
+        assert_eq!(value["otp_source"]["kind"], "mailbox");
+        assert!(serde_json::from_value::<ProjectAuthProfile>(value).is_ok());
     }
 
     #[test]

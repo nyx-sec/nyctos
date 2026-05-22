@@ -75,6 +75,16 @@ pub enum RunEvent {
         #[ts(type = "number")]
         ts_ms: i64,
     },
+    AuthSessionStatus {
+        run_id: String,
+        project_id: String,
+        role: String,
+        status: String,
+        acquired_by: String,
+        message: Option<String>,
+        #[ts(type = "number")]
+        ts_ms: i64,
+    },
     /// Per-repo lifecycle: a rayon job picked up `repo` and the static
     /// pass is running.
     RepoStarted {

@@ -223,6 +223,7 @@ fn run_id_for_event(ev: &AgentEvent) -> Option<&str> {
             | RunEvent::PhaseStarted { run_id, .. }
             | RunEvent::PhaseFinished { run_id, .. }
             | RunEvent::EnvironmentStatus { run_id, .. }
+            | RunEvent::AuthSessionStatus { run_id, .. }
             | RunEvent::RepoStarted { run_id, .. }
             | RunEvent::RepoStaticDone { run_id, .. }
             | RunEvent::RepoDynamicDone { run_id, .. }

@@ -42,6 +42,14 @@ interface PhaseProgress {
   message?: string | null;
 }
 
+interface AuthSessionProgress {
+  role: string;
+  status: string;
+  acquiredBy: string;
+  message?: string | null;
+  ts?: number;
+}
+
 interface RunSummary {
   startedAt?: number;
   finishedAt?: number;
@@ -76,6 +84,7 @@ export function LiveScanView() {
   const [repos, setRepos] = useState<Record<string, RepoProgress>>({});
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [phases, setPhases] = useState<Record<string, PhaseProgress>>({});
+  const [authSessions, setAuthSessions] = useState<Record<string, AuthSessionProgress>>({});
   const [summary, setSummary] = useState<RunSummary>({ done: false });
   const environmentRuns = useRunEnvironmentRuns(runId);
   const vulnerabilities = useRunVulnerabilities(runId);
@@ -86,6 +95,7 @@ export function LiveScanView() {
       applyToRepos(ev, setRepos);
       applyToLogs(ev, setLogs);
       applyToPhases(ev, setPhases);
+      applyToAuthSessions(ev, setAuthSessions);
       applyToSummary(ev, setSummary);
     },
   });
@@ -101,6 +111,7 @@ export function LiveScanView() {
     (r) => r.phase === "finished" || r.phase === "failed",
   ).length;
   const orderedPhases = useMemo(() => orderPhases(phases), [phases]);
+  const orderedAuthSessions = useMemo(() => orderAuthSessions(authSessions), [authSessions]);
 
   return (
     <div className="live-scan">
@@ -146,6 +157,22 @@ export function LiveScanView() {
           </section>
         )}
 
+        {orderedAuthSessions.length > 0 && (
+          <section className="live-scan__auth">
+            <h3 className="live-scan__h3">Auth sessions</h3>
+            <ul className="live-scan__auth-list">
+              {orderedAuthSessions.map((session) => (
+                <li key={session.role} className="live-scan__auth-row">
+                  <Badge tone={authTone(session.status)}>{session.status}</Badge>
+                  <span className="live-scan__auth-role">{session.role}</span>
+                  <span className="live-scan__auth-method">{session.acquiredBy}</span>
+                  {session.message && <small>{session.message}</small>}
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+
         {orderedRepos.length > 0 && (
           <ul className="live-scan__repos">
             {orderedRepos.map((repo) => (
@@ -159,7 +186,10 @@ export function LiveScanView() {
             <h3 className="live-scan__h3">Pentest phases</h3>
             <ol className="live-scan__phase-list">
               {orderedPhases.map((phase) => (
-                <li key={phase.phase} className={`live-scan__phase live-scan__phase--${phase.status}`}>
+                <li
+                  key={phase.phase}
+                  className={`live-scan__phase live-scan__phase--${phase.status}`}
+                >
                   <Badge tone={phaseTone(phase.status)}>{phase.status}</Badge>
                   <span>{phase.label}</span>
                   {phase.message && <small>{phase.message}</small>}
@@ -269,6 +299,8 @@ type RepoSetter = (updater: (prev: RepoMap) => RepoMap) => void;
 type LogSetter = (updater: (prev: LogLine[]) => LogLine[]) => void;
 type PhaseMap = Record<string, PhaseProgress>;
 type PhaseSetter = (updater: (prev: PhaseMap) => PhaseMap) => void;
+type AuthSessionMap = Record<string, AuthSessionProgress>;
+type AuthSessionSetter = (updater: (prev: AuthSessionMap) => AuthSessionMap) => void;
 type SummarySetter = (updater: (prev: RunSummary) => RunSummary) => void;
 
 function applyToRepos(ev: AgentEventLike, set: RepoSetter) {
@@ -349,9 +381,34 @@ const PHASE_ORDER = [
   "OptionalScannersStarted",
   "AgentReviewStarted",
   "AiAttackPlanningStarted",
+  "AuthSessionAcquisitionStarted",
   "LiveVerificationStarted",
   "BrowserVerificationStarted",
 ];
+
+function applyToAuthSessions(ev: AgentEventLike, set: AuthSessionSetter) {
+  if (!("kind" in ev) || ev.kind !== "Run") return;
+  const data = ev.data;
+  if (data.kind !== "AuthSessionStatus") return;
+  set((prev) => ({
+    ...prev,
+    [data.role]: {
+      role: data.role,
+      status: data.status,
+      acquiredBy: data.acquired_by,
+      message: data.message,
+      ts: data.ts_ms,
+    },
+  }));
+}
+
+function orderAuthSessions(sessions: AuthSessionMap): AuthSessionProgress[] {
+  return Object.values(sessions).sort((a, b) => {
+    if (a.role === "anonymous") return -1;
+    if (b.role === "anonymous") return 1;
+    return a.role.localeCompare(b.role);
+  });
+}
 
 function applyToPhases(ev: AgentEventLike, set: PhaseSetter) {
   if (!("kind" in ev) || ev.kind !== "Run") return;
@@ -399,6 +456,13 @@ function orderPhases(phases: PhaseMap): PhaseProgress[] {
 function phaseTone(status: PhaseProgress["status"]): BadgeTone {
   if (status === "running") return "info";
   if (status === "finished") return "success";
+  return "neutral";
+}
+
+function authTone(status: string): BadgeTone {
+  if (status === "acquired" || status === "reused") return "success";
+  if (status === "skipped") return "warning";
+  if (status === "failed") return "danger";
   return "neutral";
 }
 
@@ -451,6 +515,10 @@ function describeRunEvent(data: RunEvent): string | undefined {
       return data.message
         ? `App ${formatEnvironmentStatus(data.status)}: ${data.message}`
         : `App ${formatEnvironmentStatus(data.status)}.`;
+    case "AuthSessionStatus":
+      return data.message
+        ? `[auth ${data.role}] ${data.status}: ${data.message}`
+        : `[auth ${data.role}] ${data.status} via ${data.acquired_by}.`;
     case "RunStarted":
       return `Pentest ${data.run_id} started over ${data.repos.length} code source(s).`;
     case "RepoStarted":
@@ -522,6 +590,7 @@ function formatPhase(phase: string): string {
   if (phase === "OptionalScannersStarted") return "Optional scanners";
   if (phase === "AgentReviewStarted") return "AI pentest review";
   if (phase === "AiAttackPlanningStarted") return "AI attack planning";
+  if (phase === "AuthSessionAcquisitionStarted") return "Auth sessions";
   if (phase === "LiveVerificationStarted") return "Live verification";
   if (phase === "BrowserVerificationStarted") return "Browser verification";
   return phase;

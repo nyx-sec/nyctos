@@ -76,24 +76,40 @@ describe("ProjectRuntimeProfileForm", () => {
     draft.auth_profiles = [
       {
         role: " user_a ",
+        mode: "header_injection",
         label: "",
+        session_cache_ttl_seconds: "600",
+        session_import_path: "",
         login_url: " /login ",
         username: " alice@example.test ",
+        username_env: "",
+        login_email_env: "",
         password_env: " NYCTOS_USER_A_PASSWORD ",
         cookie_env: "",
         bearer_token_env: " NYCTOS_USER_A_TOKEN ",
+        headers: [{ name: " X-Test-Role ", value_env: " NYCTOS_USER_A_ROLE " }],
+        otp_source_kind: "manual",
+        otp_mailbox_url: "",
+        otp_email_env: "",
+        otp_subject_contains: "",
+        otp_body_regex: "",
         post_login_assertion: "",
+        post_login_assertions: [{ kind: "cookie_exists", value: " sid ", status: "" }],
+        custom_command: "",
       },
     ];
 
     expect(runtimeProfileFromDraft(draft)?.auth_profiles).toEqual([
       {
         role: "user_a",
+        mode: "header_injection",
+        session_cache_ttl_seconds: 600,
         login_url: "/login",
         username: "alice@example.test",
         password_env: "NYCTOS_USER_A_PASSWORD",
         bearer_token_env: "NYCTOS_USER_A_TOKEN",
-        headers: [],
+        headers: [{ name: "X-Test-Role", value_env: "NYCTOS_USER_A_ROLE" }],
+        post_login_assertions: [{ kind: "cookie_exists", value: "sid" }],
       },
     ]);
   });

@@ -27,6 +27,7 @@ use semver::Version;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 mod ai_pipeline;
+mod auth_sessions;
 mod banner;
 mod cmd;
 mod launch;
@@ -1247,6 +1248,10 @@ async fn drive_scan(
     }
 
     if let Some(env) = environment.as_ref() {
+        let auth_workspace_paths = workspaces_for_ai
+            .values()
+            .map(|workspace| workspace.workspace().to_path_buf())
+            .collect::<Vec<_>>();
         match verify_pentest_candidates(
             store,
             &run.id,
@@ -1255,6 +1260,9 @@ async fn drive_scan(
             &live_target_urls,
             &config.run,
             &auth_profiles,
+            &state_dir.traces_for_run(&run.id).join("auth_sessions"),
+            &auth_workspace_paths,
+            events.clone(),
         )
         .await
         {
@@ -1966,9 +1974,34 @@ async fn verify_pentest_candidates(
     target_urls: &[String],
     run_config: &nyctos_core::RunConfig,
     auth_profiles: &[nyctos_types::project::ProjectAuthProfile],
+    auth_artifact_dir: &std::path::Path,
+    auth_workspace_paths: &[std::path::PathBuf],
+    events: EventSink,
 ) -> anyhow::Result<CandidateVerificationReport> {
     let candidates = store.pentest_candidates().list_by_run(run_id).await?;
     let mut report = CandidateVerificationReport::default();
+    let auth_session_manager = auth_sessions::AuthSessionManager::default();
+    emit_phase(&events, run_id, project_id, "AuthSessionAcquisitionStarted", true, None);
+    let auth_message = preflight_auth_sessions(
+        &auth_session_manager,
+        run_id,
+        project_id,
+        target_urls,
+        auth_profiles,
+        auth_artifact_dir,
+        auth_workspace_paths,
+        run_config.browser_checks_enabled,
+        &events,
+    )
+    .await;
+    emit_phase(
+        &events,
+        run_id,
+        project_id,
+        "AuthSessionAcquisitionStarted",
+        false,
+        Some(auth_message),
+    );
     for candidate in
         candidates.into_iter().filter(|c| matches!(c.status.as_str(), "Proposed" | "NeedsLiveTest"))
     {
@@ -1976,6 +2009,9 @@ async fn verify_pentest_candidates(
         let options = pentest_tools::LiveVerifierOptions {
             target_urls: target_urls.to_vec(),
             auth_profiles: auth_profiles.to_vec(),
+            auth_session_manager: auth_session_manager.clone(),
+            auth_artifact_dir: auth_artifact_dir.to_path_buf(),
+            auth_workspace_paths: auth_workspace_paths.to_vec(),
             allow_state_changing: run_config.allow_state_changing_live_probes,
             browser_checks_enabled: run_config.browser_checks_enabled,
         };
@@ -2045,6 +2081,69 @@ async fn verify_pentest_candidates(
         }
     }
     Ok(report)
+}
+
+async fn preflight_auth_sessions(
+    manager: &auth_sessions::AuthSessionManager,
+    run_id: &str,
+    project_id: &str,
+    target_urls: &[String],
+    auth_profiles: &[nyctos_types::project::ProjectAuthProfile],
+    auth_artifact_dir: &std::path::Path,
+    auth_workspace_paths: &[std::path::PathBuf],
+    browser_checks_enabled: bool,
+    events: &EventSink,
+) -> String {
+    let Some(target_url) = target_urls.first() else {
+        return "auth session acquisition skipped: no target URL available".to_string();
+    };
+    if auth_profiles.is_empty() {
+        emit_auth_session_status(
+            events,
+            run_id,
+            project_id,
+            "anonymous",
+            "acquired",
+            "anonymous",
+            None,
+        );
+        return "auth sessions: anonymous acquired".to_string();
+    }
+
+    let mut counts: BTreeMap<String, u32> = BTreeMap::new();
+    for profile in auth_profiles {
+        let result = manager
+            .acquire_session(
+                &profile.role,
+                auth_profiles,
+                target_url,
+                auth_artifact_dir,
+                &auth_sessions::AuthSessionOptions {
+                    browser_checks_enabled,
+                    workspace_paths: auth_workspace_paths.to_vec(),
+                },
+            )
+            .await;
+        *counts.entry(result.status.as_str().to_string()).or_default() += 1;
+        let acquired_by =
+            result.session.as_ref().map(|s| s.acquired_by.as_str()).unwrap_or("unknown");
+        emit_auth_session_status(
+            events,
+            run_id,
+            project_id,
+            &profile.role,
+            result.status.as_str(),
+            acquired_by,
+            result.reason.as_deref(),
+        );
+    }
+    format!(
+        "auth sessions: {} acquired, {} reused, {} skipped, {} failed",
+        counts.get("acquired").copied().unwrap_or(0),
+        counts.get("reused").copied().unwrap_or(0),
+        counts.get("skipped").copied().unwrap_or(0),
+        counts.get("failed").copied().unwrap_or(0)
+    )
 }
 
 enum VerificationOutcome {
@@ -2154,6 +2253,28 @@ fn emit_phase(
         }
     };
     let _ = events.send(AgentEvent::Run { data });
+}
+
+fn emit_auth_session_status(
+    events: &EventSink,
+    run_id: &str,
+    project_id: &str,
+    role: &str,
+    status: &str,
+    acquired_by: &str,
+    message: Option<&str>,
+) {
+    let _ = events.send(AgentEvent::Run {
+        data: RunEvent::AuthSessionStatus {
+            run_id: run_id.to_string(),
+            project_id: project_id.to_string(),
+            role: role.to_string(),
+            status: status.to_string(),
+            acquired_by: acquired_by.to_string(),
+            message: message.map(str::to_string),
+            ts_ms: now_epoch_ms(),
+        },
+    });
 }
 
 async fn finalise_and_emit_run(
