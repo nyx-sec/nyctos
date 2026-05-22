@@ -57,7 +57,7 @@ export function ProjectList() {
                 <tr>
                   <th scope="col">Name</th>
                   <th scope="col">Description</th>
-                  <th scope="col">Target base URL</th>
+                  <th scope="col">App URL</th>
                   <th scope="col">Updated</th>
                 </tr>
               </thead>
@@ -85,6 +85,7 @@ export function ProjectList() {
 }
 
 function ProjectRow({ project }: { project: ProjectRecord }) {
+  const appUrl = project.default_launch_profile?.target_urls[0] ?? project.target_base_url;
   return (
     <tr>
       <td>
@@ -93,9 +94,7 @@ function ProjectRow({ project }: { project: ProjectRecord }) {
         </Link>
       </td>
       <td className="repo-list__source">{project.description ?? "-"}</td>
-      <td className="repo-list__source">
-        {project.target_base_url ? <code>{project.target_base_url}</code> : "-"}
-      </td>
+      <td className="repo-list__source">{appUrl ? <code>{appUrl}</code> : "-"}</td>
       <td>
         <time className="repo-list__last-scan">
           {new Date(project.updated_at).toLocaleString()}

@@ -6,7 +6,7 @@ import {
   useRunEnvironmentRuns,
   useRunVulnerabilities,
 } from "@/api/client";
-import type { RunEvent } from "@/api/types.gen";
+import type { AiEvent, RunEvent, SandboxEvent } from "@/api/types.gen";
 import { Badge, type BadgeTone } from "@/components/Badge";
 import { Button } from "@/components/Button";
 import { Card } from "@/components/Card";
@@ -99,7 +99,7 @@ export function LiveScanView() {
             ? `Finished in ${summary.wallClockMs ?? "-"}ms · ${summary.succeeded ?? 0} ok / ${
                 summary.inconclusive ?? 0
               } inconclusive / ${summary.failed ?? 0} failed`
-            : `${finishedRepos}/${totalRepos || "?"} repos finished`
+            : `${finishedRepos}/${totalRepos || "?"} code sources finished`
         }
         actions={
           <div className="live-scan__actions">
@@ -114,13 +114,13 @@ export function LiveScanView() {
       >
         {!summary.done && totalRepos === 0 && (
           <div className="live-scan__pending">
-            <Spinner /> Preparing pentest…
+            <Spinner /> Preparing app...
           </div>
         )}
 
         {environmentRuns.data && environmentRuns.data.length > 0 && (
           <section className="live-scan__environment">
-            <h3 className="live-scan__h3">Environment</h3>
+            <h3 className="live-scan__h3">App</h3>
             {environmentRuns.data.map((env) => (
               <div key={env.id} className="live-scan__env-row">
                 <Badge tone={environmentTone(env.status)}>{env.status}</Badge>
@@ -323,6 +323,19 @@ function applyToLogs(ev: AgentEventLike, set: LogSetter) {
     );
     return;
   }
+  if (ev.kind === "Ai") {
+    const text = describeAiEvent(ev.data);
+    if (!text) return;
+    const level: LogLine["level"] = ev.data.kind === "TaskHalted" ? "warn" : "info";
+    set((prev) => prev.concat({ ts: Date.now(), level, text }).slice(-500));
+    return;
+  }
+  if (ev.kind === "Sandbox") {
+    const text = describeSandboxEvent(ev.data);
+    if (!text) return;
+    set((prev) => prev.concat({ ts: Date.now(), level: "info", text }).slice(-500));
+    return;
+  }
   if (ev.kind !== "Run") return;
   const data = ev.data;
   const text = describeRunEvent(data);
@@ -338,19 +351,21 @@ function describeRunEvent(data: RunEvent): string | undefined {
     case "ProjectStarted":
       return `Project ${data.project_name} started.`;
     case "PhaseStarted":
-      return `${data.phase} started.`;
+      return `${formatPhase(data.phase)} started.`;
     case "PhaseFinished":
-      return data.message ? `${data.phase}: ${data.message}` : `${data.phase} finished.`;
+      return data.message
+        ? `${formatPhase(data.phase)}: ${data.message}`
+        : `${formatPhase(data.phase)} finished.`;
     case "EnvironmentStatus":
       return data.message
-        ? `Environment ${data.status}: ${data.message}`
-        : `Environment ${data.status}.`;
+        ? `App ${formatEnvironmentStatus(data.status)}: ${data.message}`
+        : `App ${formatEnvironmentStatus(data.status)}.`;
     case "RunStarted":
-      return `Pentest ${data.run_id} started over ${data.repos.length} repo(s).`;
+      return `Pentest ${data.run_id} started over ${data.repos.length} code source(s).`;
     case "RepoStarted":
       return `[${data.repo}] static pass started.`;
     case "RepoStaticDone":
-      return `[${data.repo}] Nyx signal pass recorded ${data.n_diags} signal(s) in ${data.elapsed_ms}ms.`;
+      return `[${data.repo}] static pass recorded ${data.n_diags} signal(s) in ${data.elapsed_ms}ms.`;
     case "RepoDynamicDone":
       return `[${data.repo}] dynamic pass done in ${data.elapsed_ms}ms.`;
     case "RepoFinished":
@@ -364,6 +379,48 @@ function describeRunEvent(data: RunEvent): string | undefined {
     case "ProjectFinished":
       return `Project phase finished.`;
   }
+}
+
+function describeAiEvent(data: AiEvent): string | undefined {
+  switch (data.kind) {
+    case "ToolCallStarted":
+      return `[AI ${data.task_id}] tool ${data.name} started.`;
+    case "ToolCallFinished":
+      return `[AI ${data.task_id}] tool ${data.name} ${data.ok ? "finished" : "failed"}.`;
+    case "TaskHalted":
+      return `[AI ${data.task_id}] halted: ${data.reason}.`;
+    case "TokenReceived":
+      return data.token.startsWith("[soft-cap]") ? `[AI ${data.task_id}] ${data.token}` : undefined;
+    case "CacheHit":
+    case "CacheMiss":
+    case "BudgetTick":
+      return undefined;
+  }
+}
+
+function describeSandboxEvent(data: SandboxEvent): string | undefined {
+  switch (data.kind) {
+    case "VerifierStarted":
+      return `[${data.repo}] verifier started for ${data.finding_id}.`;
+    case "VerifierFinished":
+      return `[${data.repo}] verifier ${data.verdict} for ${data.finding_id} in ${
+        data.elapsed_ms
+      }ms.`;
+  }
+}
+
+function formatEnvironmentStatus(status: string): string {
+  if (status === "SettingUp") return "Setting up";
+  return status;
+}
+
+function formatPhase(phase: string): string {
+  if (phase === "EnvironmentBuildStarted") return "App launch";
+  if (phase === "EnvironmentReady") return "App ready";
+  if (phase === "NyxSignalsStarted") return "Static analysis";
+  if (phase === "AgentReviewStarted") return "AI pentest review";
+  if (phase === "LiveVerificationStarted") return "Live verification";
+  return phase;
 }
 
 function applyToSummary(ev: AgentEventLike, set: SummarySetter) {

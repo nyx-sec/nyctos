@@ -12,6 +12,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use semver::Version;
+use serde::Deserialize;
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio::time::timeout;
@@ -195,35 +196,141 @@ fn parse_diags(bytes: &[u8]) -> Result<Vec<Diag>, NyxError> {
     if trimmed.is_empty() {
         return Ok(Vec::new());
     }
-    let mut diags = if trimmed[0] == b'[' {
-        let values: Vec<serde_json::Value> =
-            serde_json::from_slice(bytes).map_err(|e| NyxError::MalformedOutput(e.to_string()))?;
-        let mut out = Vec::with_capacity(values.len());
-        for (idx, value) in values.into_iter().enumerate() {
-            let d: Diag = serde_json::from_value(value)
-                .map_err(|e| NyxError::MalformedOutput(format!("element {idx}: {e}")))?;
-            out.push(d);
-        }
-        out
-    } else {
-        let text =
-            std::str::from_utf8(bytes).map_err(|e| NyxError::MalformedOutput(e.to_string()))?;
-        let mut out = Vec::new();
-        for (idx, line) in text.lines().enumerate() {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            let d: Diag = serde_json::from_str(line)
-                .map_err(|e| NyxError::MalformedOutput(format!("line {}: {}", idx + 1, e)))?;
-            out.push(d);
-        }
-        out
+    let Some(payload) = find_diag_payload(bytes) else {
+        return Err(NyxError::MalformedOutput(
+            "no JSON diagnostics found in nyx output".to_string(),
+        ));
+    };
+    let mut diags = match payload.kind {
+        PayloadKind::Array => parse_diag_array(payload.bytes)?,
+        PayloadKind::Ndjson => parse_diag_ndjson(payload.bytes, payload.line_no)?,
     };
     for d in &mut diags {
         d.lift_flow_steps();
     }
     Ok(diags)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PayloadKind {
+    Array,
+    Ndjson,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Payload<'a> {
+    bytes: &'a [u8],
+    line_no: usize,
+    kind: PayloadKind,
+}
+
+fn find_diag_payload(bytes: &[u8]) -> Option<Payload<'_>> {
+    let mut fallback = None;
+    let mut offset = 0;
+    let mut line_no = 1;
+    while offset < bytes.len() {
+        let rest = &bytes[offset..];
+        let line_len = rest.iter().position(|b| *b == b'\n').unwrap_or(rest.len());
+        let line = &rest[..line_len];
+        let trimmed = trim_leading_ws(line);
+        if !trimmed.is_empty() {
+            let start = offset + (line.len() - trimmed.len());
+            if looks_like_diag_array_start(trimmed) {
+                return Some(Payload { bytes: &bytes[start..], line_no, kind: PayloadKind::Array });
+            }
+            if looks_like_diag_object_line(trimmed) {
+                return Some(Payload {
+                    bytes: &bytes[start..],
+                    line_no,
+                    kind: PayloadKind::Ndjson,
+                });
+            }
+            if fallback.is_none() && matches!(trimmed[0], b'[' | b'{') {
+                let kind =
+                    if trimmed[0] == b'[' { PayloadKind::Array } else { PayloadKind::Ndjson };
+                fallback = Some(Payload { bytes: &bytes[start..], line_no, kind });
+            }
+        }
+        offset += line_len;
+        if offset < bytes.len() && bytes[offset] == b'\n' {
+            offset += 1;
+            line_no += 1;
+        }
+    }
+    fallback
+}
+
+fn looks_like_diag_array_start(trimmed_line: &[u8]) -> bool {
+    if trimmed_line.first() != Some(&b'[') {
+        return false;
+    }
+    let after_bracket = trim_leading_ws(&trimmed_line[1..]);
+    after_bracket.is_empty() || matches!(after_bracket[0], b'{' | b']')
+}
+
+fn looks_like_diag_object_line(trimmed_line: &[u8]) -> bool {
+    if trimmed_line.first() != Some(&b'{') {
+        return false;
+    }
+    match serde_json::from_slice::<serde_json::Value>(trimmed_line) {
+        Ok(value) => is_diag_value(&value),
+        Err(_) => false,
+    }
+}
+
+fn parse_diag_array(bytes: &[u8]) -> Result<Vec<Diag>, NyxError> {
+    let mut de = serde_json::Deserializer::from_slice(bytes);
+    let values: Vec<serde_json::Value> =
+        Vec::deserialize(&mut de).map_err(|e| NyxError::MalformedOutput(e.to_string()))?;
+    let mut out = Vec::with_capacity(values.len());
+    for (idx, value) in values.into_iter().enumerate() {
+        let d: Diag = serde_json::from_value(value)
+            .map_err(|e| NyxError::MalformedOutput(format!("element {idx}: {e}")))?;
+        out.push(d);
+    }
+    Ok(out)
+}
+
+fn parse_diag_ndjson(bytes: &[u8], start_line_no: usize) -> Result<Vec<Diag>, NyxError> {
+    let text = std::str::from_utf8(bytes).map_err(|e| NyxError::MalformedOutput(e.to_string()))?;
+    let mut out = Vec::new();
+    let mut first_json_object: Option<(usize, serde_json::Value)> = None;
+    for (idx, line) in text.lines().enumerate() {
+        let line_no = start_line_no + idx;
+        let line = line.trim();
+        if line.is_empty() || !line.starts_with('{') {
+            continue;
+        }
+        let value: serde_json::Value = serde_json::from_str(line)
+            .map_err(|e| NyxError::MalformedOutput(format!("line {line_no}: {e}")))?;
+        if first_json_object.is_none() {
+            first_json_object = Some((line_no, value.clone()));
+        }
+        if !is_diag_value(&value) {
+            continue;
+        }
+        let d: Diag = serde_json::from_value(value)
+            .map_err(|e| NyxError::MalformedOutput(format!("line {line_no}: {e}")))?;
+        out.push(d);
+    }
+    if out.is_empty() {
+        if let Some((line_no, value)) = first_json_object {
+            let _d: Diag = serde_json::from_value(value)
+                .map_err(|e| NyxError::MalformedOutput(format!("line {line_no}: {e}")))?;
+        }
+    }
+    Ok(out)
+}
+
+fn is_diag_value(value: &serde_json::Value) -> bool {
+    let Some(obj) = value.as_object() else {
+        return false;
+    };
+    obj.contains_key("path")
+        && obj.contains_key("line")
+        && obj.contains_key("id")
+        && obj.contains_key("category")
+        && obj.contains_key("severity")
 }
 
 fn trim_leading_ws(b: &[u8]) -> &[u8] {
@@ -312,6 +419,35 @@ mod tests {
         let out = parse_diags(raw).expect("parse");
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].path, "a.py");
+    }
+
+    #[test]
+    fn parse_diags_skips_stdout_trace_prefix_before_array() {
+        let raw = b"  2026-05-22T17:54:34.687407Z  WARN nyx_scanner::summary: noisy warning\n\
+                    at /tmp/source.rs:786 on ThreadId(1)\n\
+                    \n\
+                    [{\"path\":\"a.py\",\"line\":1,\"category\":\"x\",\"id\":\"R1\",\"severity\":\"Low\"}]\n";
+        let out = parse_diags(raw).expect("parse");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].rule, "R1");
+    }
+
+    #[test]
+    fn parse_diags_skips_stdout_trace_prefix_before_ndjson() {
+        let raw = b"2026-05-22T17:54:34.687407Z  WARN nyx_scanner::summary: noisy warning\n\
+                    {\"path\":\"a.py\",\"line\":1,\"category\":\"x\",\"id\":\"R1\",\"severity\":\"Low\"}\n";
+        let out = parse_diags(raw).expect("parse");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].path, "a.py");
+    }
+
+    #[test]
+    fn parse_diags_ignores_trailing_stdout_trace_after_array() {
+        let raw = b"[{\"path\":\"a.py\",\"line\":1,\"category\":\"x\",\"id\":\"R1\",\"severity\":\"Low\"}]\n\
+                    2026-05-22T17:54:34.687407Z  WARN nyx_scanner::summary: late warning\n";
+        let out = parse_diags(raw).expect("parse");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].severity, "Low");
     }
 
     #[test]

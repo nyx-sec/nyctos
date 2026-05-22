@@ -8,10 +8,10 @@ interface Props {
 export function WelcomeStep({ form, update }: Props) {
   return (
     <div className="setup-step__body">
-      <h3>Welcome to Nyx Agent</h3>
+      <h3>Welcome to Nyctos</h3>
       <p>
-        Nyx Agent runs as a local daemon on this machine. It clones (or links to) repositories you
-        own, runs static and dynamic analysis against them, and keeps every finding under{" "}
+        Nyctos runs as a local daemon on this machine. It clones (or links to) repositories you own,
+        runs static and dynamic analysis against them, and keeps every finding under{" "}
         <code>~/.local/share/nyctos/</code>. Nothing leaves the box unless you point an AI runtime
         at a remote provider in the next step.
       </p>

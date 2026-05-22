@@ -17,9 +17,11 @@ export function TopBar() {
     TITLE_BY_PATH[pathname] ??
     (pathname.startsWith("/projects/")
       ? "Project"
-      : pathname.startsWith("/chains/")
-        ? "Chain"
-        : "Nyx");
+      : pathname.startsWith("/runs/")
+        ? "Pentest Run"
+        : pathname.startsWith("/chains/")
+          ? "Chain"
+          : "Nyctos");
 
   return (
     <header className="app-layout__topbar">
@@ -28,11 +30,6 @@ export function TopBar() {
           {title}
         </span>
       </nav>
-      <div className="topbar__spacer" />
-      <div className="topbar__status">
-        <span className="topbar__status-dot" aria-hidden="true" />
-        <span>Daemon ready</span>
-      </div>
     </header>
   );
 }

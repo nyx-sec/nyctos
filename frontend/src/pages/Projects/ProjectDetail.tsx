@@ -56,7 +56,7 @@ export function ProjectDetail() {
   });
 
   async function onStartPentest() {
-    setBanner("Starting pentest for this project...");
+    setBanner("Starting pentest for this app...");
     try {
       const { run_id } = await startPentest.mutateAsync();
       setBanner(`Pentest started (run ${run_id}).`);
@@ -165,26 +165,22 @@ export function ProjectDetail() {
               </dd>
             </div>
             <div>
-              <dt>Target base URL</dt>
+              <dt>App URL</dt>
               <dd>{runtimeTarget ? <code>{runtimeTarget}</code> : "-"}</dd>
             </div>
             <div>
-              <dt>Launch profile</dt>
+              <dt>Launch</dt>
               <dd>
                 <Badge tone={runtimeStatus.tone}>{runtimeStatus.label}</Badge>
               </dd>
             </div>
             <div>
-              <dt>Build commands</dt>
-              <dd>{formatCommandCount(launchProfile?.build_steps.length ?? 0)}</dd>
+              <dt>Mode</dt>
+              <dd>{formatLaunchMode(launchProfile)}</dd>
             </div>
             <div>
-              <dt>Start commands</dt>
-              <dd>{formatCommandCount(launchProfile?.start_steps.length ?? 0)}</dd>
-            </div>
-            <div>
-              <dt>Health check</dt>
-              <dd>{formatHealthCheck(launchProfile)}</dd>
+              <dt>Ready when</dt>
+              <dd>{formatReadiness(launchProfile)}</dd>
             </div>
             <div>
               <dt>Verified vulnerabilities</dt>
@@ -202,7 +198,7 @@ export function ProjectDetail() {
             </Button>
             {!canStartPentest && (
               <span className="project-primary-action__hint">
-                Complete the launch profile and add at least one repo.
+                Add an app URL and at least one repo.
               </span>
             )}
           </div>
@@ -343,7 +339,10 @@ function RuntimeProfileSummary({ profile }: { profile: ProjectLaunchProfile | nu
   if (!profile) return null;
   return (
     <div className="runtime-profile-summary">
-      <CommandSummary title="Build" commands={profile.build_steps} />
+      <div>
+        <h3>Setup</h3>
+        <p>{formatSetup(profile)}</p>
+      </div>
       <CommandSummary title="Start" commands={profile.start_steps} />
       <div>
         <h3>Environment</h3>
@@ -364,7 +363,7 @@ function CommandSummary({
     return (
       <div>
         <h3>{title}</h3>
-        <p>-</p>
+        <p>No start commands</p>
       </div>
     );
   }
@@ -390,23 +389,31 @@ function launchProfileStatus(profile: ProjectLaunchProfile | null): {
 } {
   if (!profile) return { label: "Not configured", tone: "neutral" };
   if (profile.readiness === "Ready") return { label: "Ready", tone: "success" };
-  if (profile.readiness === "NeedsHealthCheck")
-    return { label: "Needs health check", tone: "info" };
-  if (profile.readiness === "NeedsTarget") return { label: "Needs target URL", tone: "info" };
-  return { label: "Needs start command", tone: "neutral" };
+  if (profile.readiness === "NeedsTarget") return { label: "Needs app URL", tone: "info" };
+  return { label: "Needs attention", tone: "neutral" };
 }
 
-function formatCommandCount(count: number): string {
-  if (count === 0) return "-";
-  return `${count} ${count === 1 ? "command" : "commands"}`;
+function formatLaunchMode(profile: ProjectLaunchProfile | null): string {
+  if (!profile) return "-";
+  if (profile.mode === "already-running") return "Already running";
+  if (profile.mode === "docker-compose") return "Docker Compose";
+  return "Start from project";
 }
 
-function formatHealthCheck(profile: ProjectLaunchProfile | null): string {
+function formatReadiness(profile: ProjectLaunchProfile | null): string {
   if (!profile) return "-";
   const check = profile.health_checks[0];
-  if (check?.url) return check.url;
   if (check?.command) return check.command.command;
-  return "-";
+  if (check?.url && profile.target_urls[0] && check.url === profile.target_urls[0]) {
+    return "App URL responds";
+  }
+  if (check?.url) return check.url;
+  return "No readiness check";
+}
+
+function formatSetup(profile: ProjectLaunchProfile): string {
+  if (profile.build_steps.length === 0) return "No setup commands";
+  return `${profile.build_steps.length} ${profile.build_steps.length === 1 ? "command" : "commands"}`;
 }
 
 function formatEnvironment(profile: ProjectLaunchProfile): string {

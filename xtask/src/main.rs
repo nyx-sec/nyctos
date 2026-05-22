@@ -37,7 +37,8 @@ use nyctos_types::{
     product::{
         EnvironmentRunRecord, LaunchEnvRef, LaunchHealthCheck, LaunchStep, LaunchWorkingDir,
         NyxSignalRecord, PentestCandidateRecord, ProjectLaunchProfile, ProjectLaunchProfileInput,
-        StartPentestResponse, VerificationAttemptRecord, VerifiedVulnerabilityRecord,
+        StartPentestResponse, TestLaunchTargetRequest, TestLaunchTargetResponse,
+        VerificationAttemptRecord, VerifiedVulnerabilityRecord,
     },
     project::{
         CreateProjectRequest, PatchProjectRequest, ProjectRecord, ProjectRuntimeCommand,
@@ -155,6 +156,8 @@ fn render() -> String {
         decl_of::<VerificationAttemptRecord>(),
         decl_of::<VerifiedVulnerabilityRecord>(),
         decl_of::<StartPentestResponse>(),
+        decl_of::<TestLaunchTargetRequest>(),
+        decl_of::<TestLaunchTargetResponse>(),
         decl_of::<ProjectRecord>(),
         decl_of::<CreateProjectRequest>(),
         decl_of::<PatchProjectRequest>(),

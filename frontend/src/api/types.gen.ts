@@ -209,6 +209,10 @@ export type VerifiedVulnerabilityRecord = { id: string, run_id: string, project_
 
 export type StartPentestResponse = { run_id: string, };
 
+export type TestLaunchTargetRequest = { url: string, timeout_seconds?: number, };
+
+export type TestLaunchTargetResponse = { ok: boolean, url: string, message: string, status?: number, elapsed_ms: number, };
+
 export type ProjectRecord = { id: string, name: string, description: string | null, target_base_url: string | null, env_config_json: string | null, runtime_profile: ProjectRuntimeProfile | null, default_launch_profile: ProjectLaunchProfile | null, created_at: number, updated_at: number, };
 
 export type CreateProjectRequest = { name: string, description?: string, target_base_url?: string, env_config?: unknown, runtime_profile?: ProjectRuntimeProfile, default_launch_profile?: ProjectLaunchProfileInput, };
@@ -242,9 +246,54 @@ config_path: string,
  */
 ai_runtime: string, 
 /**
+ * Optional non-secret AI provider label (matches `[ai].provider`).
+ */
+ai_provider?: string, 
+/**
+ * Optional model override (matches `[ai].model`).
+ */
+ai_model?: string, 
+/**
+ * Optional non-secret base URL for local OpenAI-compatible
+ * runtimes. Bearer tokens stay in the OS keychain.
+ */
+ai_api_base?: string, 
+/**
  * Currently-configured sandbox backend (matches `[sandbox].backend`).
  */
-sandbox_backend: string, };
+sandbox_backend: string, 
+/**
+ * Whether sandboxing is enabled globally.
+ */
+sandbox_enabled: boolean, 
+/**
+ * Whether sandboxed runs may access the network.
+ */
+sandbox_allow_network: boolean, 
+/**
+ * UI listen address (matches `[ui].listen_addr`).
+ */
+ui_listen_addr: string, 
+/**
+ * Whether `nyctos serve` opens the browser by default.
+ */
+ui_open_browser: boolean, 
+/**
+ * Current log level (matches `[general].log_level`).
+ */
+log_level: string, 
+/**
+ * Optional configured state directory.
+ */
+state_dir?: string, 
+/**
+ * Maximum number of concurrent scans.
+ */
+max_parallel_scans: number, 
+/**
+ * Per-scan timeout in seconds.
+ */
+scan_timeout_secs: number, };
 
 export type SetupRequest = { 
 /**
@@ -292,6 +341,22 @@ export type DoctorRequest = {
  */
 ai_runtime: string, 
 /**
+ * Unsaved Anthropic API key supplied by the UI for this check.
+ * The daemon only tests whether a non-empty key was provided; it
+ * does not persist this field from `/setup/doctor`.
+ */
+anthropic_api_key?: string, 
+/**
+ * Unsaved local OpenAI-compatible endpoint URL supplied by the UI
+ * for this check. Persisted only by `POST /setup`.
+ */
+local_llm_url?: string, 
+/**
+ * Unsaved local OpenAI-compatible bearer token supplied by the UI
+ * for this check. Doctor only acknowledges its presence.
+ */
+local_llm_token?: string, 
+/**
  * Sandbox backend being verified.
  */
 sandbox_backend: string, };
@@ -319,4 +384,3 @@ export type AgentTraceRow = { id: string, finding_id: string | null, task_kind: 
 export type ReplayEventKind = "start" | "stdout" | "stderr" | "end" | "error";
 
 export type ReplayEvent = { kind: ReplayEventKind, data: string, };
-

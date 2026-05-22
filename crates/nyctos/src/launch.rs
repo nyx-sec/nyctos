@@ -84,11 +84,12 @@ async fn start_launch_profile(ctx: LaunchContext<'_>) -> anyhow::Result<RunningP
         ctx.project.id.as_str(),
         &env_id,
         "Pending",
-        Some("launch profile queued"),
+        Some("app launch queued"),
         &target_urls,
     );
 
     let start_result = match ctx.profile.mode.as_str() {
+        "already-running" => use_existing_app(&ctx, &env_id, &logs_dir).await,
         "docker-compose" if ctx.profile.start_steps.is_empty() => {
             start_compose(&ctx, &env_id, &logs_dir).await
         }
@@ -110,7 +111,7 @@ async fn start_launch_profile(ctx: LaunchContext<'_>) -> anyhow::Result<RunningP
                 ctx.project.id.as_str(),
                 &env_id,
                 "Ready",
-                Some("local app passed health checks"),
+                Some("app is reachable"),
                 &target_urls,
             );
             Ok(RunningProjectEnvironment {
@@ -150,46 +151,82 @@ async fn start_custom(
     env_id: &str,
     logs_dir: &Path,
 ) -> anyhow::Result<(RunningMode, serde_json::Value)> {
-    ctx.store
-        .environment_runs()
-        .update_lifecycle(env_id, "Building", None, None, None, None)
-        .await?;
-    emit_env(
-        &ctx.events,
-        ctx.run_id,
-        ctx.project.id.as_str(),
-        env_id,
-        "Building",
-        Some("running build commands"),
-        &ctx.profile.target_urls,
-    );
-    for (index, step) in ctx.profile.build_steps.iter().enumerate() {
-        run_step_to_completion(step, ctx.workspaces, logs_dir, "build", index).await?;
+    if !ctx.profile.build_steps.is_empty() {
+        ctx.store
+            .environment_runs()
+            .update_lifecycle(env_id, "SettingUp", None, None, None, None)
+            .await?;
+        emit_env(
+            &ctx.events,
+            ctx.run_id,
+            ctx.project.id.as_str(),
+            env_id,
+            "SettingUp",
+            Some("running setup commands"),
+            &ctx.profile.target_urls,
+        );
+        for (index, step) in ctx.profile.build_steps.iter().enumerate() {
+            run_step_to_completion(step, ctx.workspaces, logs_dir, "build", index).await?;
+        }
     }
 
-    if ctx.profile.start_steps.is_empty() {
-        anyhow::bail!("launch profile has no start steps");
-    }
-
-    ctx.store
-        .environment_runs()
-        .update_lifecycle(env_id, "Starting", None, None, None, None)
-        .await?;
-    emit_env(
-        &ctx.events,
-        ctx.run_id,
-        ctx.project.id.as_str(),
-        env_id,
-        "Starting",
-        Some("starting local app"),
-        &ctx.profile.target_urls,
-    );
     let mut children = Vec::new();
-    for (index, step) in ctx.profile.start_steps.iter().enumerate() {
-        children.push(spawn_start_step(step, ctx.workspaces, logs_dir, index).await?);
+    if !ctx.profile.start_steps.is_empty() {
+        ctx.store
+            .environment_runs()
+            .update_lifecycle(env_id, "Starting", None, None, None, None)
+            .await?;
+        emit_env(
+            &ctx.events,
+            ctx.run_id,
+            ctx.project.id.as_str(),
+            env_id,
+            "Starting",
+            Some("starting app"),
+            &ctx.profile.target_urls,
+        );
+        for (index, step) in ctx.profile.start_steps.iter().enumerate() {
+            children.push(spawn_start_step(step, ctx.workspaces, logs_dir, index).await?);
+        }
+    } else {
+        ctx.store
+            .environment_runs()
+            .update_lifecycle(env_id, "Checking", None, None, None, None)
+            .await?;
+        emit_env(
+            &ctx.events,
+            ctx.run_id,
+            ctx.project.id.as_str(),
+            env_id,
+            "Checking",
+            Some("checking app URL"),
+            &ctx.profile.target_urls,
+        );
     }
-    let health = wait_for_health(&ctx.profile.health_checks, ctx.workspaces, logs_dir).await?;
+    let health = wait_for_profile_health(ctx.profile, ctx.workspaces, logs_dir).await?;
     Ok((RunningMode::Custom { children }, health))
+}
+
+async fn use_existing_app(
+    ctx: &LaunchContext<'_>,
+    env_id: &str,
+    logs_dir: &Path,
+) -> anyhow::Result<(RunningMode, serde_json::Value)> {
+    ctx.store
+        .environment_runs()
+        .update_lifecycle(env_id, "Checking", None, None, None, None)
+        .await?;
+    emit_env(
+        &ctx.events,
+        ctx.run_id,
+        ctx.project.id.as_str(),
+        env_id,
+        "Checking",
+        Some("checking app URL"),
+        &ctx.profile.target_urls,
+    );
+    let health = wait_for_profile_health(ctx.profile, ctx.workspaces, logs_dir).await?;
+    Ok((RunningMode::None, health))
 }
 
 async fn start_compose(
@@ -210,10 +247,12 @@ async fn start_compose(
     )?;
     let env = builder.up().await?;
     let services = env.services_health().await.unwrap_or_default();
+    let readiness = wait_for_profile_health(ctx.profile, ctx.workspaces, logs_dir).await?;
     let health = serde_json::json!({
         "ok": true,
         "mode": "docker-compose",
         "project": env.project_name(),
+        "readiness": readiness,
         "services": services.iter().map(|s| serde_json::json!({
             "service": s.service,
             "state": s.state,
@@ -305,9 +344,22 @@ async fn run_step_to_completion(
     let timeout = Duration::from_secs(step.timeout_seconds.unwrap_or(300));
     let status = tokio::time::timeout(timeout, child.wait()).await??;
     if !status.success() {
-        anyhow::bail!("`{}` exited with status {status}", step.command);
+        anyhow::bail!(
+            "{} failed: `{}` exited with status {status}",
+            step_label(phase),
+            step.command
+        );
     }
     Ok(())
+}
+
+fn step_label(phase: &str) -> &'static str {
+    match phase {
+        "build" => "setup command",
+        "health" => "readiness command",
+        "stop" => "stop command",
+        _ => "command",
+    }
 }
 
 async fn spawn_start_step(
@@ -400,13 +452,36 @@ async fn wait_for_health(
             Ok(value) => results.push(value),
             Err(err) => {
                 return Err(anyhow::anyhow!(
-                    "health check failed after {}ms: {err}",
+                    "readiness check failed after {}ms: {err}",
                     started.elapsed().as_millis()
                 ));
             }
         }
     }
     Ok(serde_json::json!({ "ok": true, "checks": results }))
+}
+
+async fn wait_for_profile_health(
+    profile: &ProjectLaunchProfile,
+    workspaces: &HashMap<String, WorkspaceHandle>,
+    logs_dir: &Path,
+) -> anyhow::Result<serde_json::Value> {
+    if profile.health_checks.is_empty() {
+        let checks: Vec<LaunchHealthCheck> = profile
+            .target_urls
+            .iter()
+            .map(|url| LaunchHealthCheck {
+                kind: "http".to_string(),
+                url: Some(url.clone()),
+                host: None,
+                port: None,
+                command: None,
+                timeout_seconds: Some(60),
+            })
+            .collect();
+        return wait_for_health(&checks, workspaces, logs_dir).await;
+    }
+    wait_for_health(&profile.health_checks, workspaces, logs_dir).await
 }
 
 async fn wait_for_http(url: Option<&str>, timeout: Duration) -> anyhow::Result<serde_json::Value> {

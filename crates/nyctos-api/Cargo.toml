@@ -18,6 +18,7 @@ hex = { workspace = true }
 hmac = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+reqwest = { workspace = true }
 sha2 = { workspace = true }
 subtle = { workspace = true }
 tar = { workspace = true }

@@ -25,7 +25,7 @@ describe("AppLayout", () => {
       </MemoryRouter>,
     );
 
-    expect(screen.getByRole("img", { name: "Nyx" })).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "Nyctos" })).toBeInTheDocument();
     for (const label of ["Projects", "Pentest Runs", "Vulnerabilities", "Settings"]) {
       expect(screen.getByRole("link", { name: new RegExp(label) })).toBeInTheDocument();
     }
@@ -34,7 +34,7 @@ describe("AppLayout", () => {
     expect(screen.queryByRole("link", { name: /Raw Chains/ })).toBeNull();
     expect(screen.queryByRole("link", { name: /Candidate Queue/ })).toBeNull();
     expect(screen.getByTestId("child")).toHaveTextContent("child content");
-    expect(screen.getByText("Daemon ready")).toBeInTheDocument();
+    expect(screen.queryByText("Daemon ready")).not.toBeInTheDocument();
   });
 
   it("keeps setup in navigation until first-launch setup is complete", () => {
@@ -47,6 +47,18 @@ describe("AppLayout", () => {
     );
 
     expect(screen.getByRole("link", { name: /Setup/ })).toBeInTheDocument();
+  });
+
+  it("labels run detail routes as a pentest run", () => {
+    render(
+      <MemoryRouter initialEntries={["/runs/run-1"]}>
+        <AppLayout>
+          <span />
+        </AppLayout>
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText("Pentest Run")).toBeInTheDocument();
   });
 
   it("reveals debug surfaces when advanced mode is enabled", () => {

@@ -564,11 +564,7 @@ impl<'a> VerifiedVulnerabilityStore<'a> {
 }
 
 fn launch_profile_readiness(input: &ProjectLaunchProfileInput) -> &'static str {
-    if input.start_steps.is_empty() {
-        "Incomplete"
-    } else if input.health_checks.is_empty() {
-        "NeedsHealthCheck"
-    } else if input.target_urls.is_empty() {
+    if input.target_urls.is_empty() {
         "NeedsTarget"
     } else {
         "Ready"
@@ -756,6 +752,28 @@ mod tests {
         assert_eq!(row.readiness, "Ready");
         assert_eq!(row.start_steps[0].command, "npm run dev");
         assert!(row.is_default);
+    }
+
+    #[tokio::test]
+    async fn launch_profile_target_url_is_enough_to_be_ready() {
+        let (_tmp, s) = fresh_store().await;
+        s.projects().create("p-1", "acme", None, None, None, 1_000).await.unwrap();
+        let row = s
+            .launch_profiles()
+            .upsert_default(
+                "p-1",
+                &ProjectLaunchProfileInput {
+                    mode: Some("already-running".to_string()),
+                    target_urls: vec!["http://localhost:3000".to_string()],
+                    ..empty_input()
+                },
+                2_000,
+            )
+            .await
+            .unwrap();
+        assert_eq!(row.readiness, "Ready");
+        assert!(row.start_steps.is_empty());
+        assert!(row.health_checks.is_empty());
     }
 
     #[tokio::test]

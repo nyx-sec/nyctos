@@ -1,4 +1,4 @@
-import { type ChangeEvent } from "react";
+import { type ChangeEvent, useEffect, useRef, useState } from "react";
 import type {
   LaunchEnvRef,
   LaunchHealthCheck,
@@ -9,7 +9,17 @@ import type {
   ProjectRuntimeEnvVar,
   ProjectRuntimeProfile,
 } from "@/api/client";
+import { testLaunchTarget } from "@/api/client";
 import { Button } from "@/components/Button";
+
+export type LaunchMode = "already-running" | "custom-commands" | "docker-compose";
+export type ReadinessKind = "target-url" | "custom-url" | "command" | "skip";
+type ReachabilityStatus = "idle" | "checking" | "reachable" | "unreachable";
+
+interface ReachabilityState {
+  status: ReachabilityStatus;
+  message: string;
+}
 
 export interface RuntimeCommandDraft {
   command: string;
@@ -25,7 +35,9 @@ export interface RuntimeEnvDraft {
 }
 
 export interface RuntimeProfileDraft {
+  mode: LaunchMode;
   target_base_url: string;
+  readiness_kind: ReadinessKind;
   health_check_url: string;
   health_check_command: RuntimeCommandDraft;
   allowed_hosts: string;
@@ -35,6 +47,19 @@ export interface RuntimeProfileDraft {
   start_commands: RuntimeCommandDraft[];
   env_vars: RuntimeEnvDraft[];
 }
+
+const LAUNCH_MODES: Array<{ value: LaunchMode; label: string }> = [
+  { value: "already-running", label: "Already running" },
+  { value: "custom-commands", label: "Start project" },
+  { value: "docker-compose", label: "Docker" },
+];
+
+const READINESS_KINDS: Array<{ value: ReadinessKind; label: string }> = [
+  { value: "target-url", label: "URL responds" },
+  { value: "custom-url", label: "Health URL" },
+  { value: "command", label: "Command" },
+  { value: "skip", label: "Skip" },
+];
 
 const blankCommand = (): RuntimeCommandDraft => ({
   command: "",
@@ -47,15 +72,17 @@ const blankEnv = (): RuntimeEnvDraft => ({ name: "", value: "", secret: false })
 
 export function emptyRuntimeProfileDraft(targetBaseUrl = ""): RuntimeProfileDraft {
   return {
+    mode: "already-running",
     target_base_url: targetBaseUrl,
+    readiness_kind: "target-url",
     health_check_url: "",
     health_check_command: blankCommand(),
     allowed_hosts: "",
     env_file: "",
     timeout_seconds: "",
-    build_commands: [blankCommand()],
-    start_commands: [blankCommand()],
-    env_vars: [blankEnv()],
+    build_commands: [],
+    start_commands: [],
+    env_vars: [],
   };
 }
 
@@ -64,8 +91,13 @@ export function runtimeProfileToDraft(
   fallbackTargetBaseUrl = "",
 ): RuntimeProfileDraft {
   if (!profile) return emptyRuntimeProfileDraft(fallbackTargetBaseUrl);
+  const target = profile.target_base_url ?? fallbackTargetBaseUrl;
+  const hasCommands =
+    (profile.build_commands ?? []).length > 0 || (profile.start_commands ?? []).length > 0;
   return {
-    target_base_url: profile.target_base_url ?? fallbackTargetBaseUrl,
+    mode: hasCommands ? "custom-commands" : "already-running",
+    target_base_url: target,
+    readiness_kind: runtimeReadinessKind(profile, target),
     health_check_url: profile.health_check_url ?? "",
     health_check_command: commandToDraft(profile.health_check_command ?? null),
     allowed_hosts: (profile.allowed_hosts ?? []).join("\n"),
@@ -82,11 +114,12 @@ export function runtimeProfileFromDraft(
 ): ProjectRuntimeProfile | undefined {
   const build_commands = draft.build_commands.map(commandFromDraft).filter(isDefined);
   const start_commands = draft.start_commands.map(commandFromDraft).filter(isDefined);
-  const health_check_command = commandFromDraft(draft.health_check_command);
+  const health_check_command =
+    draft.readiness_kind === "command" ? commandFromDraft(draft.health_check_command) : undefined;
   const allowed_hosts = splitList(draft.allowed_hosts);
   const env_vars = draft.env_vars.map(envFromDraft).filter(isDefined);
   const target_base_url = trimOrUndefined(draft.target_base_url);
-  const health_check_url = trimOrUndefined(draft.health_check_url);
+  const health_check_url = runtimeHealthUrlFromDraft(draft, target_base_url);
   const env_file = trimOrUndefined(draft.env_file);
   const timeout_seconds = positiveIntOrUndefined(draft.timeout_seconds);
 
@@ -119,10 +152,10 @@ export function runtimeProfileFromDraft(
 
 export function runtimeProfileDraftError(draft: RuntimeProfileDraft): string | null {
   if (!isBlankOrHttpUrl(draft.target_base_url)) {
-    return "Runtime target base URL must start with http:// or https://";
+    return "App URL must start with http:// or https://";
   }
-  if (!isBlankOrHttpUrl(draft.health_check_url)) {
-    return "Health check URL must start with http:// or https://";
+  if (draft.readiness_kind === "custom-url" && !isBlankOrHttpUrl(draft.health_check_url)) {
+    return "Readiness URL must start with http:// or https://";
   }
   const timeoutFields = [
     draft.timeout_seconds,
@@ -143,6 +176,7 @@ export function launchProfileToDraft(
   fallbackTargetBaseUrl = "",
 ): RuntimeProfileDraft {
   if (!profile) return emptyRuntimeProfileDraft(fallbackTargetBaseUrl);
+  const target = profile.target_urls[0] ?? fallbackTargetBaseUrl;
   const httpCheck = profile.health_checks.find((check) => check.kind === "http" && check.url);
   const commandCheck = profile.health_checks.find((check) => check.kind === "command");
   const envFile = profile.env_refs.find((ref) => ref.kind === "env-file")?.value ?? "";
@@ -150,42 +184,37 @@ export function launchProfileToDraft(
     .filter((ref) => ref.kind === "env-var")
     .map((ref) => ({ name: ref.value, value: "", secret: ref.secret }));
   return {
-    target_base_url: profile.target_urls[0] ?? fallbackTargetBaseUrl,
+    mode: launchMode(profile.mode),
+    target_base_url: target,
+    readiness_kind: launchReadinessKind(target, httpCheck, commandCheck),
     health_check_url: httpCheck?.url ?? "",
     health_check_command: launchStepToDraft(commandCheck?.command ?? null),
     allowed_hosts: "",
     env_file: envFile,
-    timeout_seconds: "",
+    timeout_seconds:
+      httpCheck?.timeout_seconds?.toString() ??
+      commandCheck?.timeout_seconds?.toString() ??
+      commandCheck?.command?.timeout_seconds?.toString() ??
+      "",
     build_commands: launchStepDrafts(profile.build_steps),
     start_commands: launchStepDrafts(profile.start_steps),
-    env_vars: envVars.length > 0 ? envVars : [blankEnv()],
+    env_vars: envVars,
   };
 }
 
 export function launchProfileFromDraft(
   draft: RuntimeProfileDraft,
 ): ProjectLaunchProfileInput | undefined {
-  const build_steps = draft.build_commands.map(launchStepFromDraft).filter(isDefined);
-  const start_steps = draft.start_commands.map(launchStepFromDraft).filter(isDefined);
-  const health_checks: LaunchHealthCheck[] = [];
-  const healthUrl = trimOrUndefined(draft.health_check_url);
-  if (healthUrl) {
-    health_checks.push({
-      kind: "http",
-      url: healthUrl,
-      timeout_seconds: positiveIntOrUndefined(draft.timeout_seconds),
-    });
-  }
-  const commandCheck = launchStepFromDraft(draft.health_check_command);
-  if (commandCheck) {
-    health_checks.push({
-      kind: "command",
-      command: commandCheck,
-      timeout_seconds:
-        commandCheck.timeout_seconds ?? positiveIntOrUndefined(draft.timeout_seconds),
-    });
-  }
+  const mode = draft.mode;
+  const includeCommands = mode === "custom-commands";
+  const build_steps = includeCommands
+    ? draft.build_commands.map(launchStepFromDraft).filter(isDefined)
+    : [];
+  const start_steps = includeCommands
+    ? draft.start_commands.map(launchStepFromDraft).filter(isDefined)
+    : [];
   const target = trimOrUndefined(draft.target_base_url);
+  const health_checks = launchHealthChecksFromDraft(draft, target);
   const env_refs: LaunchEnvRef[] = [];
   const envFile = trimOrUndefined(draft.env_file);
   if (envFile) env_refs.push({ kind: "env-file", value: envFile, secret: true });
@@ -201,8 +230,8 @@ export function launchProfileFromDraft(
     env_refs.length > 0;
   if (!hasContent) return undefined;
   return {
-    name: "local dev",
-    mode: "custom-commands",
+    name: "App",
+    mode,
     build_steps,
     start_steps,
     stop_steps: [],
@@ -222,14 +251,31 @@ export function ProjectRuntimeProfileForm({ value, onChange }: Props) {
   const setField = (field: keyof RuntimeProfileDraft) => (e: ChangeEvent<HTMLInputElement>) => {
     onChange({ ...value, [field]: e.target.value });
   };
+  const reachability = useTargetReachability(value.target_base_url);
+  const hasLaunchCommands =
+    value.build_commands.some(hasCommandContent) || value.start_commands.some(hasCommandContent);
+  const hasEnvironment =
+    Boolean(trimOrUndefined(value.env_file)) ||
+    value.env_vars.some((row) => Boolean(trimOrUndefined(row.name)));
 
   return (
     <div className="runtime-profile-form">
-      <section className="runtime-profile-section" aria-labelledby="runtime-target-title">
-        <h3 id="runtime-target-title">Target and health</h3>
+      <section className="runtime-profile-card runtime-profile-card--primary">
+        <div className="runtime-profile-card__header">
+          <h3>App</h3>
+        </div>
         <div className="runtime-profile-grid">
           <div className="setup-field">
-            <label htmlFor="runtime-target-url">Runtime target base URL</label>
+            <span className="runtime-profile-label">Launch mode</span>
+            <SegmentedControl
+              ariaLabel="Launch mode"
+              options={LAUNCH_MODES}
+              value={value.mode}
+              onChange={(mode) => onChange({ ...value, mode })}
+            />
+          </div>
+          <div className="setup-field">
+            <label htmlFor="runtime-target-url">App URL</label>
             <input
               id="runtime-target-url"
               type="text"
@@ -238,74 +284,75 @@ export function ProjectRuntimeProfileForm({ value, onChange }: Props) {
               value={value.target_base_url}
               onChange={setField("target_base_url")}
             />
-          </div>
-          <div className="setup-field">
-            <label htmlFor="runtime-health-url">Health check URL</label>
-            <input
-              id="runtime-health-url"
-              type="text"
-              autoComplete="off"
-              placeholder="http://localhost:3000/health"
-              value={value.health_check_url}
-              onChange={setField("health_check_url")}
-            />
+            <ReachabilityLine state={reachability} />
           </div>
         </div>
-        <div className="runtime-profile-grid runtime-profile-grid--narrow">
-          <div className="setup-field">
-            <label htmlFor="runtime-timeout">Default timeout seconds</label>
-            <input
+
+        <div className="runtime-profile-ready">
+          <span className="runtime-profile-label">Ready when</span>
+          <SegmentedControl
+            ariaLabel="Ready when"
+            options={READINESS_KINDS}
+            value={value.readiness_kind}
+            onChange={(readiness_kind) => onChange({ ...value, readiness_kind })}
+          />
+        </div>
+        {value.readiness_kind === "custom-url" && (
+          <div className="runtime-profile-grid runtime-profile-grid--inline">
+            <div className="setup-field">
+              <label htmlFor="runtime-health-url">Readiness URL</label>
+              <input
+                id="runtime-health-url"
+                type="text"
+                autoComplete="off"
+                placeholder="http://localhost:3000/health"
+                value={value.health_check_url}
+                onChange={setField("health_check_url")}
+              />
+            </div>
+            <TimeoutField
               id="runtime-timeout"
-              type="number"
-              min="1"
-              inputMode="numeric"
-              placeholder="300"
+              label="Timeout"
               value={value.timeout_seconds}
-              onChange={setField("timeout_seconds")}
+              onChange={(timeout_seconds) => onChange({ ...value, timeout_seconds })}
             />
           </div>
-          <div className="setup-field">
-            <label htmlFor="runtime-allowed-hosts">Allowed hosts</label>
-            <textarea
-              id="runtime-allowed-hosts"
-              rows={3}
-              placeholder={"localhost\n127.0.0.1"}
-              value={value.allowed_hosts}
-              onChange={(e) => onChange({ ...value, allowed_hosts: e.target.value })}
-            />
-          </div>
-        </div>
+        )}
+        {value.readiness_kind === "command" && (
+          <CommandFields
+            prefix="runtime-health-command"
+            index={0}
+            row={value.health_check_command}
+            commandLabel="Readiness command"
+            onChange={(row) => onChange({ ...value, health_check_command: row })}
+          />
+        )}
       </section>
 
-      <CommandRows
-        title="Build commands"
-        prefix="runtime-build"
-        rows={value.build_commands}
-        onChange={(rows) => onChange({ ...value, build_commands: rows })}
-      />
+      {value.mode === "custom-commands" && (
+        <details className="runtime-profile-details" open={hasLaunchCommands}>
+          <summary>Launch commands</summary>
+          <CommandRows
+            title="Setup"
+            prefix="runtime-setup"
+            rows={value.build_commands}
+            addLabel="Add setup command"
+            onChange={(rows) => onChange({ ...value, build_commands: rows })}
+          />
+          <CommandRows
+            title="Start"
+            prefix="runtime-start"
+            rows={value.start_commands}
+            addLabel="Add start command"
+            onChange={(rows) => onChange({ ...value, start_commands: rows })}
+          />
+        </details>
+      )}
 
-      <CommandRows
-        title="Start commands"
-        prefix="runtime-start"
-        rows={value.start_commands}
-        onChange={(rows) => onChange({ ...value, start_commands: rows })}
-      />
-
-      <section className="runtime-profile-section" aria-labelledby="runtime-health-command-title">
-        <h3 id="runtime-health-command-title">Health check command</h3>
-        <CommandFields
-          prefix="runtime-health-command"
-          index={0}
-          row={value.health_check_command}
-          commandLabel="Health check command"
-          onChange={(row) => onChange({ ...value, health_check_command: row })}
-        />
-      </section>
-
-      <section className="runtime-profile-section" aria-labelledby="runtime-env-title">
-        <h3 id="runtime-env-title">Test environment</h3>
+      <details className="runtime-profile-details" open={hasEnvironment}>
+        <summary>Environment</summary>
         <div className="setup-field">
-          <label htmlFor="runtime-env-file">Env file path</label>
+          <label htmlFor="runtime-env-file">Env file</label>
           <input
             id="runtime-env-file"
             type="text"
@@ -319,8 +366,93 @@ export function ProjectRuntimeProfileForm({ value, onChange }: Props) {
           rows={value.env_vars}
           onChange={(rows) => onChange({ ...value, env_vars: rows })}
         />
-      </section>
+      </details>
     </div>
+  );
+}
+
+function useTargetReachability(url: string): ReachabilityState {
+  const [state, setState] = useState<ReachabilityState>({ status: "idle", message: "" });
+  const seq = useRef(0);
+
+  useEffect(() => {
+    const trimmed = url.trim();
+    const nextSeq = seq.current + 1;
+    seq.current = nextSeq;
+
+    if (!trimmed || !isBlankOrHttpUrl(trimmed)) {
+      setState({ status: "idle", message: "" });
+      return;
+    }
+
+    setState({ status: "checking", message: "Checking app URL..." });
+    const timer = window.setTimeout(async () => {
+      try {
+        const result = await testLaunchTarget({ url: trimmed, timeout_seconds: 3 });
+        if (seq.current !== nextSeq) return;
+        setState({
+          status: result.ok ? "reachable" : "unreachable",
+          message: result.message,
+        });
+      } catch (err) {
+        if (seq.current !== nextSeq) return;
+        setState({
+          status: "unreachable",
+          message: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }, 600);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [url]);
+
+  return state;
+}
+
+function ReachabilityLine({ state }: { state: ReachabilityState }) {
+  if (state.status === "idle") return null;
+  return (
+    <p className={`runtime-url-status runtime-url-status--${state.status}`} aria-live="polite">
+      {state.status === "checking" && "Checking..."}
+      {state.status === "reachable" && "Reachable"}
+      {state.status === "unreachable" && "Not reachable"}
+      {state.message && <span>{state.message}</span>}
+    </p>
+  );
+}
+
+function SegmentedControl<T extends string>({
+  ariaLabel,
+  options,
+  value,
+  onChange,
+}: {
+  ariaLabel: string;
+  options: Array<{ value: T; label: string }>;
+  value: T;
+  onChange: (next: T) => void;
+}) {
+  const name = ariaLabel.toLowerCase().replace(/\s+/g, "-");
+  return (
+    <fieldset className="runtime-segmented" aria-label={ariaLabel}>
+      {options.map((option) => (
+        <label
+          key={option.value}
+          className={`runtime-segmented__item${value === option.value ? " active" : ""}`}
+        >
+          <input
+            type="radio"
+            name={name}
+            value={option.value}
+            checked={value === option.value}
+            onChange={() => onChange(option.value)}
+          />
+          {option.label}
+        </label>
+      ))}
+    </fieldset>
   );
 }
 
@@ -328,45 +460,46 @@ function CommandRows({
   title,
   prefix,
   rows,
+  addLabel,
   onChange,
 }: {
   title: string;
   prefix: string;
   rows: RuntimeCommandDraft[];
+  addLabel: string;
   onChange: (rows: RuntimeCommandDraft[]) => void;
 }) {
-  const safeRows = rows.length > 0 ? rows : [blankCommand()];
   return (
-    <section className="runtime-profile-section" aria-labelledby={`${prefix}-title`}>
+    <section className="runtime-profile-subsection" aria-labelledby={`${prefix}-title`}>
       <div className="runtime-profile-section__header">
-        <h3 id={`${prefix}-title`}>{title}</h3>
-        <Button size="sm" variant="ghost" onClick={() => onChange([...safeRows, blankCommand()])}>
-          Add command
+        <h4 id={`${prefix}-title`}>{title}</h4>
+        <Button size="sm" variant="ghost" onClick={() => onChange([...rows, blankCommand()])}>
+          {addLabel}
         </Button>
       </div>
-      <div className="runtime-profile-list">
-        {safeRows.map((row, index) => (
-          <div className="runtime-profile-row" key={`${prefix}-${index}`}>
-            <CommandFields
-              prefix={prefix}
-              index={index}
-              row={row}
-              commandLabel={`${title.slice(0, -1)} ${index + 1}`}
-              onChange={(next) => onChange(replaceAt(safeRows, index, next))}
-            />
-            {safeRows.length > 1 && (
+      {rows.length > 0 && (
+        <div className="runtime-profile-list">
+          {rows.map((row, index) => (
+            <div className="runtime-profile-row" key={`${prefix}-${index}`}>
+              <CommandFields
+                prefix={prefix}
+                index={index}
+                row={row}
+                commandLabel={`${title} command ${index + 1}`}
+                onChange={(next) => onChange(replaceAt(rows, index, next))}
+              />
               <Button
                 size="sm"
                 variant="ghost"
                 className="runtime-profile-row__remove"
-                onClick={() => onChange(safeRows.filter((_, i) => i !== index))}
+                onClick={() => onChange(rows.filter((_, i) => i !== index))}
               >
                 Remove
               </Button>
-            )}
-          </div>
-        ))}
-      </div>
+            </div>
+          ))}
+        </div>
+      )}
     </section>
   );
 }
@@ -395,45 +528,71 @@ function CommandFields({
           id={`${prefix}-command-${index}`}
           type="text"
           autoComplete="off"
-          placeholder="npm run dev"
+          placeholder={commandLabel.startsWith("Setup") ? "npm ci" : "npm run dev"}
           value={row.command}
           onChange={set("command")}
         />
       </div>
-      <div className="setup-field">
-        <label htmlFor={`${prefix}-repo-${index}`}>Repo</label>
-        <input
-          id={`${prefix}-repo-${index}`}
-          type="text"
-          autoComplete="off"
-          placeholder="frontend"
-          value={row.repo_name}
-          onChange={set("repo_name")}
-        />
-      </div>
-      <div className="setup-field">
-        <label htmlFor={`${prefix}-working-directory-${index}`}>Working dir</label>
-        <input
-          id={`${prefix}-working-directory-${index}`}
-          type="text"
-          autoComplete="off"
-          placeholder="apps/web"
-          value={row.working_directory}
-          onChange={set("working_directory")}
-        />
-      </div>
-      <div className="setup-field">
-        <label htmlFor={`${prefix}-timeout-${index}`}>Timeout</label>
-        <input
-          id={`${prefix}-timeout-${index}`}
-          type="number"
-          min="1"
-          inputMode="numeric"
-          placeholder="120"
-          value={row.timeout_seconds}
-          onChange={set("timeout_seconds")}
-        />
-      </div>
+      <details className="runtime-command-advanced">
+        <summary>Advanced</summary>
+        <div className="runtime-command-advanced__grid">
+          <div className="setup-field">
+            <label htmlFor={`${prefix}-repo-${index}`}>Code source</label>
+            <input
+              id={`${prefix}-repo-${index}`}
+              type="text"
+              autoComplete="off"
+              placeholder="website"
+              value={row.repo_name}
+              onChange={set("repo_name")}
+            />
+          </div>
+          <div className="setup-field">
+            <label htmlFor={`${prefix}-working-directory-${index}`}>Working dir</label>
+            <input
+              id={`${prefix}-working-directory-${index}`}
+              type="text"
+              autoComplete="off"
+              placeholder="apps/web"
+              value={row.working_directory}
+              onChange={set("working_directory")}
+            />
+          </div>
+          <TimeoutField
+            id={`${prefix}-timeout-${index}`}
+            label="Timeout"
+            value={row.timeout_seconds}
+            onChange={(timeout_seconds) => onChange({ ...row, timeout_seconds })}
+          />
+        </div>
+      </details>
+    </div>
+  );
+}
+
+function TimeoutField({
+  id,
+  label,
+  value,
+  onChange,
+}: {
+  id: string;
+  label: string;
+  value: string;
+  onChange: (next: string) => void;
+}) {
+  return (
+    <div className="setup-field runtime-timeout-field">
+      <label htmlFor={id}>{label}</label>
+      <input
+        id={id}
+        type="number"
+        min="1"
+        inputMode="numeric"
+        placeholder="60"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      />
     </div>
   );
 }
@@ -445,16 +604,15 @@ function EnvRows({
   rows: RuntimeEnvDraft[];
   onChange: (rows: RuntimeEnvDraft[]) => void;
 }) {
-  const safeRows = rows.length > 0 ? rows : [blankEnv()];
   return (
     <div className="runtime-profile-list">
       <div className="runtime-profile-section__header">
         <h4>Env variables</h4>
-        <Button size="sm" variant="ghost" onClick={() => onChange([...safeRows, blankEnv()])}>
+        <Button size="sm" variant="ghost" onClick={() => onChange([...rows, blankEnv()])}>
           Add variable
         </Button>
       </div>
-      {safeRows.map((row, index) => (
+      {rows.map((row, index) => (
         <div className="runtime-env-row" key={`runtime-env-${index}`}>
           <div className="setup-field">
             <label htmlFor={`runtime-env-name-${index}`}>Name</label>
@@ -464,9 +622,7 @@ function EnvRows({
               autoComplete="off"
               placeholder="NODE_ENV"
               value={row.name}
-              onChange={(e) =>
-                onChange(replaceAt(safeRows, index, { ...row, name: e.target.value }))
-              }
+              onChange={(e) => onChange(replaceAt(rows, index, { ...row, name: e.target.value }))}
             />
           </div>
           <div className="setup-field">
@@ -477,9 +633,7 @@ function EnvRows({
               autoComplete="off"
               placeholder="test"
               value={row.value}
-              onChange={(e) =>
-                onChange(replaceAt(safeRows, index, { ...row, value: e.target.value }))
-              }
+              onChange={(e) => onChange(replaceAt(rows, index, { ...row, value: e.target.value }))}
             />
           </div>
           <label className="runtime-env-row__secret">
@@ -487,21 +641,19 @@ function EnvRows({
               type="checkbox"
               checked={row.secret}
               onChange={(e) =>
-                onChange(replaceAt(safeRows, index, { ...row, secret: e.target.checked }))
+                onChange(replaceAt(rows, index, { ...row, secret: e.target.checked }))
               }
             />
             Secret
           </label>
-          {safeRows.length > 1 && (
-            <Button
-              size="sm"
-              variant="ghost"
-              className="runtime-profile-row__remove"
-              onClick={() => onChange(safeRows.filter((_, i) => i !== index))}
-            >
-              Remove
-            </Button>
-          )}
+          <Button
+            size="sm"
+            variant="ghost"
+            className="runtime-profile-row__remove"
+            onClick={() => onChange(rows.filter((_, i) => i !== index))}
+          >
+            Remove
+          </Button>
         </div>
       ))}
     </div>
@@ -509,17 +661,15 @@ function EnvRows({
 }
 
 function commandDrafts(commands: ProjectRuntimeCommand[]): RuntimeCommandDraft[] {
-  return commands.length > 0 ? commands.map(commandToDraft) : [blankCommand()];
+  return commands.map(commandToDraft);
 }
 
 function envDrafts(vars: ProjectRuntimeEnvVar[]): RuntimeEnvDraft[] {
-  return vars.length > 0
-    ? vars.map((v) => ({
-        name: v.name,
-        value: v.value,
-        secret: v.secret,
-      }))
-    : [blankEnv()];
+  return vars.map((v) => ({
+    name: v.name,
+    value: v.value,
+    secret: v.secret,
+  }));
 }
 
 function commandToDraft(command: ProjectRuntimeCommand | null): RuntimeCommandDraft {
@@ -569,7 +719,7 @@ function launchStepToDraft(step: LaunchStep | null): RuntimeCommandDraft {
 }
 
 function launchStepDrafts(steps: LaunchStep[]): RuntimeCommandDraft[] {
-  return steps.length > 0 ? steps.map(launchStepToDraft) : [blankCommand()];
+  return steps.map(launchStepToDraft);
 }
 
 function envFromDraft(draft: RuntimeEnvDraft): ProjectRuntimeEnvVar | undefined {
@@ -580,6 +730,61 @@ function envFromDraft(draft: RuntimeEnvDraft): ProjectRuntimeEnvVar | undefined 
     value: draft.value.trim(),
     secret: draft.secret,
   };
+}
+
+function launchHealthChecksFromDraft(
+  draft: RuntimeProfileDraft,
+  target: string | undefined,
+): LaunchHealthCheck[] {
+  const timeout = positiveIntOrUndefined(draft.timeout_seconds);
+  if (draft.readiness_kind === "skip") return [];
+  if (draft.readiness_kind === "target-url" && target) {
+    return [{ kind: "http", url: target, timeout_seconds: timeout }];
+  }
+  if (draft.readiness_kind === "custom-url") {
+    const url = trimOrUndefined(draft.health_check_url);
+    return url ? [{ kind: "http", url, timeout_seconds: timeout }] : [];
+  }
+  const command = launchStepFromDraft(draft.health_check_command);
+  if (!command) return [];
+  return [
+    {
+      kind: "command",
+      command,
+      timeout_seconds: command.timeout_seconds ?? timeout,
+    },
+  ];
+}
+
+function runtimeHealthUrlFromDraft(
+  draft: RuntimeProfileDraft,
+  target: string | undefined,
+): string | undefined {
+  if (draft.readiness_kind === "target-url") return target;
+  if (draft.readiness_kind === "custom-url") return trimOrUndefined(draft.health_check_url);
+  return undefined;
+}
+
+function runtimeReadinessKind(profile: ProjectRuntimeProfile, target: string): ReadinessKind {
+  if (profile.health_check_command) return "command";
+  if (!profile.health_check_url) return "target-url";
+  return sameTrimmed(profile.health_check_url, target) ? "target-url" : "custom-url";
+}
+
+function launchReadinessKind(
+  target: string,
+  httpCheck: LaunchHealthCheck | undefined,
+  commandCheck: LaunchHealthCheck | undefined,
+): ReadinessKind {
+  if (commandCheck) return "command";
+  if (!httpCheck?.url) return "target-url";
+  return sameTrimmed(httpCheck.url, target) ? "target-url" : "custom-url";
+}
+
+function launchMode(input: string | null | undefined): LaunchMode {
+  if (input === "docker-compose") return "docker-compose";
+  if (input === "custom-commands") return "custom-commands";
+  return "already-running";
 }
 
 function splitList(input: string): string[] {
@@ -617,10 +822,23 @@ function isInvalidPositiveInteger(input: string): boolean {
   return !/^[1-9]\d*$/.test(trimmed);
 }
 
-function replaceAt<T>(items: T[], index: number, next: T): T[] {
-  return items.map((item, i) => (i === index ? next : item));
-}
-
 function isDefined<T>(value: T | undefined): value is T {
   return value !== undefined;
+}
+
+function hasCommandContent(row: RuntimeCommandDraft): boolean {
+  return Boolean(
+    trimOrUndefined(row.command) ||
+      trimOrUndefined(row.repo_name) ||
+      trimOrUndefined(row.working_directory) ||
+      trimOrUndefined(row.timeout_seconds),
+  );
+}
+
+function sameTrimmed(a: string | null | undefined, b: string | null | undefined): boolean {
+  return (a ?? "").trim() === (b ?? "").trim();
+}
+
+function replaceAt<T>(items: T[], index: number, next: T): T[] {
+  return items.map((item, i) => (i === index ? next : item));
 }

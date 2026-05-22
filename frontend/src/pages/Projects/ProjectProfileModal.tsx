@@ -33,9 +33,13 @@ export function ProjectProfileModal({ project, onClose, onSaved }: Props) {
       setError(profileError);
       return;
     }
+    if (!draft.target_base_url.trim()) {
+      setError("Add an app URL before saving the launch profile.");
+      return;
+    }
     const launchProfile = launchProfileFromDraft(draft);
     if (!launchProfile) {
-      setError("Add at least a target URL or start command.");
+      setError("Add an app URL before saving the launch profile.");
       return;
     }
     try {

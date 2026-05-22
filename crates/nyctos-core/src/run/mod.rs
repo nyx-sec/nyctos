@@ -215,6 +215,7 @@ pub struct RunDispatcher {
     per_repo_timeout: Duration,
     event_sink: Option<EventSink>,
     attempted_repos: Option<Vec<String>>,
+    emit_run_lifecycle: bool,
 }
 
 impl RunDispatcher {
@@ -234,6 +235,7 @@ impl RunDispatcher {
             per_repo_timeout: cfg.per_repo_timeout(),
             event_sink,
             attempted_repos: None,
+            emit_run_lifecycle: true,
         }
     }
 
@@ -248,6 +250,7 @@ impl RunDispatcher {
             per_repo_timeout,
             event_sink,
             attempted_repos: None,
+            emit_run_lifecycle: true,
         }
     }
 
@@ -258,6 +261,15 @@ impl RunDispatcher {
     /// alone without joining `RepoIngestFailed` frames emitted earlier.
     pub fn with_attempted_repos(mut self, attempted: Vec<String>) -> Self {
         self.attempted_repos = Some(attempted);
+        self
+    }
+
+    /// Suppress run/project lifecycle frames while preserving per-repo
+    /// static-pass frames. The pentest orchestrator emits lifecycle
+    /// events itself so `RunFinished` reflects the whole run, not just
+    /// the Nyx signal pass.
+    pub fn without_run_lifecycle(mut self) -> Self {
+        self.emit_run_lifecycle = false;
         self
     }
 
@@ -301,22 +313,24 @@ impl RunDispatcher {
             Some(list) => list.clone(),
             None => workspaces.iter().map(|w| w.name().to_string()).collect(),
         };
-        self.emit(AgentEvent::Run {
-            data: RunEvent::RunStarted {
-                run_id: run.id.clone(),
-                project_id: project_id.clone(),
-                repos,
-                started_at_ms: run.started_at_ms,
-            },
-        });
-        self.emit(AgentEvent::Run {
-            data: RunEvent::ProjectStarted {
-                run_id: run.id.clone(),
-                project_id: project_id.clone(),
-                project_name: project.name.clone(),
-                started_at_ms: run.started_at_ms,
-            },
-        });
+        if self.emit_run_lifecycle {
+            self.emit(AgentEvent::Run {
+                data: RunEvent::RunStarted {
+                    run_id: run.id.clone(),
+                    project_id: project_id.clone(),
+                    repos,
+                    started_at_ms: run.started_at_ms,
+                },
+            });
+            self.emit(AgentEvent::Run {
+                data: RunEvent::ProjectStarted {
+                    run_id: run.id.clone(),
+                    project_id: project_id.clone(),
+                    project_name: project.name.clone(),
+                    started_at_ms: run.started_at_ms,
+                },
+            });
+        }
 
         let pool = ThreadPoolBuilder::new()
             .num_threads(self.static_concurrency)
@@ -350,24 +364,26 @@ impl RunDispatcher {
             }
         }
 
-        self.emit(AgentEvent::Run {
-            data: RunEvent::ProjectFinished {
-                run_id: run.id.clone(),
-                project_id: project_id.clone(),
-                finished_at_ms,
-            },
-        });
-        self.emit(AgentEvent::Run {
-            data: RunEvent::RunFinished {
-                run_id: run.id.clone(),
-                project_id: project_id.clone(),
-                finished_at_ms,
-                wall_clock_ms,
-                succeeded: counts.succeeded,
-                inconclusive: counts.inconclusive,
-                failed: counts.failed,
-            },
-        });
+        if self.emit_run_lifecycle {
+            self.emit(AgentEvent::Run {
+                data: RunEvent::ProjectFinished {
+                    run_id: run.id.clone(),
+                    project_id: project_id.clone(),
+                    finished_at_ms,
+                },
+            });
+            self.emit(AgentEvent::Run {
+                data: RunEvent::RunFinished {
+                    run_id: run.id.clone(),
+                    project_id: project_id.clone(),
+                    finished_at_ms,
+                    wall_clock_ms,
+                    succeeded: counts.succeeded,
+                    inconclusive: counts.inconclusive,
+                    failed: counts.failed,
+                },
+            });
+        }
 
         let callgraph = CrossRepoCallgraphStub {
             nodes: bundles
@@ -721,6 +737,46 @@ mod tests {
         assert!(saw_repo_finished);
         assert!(saw_project_finished);
         assert!(saw_run_finished);
+    }
+
+    #[test]
+    fn run_lifecycle_can_be_suppressed_for_pentest_orchestrator() {
+        let (tx, mut rx) = broadcast::channel::<AgentEvent>(16);
+        let tmp = tempfile::tempdir().expect("tmp");
+        let workspaces = vec![handle_for("solo", tmp.path())];
+        let lane: Arc<dyn ScanLane<()>> =
+            Arc::new(|_w: &WorkspaceHandle, _t: Duration| -> Result<Vec<()>, ScanLaneError> {
+                Ok(Vec::new())
+            });
+        let dispatcher = RunDispatcher::with_explicit(1, Duration::from_secs(5), Some(tx.clone()))
+            .without_run_lifecycle();
+        let run = Run::with_id("run-evt");
+        let _ = dispatcher.dispatch_project::<dyn ScanLane<()>, ()>(
+            &test_project(),
+            run,
+            lane,
+            workspaces,
+        );
+
+        let mut saw_repo_started = false;
+        let mut saw_repo_static_done = false;
+        let mut saw_run_lifecycle = false;
+        while let Ok(ev) = rx.try_recv() {
+            if let AgentEvent::Run { data } = ev {
+                match data {
+                    RunEvent::RepoStarted { .. } => saw_repo_started = true,
+                    RunEvent::RepoStaticDone { .. } => saw_repo_static_done = true,
+                    RunEvent::RunStarted { .. }
+                    | RunEvent::ProjectStarted { .. }
+                    | RunEvent::ProjectFinished { .. }
+                    | RunEvent::RunFinished { .. } => saw_run_lifecycle = true,
+                    _ => {}
+                }
+            }
+        }
+        assert!(saw_repo_started);
+        assert!(saw_repo_static_done);
+        assert!(!saw_run_lifecycle);
     }
 
     #[test]

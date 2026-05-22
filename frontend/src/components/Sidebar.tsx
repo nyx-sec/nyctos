@@ -65,7 +65,7 @@ export function Sidebar({ setupComplete }: SidebarProps) {
   return (
     <aside className="app-layout__sidebar" aria-label="Primary navigation">
       <div className="sidebar__brand">
-        <img src="/logo.png" alt="Nyx" className="sidebar__brand-logo" />
+        <img src="/logo.png" alt="Nyctos" className="sidebar__brand-logo" />
       </div>
       <nav className="sidebar__nav">
         {primary.map((item) => (

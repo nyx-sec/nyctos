@@ -35,23 +35,28 @@ describe("ProjectRuntimeProfileForm", () => {
   it("adds command rows and serializes trimmed profile fields", () => {
     const draft = emptyRuntimeProfileDraft();
     draft.target_base_url = " http://localhost:3000 ";
+    draft.readiness_kind = "custom-url";
     draft.health_check_url = " http://localhost:3000/health ";
     draft.allowed_hosts = "localhost\n127.0.0.1, localhost";
     draft.env_file = " .env.test ";
     draft.timeout_seconds = "300";
-    draft.build_commands[0] = {
-      command: " npm ci ",
-      repo_name: " web ",
-      working_directory: "",
-      timeout_seconds: "120",
-    };
-    draft.start_commands[0] = {
-      command: " npm run dev ",
-      repo_name: " web ",
-      working_directory: " apps/web ",
-      timeout_seconds: "",
-    };
-    draft.env_vars[0] = { name: " NODE_ENV ", value: " test ", secret: false };
+    draft.build_commands = [
+      {
+        command: " npm ci ",
+        repo_name: " web ",
+        working_directory: "",
+        timeout_seconds: "120",
+      },
+    ];
+    draft.start_commands = [
+      {
+        command: " npm run dev ",
+        repo_name: " web ",
+        working_directory: " apps/web ",
+        timeout_seconds: "",
+      },
+    ];
+    draft.env_vars = [{ name: " NODE_ENV ", value: " test ", secret: false }];
 
     expect(runtimeProfileFromDraft(draft)).toEqual({
       build_commands: [{ command: "npm ci", repo_name: "web", timeout_seconds: 120 }],
@@ -65,21 +70,62 @@ describe("ProjectRuntimeProfileForm", () => {
     });
   });
 
-  it("lets the operator add a second build command row", () => {
+  it("keeps launch commands optional and lets the operator add one", () => {
     render(<FormHarness />);
 
-    fireEvent.click(screen.getAllByRole("button", { name: "Add command" })[0]);
-    fireEvent.change(screen.getByLabelText("Build command 2"), {
+    fireEvent.click(screen.getByRole("radio", { name: "Start project" }));
+    fireEvent.click(screen.getByText("Launch commands"));
+    fireEvent.click(screen.getByRole("button", { name: "Add setup command" }));
+    fireEvent.change(screen.getByLabelText("Setup command 1"), {
       target: { value: "npm run build" },
     });
 
     expect(screen.getByDisplayValue("npm run build")).toBeInTheDocument();
   });
 
+  it("auto-tests a typed app URL through the daemon", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      const body = init?.body ? JSON.parse(String(init.body)) : {};
+      return jsonResponse({
+        ok: true,
+        url: body.url,
+        message: "Reachable in 12ms",
+        status: 200,
+        elapsed_ms: 12,
+      });
+    });
+
+    render(<FormHarness />);
+
+    fireEvent.change(screen.getByLabelText("App URL"), {
+      target: { value: "http://localhost:3000" },
+    });
+
+    expect(await screen.findByText("Reachable", {}, { timeout: 2_000 })).toBeInTheDocument();
+    expect(screen.getByText("Reachable in 12ms")).toBeInTheDocument();
+  });
+
+  it("opens the new-project modal without immediate validation noise", () => {
+    render(wrap(<ProjectAddModal onClose={() => {}} onAdded={() => {}} />));
+
+    expect(screen.getByRole("dialog", { name: "New project" })).toBeInTheDocument();
+    expect(screen.queryByText("Name is required")).not.toBeInTheDocument();
+  });
+
   it("posts the typed launch profile from the new-project modal", async () => {
     const requests: unknown[] = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      const url = String(_input);
       const body = init?.body ? JSON.parse(String(init.body)) : {};
+      if (url.includes("/launch-target/test")) {
+        return jsonResponse({
+          ok: true,
+          url: body.url,
+          message: "Reachable in 12ms",
+          status: 200,
+          elapsed_ms: 12,
+        });
+      }
       requests.push(body);
       return jsonResponse({
         id: "proj-acme",
@@ -98,31 +144,22 @@ describe("ProjectRuntimeProfileForm", () => {
     render(wrap(<ProjectAddModal onClose={() => {}} onAdded={onAdded} />));
 
     fireEvent.change(screen.getByPlaceholderText("acme-app"), { target: { value: "acme" } });
-    fireEvent.change(screen.getByLabelText("Runtime target base URL"), {
+    fireEvent.change(screen.getByLabelText("App URL"), {
       target: { value: "http://localhost:3000" },
     });
-    fireEvent.change(screen.getByLabelText("Health check URL"), {
-      target: { value: "http://localhost:3000/health" },
-    });
-    fireEvent.change(screen.getByLabelText("Build command 1"), {
-      target: { value: "npm ci" },
-    });
-    fireEvent.change(screen.getByLabelText("Start command 1"), {
-      target: { value: "npm run dev" },
-    });
-    fireEvent.change(screen.getByLabelText("Env file path"), { target: { value: ".env.test" } });
     fireEvent.click(screen.getByRole("button", { name: "Create project" }));
 
     await waitFor(() => expect(onAdded).toHaveBeenCalledWith("acme"));
-    expect(requests[0]).toMatchObject({
+    expect(requests.find((body) => (body as { name?: string }).name === "acme")).toMatchObject({
       name: "acme",
       target_base_url: "http://localhost:3000",
       default_launch_profile: {
-        build_steps: [{ command: "npm ci" }],
-        start_steps: [{ command: "npm run dev" }],
-        health_checks: [{ kind: "http", url: "http://localhost:3000/health" }],
+        mode: "already-running",
+        build_steps: [],
+        start_steps: [],
+        health_checks: [{ kind: "http", url: "http://localhost:3000" }],
         target_urls: ["http://localhost:3000"],
-        env_refs: [{ kind: "env-file", value: ".env.test", secret: true }],
+        env_refs: [],
       },
     });
   });

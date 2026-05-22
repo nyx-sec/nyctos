@@ -7,7 +7,7 @@
 //! socket.
 
 use std::collections::{HashMap, HashSet};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::{
     body::Body,
@@ -46,7 +46,10 @@ use nyctos_types::api::{
     SetupStatusResponse,
 };
 use nyctos_types::event::{AgentEvent, ReproEvent, RunEvent};
-use nyctos_types::product::{ProjectLaunchProfileInput, StartPentestResponse};
+use nyctos_types::product::{
+    ProjectLaunchProfileInput, StartPentestResponse, TestLaunchTargetRequest,
+    TestLaunchTargetResponse,
+};
 use nyctos_types::project::{
     CreateProjectRequest, PatchProjectRequest, ProjectRuntimeProfile, TriStateJson,
     TriStateProjectRuntimeProfile,
@@ -62,6 +65,7 @@ pub fn build_router(state: ServerState) -> Router {
         .route("/api/v1/setup/status", get(setup_status))
         .route("/api/v1/setup", post(submit_setup))
         .route("/api/v1/setup/doctor", post(setup_doctor))
+        .route("/api/v1/launch-target/test", post(test_launch_target))
         .route("/api/v1/projects", get(list_projects).post(create_project))
         .route(
             "/api/v1/projects/{project_id}",
@@ -114,10 +118,11 @@ pub fn build_router(state: ServerState) -> Router {
 
 /// Bearer-token gate. Skipped entirely when [`AuthConfig::token`] is
 /// unset (the `--headless` path), and skipped on a per-route basis for
-/// `/health` plus the wizard endpoints, but only while setup is still
-/// pending. Once `nyctos.toml` exists the wizard endpoints require
-/// the bearer token like every other mutation endpoint so an attacker
-/// cannot overwrite the operator's config.
+/// `/health` plus the read-only setup status endpoint. The mutating
+/// wizard endpoints stay open only while setup is still pending. Once
+/// `nyctos.toml` exists, setup writes require the bearer token like
+/// every other mutation endpoint so an attacker cannot overwrite the
+/// operator's config.
 async fn auth_layer(
     State(state): State<ServerState>,
     req: Request,
@@ -128,6 +133,9 @@ async fn auth_layer(
     }
     let path = req.uri().path();
     if is_always_open(path) {
+        return Ok(next.run(req).await);
+    }
+    if is_setup_status_path(path) {
         return Ok(next.run(req).await);
     }
     if is_setup_path(path) && !state.setup.is_complete() {
@@ -148,6 +156,10 @@ fn is_always_open(path: &str) -> bool {
 
 fn is_setup_path(path: &str) -> bool {
     matches!(path, "/api/v1/setup" | "/api/v1/setup/status" | "/api/v1/setup/doctor")
+}
+
+fn is_setup_status_path(path: &str) -> bool {
+    path == "/api/v1/setup/status"
 }
 
 fn check_bearer(req: &Request, expected: &str) -> bool {
@@ -230,6 +242,58 @@ async fn health() -> impl IntoResponse {
     })
 }
 
+async fn test_launch_target(
+    Json(req): Json<TestLaunchTargetRequest>,
+) -> Result<Json<TestLaunchTargetResponse>, ApiError> {
+    let raw = req.url.trim();
+    let url = local_http_url(raw).ok_or_else(|| {
+        ApiError::BadRequest(
+            "app URL must be local http:// or https:// (localhost, 127.0.0.1, or ::1)".to_string(),
+        )
+    })?;
+    let timeout = Duration::from_secs(req.timeout_seconds.unwrap_or(3).clamp(1, 15));
+    let started = Instant::now();
+    let client = reqwest::Client::builder()
+        .timeout(timeout)
+        .build()
+        .map_err(|e| ApiError::Internal(format!("build URL test client: {e}")))?;
+
+    let response = match client.get(url.clone()).send().await {
+        Ok(resp) => {
+            let status = resp.status();
+            let ok = status.is_success();
+            TestLaunchTargetResponse {
+                ok,
+                url: url.to_string(),
+                message: if ok {
+                    format!("Reachable in {}ms", started.elapsed().as_millis())
+                } else {
+                    format!("Responded with HTTP {}", status.as_u16())
+                },
+                status: Some(status.as_u16()),
+                elapsed_ms: millis_u64(started.elapsed()),
+            }
+        }
+        Err(err) => TestLaunchTargetResponse {
+            ok: false,
+            url: url.to_string(),
+            message: if err.is_timeout() {
+                format!("Timed out after {}s", timeout.as_secs())
+            } else {
+                format!("Could not reach app: {err}")
+            },
+            status: None,
+            elapsed_ms: millis_u64(started.elapsed()),
+        },
+    };
+
+    Ok(Json(response))
+}
+
+fn millis_u64(duration: Duration) -> u64 {
+    duration.as_millis().min(u128::from(u64::MAX)) as u64
+}
+
 // ---- /setup -----------------------------------------------------------------
 
 async fn setup_status(State(s): State<ServerState>) -> Result<Json<SetupStatusResponse>, ApiError> {
@@ -238,7 +302,18 @@ async fn setup_status(State(s): State<ServerState>) -> Result<Json<SetupStatusRe
         complete: s.setup.is_complete(),
         config_path: s.setup.config_path.display().to_string(),
         ai_runtime: ai_runtime_label(cfg.ai.runtime).to_string(),
+        ai_provider: cfg.ai.provider.clone(),
+        ai_model: cfg.ai.model.clone(),
+        ai_api_base: cfg.ai.api_base.clone(),
         sandbox_backend: sandbox_backend_label(cfg.sandbox.backend).to_string(),
+        sandbox_enabled: cfg.sandbox.enabled,
+        sandbox_allow_network: cfg.sandbox.allow_network,
+        ui_listen_addr: cfg.ui.listen_addr.clone(),
+        ui_open_browser: cfg.ui.open_browser,
+        log_level: cfg.general.log_level.clone(),
+        state_dir: cfg.general.state_dir.as_ref().map(|p| p.display().to_string()),
+        max_parallel_scans: cfg.performance.max_parallel_scans,
+        scan_timeout_secs: cfg.performance.scan_timeout_secs,
     }))
 }
 
@@ -280,30 +355,42 @@ async fn submit_setup(
 
     let ai_runtime = parse_ai_runtime(&req.ai_runtime)?;
     let sandbox_backend = parse_sandbox_backend(&req.sandbox_backend)?;
+    let mut cfg = s.setup.config.read().await.clone();
+    let anthropic_api_key =
+        req.anthropic_api_key.as_deref().map(str::trim).filter(|v| !v.is_empty());
+    let local_llm_url = req.local_llm_url.as_deref().map(str::trim).filter(|v| !v.is_empty());
 
-    if matches!(ai_runtime, AiRuntime::Anthropic)
-        && req.anthropic_api_key.as_deref().map(str::trim).unwrap_or("").is_empty()
-    {
-        return Err(ApiError::BadRequest(
-            "anthropic_api_key is required when ai_runtime = \"anthropic\"".to_string(),
-        ));
+    if matches!(ai_runtime, AiRuntime::Anthropic) && anthropic_api_key.is_none() {
+        let has_existing_key = s
+            .setup
+            .secrets
+            .get(ACCOUNT_AI_ANTHROPIC)
+            .map_err(|e| ApiError::Internal(format!("read Anthropic key: {e}")))?
+            .is_some();
+        if !has_existing_key {
+            return Err(ApiError::BadRequest(
+                "anthropic_api_key is required when ai_runtime = \"anthropic\"".to_string(),
+            ));
+        }
     }
-    if matches!(ai_runtime, AiRuntime::LocalLlm)
-        && req.local_llm_url.as_deref().map(str::trim).unwrap_or("").is_empty()
-    {
-        return Err(ApiError::BadRequest(
-            "local_llm_url is required when ai_runtime = \"local-llm\"".to_string(),
-        ));
+    if matches!(ai_runtime, AiRuntime::LocalLlm) && local_llm_url.is_none() {
+        let missing_existing_url =
+            cfg.ai.api_base.as_deref().map(str::trim).unwrap_or("").is_empty();
+        if missing_existing_url {
+            return Err(ApiError::BadRequest(
+                "local_llm_url is required when ai_runtime = \"local-llm\"".to_string(),
+            ));
+        }
     }
 
     // Persist secrets first so a failure there does not orphan a
     // half-written config file. The keychain may legitimately reject
     // calls in non-interactive environments (e.g. CI); surface that as
     // a 500 with the precise reason.
-    if let Some(key) = req.anthropic_api_key.as_deref().filter(|v| !v.trim().is_empty()) {
+    if let Some(key) = anthropic_api_key {
         s.setup
             .secrets
-            .set(ACCOUNT_AI_ANTHROPIC, key.trim())
+            .set(ACCOUNT_AI_ANTHROPIC, key)
             .map_err(|e| ApiError::Internal(format!("store Anthropic key: {e}")))?;
     } else if matches!(ai_runtime, AiRuntime::None | AiRuntime::LocalLlm | AiRuntime::ClaudeCode) {
         let _ = s.setup.secrets.delete(ACCOUNT_AI_ANTHROPIC);
@@ -317,7 +404,6 @@ async fn submit_setup(
         let _ = s.setup.secrets.delete(ACCOUNT_AI_LOCAL_LLM);
     }
 
-    let mut cfg = s.setup.config.read().await.clone();
     cfg.ai.runtime = ai_runtime;
     cfg.ai.provider = match ai_runtime {
         AiRuntime::None => None,
@@ -326,7 +412,9 @@ async fn submit_setup(
         AiRuntime::ClaudeCode => Some("claude-code".to_string()),
     };
     cfg.ai.api_base = match ai_runtime {
-        AiRuntime::LocalLlm => req.local_llm_url.map(|s| s.trim().to_string()),
+        AiRuntime::LocalLlm => {
+            local_llm_url.map(str::to_string).or_else(|| cfg.ai.api_base.clone())
+        }
         _ => cfg.ai.api_base.clone(),
     };
     cfg.sandbox.backend = sandbox_backend;
@@ -402,18 +490,8 @@ async fn setup_doctor(
             passed: true,
             message: "AI disabled: static pass only".to_string(),
         }),
-        AiRuntime::Anthropic => checks.push(DoctorCheck {
-            name: "ai-anthropic".to_string(),
-            passed: true,
-            message: "Anthropic runtime selected; API key will be stored in the OS keychain"
-                .to_string(),
-        }),
-        AiRuntime::LocalLlm => checks.push(DoctorCheck {
-            name: "ai-local-llm".to_string(),
-            passed: true,
-            message: "Local LLM runtime selected; endpoint will be saved to [ai].api_base"
-                .to_string(),
-        }),
+        AiRuntime::Anthropic => checks.push(anthropic_doctor_check(&s, &req)),
+        AiRuntime::LocalLlm => checks.push(local_llm_doctor_check(&s, &req).await),
         AiRuntime::ClaudeCode => {
             let found = which_on_path("claude");
             checks.push(DoctorCheck {
@@ -436,6 +514,61 @@ async fn setup_doctor(
     });
 
     Ok(Json(DoctorResponse { checks }))
+}
+
+fn anthropic_doctor_check(s: &ServerState, req: &DoctorRequest) -> DoctorCheck {
+    let provided = req.anthropic_api_key.as_deref().map(str::trim).is_some_and(|v| !v.is_empty());
+    if provided {
+        return DoctorCheck {
+            name: "ai-anthropic".to_string(),
+            passed: true,
+            message: "Anthropic API key provided for this check; save settings to store it"
+                .to_string(),
+        };
+    }
+
+    match s.setup.secrets.get(ACCOUNT_AI_ANTHROPIC) {
+        Ok(Some(_)) => DoctorCheck {
+            name: "ai-anthropic".to_string(),
+            passed: true,
+            message: "Anthropic API key found in the OS keychain".to_string(),
+        },
+        Ok(None) => DoctorCheck {
+            name: "ai-anthropic".to_string(),
+            passed: false,
+            message: "Anthropic API key is not set; enter one before saving this runtime"
+                .to_string(),
+        },
+        Err(e) => DoctorCheck {
+            name: "ai-anthropic".to_string(),
+            passed: false,
+            message: format!("Could not read Anthropic API key from the OS keychain: {e}"),
+        },
+    }
+}
+
+async fn local_llm_doctor_check(s: &ServerState, req: &DoctorRequest) -> DoctorCheck {
+    let provided_url = req.local_llm_url.as_deref().map(str::trim).filter(|v| !v.is_empty());
+    let configured_url = if provided_url.is_none() {
+        let cfg = s.setup.config.read().await;
+        cfg.ai.api_base.clone()
+    } else {
+        None
+    };
+    let url = provided_url.or_else(|| configured_url.as_deref().map(str::trim));
+    match url.filter(|v| !v.is_empty()) {
+        Some(url) => DoctorCheck {
+            name: "ai-local-llm".to_string(),
+            passed: true,
+            message: format!("Local LLM endpoint configured at {url}"),
+        },
+        None => DoctorCheck {
+            name: "ai-local-llm".to_string(),
+            passed: false,
+            message: "Local LLM endpoint is not set; enter a /v1 URL before saving this runtime"
+                .to_string(),
+        },
+    }
 }
 
 fn which_on_path(bin: &str) -> Option<String> {
@@ -673,8 +806,10 @@ fn launch_profile_input_from_runtime(
     profile: &ProjectRuntimeProfile,
     fallback_target: Option<&str>,
 ) -> ProjectLaunchProfileInput {
-    let build_steps = profile.build_commands.iter().map(runtime_command_to_launch_step).collect();
-    let start_steps = profile.start_commands.iter().map(runtime_command_to_launch_step).collect();
+    let build_steps: Vec<nyctos_types::product::LaunchStep> =
+        profile.build_commands.iter().map(runtime_command_to_launch_step).collect();
+    let start_steps: Vec<nyctos_types::product::LaunchStep> =
+        profile.start_commands.iter().map(runtime_command_to_launch_step).collect();
     let mut health_checks = Vec::new();
     if let Some(url) = normalize_optional_string(profile.health_check_url.as_deref()) {
         health_checks.push(nyctos_types::product::LaunchHealthCheck {
@@ -720,9 +855,14 @@ fn launch_profile_input_from_runtime(
             secret: var.secret,
         });
     }
+    let mode = if build_steps.is_empty() && start_steps.is_empty() {
+        "already-running"
+    } else {
+        "custom-commands"
+    };
     ProjectLaunchProfileInput {
         name: Some("local dev".to_string()),
-        mode: Some("custom-commands".to_string()),
+        mode: Some(mode.to_string()),
         build_steps,
         start_steps,
         stop_steps: Vec::new(),
@@ -806,7 +946,7 @@ async fn patch_default_launch_profile(
 
 fn validate_launch_profile_input(input: &ProjectLaunchProfileInput) -> Result<(), ApiError> {
     let mode = input.mode.as_deref().unwrap_or("custom-commands");
-    if !matches!(mode, "custom-commands" | "docker-compose" | "devcontainer") {
+    if !matches!(mode, "already-running" | "custom-commands" | "docker-compose" | "devcontainer") {
         return Err(ApiError::BadRequest(format!("unknown launch profile mode `{mode}`")));
     }
     for url in &input.target_urls {
@@ -829,14 +969,21 @@ fn validate_launch_profile_input(input: &ProjectLaunchProfileInput) -> Result<()
 }
 
 fn is_local_http_url(raw: &str) -> bool {
-    let raw = raw.trim();
-    if !(raw.starts_with("http://") || raw.starts_with("https://")) {
-        return false;
+    local_http_url(raw).is_some()
+}
+
+fn local_http_url(raw: &str) -> Option<reqwest::Url> {
+    let url = reqwest::Url::parse(raw.trim()).ok()?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
     }
-    raw.contains("localhost")
-        || raw.contains("127.0.0.1")
-        || raw.contains("[::1]")
-        || raw.contains("0.0.0.0")
+    let host = url.host_str()?;
+    let allowed = host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::Ipv4Addr>()
+            .is_ok_and(|addr| addr.is_loopback() || addr.is_unspecified())
+        || host.parse::<std::net::Ipv6Addr>().is_ok_and(|addr| addr.is_loopback());
+    allowed.then_some(url)
 }
 
 // ---- /projects/:project_id/repos --------------------------------------------

@@ -1,8 +1,5 @@
 /**
- * Operator UI preferences persisted to `localStorage`. Phase 24 ships
- * a single toggle (`advanced`) that gates the Quarantine page + the
- * sidebar entry so the default install renders a quiet UI. Future
- * UI-polish phases grow this surface.
+ * Operator UI preferences persisted to `localStorage`.
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -11,8 +8,8 @@ const KEY = "nyx.advanced";
 
 /**
  * Read the persisted "show advanced" preference. The default is
- * `false`; only operators who explicitly opt in see the Quarantine
- * surface and any other Phase-24+ advanced affordances.
+ * `false`; only operators who explicitly opt in see raw/debug
+ * surfaces such as Quarantine.
  */
 function readAdvanced(): boolean {
   if (typeof window === "undefined") return false;

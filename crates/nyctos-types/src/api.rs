@@ -45,8 +45,39 @@ pub struct SetupStatusResponse {
     pub config_path: String,
     /// Currently-configured AI runtime (matches `[ai].runtime`).
     pub ai_runtime: String,
+    /// Optional non-secret AI provider label (matches `[ai].provider`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub ai_provider: Option<String>,
+    /// Optional model override (matches `[ai].model`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub ai_model: Option<String>,
+    /// Optional non-secret base URL for local OpenAI-compatible
+    /// runtimes. Bearer tokens stay in the OS keychain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub ai_api_base: Option<String>,
     /// Currently-configured sandbox backend (matches `[sandbox].backend`).
     pub sandbox_backend: String,
+    /// Whether sandboxing is enabled globally.
+    pub sandbox_enabled: bool,
+    /// Whether sandboxed runs may access the network.
+    pub sandbox_allow_network: bool,
+    /// UI listen address (matches `[ui].listen_addr`).
+    pub ui_listen_addr: String,
+    /// Whether `nyctos serve` opens the browser by default.
+    pub ui_open_browser: bool,
+    /// Current log level (matches `[general].log_level`).
+    pub log_level: String,
+    /// Optional configured state directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub state_dir: Option<String>,
+    /// Maximum number of concurrent scans.
+    pub max_parallel_scans: u32,
+    /// Per-scan timeout in seconds.
+    pub scan_timeout_secs: u64,
 }
 
 /// Request body for `POST /api/v1/setup`. The router validates
@@ -95,6 +126,22 @@ pub struct DoctorRequest {
     /// AI runtime being verified. Doctor only inspects what the chosen
     /// runtime depends on (e.g. `claude-code` looks for the binary).
     pub ai_runtime: String,
+    /// Unsaved Anthropic API key supplied by the UI for this check.
+    /// The daemon only tests whether a non-empty key was provided; it
+    /// does not persist this field from `/setup/doctor`.
+    #[serde(default)]
+    #[ts(optional)]
+    pub anthropic_api_key: Option<String>,
+    /// Unsaved local OpenAI-compatible endpoint URL supplied by the UI
+    /// for this check. Persisted only by `POST /setup`.
+    #[serde(default)]
+    #[ts(optional)]
+    pub local_llm_url: Option<String>,
+    /// Unsaved local OpenAI-compatible bearer token supplied by the UI
+    /// for this check. Doctor only acknowledges its presence.
+    #[serde(default)]
+    #[ts(optional)]
+    pub local_llm_token: Option<String>,
     /// Sandbox backend being verified.
     pub sandbox_backend: String,
 }

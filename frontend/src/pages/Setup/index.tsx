@@ -49,6 +49,18 @@ export function SetupWizard() {
   async function runDoctor() {
     await doctor.mutateAsync({
       ai_runtime: form.aiRuntime,
+      anthropic_api_key:
+        form.aiRuntime === "anthropic" && form.anthropicApiKey.trim()
+          ? form.anthropicApiKey.trim()
+          : undefined,
+      local_llm_url:
+        form.aiRuntime === "local-llm" && form.localLlmUrl.trim()
+          ? form.localLlmUrl.trim()
+          : undefined,
+      local_llm_token:
+        form.aiRuntime === "local-llm" && form.localLlmToken.trim()
+          ? form.localLlmToken.trim()
+          : undefined,
       sandbox_backend: form.sandboxBackend,
     });
   }

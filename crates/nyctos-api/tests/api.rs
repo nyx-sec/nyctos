@@ -940,6 +940,104 @@ async fn setup_submit_persists_anthropic_api_key_through_memory_backend() {
 }
 
 #[tokio::test]
+async fn setup_submit_keeps_existing_anthropic_key_when_updating_other_settings() {
+    let trigger: Arc<dyn ScanTrigger> =
+        Arc::new(StubScanTrigger { run_id: "irrelevant".to_string() });
+    let srv = TestServer::start_with_options(trigger, false, false).await;
+    let client = reqwest::Client::new();
+    let first = client
+        .post(format!("{}/api/v1/setup", srv.base()))
+        .json(&serde_json::json!({
+            "ai_runtime": "anthropic",
+            "anthropic_api_key": "sk-ant-test-12345",
+            "sandbox_backend": "process",
+            "i_own_this": true,
+        }))
+        .send()
+        .await
+        .expect("post first");
+    assert_eq!(first.status(), reqwest::StatusCode::OK);
+
+    let second = client
+        .post(format!("{}/api/v1/setup", srv.base()))
+        .json(&serde_json::json!({
+            "ai_runtime": "anthropic",
+            "sandbox_backend": "docker",
+            "i_own_this": true,
+        }))
+        .send()
+        .await
+        .expect("post second");
+    assert_eq!(second.status(), reqwest::StatusCode::OK);
+
+    let after: Value = reqwest::get(format!("{}/api/v1/setup/status", srv.base()))
+        .await
+        .expect("get")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(after["ai_runtime"], "anthropic");
+    assert_eq!(after["sandbox_backend"], "docker");
+}
+
+#[tokio::test]
+async fn setup_doctor_fails_anthropic_when_key_is_missing() {
+    let trigger: Arc<dyn ScanTrigger> =
+        Arc::new(StubScanTrigger { run_id: "irrelevant".to_string() });
+    let srv = TestServer::start_with_options(trigger, false, false).await;
+    let body: Value = reqwest::Client::new()
+        .post(format!("{}/api/v1/setup/doctor", srv.base()))
+        .json(&serde_json::json!({
+            "ai_runtime": "anthropic",
+            "sandbox_backend": "auto",
+        }))
+        .send()
+        .await
+        .expect("post")
+        .json()
+        .await
+        .expect("json");
+
+    let ai = body["checks"]
+        .as_array()
+        .expect("checks")
+        .iter()
+        .find(|row| row["name"] == "ai-anthropic")
+        .expect("ai-anthropic check");
+    assert_eq!(ai["passed"], false);
+    assert!(ai["message"].as_str().unwrap_or_default().contains("API key is not set"));
+}
+
+#[tokio::test]
+async fn setup_doctor_accepts_unsaved_anthropic_key() {
+    let trigger: Arc<dyn ScanTrigger> =
+        Arc::new(StubScanTrigger { run_id: "irrelevant".to_string() });
+    let srv = TestServer::start_with_options(trigger, false, false).await;
+    let body: Value = reqwest::Client::new()
+        .post(format!("{}/api/v1/setup/doctor", srv.base()))
+        .json(&serde_json::json!({
+            "ai_runtime": "anthropic",
+            "anthropic_api_key": "sk-ant-test-12345",
+            "sandbox_backend": "auto",
+        }))
+        .send()
+        .await
+        .expect("post")
+        .json()
+        .await
+        .expect("json");
+
+    let ai = body["checks"]
+        .as_array()
+        .expect("checks")
+        .iter()
+        .find(|row| row["name"] == "ai-anthropic")
+        .expect("ai-anthropic check");
+    assert_eq!(ai["passed"], true);
+    assert!(ai["message"].as_str().unwrap_or_default().contains("provided for this check"));
+}
+
+#[tokio::test]
 async fn setup_submit_rejects_without_ownership_attestation() {
     let trigger: Arc<dyn ScanTrigger> =
         Arc::new(StubScanTrigger { run_id: "irrelevant".to_string() });
@@ -992,11 +1090,29 @@ async fn auth_middleware_lets_setup_endpoints_through_without_token() {
 }
 
 #[tokio::test]
-async fn auth_middleware_requires_token_for_setup_after_completion() {
+async fn auth_middleware_allows_setup_status_after_completion_without_token() {
     let trigger: Arc<dyn ScanTrigger> =
         Arc::new(StubScanTrigger { run_id: "irrelevant".to_string() });
     let srv = TestServer::start_with_options(trigger, true, true).await;
     let resp = reqwest::get(format!("{}/api/v1/setup/status", srv.base())).await.expect("get");
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+}
+
+#[tokio::test]
+async fn auth_middleware_requires_token_for_setup_write_after_completion() {
+    let trigger: Arc<dyn ScanTrigger> =
+        Arc::new(StubScanTrigger { run_id: "irrelevant".to_string() });
+    let srv = TestServer::start_with_options(trigger, true, true).await;
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/v1/setup", srv.base()))
+        .json(&serde_json::json!({
+            "ai_runtime": "none",
+            "sandbox_backend": "process",
+            "i_own_this": true,
+        }))
+        .send()
+        .await
+        .expect("post");
     assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
 }
 
@@ -2459,6 +2575,46 @@ async fn projects_crud_roundtrip() {
     let missing =
         client.get(format!("{}/api/v1/projects/{id}", srv.base())).send().await.expect("get");
     assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn launch_target_test_reports_reachable_local_url() {
+    let srv = TestServer::start().await;
+    let client = reqwest::Client::new();
+
+    let body: Value = client
+        .post(format!("{}/api/v1/launch-target/test", srv.base()))
+        .json(&serde_json::json!({
+            "url": format!("{}/api/v1/health", srv.base()),
+            "timeout_seconds": 2
+        }))
+        .send()
+        .await
+        .expect("post")
+        .json()
+        .await
+        .expect("json");
+
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["status"], 200);
+    assert!(body["message"].as_str().unwrap_or_default().contains("Reachable"));
+}
+
+#[tokio::test]
+async fn launch_target_test_rejects_non_local_url() {
+    let srv = TestServer::start().await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(format!("{}/api/v1/launch-target/test", srv.base()))
+        .json(&serde_json::json!({
+            "url": "https://localhost.example.com"
+        }))
+        .send()
+        .await
+        .expect("post");
+
+    assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]

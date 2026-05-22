@@ -15,6 +15,7 @@ import type {
   CreateProjectRequest,
   CreateRepoRequest,
   DoctorCheck,
+  DoctorRequest,
   DoctorResponse,
   EnvironmentRunRecord,
   FindingDiffStatus,
@@ -42,6 +43,8 @@ import type {
   RunRecord,
   SetupRequest,
   SetupStatusResponse,
+  TestLaunchTargetRequest,
+  TestLaunchTargetResponse,
   TestRepoRequest,
   TestRepoResponse,
   VerifiedVulnerabilityRecord,
@@ -54,6 +57,7 @@ export type {
   CreateProjectRequest,
   CreateRepoRequest,
   DoctorCheck,
+  DoctorRequest,
   DoctorResponse,
   EnvironmentRunRecord,
   FindingDiffStatus,
@@ -81,6 +85,8 @@ export type {
   RunRecord,
   SetupRequest,
   SetupStatusResponse,
+  TestLaunchTargetRequest,
+  TestLaunchTargetResponse,
   TestRepoRequest,
   TestRepoResponse,
   VerifiedVulnerabilityRecord,
@@ -280,11 +286,18 @@ export function useSubmitSetup() {
 
 export function useDoctor() {
   return useMutation({
-    mutationFn: (body: { ai_runtime: AiRuntimeChoice; sandbox_backend: SandboxBackendChoice }) =>
+    mutationFn: (body: DoctorRequest) =>
       request<DoctorResponse>("/setup/doctor", {
         method: "POST",
         body: JSON.stringify(body),
       }),
+  });
+}
+
+export function testLaunchTarget(body: TestLaunchTargetRequest): Promise<TestLaunchTargetResponse> {
+  return request<TestLaunchTargetResponse>("/launch-target/test", {
+    method: "POST",
+    body: JSON.stringify(body),
   });
 }
 

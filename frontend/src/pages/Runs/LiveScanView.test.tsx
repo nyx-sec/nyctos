@@ -62,7 +62,7 @@ describe("LiveScanView", () => {
   it("shows the waiting-for-RunStarted placeholder before any frame arrives", async () => {
     render(wrap(<LiveScanView />));
     expect(await screen.findByText(/Run run-1/)).toBeInTheDocument();
-    expect(screen.getByText(/Preparing pentest/)).toBeInTheDocument();
+    expect(screen.getByText(/Preparing app/)).toBeInTheDocument();
     expect(FakeWebSocket.instances).toHaveLength(1);
   });
 
@@ -118,6 +118,9 @@ describe("LiveScanView", () => {
     );
     expect(await screen.findByText("Static done")).toBeInTheDocument();
     expect(screen.getByText("3 signal(s)")).toBeInTheDocument();
+    expect(
+      screen.getByText("[alpha] static pass recorded 3 signal(s) in 220ms."),
+    ).toBeInTheDocument();
 
     act(() =>
       ws.emit({
@@ -140,6 +143,21 @@ describe("LiveScanView", () => {
     render(wrap(<LiveScanView />));
     await screen.findByText(/Run run-1/);
     const ws = FakeWebSocket.instances[0];
+
+    act(() =>
+      ws.emit({
+        kind: "Run",
+        data: {
+          kind: "PhaseStarted",
+          run_id: "run-1",
+          project_id: "p-1",
+          phase: "NyxSignalsStarted",
+          started_at_ms: 1100,
+        },
+      }),
+    );
+    expect(await screen.findByText("Static analysis started.")).toBeInTheDocument();
+    expect(screen.queryByText(/Nyx signal/i)).not.toBeInTheDocument();
 
     act(() =>
       ws.emit({
@@ -224,5 +242,57 @@ describe("LiveScanView", () => {
 
     act(() => ws.emit({ kind: "Lagged", skipped: 7 }));
     expect(await screen.findByText(/\[lagged\] skipped 7 frame\(s\)/)).toBeInTheDocument();
+  });
+
+  it("logs pentest phases and AI tool activity after the static pass", async () => {
+    render(wrap(<LiveScanView />));
+    await screen.findByText(/Run run-1/);
+    const ws = FakeWebSocket.instances[0];
+
+    act(() =>
+      ws.emit({
+        kind: "Run",
+        data: {
+          kind: "PhaseStarted",
+          run_id: "run-1",
+          project_id: "p-1",
+          phase: "AgentReviewStarted",
+          started_at_ms: 1200,
+        },
+      }),
+    );
+    expect(await screen.findByText("AI pentest review started.")).toBeInTheDocument();
+
+    act(() =>
+      ws.emit({
+        kind: "Ai",
+        data: {
+          kind: "ToolCallStarted",
+          task_id: "expl-website",
+          name: "Bash",
+        },
+      }),
+    );
+    expect(await screen.findByText("[AI expl-website] tool Bash started.")).toBeInTheDocument();
+
+    act(() =>
+      ws.emit({
+        kind: "Run",
+        data: {
+          kind: "PhaseFinished",
+          run_id: "run-1",
+          project_id: "p-1",
+          phase: "LiveVerificationStarted",
+          status: "Finished",
+          message: "candidate verifier: 0 confirmed, 0 rejected, 153 inconclusive, 0 errored",
+          finished_at_ms: 2200,
+        },
+      }),
+    );
+    expect(
+      await screen.findByText(
+        "Live verification: candidate verifier: 0 confirmed, 0 rejected, 153 inconclusive, 0 errored",
+      ),
+    ).toBeInTheDocument();
   });
 });

@@ -43,7 +43,8 @@ export function ProjectAddModal({ onClose, onAdded }: Props) {
 
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
-    mode: "onBlur",
+    mode: "onSubmit",
+    reValidateMode: "onBlur",
     defaultValues: { name: "", description: "" },
   });
   const { register, handleSubmit, formState, setError, reset } = form;
@@ -104,34 +105,36 @@ export function ProjectAddModal({ onClose, onAdded }: Props) {
             onSubmit={handleSubmit(onSubmit)}
             noValidate
           >
-            <div className="setup-field">
-              <label htmlFor="project-name">Name</label>
-              <input
-                id="project-name"
-                type="text"
-                autoComplete="off"
-                placeholder="acme-app"
-                name={nameReg.name}
-                onBlur={nameReg.onBlur}
-                onChange={nameReg.onChange}
-                ref={(el) => {
-                  nameReg.ref(el);
-                  firstInputRef.current = el;
-                }}
-              />
-              <FieldError msg={formState.errors.name?.message} />
-            </div>
+            <div className="project-add-basic">
+              <div className="setup-field">
+                <label htmlFor="project-name">Name</label>
+                <input
+                  id="project-name"
+                  type="text"
+                  autoComplete="off"
+                  placeholder="acme-app"
+                  name={nameReg.name}
+                  onBlur={nameReg.onBlur}
+                  onChange={nameReg.onChange}
+                  ref={(el) => {
+                    nameReg.ref(el);
+                    firstInputRef.current = el;
+                  }}
+                />
+                <FieldError msg={formState.errors.name?.message} />
+              </div>
 
-            <div className="setup-field">
-              <label htmlFor="project-description">Description (optional)</label>
-              <input
-                id="project-description"
-                type="text"
-                autoComplete="off"
-                placeholder="Acme web product"
-                {...register("description")}
-              />
-              <FieldError msg={formState.errors.description?.message} />
+              <div className="setup-field">
+                <label htmlFor="project-description">Description</label>
+                <input
+                  id="project-description"
+                  type="text"
+                  autoComplete="off"
+                  placeholder="Acme web product"
+                  {...register("description")}
+                />
+                <FieldError msg={formState.errors.description?.message} />
+              </div>
             </div>
 
             <ProjectRuntimeProfileForm value={profileDraft} onChange={setProfileDraft} />

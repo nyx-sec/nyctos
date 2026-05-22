@@ -17,8 +17,8 @@ use nyctos_core::store::{
 };
 use nyctos_core::{
     ingest, now_epoch_ms, repo_from_config, Config, InconclusiveReason, IngestError, IngestedRepo,
-    LogConfig, Project, ProjectId, Repo, RepoOutcome, RepoSource, Run, RunBundle, RunDispatcher,
-    SandboxBackend, SecretStore, StateDir, Store, WorkspaceHandle,
+    LogConfig, Project, ProjectId, Repo, RepoOutcome, RepoSource, Run, RunBundle, RunCounts,
+    RunDispatcher, SandboxBackend, SecretStore, StateDir, Store, WorkspaceHandle,
 };
 use nyctos_nyx::{Diag, NyxError, NyxRunner, NyxScanLane, MINIMUM_NYX_VERSION};
 use nyctos_sandbox::{select_backend, BackendChoice, BackendKind, Lane};
@@ -570,10 +570,19 @@ async fn drive_scan(
     since_ref: Option<&str>,
 ) -> anyhow::Result<ScanReport> {
     let now_ms = now_epoch_ms();
-    // Every selected repo belongs to `project`; the dispatcher emits
-    // Project/Run events scoped to that id, and workspace dirs land
-    // under `<state>/projects/<project_id>/repos/<name>/`.
+    // Every selected repo belongs to `project`; the orchestrator emits
+    // project/run lifecycle events while the static dispatcher emits
+    // per-repo signal-scan events. Workspace dirs land under
+    // `<state>/projects/<project_id>/repos/<name>/`.
     let attempted_repo_names: Vec<String> = selected.iter().map(|r| r.name.clone()).collect();
+    emit_run_started(
+        &events,
+        &run.id,
+        project.id.as_str(),
+        &project.name,
+        attempted_repo_names.clone(),
+        run.started_at_ms,
+    );
     let mut ingest_failures: Vec<(String, IngestError)> = Vec::new();
     let mut workspaces: Vec<WorkspaceHandle> = Vec::new();
     for repo in &selected {
@@ -619,7 +628,17 @@ async fn drive_scan(
     }
 
     if workspaces.is_empty() {
-        finalise_run(store, &run.id, run.started_at_ms, 0, "Failed").await?;
+        finalise_and_emit_run(
+            store,
+            &events,
+            &run.id,
+            project.id.as_str(),
+            run.started_at_ms,
+            0,
+            "Failed",
+            RunCounts::default(),
+        )
+        .await?;
         return Ok(ScanReport {
             run_id: run.id.clone(),
             wall_clock_ms: 0,
@@ -635,7 +654,17 @@ async fn drive_scan(
         Ok(lane) => Arc::new(lane),
         Err(err) => {
             eprintln!("scan: cannot build nyx lane: {err}");
-            finalise_run(store, &run.id, run.started_at_ms, 0, "Failed").await?;
+            finalise_and_emit_run(
+                store,
+                &events,
+                &run.id,
+                project.id.as_str(),
+                run.started_at_ms,
+                0,
+                "Failed",
+                RunCounts::default(),
+            )
+            .await?;
             return Ok(ScanReport {
                 run_id: run.id.clone(),
                 wall_clock_ms: 0,
@@ -689,7 +718,17 @@ async fn drive_scan(
                     false,
                     Some(err.to_string()),
                 );
-                finalise_run(store, &run.id, run.started_at_ms, 0, "Failed").await?;
+                finalise_and_emit_run(
+                    store,
+                    &events,
+                    &run.id,
+                    project.id.as_str(),
+                    run.started_at_ms,
+                    0,
+                    "Failed",
+                    RunCounts::default(),
+                )
+                .await?;
                 return Ok(ScanReport {
                     run_id: run.id.clone(),
                     wall_clock_ms: 0,
@@ -716,9 +755,11 @@ async fn drive_scan(
     let live_target_urls =
         environment.as_ref().map(|env| env.target_urls.clone()).unwrap_or_default();
 
+    emit_phase(&events, &run.id, project.id.as_str(), "NyxSignalsStarted", true, None);
     let dispatcher =
         RunDispatcher::from_config(&config.performance, workspaces.len(), Some(events.clone()))
-            .with_attempted_repos(attempted_repo_names.clone());
+            .with_attempted_repos(attempted_repo_names.clone())
+            .without_run_lifecycle();
     let run_for_dispatch = run.clone();
     let project_for_dispatch = project.clone();
     let dispatch_handle = tokio::task::spawn_blocking(move || {
@@ -739,7 +780,25 @@ async fn drive_scan(
             if let Some(env) = environment.take() {
                 let _ = env.stop().await;
             }
-            let _ = finalise_run(store, &run.id, run.started_at_ms, 0, "Failed").await;
+            emit_phase(
+                &events,
+                &run.id,
+                project.id.as_str(),
+                "NyxSignalsStarted",
+                false,
+                Some(format!("static dispatcher failed: {join_err}")),
+            );
+            let _ = finalise_and_emit_run(
+                store,
+                &events,
+                &run.id,
+                project.id.as_str(),
+                run.started_at_ms,
+                0,
+                "Failed",
+                RunCounts::default(),
+            )
+            .await;
             return Err(anyhow::anyhow!("dispatch join error: {join_err}"));
         }
     };
@@ -748,9 +807,51 @@ async fn drive_scan(
         if let Some(env) = environment.take() {
             let _ = env.stop().await;
         }
-        let _ =
-            finalise_run(store, &run.id, run.started_at_ms, bundle.wall_clock_ms, "Failed").await;
+        emit_phase(
+            &events,
+            &run.id,
+            project.id.as_str(),
+            "NyxSignalsStarted",
+            false,
+            Some(format!("failed to persist static signals: {err}")),
+        );
+        let _ = finalise_and_emit_run(
+            store,
+            &events,
+            &run.id,
+            project.id.as_str(),
+            run.started_at_ms,
+            0,
+            "Failed",
+            bundle.counts(),
+        )
+        .await;
         return Err(err);
+    }
+    let signal_count = bundle
+        .per_repo
+        .iter()
+        .map(|b| match &b.outcome {
+            RepoOutcome::Success(diags) => diags.len(),
+            _ => 0,
+        })
+        .sum::<usize>();
+    emit_phase(
+        &events,
+        &run.id,
+        project.id.as_str(),
+        "NyxSignalsStarted",
+        false,
+        Some(format!("recorded {signal_count} signal(s)")),
+    );
+
+    emit_phase(&events, &run.id, project.id.as_str(), "AgentReviewStarted", true, None);
+    let mut agent_review_notes: Vec<String> = Vec::new();
+    if !matches!(config.ai.runtime, nyctos_core::AiRuntime::Anthropic) {
+        agent_review_notes.push(format!(
+            "one-shot helpers skipped for configured runtime {:?}",
+            config.ai.runtime
+        ));
     }
 
     // Fan out PayloadSynthesis tasks against every diag the static
@@ -768,6 +869,10 @@ async fn drive_scan(
     .await
     {
         Ok(report) => {
+            agent_review_notes.push(format!(
+                "payload synthesis: {} synthesised, {} quarantined, {} failed",
+                report.synthesised, report.quarantined, report.failed
+            ));
             if verbose && (report.synthesised > 0 || report.quarantined > 0 || report.failed > 0) {
                 println!(
                     "scan: payload synthesis - {} synthesised, {} quarantined, {} failed ({} attempts, ${:.6})",
@@ -779,7 +884,10 @@ async fn drive_scan(
                 );
             }
         }
-        Err(err) => tracing::warn!(error = %err, "payload synthesis pass failed"),
+        Err(err) => {
+            agent_review_notes.push(format!("payload synthesis failed: {err}"));
+            tracing::warn!(error = %err, "payload synthesis pass failed");
+        }
     }
 
     // Fan out SpecDerivation tasks against every diag the static pass
@@ -797,6 +905,10 @@ async fn drive_scan(
     .await
     {
         Ok(report) => {
+            agent_review_notes.push(format!(
+                "spec derivation: {} synthesised, {} quarantined, {} failed",
+                report.synthesised, report.quarantined, report.failed
+            ));
             if verbose && (report.synthesised > 0 || report.quarantined > 0 || report.failed > 0) {
                 println!(
                     "scan: spec derivation - {} synthesised, {} quarantined, {} failed ({} attempts, ${:.6})",
@@ -808,7 +920,10 @@ async fn drive_scan(
                 );
             }
         }
-        Err(err) => tracing::warn!(error = %err, "spec derivation pass failed"),
+        Err(err) => {
+            agent_review_notes.push(format!("spec derivation failed: {err}"));
+            tracing::warn!(error = %err, "spec derivation pass failed");
+        }
     }
 
     // Rank cross-repo exploitable chains across the run's finding
@@ -826,6 +941,10 @@ async fn drive_scan(
     .await
     {
         Ok(report) => {
+            agent_review_notes.push(format!(
+                "chain reasoning: {} chain(s), {} failed",
+                report.chains_persisted, report.failed
+            ));
             if verbose && (report.chains_persisted > 0 || report.failed > 0) {
                 println!(
                     "scan: chain reasoning - {} chains ({} cross-repo), {} members stamped, {} failed ({} attempts, ${:.6})",
@@ -838,7 +957,10 @@ async fn drive_scan(
                 );
             }
         }
-        Err(err) => tracing::warn!(error = %err, "chain reasoning pass failed"),
+        Err(err) => {
+            agent_review_notes.push(format!("chain reasoning failed: {err}"));
+            tracing::warn!(error = %err, "chain reasoning pass failed");
+        }
     }
 
     // Scan repo source for candidate vulnerabilities the static pass
@@ -857,6 +979,10 @@ async fn drive_scan(
     .await
     {
         Ok(report) => {
+            agent_review_notes.push(format!(
+                "novel discovery: {} candidate(s), {} batch(es), {} failed",
+                report.candidates_persisted, report.batches_dispatched, report.failed
+            ));
             if verbose
                 && (report.candidates_persisted > 0
                     || report.batches_dispatched > 0
@@ -874,7 +1000,10 @@ async fn drive_scan(
                 );
             }
         }
-        Err(err) => tracing::warn!(error = %err, "novel finding discovery pass failed"),
+        Err(err) => {
+            agent_review_notes.push(format!("novel finding discovery failed: {err}"));
+            tracing::warn!(error = %err, "novel finding discovery pass failed");
+        }
     }
 
     // Drive the Claude Code agent loop against the running chain-lane
@@ -899,6 +1028,10 @@ async fn drive_scan(
     .await
     {
         Ok(report) => {
+            agent_review_notes.push(format!(
+                "exploration: {} dispatched, {} quarantined, {} failed",
+                report.explorations_dispatched, report.findings_quarantined, report.failed
+            ));
             if verbose
                 && (report.explorations_dispatched > 0
                     || report.findings_quarantined > 0
@@ -917,24 +1050,41 @@ async fn drive_scan(
                 );
             }
         }
-        Err(err) => tracing::warn!(error = %err, "ai exploration pass failed"),
+        Err(err) => {
+            agent_review_notes.push(format!("exploration failed: {err}"));
+            tracing::warn!(error = %err, "ai exploration pass failed");
+        }
     }
+    emit_phase(
+        &events,
+        &run.id,
+        project.id.as_str(),
+        "AgentReviewStarted",
+        false,
+        Some(agent_review_notes.join("; ")),
+    );
 
     // Drive the deterministic payload runner across every finding
     // (and AI-discovered candidate) that has a payload+spec pair
     // ready. Confirms or rejects each row under differential rule v1;
     // Quarantined candidates flip to Promoted on Confirmed.
+    emit_phase(&events, &run.id, project.id.as_str(), "LiveVerificationStarted", true, None);
+    let mut verification_notes: Vec<String> = Vec::new();
     match ai_pipeline::run_payload_verification_pass(
         &config.run,
         &config.sandbox,
         store,
         &bundle,
         &workspaces_for_ai,
-        events,
+        events.clone(),
     )
     .await
     {
         Ok(report) => {
+            verification_notes.push(format!(
+                "payload verifier: {} confirmed, {} not-confirmed, {} errored, {} skipped no-payload",
+                report.confirmed, report.not_confirmed, report.errored, report.skipped_no_payload
+            ));
             if verbose
                 && (report.confirmed > 0
                     || report.not_confirmed > 0
@@ -953,7 +1103,10 @@ async fn drive_scan(
                 );
             }
         }
-        Err(err) => tracing::warn!(error = %err, "verifier pass failed"),
+        Err(err) => {
+            verification_notes.push(format!("payload verifier failed: {err}"));
+            tracing::warn!(error = %err, "verifier pass failed");
+        }
     }
 
     if let Some(env) = environment.as_ref() {
@@ -967,6 +1120,10 @@ async fn drive_scan(
         .await
         {
             Ok(report) => {
+                verification_notes.push(format!(
+                    "candidate verifier: {} confirmed, {} rejected, {} inconclusive, {} errored",
+                    report.confirmed, report.rejected, report.inconclusive, report.errored
+                ));
                 if verbose
                     && (report.confirmed > 0
                         || report.rejected > 0
@@ -979,9 +1136,23 @@ async fn drive_scan(
                     );
                 }
             }
-            Err(err) => tracing::warn!(error = %err, "pentest candidate verification failed"),
+            Err(err) => {
+                verification_notes.push(format!("candidate verifier failed: {err}"));
+                tracing::warn!(error = %err, "pentest candidate verification failed");
+            }
         }
+    } else {
+        verification_notes
+            .push("candidate verifier skipped: no running app environment".to_string());
     }
+    emit_phase(
+        &events,
+        &run.id,
+        project.id.as_str(),
+        "LiveVerificationStarted",
+        false,
+        Some(verification_notes.join("; ")),
+    );
 
     let counts = bundle.counts();
     let success = counts.failed == 0 && ingest_failures.is_empty();
@@ -991,7 +1162,17 @@ async fn drive_scan(
             tracing::warn!(error = %err, "environment teardown failed");
         }
     }
-    finalise_run(store, &run.id, run.started_at_ms, bundle.wall_clock_ms, final_status).await?;
+    let (_finished_at, final_wall_clock_ms) = finalise_and_emit_run(
+        store,
+        &events,
+        &run.id,
+        project.id.as_str(),
+        run.started_at_ms,
+        0,
+        final_status,
+        counts,
+    )
+    .await?;
 
     if let Some(path) = output_path {
         let changed = match since_ref {
@@ -999,7 +1180,7 @@ async fn drive_scan(
             None => None,
         };
         let started_at = run.started_at_ms;
-        let finished_at = started_at + bundle.wall_clock_ms;
+        let finished_at = started_at + final_wall_clock_ms;
         let meta = cmd::scan_report::RunMeta {
             started_at,
             finished_at: Some(finished_at),
@@ -1040,7 +1221,7 @@ async fn drive_scan(
 
     Ok(ScanReport {
         run_id: bundle.run_id,
-        wall_clock_ms: bundle.wall_clock_ms,
+        wall_clock_ms: final_wall_clock_ms,
         succeeded: counts.succeeded,
         inconclusive: counts.inconclusive,
         failed: counts.failed,
@@ -1598,7 +1779,7 @@ fn candidate_from_signal(
             "rule": signal.rule,
         })],
         hypothesis: format!(
-            "Nyx reported a {} signal at {}:{}; live verification is required before surfacing it.",
+            "Static analysis reported a {} signal at {}:{}; live verification is required before surfacing it.",
             signal.severity,
             signal.path,
             signal.line.map(|l: i64| l.to_string()).unwrap_or_else(|| "?".to_string())
@@ -1797,6 +1978,32 @@ fn vulnerability_from_candidate(
     }
 }
 
+fn emit_run_started(
+    events: &EventSink,
+    run_id: &str,
+    project_id: &str,
+    project_name: &str,
+    repos: Vec<String>,
+    started_at_ms: i64,
+) {
+    let _ = events.send(AgentEvent::Run {
+        data: RunEvent::RunStarted {
+            run_id: run_id.to_string(),
+            project_id: project_id.to_string(),
+            repos,
+            started_at_ms,
+        },
+    });
+    let _ = events.send(AgentEvent::Run {
+        data: RunEvent::ProjectStarted {
+            run_id: run_id.to_string(),
+            project_id: project_id.to_string(),
+            project_name: project_name.to_string(),
+            started_at_ms,
+        },
+    });
+}
+
 fn emit_phase(
     events: &EventSink,
     run_id: &str,
@@ -1825,17 +2032,50 @@ fn emit_phase(
     let _ = events.send(AgentEvent::Run { data });
 }
 
+async fn finalise_and_emit_run(
+    store: &Store,
+    events: &EventSink,
+    run_id: &str,
+    project_id: &str,
+    started_at_ms: i64,
+    wall_clock_ms: i64,
+    status: &str,
+    counts: RunCounts,
+) -> anyhow::Result<(i64, i64)> {
+    let (finished_at, wall) =
+        finalise_run(store, run_id, started_at_ms, wall_clock_ms, status).await?;
+    let _ = events.send(AgentEvent::Run {
+        data: RunEvent::ProjectFinished {
+            run_id: run_id.to_string(),
+            project_id: project_id.to_string(),
+            finished_at_ms: finished_at,
+        },
+    });
+    let _ = events.send(AgentEvent::Run {
+        data: RunEvent::RunFinished {
+            run_id: run_id.to_string(),
+            project_id: project_id.to_string(),
+            finished_at_ms: finished_at,
+            wall_clock_ms: wall,
+            succeeded: counts.succeeded,
+            inconclusive: counts.inconclusive,
+            failed: counts.failed,
+        },
+    });
+    Ok((finished_at, wall))
+}
+
 async fn finalise_run(
     store: &Store,
     run_id: &str,
     started_at_ms: i64,
     wall_clock_ms: i64,
     status: &str,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<(i64, i64)> {
     let finished_at = now_epoch_ms();
     let wall = if wall_clock_ms == 0 { finished_at - started_at_ms } else { wall_clock_ms };
     store.runs().finish(run_id, finished_at, status, wall).await?;
-    Ok(())
+    Ok((finished_at, wall))
 }
 
 /// Resolve the project rows + repos a scan should walk.
