@@ -3,7 +3,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import { ReactNode } from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ChainRecord, FindingRecord } from "@/api/client";
+import type { ChainRecord, FindingRecord, NyxSignalRecord } from "@/api/client";
 import { ChainDetail } from "./ChainDetail";
 
 function jsonResponse(body: unknown, init: ResponseInit = { status: 200 }) {
@@ -70,6 +70,26 @@ function makeFinding(overrides: Partial<FindingRecord> = {}): FindingRecord {
   };
 }
 
+function makeSignal(overrides: Partial<NyxSignalRecord> = {}): NyxSignalRecord {
+  return {
+    id: "sig-project-repo-abc123deadbeef00",
+    run_id: "run-1",
+    project_id: "project-1",
+    repo_id: "repo-1",
+    repo: "website",
+    path: "/state/projects/project-1/repos/website/snapshots/run-1/public/app.js",
+    line: 42,
+    cap: "Security",
+    rule: "taint-unsanitised-flow",
+    severity: "High",
+    message: "unsanitised user input reaches fetch",
+    signal_kind: "security",
+    meaningful: true,
+    created_at: 1234,
+    ...overrides,
+  };
+}
+
 describe("ChainDetail", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -79,6 +99,7 @@ describe("ChainDetail", () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
       const url = typeof input === "string" ? input : (input as Request).url;
       if (url === "/api/v1/chains/chain-xrep") return jsonResponse(makeChain());
+      if (url === "/api/v1/runs/run-1/signals") return jsonResponse([]);
       if (url === "/api/v1/findings/f-controller") {
         return jsonResponse(makeFinding({ id: "f-controller" }));
       }
@@ -141,6 +162,7 @@ describe("ChainDetail", () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
       const url = typeof input === "string" ? input : (input as Request).url;
       if (url === "/api/v1/chains/chain-xrep") return jsonResponse(makeChain());
+      if (url === "/api/v1/runs/run-1/signals") return jsonResponse([]);
       if (url === "/api/v1/findings/f-controller") {
         return jsonResponse(makeFinding({ id: "f-controller" }));
       }
@@ -164,6 +186,38 @@ describe("ChainDetail", () => {
         "/findings?run_id=run-1&focus=f-sink",
       ]),
     );
+  });
+
+  it("falls back to run signals when a member id is the stable signal suffix", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      if (url === "/api/v1/chains/chain-signals") {
+        return jsonResponse(
+          makeChain({
+            id: "chain-signals",
+            member_ids: '["abc123deadbeef00"]',
+            rationale_blob: '{"rationale":"signal-driven chain"}',
+          }),
+        );
+      }
+      if (url === "/api/v1/runs/run-1/signals") {
+        return jsonResponse([makeSignal()]);
+      }
+      if (url === "/api/v1/findings/abc123deadbeef00") {
+        return jsonResponse({ error: { message: "missing" } }, { status: 404 });
+      }
+      throw new Error(`unexpected url ${url}`);
+    });
+
+    render(wrap(<ChainDetail />, "/chains/chain-signals"));
+
+    expect(await screen.findByText("signal-driven chain")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByText("website")).toBeInTheDocument();
+    });
+    expect(screen.getByText("public/app.js:42")).toBeInTheDocument();
+    expect(screen.getByText("taint-unsanitised-flow")).toBeInTheDocument();
+    expect(screen.queryByText(/linked record not found/)).not.toBeInTheDocument();
   });
 
   it("renders an error alert when the chain fetch fails", async () => {

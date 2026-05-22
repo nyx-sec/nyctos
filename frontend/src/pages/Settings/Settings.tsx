@@ -9,14 +9,19 @@ import { Spinner } from "@/components/Spinner";
 
 const AI_CHOICES: { value: AiRuntimeChoice; label: string; body: string }[] = [
   {
-    value: "none",
-    label: "None",
-    body: "Static-pass only. AI triage and candidate generation stay off.",
+    value: "claude-code",
+    label: "Claude Code CLI (recommended)",
+    body: "All-in-one local CLI backend for structured tasks and agent exploration.",
+  },
+  {
+    value: "codex",
+    label: "Codex CLI",
+    body: "All-in-one local CLI backend using your installed codex command.",
   },
   {
     value: "anthropic",
     label: "Anthropic API",
-    body: "Hosted Claude models using a key stored in the OS keychain.",
+    body: "Optional direct API mode for structured one-shot tasks using a key in the OS keychain.",
   },
   {
     value: "local-llm",
@@ -24,9 +29,9 @@ const AI_CHOICES: { value: AiRuntimeChoice; label: string; body: string }[] = [
     body: "LM Studio, Ollama, vLLM, or another local /v1 endpoint.",
   },
   {
-    value: "claude-code",
-    label: "Claude Code CLI",
-    body: "Uses an installed claude binary on this host.",
+    value: "none",
+    label: "None",
+    body: "Static-pass only. AI triage and candidate generation stay off.",
   },
 ];
 
@@ -425,6 +430,9 @@ function backendLabel(value: string | undefined): string {
 
 function runtimeDetail(data: SetupStatusResponse | undefined): string {
   if (!data || data.ai_runtime === "none") return "Static-pass only";
+  if (data.ai_runtime === "claude-code" || data.ai_runtime === "codex") {
+    return "One-shot and agent exploration";
+  }
   if (data.ai_runtime === "local-llm") return data.ai_api_base ?? "Local endpoint";
   return data.ai_model ?? data.ai_provider ?? "Configured";
 }

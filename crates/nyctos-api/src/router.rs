@@ -323,6 +323,7 @@ fn ai_runtime_label(r: AiRuntime) -> &'static str {
         AiRuntime::Anthropic => "anthropic",
         AiRuntime::LocalLlm => "local-llm",
         AiRuntime::ClaudeCode => "claude-code",
+        AiRuntime::Codex => "codex",
     }
 }
 
@@ -392,7 +393,10 @@ async fn submit_setup(
             .secrets
             .set(ACCOUNT_AI_ANTHROPIC, key)
             .map_err(|e| ApiError::Internal(format!("store Anthropic key: {e}")))?;
-    } else if matches!(ai_runtime, AiRuntime::None | AiRuntime::LocalLlm | AiRuntime::ClaudeCode) {
+    } else if matches!(
+        ai_runtime,
+        AiRuntime::None | AiRuntime::LocalLlm | AiRuntime::ClaudeCode | AiRuntime::Codex
+    ) {
         let _ = s.setup.secrets.delete(ACCOUNT_AI_ANTHROPIC);
     }
     if let Some(tok) = req.local_llm_token.as_deref().filter(|v| !v.trim().is_empty()) {
@@ -410,6 +414,7 @@ async fn submit_setup(
         AiRuntime::Anthropic => Some("anthropic".to_string()),
         AiRuntime::LocalLlm => Some("local-llm".to_string()),
         AiRuntime::ClaudeCode => Some("claude-code".to_string()),
+        AiRuntime::Codex => Some("codex".to_string()),
     };
     cfg.ai.api_base = match ai_runtime {
         AiRuntime::LocalLlm => {
@@ -434,6 +439,7 @@ fn parse_ai_runtime(raw: &str) -> Result<AiRuntime, ApiError> {
         "anthropic" => Ok(AiRuntime::Anthropic),
         "local-llm" => Ok(AiRuntime::LocalLlm),
         "claude-code" => Ok(AiRuntime::ClaudeCode),
+        "codex" => Ok(AiRuntime::Codex),
         other => Err(ApiError::BadRequest(format!("unknown ai_runtime `{other}`"))),
     }
 }
@@ -498,11 +504,14 @@ async fn setup_doctor(
                 name: "ai-claude-code".to_string(),
                 passed: found.is_some(),
                 message: match found {
-                    Some(p) => format!("claude binary on PATH at {p}"),
+                    Some(p) => format!(
+                        "Claude Code binary found at {p}; one-shot enabled; agent exploration enabled. Authentication is checked by Claude Code when a task starts."
+                    ),
                     None => "`claude` not found on PATH; install Claude Code first".to_string(),
                 },
             });
         }
+        AiRuntime::Codex => checks.push(codex_doctor_check().await),
     }
 
     let sandbox_backend = parse_sandbox_backend(&req.sandbox_backend)?;
@@ -569,6 +578,81 @@ async fn local_llm_doctor_check(s: &ServerState, req: &DoctorRequest) -> DoctorC
                 .to_string(),
         },
     }
+}
+
+async fn codex_doctor_check() -> DoctorCheck {
+    let Some(path) = which_on_path("codex") else {
+        return DoctorCheck {
+            name: "ai-codex".to_string(),
+            passed: false,
+            message: "`codex` not found on PATH; install Codex CLI first".to_string(),
+        };
+    };
+
+    let mut cmd = tokio::process::Command::new(&path);
+    cmd.arg("doctor")
+        .arg("--json")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let output = match tokio::time::timeout(Duration::from_secs(5), cmd.output()).await {
+        Ok(Ok(output)) => output,
+        Ok(Err(err)) => {
+            return DoctorCheck {
+                name: "ai-codex".to_string(),
+                passed: false,
+                message: format!("Codex binary found at {path}, but doctor failed to run: {err}"),
+            };
+        }
+        Err(_) => {
+            return DoctorCheck {
+                name: "ai-codex".to_string(),
+                passed: false,
+                message: format!("Codex binary found at {path}, but doctor timed out"),
+            };
+        }
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed = serde_json::from_str::<serde_json::Value>(&stdout);
+    let Ok(report) = parsed else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let detail = if stderr.trim().is_empty() { stdout.trim() } else { stderr.trim() };
+        return DoctorCheck {
+            name: "ai-codex".to_string(),
+            passed: false,
+            message: format!(
+                "Codex binary found at {path}, but doctor did not return JSON: {detail}"
+            ),
+        };
+    };
+
+    let version = report.get("codexVersion").and_then(|v| v.as_str()).unwrap_or("unknown version");
+    let overall = report.get("overallStatus").and_then(|v| v.as_str()).unwrap_or("unknown");
+    let auth = doctor_check_status(&report, "auth.credentials");
+    let install = doctor_check_status(&report, "installation");
+    let runtime = doctor_check_status(&report, "runtime.provenance");
+    let passed = matches!(auth, Some("ok")) && matches!(install, Some("ok"));
+    let auth_msg = match auth {
+        Some("ok") => "auth configured",
+        Some(other) => other,
+        None => "auth status unavailable",
+    };
+    let runtime_msg = match runtime {
+        Some("ok") => "runtime healthy",
+        Some(other) => other,
+        None => "runtime status unavailable",
+    };
+    DoctorCheck {
+        name: "ai-codex".to_string(),
+        passed,
+        message: format!(
+            "Codex CLI {version} found at {path}; {auth_msg}; {runtime_msg}; doctor overall {overall}; one-shot enabled; agent exploration enabled"
+        ),
+    }
+}
+
+fn doctor_check_status<'a>(report: &'a serde_json::Value, id: &str) -> Option<&'a str> {
+    report.get("checks")?.get(id)?.get("status")?.as_str()
 }
 
 fn which_on_path(bin: &str) -> Option<String> {

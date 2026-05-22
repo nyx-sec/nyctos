@@ -26,7 +26,7 @@ use async_trait::async_trait;
 use nyctos_ai::{
     read_spec_excerpt, run_chain_reasoning, run_exploration, run_novel_findings,
     run_payload_synthesis, run_spec_derivation, AiRuntime, AnthropicSdkAdapter, BudgetTracker,
-    ChainReasoningOutcome, ClaudeCodeAdapter, EscapeSuiteGate, EscapeSuiteVerdict,
+    ChainReasoningOutcome, ClaudeCodeAdapter, CodexCliAdapter, EscapeSuiteGate, EscapeSuiteVerdict,
     ExplorationAuditEntry, ExplorationEndpoint, ExplorationFinding, ExplorationHaltReason,
     ExplorationOutcome, ExplorationScope, NovelFindingDiscoveryOutcome, PayloadSynthesisOutcome,
     Pricing, SharedBudgetTracker, SpecDerivationOutcome, DEFAULT_EXPLORATION_RUN_CAP_USD_MICROS,
@@ -144,6 +144,126 @@ fn pricing_overrides_from_config(config: &AiConfig) -> HashMap<String, Pricing> 
         .collect()
 }
 
+async fn selected_one_shot_runtime(
+    config: &AiConfig,
+    store: &Store,
+    secrets: &SecretStore,
+    default_cap_usd_micros: i64,
+    pass_name: &str,
+) -> anyhow::Result<Option<Arc<dyn AiRuntime>>> {
+    let tracker: SharedBudgetTracker =
+        Arc::new(BudgetStoreTracker::new(store.clone(), default_cap_usd_micros));
+    match config.runtime {
+        ConfigAiRuntime::None => Ok(None),
+        ConfigAiRuntime::LocalLlm => {
+            tracing::info!(
+                pass = pass_name,
+                "selected local-llm runtime does not support one-shot tasks yet; skipping"
+            );
+            Ok(None)
+        }
+        ConfigAiRuntime::Anthropic => {
+            let api_key = match secrets.get(nyctos_core::secrets::ACCOUNT_AI_ANTHROPIC) {
+                Ok(Some(k)) => k,
+                Ok(None) => {
+                    tracing::info!(
+                        pass = pass_name,
+                        "selected Anthropic runtime has no API key configured; skipping"
+                    );
+                    return Ok(None);
+                }
+                Err(e) => return Err(anyhow::anyhow!("secret store error: {e}")),
+            };
+            let mut adapter = AnthropicSdkAdapter::new(api_key, tracker)
+                .with_pricing_overrides(pricing_overrides_from_config(config));
+            if let Some(model) = &config.model {
+                adapter = adapter.with_default_model(model.clone());
+            }
+            Ok(Some(Arc::new(adapter)))
+        }
+        ConfigAiRuntime::ClaudeCode => {
+            let mut adapter = match ClaudeCodeAdapter::discover(tracker).await {
+                Ok(a) => a,
+                Err(err) => {
+                    tracing::info!(
+                        pass = pass_name,
+                        "selected Claude Code runtime unavailable ({err}); skipping"
+                    );
+                    return Ok(None);
+                }
+            };
+            if let Some(model) = &config.model {
+                adapter = adapter.with_default_model(model.clone());
+            }
+            Ok(Some(Arc::new(adapter)))
+        }
+        ConfigAiRuntime::Codex => {
+            let mut adapter = match CodexCliAdapter::discover(tracker).await {
+                Ok(a) => a,
+                Err(err) => {
+                    tracing::info!(
+                        pass = pass_name,
+                        "selected Codex runtime unavailable ({err}); skipping"
+                    );
+                    return Ok(None);
+                }
+            };
+            if let Some(model) = &config.model {
+                adapter = adapter.with_default_model(model.clone());
+            }
+            Ok(Some(Arc::new(adapter)))
+        }
+    }
+}
+
+async fn selected_agent_loop_runtime(
+    config: &AiConfig,
+    store: &Store,
+    run_cap_usd_micros: i64,
+) -> Option<Arc<dyn AiRuntime>> {
+    let tracker: SharedBudgetTracker =
+        Arc::new(BudgetStoreTracker::new(store.clone(), run_cap_usd_micros));
+    match config.runtime {
+        ConfigAiRuntime::ClaudeCode => {
+            let mut adapter = match ClaudeCodeAdapter::discover(tracker).await {
+                Ok(a) => a,
+                Err(err) => {
+                    tracing::info!(
+                        "ai exploration: selected Claude Code runtime unavailable ({err}); skipping pass"
+                    );
+                    return None;
+                }
+            };
+            if let Some(model) = &config.model {
+                adapter = adapter.with_default_model(model.clone());
+            }
+            Some(Arc::new(adapter))
+        }
+        ConfigAiRuntime::Codex => {
+            let mut adapter = match CodexCliAdapter::discover(tracker).await {
+                Ok(a) => a,
+                Err(err) => {
+                    tracing::info!(
+                        "ai exploration: selected Codex runtime unavailable ({err}); skipping pass"
+                    );
+                    return None;
+                }
+            };
+            if let Some(model) = &config.model {
+                adapter = adapter.with_default_model(model.clone());
+            }
+            Some(Arc::new(adapter))
+        }
+        ConfigAiRuntime::Anthropic => {
+            tracing::info!(
+                "ai exploration: selected Anthropic API runtime does not support agent exploration; skipping pass"
+            );
+            None
+        }
+        ConfigAiRuntime::None | ConfigAiRuntime::LocalLlm => None,
+    }
+}
+
 #[async_trait]
 impl BudgetTracker for BudgetStoreTracker {
     async fn cap(&self, run_id: &str, kind: BudgetKind) -> Result<Option<i64>, AiError> {
@@ -181,8 +301,8 @@ pub struct PayloadSynthesisPassReport {
 }
 
 /// Fan-out PayloadSynthesis across every `Unsupported(NoPayloadsForCap)`
-/// finding in `bundle`. No-op (returns a default report) when
-/// `config.runtime != Anthropic` or no API key is configured.
+/// finding in `bundle`. No-op (returns a default report) when the
+/// selected runtime does not support one-shot tasks or is unavailable.
 pub async fn run_payload_synthesis_pass(
     config: &AiConfig,
     store: &Store,
@@ -191,32 +311,22 @@ pub async fn run_payload_synthesis_pass(
     workspaces: &HashMap<String, WorkspaceHandle>,
     events: EventSink,
 ) -> anyhow::Result<PayloadSynthesisPassReport> {
-    if !matches!(config.runtime, ConfigAiRuntime::Anthropic) {
-        return Ok(PayloadSynthesisPassReport::default());
-    }
-    let api_key = match secrets.get(nyctos_core::secrets::ACCOUNT_AI_ANTHROPIC) {
-        Ok(Some(k)) => k,
-        Ok(None) => {
-            tracing::info!(
-                "payload synthesis: AI runtime is anthropic but no API key configured; skipping"
-            );
-            return Ok(PayloadSynthesisPassReport::default());
-        }
-        Err(e) => return Err(anyhow::anyhow!("secret store error: {e}")),
-    };
-    let tracker: SharedBudgetTracker = Arc::new(BudgetStoreTracker::new(
-        store.clone(),
-        config.default_run_budget_usd_micros_resolved(),
-    ));
-    let adapter = Arc::new(
-        AnthropicSdkAdapter::new(api_key, tracker.clone())
-            .with_pricing_overrides(pricing_overrides_from_config(config)),
-    );
-
     let inputs = build_inputs(bundle, workspaces);
     if inputs.is_empty() {
         return Ok(PayloadSynthesisPassReport::default());
     }
+    let adapter = match selected_one_shot_runtime(
+        config,
+        store,
+        secrets,
+        config.default_run_budget_usd_micros_resolved(),
+        "payload synthesis",
+    )
+    .await?
+    {
+        Some(adapter) => adapter,
+        None => return Ok(PayloadSynthesisPassReport::default()),
+    };
     tracing::info!(count = inputs.len(), "payload synthesis: fanning out");
 
     let semaphore = Arc::new(Semaphore::new(config.max_concurrent_one_shot_resolved()));
@@ -560,8 +670,8 @@ pub struct SpecDerivationPassReport {
 }
 
 /// Fan-out SpecDerivation across every `Inconclusive(SpecDerivationFailed)`
-/// finding in `bundle`. No-op (returns a default report) when
-/// `config.runtime != Anthropic` or no API key is configured.
+/// finding in `bundle`. No-op (returns a default report) when the
+/// selected runtime does not support one-shot tasks or is unavailable.
 pub async fn run_spec_derivation_pass(
     config: &AiConfig,
     store: &Store,
@@ -570,32 +680,22 @@ pub async fn run_spec_derivation_pass(
     workspaces: &HashMap<String, WorkspaceHandle>,
     events: EventSink,
 ) -> anyhow::Result<SpecDerivationPassReport> {
-    if !matches!(config.runtime, ConfigAiRuntime::Anthropic) {
-        return Ok(SpecDerivationPassReport::default());
-    }
-    let api_key = match secrets.get(nyctos_core::secrets::ACCOUNT_AI_ANTHROPIC) {
-        Ok(Some(k)) => k,
-        Ok(None) => {
-            tracing::info!(
-                "spec derivation: AI runtime is anthropic but no API key configured; skipping"
-            );
-            return Ok(SpecDerivationPassReport::default());
-        }
-        Err(e) => return Err(anyhow::anyhow!("secret store error: {e}")),
-    };
-    let tracker: SharedBudgetTracker = Arc::new(BudgetStoreTracker::new(
-        store.clone(),
-        config.default_run_budget_usd_micros_resolved(),
-    ));
-    let adapter = Arc::new(
-        AnthropicSdkAdapter::new(api_key, tracker.clone())
-            .with_pricing_overrides(pricing_overrides_from_config(config)),
-    );
-
     let inputs = build_spec_inputs(bundle, workspaces);
     if inputs.is_empty() {
         return Ok(SpecDerivationPassReport::default());
     }
+    let adapter = match selected_one_shot_runtime(
+        config,
+        store,
+        secrets,
+        config.default_run_budget_usd_micros_resolved(),
+        "spec derivation",
+    )
+    .await?
+    {
+        Some(adapter) => adapter,
+        None => return Ok(SpecDerivationPassReport::default()),
+    };
     tracing::info!(count = inputs.len(), "spec derivation: fanning out");
 
     let semaphore = Arc::new(Semaphore::new(config.max_concurrent_one_shot_resolved()));
@@ -851,8 +951,9 @@ pub struct ChainReasoningPassReport {
 }
 
 /// Fan-out (single-call) ChainReasoning over the run's finding graph.
-/// No-op (returns a default report) when `config.runtime != Anthropic`,
-/// no API key is configured, or the bundle has fewer than two findings.
+/// No-op (returns a default report) when the selected runtime does not
+/// support one-shot tasks, is unavailable, or the bundle has fewer than
+/// two findings.
 pub async fn run_chain_reasoning_pass(
     config: &AiConfig,
     store: &Store,
@@ -861,22 +962,21 @@ pub async fn run_chain_reasoning_pass(
     workspaces: &HashMap<String, WorkspaceHandle>,
     events: EventSink,
 ) -> anyhow::Result<ChainReasoningPassReport> {
-    if !matches!(config.runtime, ConfigAiRuntime::Anthropic) {
-        return Ok(ChainReasoningPassReport::default());
-    }
-    let api_key = match secrets.get(nyctos_core::secrets::ACCOUNT_AI_ANTHROPIC) {
-        Ok(Some(k)) => k,
-        Ok(None) => {
-            tracing::info!(
-                "chain reasoning: AI runtime is anthropic but no API key configured; skipping"
-            );
-            return Ok(ChainReasoningPassReport::default());
-        }
-        Err(e) => return Err(anyhow::anyhow!("secret store error: {e}")),
-    };
     let _ = workspaces; // workspaces unused: the graph is built from bundle metadata only.
     let input = match build_chain_input(bundle) {
         Some(i) => i,
+        None => return Ok(ChainReasoningPassReport::default()),
+    };
+    let adapter = match selected_one_shot_runtime(
+        config,
+        store,
+        secrets,
+        config.default_run_budget_usd_micros_resolved(),
+        "chain reasoning",
+    )
+    .await?
+    {
+        Some(adapter) => adapter,
         None => return Ok(ChainReasoningPassReport::default()),
     };
     tracing::info!(
@@ -886,18 +986,12 @@ pub async fn run_chain_reasoning_pass(
         "chain reasoning: dispatching"
     );
 
-    let tracker: SharedBudgetTracker = Arc::new(BudgetStoreTracker::new(
-        store.clone(),
-        config.default_run_budget_usd_micros_resolved(),
-    ));
-    let adapter = AnthropicSdkAdapter::new(api_key, tracker.clone())
-        .with_pricing_overrides(pricing_overrides_from_config(config));
     let runtime_name = adapter.name();
     let runtime_model = adapter.default_model().to_string();
 
     let started_at = now_epoch_ms();
     let outcome = match run_chain_reasoning(
-        &adapter,
+        adapter.as_ref(),
         &input,
         events,
         config.chain_reasoning_per_call_cap_usd_micros_resolved(),
@@ -1275,8 +1369,8 @@ pub struct NovelFindingDiscoveryPassReport {
 }
 
 /// Fan-out NovelFindingDiscovery across every successfully-ingested
-/// repo in `bundle`. No-op (returns a default report) when
-/// `config.runtime != Anthropic` or no API key is configured.
+/// repo in `bundle`. No-op (returns a default report) when the
+/// selected runtime does not support one-shot tasks or is unavailable.
 ///
 /// This is the most expensive AI pass; a per-run cap (default $5
 /// model spend, sourced from
@@ -1293,28 +1387,25 @@ pub async fn run_novel_finding_discovery_pass(
     workspaces: &HashMap<String, WorkspaceHandle>,
     events: EventSink,
 ) -> anyhow::Result<NovelFindingDiscoveryPassReport> {
-    if !matches!(config.runtime, ConfigAiRuntime::Anthropic) {
-        return Ok(NovelFindingDiscoveryPassReport::default());
-    }
-    let api_key = match secrets.get(nyctos_core::secrets::ACCOUNT_AI_ANTHROPIC) {
-        Ok(Some(k)) => k,
-        Ok(None) => {
-            tracing::info!(
-                "novel finding discovery: AI runtime is anthropic but no API key configured; skipping"
-            );
-            return Ok(NovelFindingDiscoveryPassReport::default());
-        }
-        Err(e) => return Err(anyhow::anyhow!("secret store error: {e}")),
-    };
     let tracker: SharedBudgetTracker = Arc::new(BudgetStoreTracker::new(
         store.clone(),
         DEFAULT_NOVEL_DISCOVERY_RUN_CAP_USD_MICROS,
     ));
-    let adapter = AnthropicSdkAdapter::new(api_key, tracker.clone())
-        .with_pricing_overrides(pricing_overrides_from_config(config));
+    let adapter = match selected_one_shot_runtime(
+        config,
+        store,
+        secrets,
+        DEFAULT_NOVEL_DISCOVERY_RUN_CAP_USD_MICROS,
+        "novel finding discovery",
+    )
+    .await?
+    {
+        Some(adapter) => adapter,
+        None => return Ok(NovelFindingDiscoveryPassReport::default()),
+    };
 
     drive_novel_finding_pass(
-        &adapter,
+        adapter.as_ref(),
         tracker.as_ref(),
         store,
         bundle,
@@ -2516,8 +2607,8 @@ impl EscapeSuiteGate for StaticEscapeSuiteGate {
 }
 
 /// Fan-out AI Exploration across every successfully-ingested repo in
-/// `bundle`. No-op (returns a default report) when the runtime is not
-/// Anthropic / Claude Code or when no Claude Code binary is on PATH.
+/// `bundle`. No-op (returns a default report) when the selected runtime
+/// does not support agent loops or its CLI binary is unavailable.
 ///
 /// Each repo gets one exploration call routed through the Claude Code
 /// agent loop. Findings the model records via the
@@ -2542,33 +2633,17 @@ pub async fn run_ai_exploration_pass(
     events: EventSink,
     traces_dir: &std::path::Path,
 ) -> anyhow::Result<AiExplorationPassReport> {
-    // Route the exploration loop through Claude Code's agent loop
-    // adapter specifically; the Anthropic Messages adapter does not
-    // support agent_loop. Future agent-loop adapters slot in here;
-    // the dispatch picks Claude Code when the configured runtime is
-    // `claude-code` OR when the configured runtime is `anthropic`
-    // and a Claude Code binary is
-    // on PATH (since the Anthropic adapter cannot drive an agent
-    // loop).
     let run_cap_usd_micros =
         config.exploration_run_cap_usd_micros_resolved(DEFAULT_EXPLORATION_RUN_CAP_USD_MICROS);
     let soft_cap_usd_micros =
         config.exploration_soft_cap_usd_micros_resolved(DEFAULT_EXPLORATION_SOFT_CAP_USD_MICROS);
-    let adapter = match ClaudeCodeAdapter::discover(make_exploration_tracker(
-        store,
-        run_cap_usd_micros,
-    ))
-    .await
-    {
-        Ok(a) => a,
-        Err(err) => {
-            tracing::info!("ai exploration: claude-code unavailable ({err}); skipping pass");
-            return Ok(AiExplorationPassReport::default());
-        }
+    let adapter = match selected_agent_loop_runtime(config, store, run_cap_usd_micros).await {
+        Some(adapter) => adapter,
+        None => return Ok(AiExplorationPassReport::default()),
     };
 
     drive_ai_exploration_pass(
-        &adapter,
+        adapter.as_ref(),
         store,
         bundle,
         workspaces,
@@ -2645,10 +2720,6 @@ pub(crate) async fn drive_ai_exploration_pass<R: AiRuntime + ?Sized>(
         .await?;
     }
     Ok(report)
-}
-
-fn make_exploration_tracker(store: &Store, run_cap_usd_micros: i64) -> SharedBudgetTracker {
-    Arc::new(BudgetStoreTracker::new(store.clone(), run_cap_usd_micros))
 }
 
 fn build_exploration_scope(

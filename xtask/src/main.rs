@@ -179,13 +179,16 @@ fn render() -> String {
         decl_of::<ReplayEvent>(),
     ];
 
-    for decl in decls {
+    let decl_count = decls.len();
+    for (idx, decl) in decls.into_iter().enumerate() {
         out.push_str("export ");
         out.push_str(&decl);
         if !decl.ends_with('\n') {
             out.push('\n');
         }
-        out.push('\n');
+        if idx + 1 < decl_count {
+            out.push('\n');
+        }
     }
     out
 }

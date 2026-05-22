@@ -293,13 +293,13 @@ max_parallel_scans: number,
 /**
  * Per-scan timeout in seconds.
  */
-scan_timeout_secs: number, };
+scan_timeout_secs: bigint, };
 
 export type SetupRequest = { 
 /**
  * Operator-typed AI runtime: `none` | `anthropic` | `local-llm` |
- * `claude-code`. The wizard stashes the API key (when relevant)
- * out-of-band via `secrets`, not in the TOML.
+ * `claude-code` | `codex`. The wizard stashes API keys (when
+ * relevant) out-of-band via `secrets`, not in the TOML.
  */
 ai_runtime: string, 
 /**
@@ -337,7 +337,7 @@ export type DoctorResponse = { checks: Array<DoctorCheck>, };
 export type DoctorRequest = { 
 /**
  * AI runtime being verified. Doctor only inspects what the chosen
- * runtime depends on (e.g. `claude-code` looks for the binary).
+ * runtime depends on (e.g. CLI runtimes look for their binary).
  */
 ai_runtime: string, 
 /**

@@ -420,6 +420,8 @@ pub enum AiRuntime {
     LocalLlm,
     /// Drive an already-installed `claude` CLI on `$PATH`.
     ClaudeCode,
+    /// Drive an already-installed `codex` CLI on `$PATH`.
+    Codex,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

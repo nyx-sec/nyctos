@@ -88,8 +88,8 @@ pub struct SetupStatusResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct SetupRequest {
     /// Operator-typed AI runtime: `none` | `anthropic` | `local-llm` |
-    /// `claude-code`. The wizard stashes the API key (when relevant)
-    /// out-of-band via `secrets`, not in the TOML.
+    /// `claude-code` | `codex`. The wizard stashes API keys (when
+    /// relevant) out-of-band via `secrets`, not in the TOML.
     pub ai_runtime: String,
     /// Anthropic API key. Required when `ai_runtime = "anthropic"`.
     /// Persisted to the OS keychain; never written to TOML or logs.
@@ -124,7 +124,7 @@ pub struct SetupRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct DoctorRequest {
     /// AI runtime being verified. Doctor only inspects what the chosen
-    /// runtime depends on (e.g. `claude-code` looks for the binary).
+    /// runtime depends on (e.g. CLI runtimes look for their binary).
     pub ai_runtime: String,
     /// Unsaved Anthropic API key supplied by the UI for this check.
     /// The daemon only tests whether a non-empty key was provided; it

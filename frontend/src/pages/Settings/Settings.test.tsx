@@ -108,7 +108,7 @@ describe("Settings page", () => {
     renderSettings();
     await waitForSettings();
 
-    expect(screen.getAllByText("Claude Code CLI").length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Claude Code CLI/).length).toBeGreaterThan(0);
     expect(screen.getAllByText("Birdcage").length).toBeGreaterThan(0);
     expect(screen.getByText("127.0.0.1:9999")).toBeInTheDocument();
     expect(screen.getByText("7 parallel / 42s")).toBeInTheDocument();
@@ -169,6 +169,26 @@ describe("Settings page", () => {
     expect(JSON.parse(submit.body!)).toEqual({
       ai_runtime: "claude-code",
       sandbox_backend: "docker",
+      i_own_this: true,
+    });
+  });
+
+  it("saves Codex CLI as an all-in-one runtime without API keys", async () => {
+    renderSettings();
+    await waitForSettings();
+
+    fireEvent.click(screen.getByRole("radio", { name: /Codex CLI/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => {
+      expect(
+        recorded.find((call) => call.method === "POST" && call.url.endsWith("/setup")),
+      ).toBeDefined();
+    });
+    const submit = recorded.find((call) => call.method === "POST" && call.url.endsWith("/setup"))!;
+    expect(JSON.parse(submit.body!)).toEqual({
+      ai_runtime: "codex",
+      sandbox_backend: "auto",
       i_own_this: true,
     });
   });

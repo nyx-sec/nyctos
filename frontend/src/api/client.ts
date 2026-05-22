@@ -169,7 +169,7 @@ export type RepoSourceKind = "git" | "local-path" | "github" | "gitlab" | "local
 // closed enum sets at handler time). Both unions are subtypes of
 // `string`, so existing call sites assign without casting.
 
-export type AiRuntimeChoice = "none" | "anthropic" | "local-llm" | "claude-code";
+export type AiRuntimeChoice = "claude-code" | "codex" | "anthropic" | "local-llm" | "none";
 export type SandboxBackendChoice =
   | "auto"
   | "process"

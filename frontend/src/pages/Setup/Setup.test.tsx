@@ -95,8 +95,9 @@ describe("SetupWizard", () => {
     attestAndContinue();
     await screen.findByText("Pick an AI runtime");
 
-    // None selected by default: Continue is enabled.
+    // Claude Code is selected by default: Continue is enabled.
     expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled();
+    expect(screen.getByRole("radio", { name: /Claude Code CLI/i })).toBeChecked();
     expect(screen.queryByLabelText("Anthropic API key")).toBeNull();
 
     fireEvent.click(screen.getByRole("radio", { name: /Anthropic API/i }));
@@ -127,6 +128,18 @@ describe("SetupWizard", () => {
 
     fireEvent.change(urlInput, { target: { value: "http://127.0.0.1:1234/v1" } });
     expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled();
+  });
+
+  it("offers Codex CLI without requiring an API key", async () => {
+    renderWizard();
+    await screen.findByText("Welcome");
+    attestAndContinue();
+    await screen.findByText("Pick an AI runtime");
+
+    fireEvent.click(screen.getByRole("radio", { name: /Codex CLI/i }));
+    expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled();
+    expect(screen.queryByLabelText("Anthropic API key")).toBeNull();
+    expect(screen.getAllByText(/codex/i).length).toBeGreaterThan(0);
   });
 
   it("renders each DoctorCheck shape (passed and failed) on the Sandbox step after Run checks", async () => {

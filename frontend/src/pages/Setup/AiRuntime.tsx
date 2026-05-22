@@ -8,14 +8,19 @@ interface Props {
 
 const CHOICES: { value: AiRuntimeChoice; label: string; body: string }[] = [
   {
-    value: "none",
-    label: "None (static-pass only)",
-    body: "Skip every AI step. The daemon still runs nyx static analysis end-to-end.",
+    value: "claude-code",
+    label: "Claude Code CLI (recommended)",
+    body: "All-in-one local CLI backend for structured one-shot tasks and agent exploration.",
+  },
+  {
+    value: "codex",
+    label: "Codex CLI",
+    body: "All-in-one local CLI backend using your installed codex command.",
   },
   {
     value: "anthropic",
     label: "Anthropic API",
-    body: "Hosted Claude models. Requires an API key; stored in the OS keychain, never in TOML.",
+    body: "Optional direct API mode for structured one-shot tasks. Requires an API key stored in the OS keychain.",
   },
   {
     value: "local-llm",
@@ -23,9 +28,9 @@ const CHOICES: { value: AiRuntimeChoice; label: string; body: string }[] = [
     body: "Point at an LM Studio / Ollama / vLLM endpoint already running on this machine.",
   },
   {
-    value: "claude-code",
-    label: "Claude Code CLI",
-    body: "Drive an installed claude CLI on $PATH. The daemon verifies the binary on save.",
+    value: "none",
+    label: "None (static-pass only)",
+    body: "Skip every AI step. The daemon still runs nyx static analysis end-to-end.",
   },
 ];
 
@@ -34,8 +39,8 @@ export function AiRuntimeStep({ form, update }: Props) {
     <div className="setup-step__body">
       <h3>Pick an AI runtime</h3>
       <p>
-        The agent runs without an AI runtime; selecting one enables triage and candidate generation
-        in later phases. You can change this at any time.
+        Claude Code is the recommended all-in-one backend. Anthropic API is available as a direct
+        API fallback, not a companion requirement.
       </p>
       <div className="setup-choices">
         {CHOICES.map((choice) => (
@@ -108,7 +113,17 @@ export function AiRuntimeStep({ form, update }: Props) {
         <div className="setup-field">
           <p>
             The daemon will look for a <code>claude</code> binary on <code>$PATH</code> when you
-            reach the next step. No additional configuration is needed here.
+            reach the next step. It can run structured tasks and agent exploration without an
+            Anthropic API key.
+          </p>
+        </div>
+      )}
+
+      {form.aiRuntime === "codex" && (
+        <div className="setup-field">
+          <p>
+            The daemon will look for a <code>codex</code> binary on <code>$PATH</code> when you
+            reach the next step. Codex CLI uses its own local authentication and configuration.
           </p>
         </div>
       )}

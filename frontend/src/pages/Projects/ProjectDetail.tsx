@@ -138,92 +138,92 @@ export function ProjectDetail() {
   const runtimeStatus = launchProfileStatus(launchProfile);
   const canStartPentest = rows.length > 0 && launchProfile?.readiness === "Ready";
   const verifiedCount = vulnerabilities.data?.length ?? 0;
+  const repoCountLabel = formatRepoCount(rows.length);
+  const heroDescription = formatHeroDescription(p.description, runtimeTarget, rows.length);
+  const startHint = canStartPentest
+    ? null
+    : formatStartHint(runtimeTarget, rows.length, launchProfile);
 
   return (
     <>
-      <div className="page-stack">
-        <Card
-          className="project-summary"
-          title={p.name}
-          subtitle={p.description || undefined}
-          actions={
-            <div className="repo-list__actions">
-              <Button variant="ghost" onClick={() => setShowProfileEdit(true)}>
-                Edit launch profile
-              </Button>
-              <Button variant="ghost" onClick={onDeleteProject} disabled={deleteProject.isPending}>
-                Delete project
-              </Button>
-            </div>
-          }
-        >
-          <dl className="project-meta">
-            <div>
-              <dt>Project id</dt>
-              <dd>
-                <code>{p.id}</code>
-              </dd>
-            </div>
-            <div>
-              <dt>App URL</dt>
-              <dd>{runtimeTarget ? <code>{runtimeTarget}</code> : "-"}</dd>
-            </div>
-            <div>
-              <dt>Launch</dt>
-              <dd>
+      <div className="page-stack project-detail">
+        <Card className="project-hero">
+          <div className="project-hero__content">
+            <div className="project-hero__copy">
+              <div className="project-hero__eyebrow">
                 <Badge tone={runtimeStatus.tone}>{runtimeStatus.label}</Badge>
-              </dd>
+                <span>Autonomous pentest</span>
+              </div>
+              <h1>{p.name}</h1>
+              <p>{heroDescription}</p>
+              {startHint && <p className="project-hero__hint">{startHint}</p>}
             </div>
-            <div>
-              <dt>Mode</dt>
-              <dd>{formatLaunchMode(launchProfile)}</dd>
-            </div>
-            <div>
-              <dt>Ready when</dt>
-              <dd>{formatReadiness(launchProfile)}</dd>
-            </div>
-            <div>
-              <dt>Verified vulnerabilities</dt>
-              <dd>{verifiedCount}</dd>
-            </div>
-          </dl>
-          <RuntimeProfileSummary profile={launchProfile} />
-          <div className="project-primary-action">
-            <Button
-              variant="primary"
-              onClick={onStartPentest}
-              disabled={!canStartPentest || startPentest.isPending}
-            >
-              Start pentest
-            </Button>
-            {!canStartPentest && (
-              <span className="project-primary-action__hint">
-                Add an app URL and at least one repo.
-              </span>
-            )}
-          </div>
-        </Card>
 
-        <Card
-          title="Repositories"
-          subtitle={`${rows.length} ${rows.length === 1 ? "repository" : "repositories"}`}
-          actions={
-            <div className="repo-list__actions">
+            <div className="project-hero__actions">
+              <Button
+                variant="primary"
+                onClick={onStartPentest}
+                disabled={!canStartPentest || startPentest.isPending}
+              >
+                {startPentest.isPending ? "Starting..." : "Start pentest"}
+              </Button>
               <Button variant="ghost" onClick={() => setShowProfileEdit(true)}>
                 Launch profile
               </Button>
+              <Button
+                className="project-hero__delete"
+                variant="ghost"
+                onClick={onDeleteProject}
+                disabled={deleteProject.isPending}
+              >
+                Delete project
+              </Button>
+            </div>
+          </div>
+
+          <dl className="project-hero__signals">
+            <div className="project-hero__signal project-hero__signal--target">
+              <dt>Target</dt>
+              <dd>
+                {runtimeTarget ? (
+                  <code title={runtimeTarget}>{runtimeTarget}</code>
+                ) : (
+                  <span className="project-hero__muted">Not set</span>
+                )}
+              </dd>
+            </div>
+            <div className="project-hero__signal">
+              <dt>Scope</dt>
+              <dd>{repoCountLabel}</dd>
+            </div>
+            <div className="project-hero__signal">
+              <dt>Verified</dt>
+              <dd>{verifiedCount}</dd>
+            </div>
+            <div className="project-hero__signal">
+              <dt>Mode</dt>
+              <dd>{formatLaunchMode(launchProfile)}</dd>
+            </div>
+          </dl>
+        </Card>
+
+        {banner && (
+          <div className="project-banner" role="status" aria-live="polite">
+            {banner}
+          </div>
+        )}
+
+        <Card
+          title="Repositories"
+          subtitle={repoCountLabel}
+          actions={
+            <div className="repo-list__actions">
               <Button variant="primary" onClick={() => setShowAdd(true)}>
                 Add repo
               </Button>
             </div>
           }
         >
-          {banner && (
-            <div className="repo-list__banner" role="status" aria-live="polite">
-              {banner}
-            </div>
-          )}
-
           {repos.isPending && (
             <div className="repo-list__pending">
               <Spinner /> Loading repositories...
@@ -335,54 +335,6 @@ export function ProjectDetail() {
   );
 }
 
-function RuntimeProfileSummary({ profile }: { profile: ProjectLaunchProfile | null }) {
-  if (!profile) return null;
-  return (
-    <div className="runtime-profile-summary">
-      <div>
-        <h3>Setup</h3>
-        <p>{formatSetup(profile)}</p>
-      </div>
-      <CommandSummary title="Start" commands={profile.start_steps} />
-      <div>
-        <h3>Environment</h3>
-        <p>{formatEnvironment(profile)}</p>
-      </div>
-    </div>
-  );
-}
-
-function CommandSummary({
-  title,
-  commands,
-}: {
-  title: string;
-  commands: ProjectLaunchProfile["build_steps"];
-}) {
-  if (commands.length === 0) {
-    return (
-      <div>
-        <h3>{title}</h3>
-        <p>No start commands</p>
-      </div>
-    );
-  }
-  return (
-    <div>
-      <h3>{title}</h3>
-      <ul className="runtime-profile-command-list">
-        {commands.map((cmd, index) => (
-          <li key={`${title}-${index}`}>
-            <code>{cmd.command}</code>
-            {cmd.repo_name && <span>{cmd.repo_name}</span>}
-            {cmd.working_directory && <span>{cmd.working_directory}</span>}
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
 function launchProfileStatus(profile: ProjectLaunchProfile | null): {
   label: string;
   tone: BadgeTone;
@@ -400,31 +352,33 @@ function formatLaunchMode(profile: ProjectLaunchProfile | null): string {
   return "Start from project";
 }
 
-function formatReadiness(profile: ProjectLaunchProfile | null): string {
-  if (!profile) return "-";
-  const check = profile.health_checks[0];
-  if (check?.command) return check.command.command;
-  if (check?.url && profile.target_urls[0] && check.url === profile.target_urls[0]) {
-    return "App URL responds";
-  }
-  if (check?.url) return check.url;
-  return "No readiness check";
+function formatRepoCount(count: number): string {
+  return `${count} ${count === 1 ? "repository" : "repositories"}`;
 }
 
-function formatSetup(profile: ProjectLaunchProfile): string {
-  if (profile.build_steps.length === 0) return "No setup commands";
-  return `${profile.build_steps.length} ${profile.build_steps.length === 1 ? "command" : "commands"}`;
+function formatHeroDescription(
+  description: string | null,
+  target: string | null | undefined,
+  repoCount: number,
+): string {
+  const trimmed = description?.trim();
+  if (trimmed) return trimmed;
+  if (target && repoCount > 0) {
+    return "Ready for autonomous testing.";
+  }
+  if (target) return "Target configured. Add source scope to begin.";
+  return "Set a target and source scope to begin.";
 }
 
-function formatEnvironment(profile: ProjectLaunchProfile): string {
-  const parts: string[] = [];
-  if (profile.env_refs.length > 0) {
-    const names = profile.env_refs.map((entry) =>
-      entry.secret ? `${entry.value} (secret)` : entry.value,
-    );
-    parts.push(names.join(", "));
-  }
-  return parts.length > 0 ? parts.join(" · ") : "-";
+function formatStartHint(
+  target: string | null | undefined,
+  repoCount: number,
+  profile: ProjectLaunchProfile | null,
+): string {
+  if (!target) return "Add an app URL and repository scope.";
+  if (repoCount === 0) return "Add at least one repository to give Nyctos source context.";
+  if (profile?.readiness !== "Ready") return "Resolve launch readiness before starting.";
+  return "Complete project setup before starting.";
 }
 
 interface RepoRowProps {

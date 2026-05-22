@@ -847,7 +847,8 @@ async fn drive_scan(
 
     emit_phase(&events, &run.id, project.id.as_str(), "AgentReviewStarted", true, None);
     let mut agent_review_notes: Vec<String> = Vec::new();
-    if !matches!(config.ai.runtime, nyctos_core::AiRuntime::Anthropic) {
+    if matches!(config.ai.runtime, nyctos_core::AiRuntime::None | nyctos_core::AiRuntime::LocalLlm)
+    {
         agent_review_notes.push(format!(
             "one-shot helpers skipped for configured runtime {:?}",
             config.ai.runtime
@@ -856,7 +857,7 @@ async fn drive_scan(
 
     // Fan out PayloadSynthesis tasks against every diag the static
     // pass flagged with `Unsupported(NoPayloadsForCap)`. No-op when
-    // the AI runtime is disabled or no key is configured.
+    // the selected AI runtime is disabled, unsupported, or unavailable.
     let secrets = SecretStore::from_env();
     match ai_pipeline::run_payload_synthesis_pass(
         &config.ai,
@@ -928,8 +929,8 @@ async fn drive_scan(
 
     // Rank cross-repo exploitable chains across the run's finding
     // graph. Single-call pass; shares the run's budget bucket with
-    // payload + spec passes. No-op when no API key is configured or
-    // fewer than two findings landed in the bundle.
+    // payload + spec passes. No-op when the selected runtime is
+    // unavailable or fewer than two findings landed in the bundle.
     match ai_pipeline::run_chain_reasoning_pass(
         &config.ai,
         store,
@@ -1006,7 +1007,7 @@ async fn drive_scan(
         }
     }
 
-    // Drive the Claude Code agent loop against the running chain-lane
+    // Drive the selected CLI agent loop against the running chain-lane
     // sandbox so the model can probe shadow APIs, CORS misconfig,
     // business-logic skips, etc. Gated by the static escape suite (a
     // red fixture halts the driver) and capped by a per-run hard cap

@@ -26,8 +26,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use nyctos_types::agent::{
-    classify_tool_use, AgentResult, AgentTask, AiError, Budget, CostEstimate, ExtractedAgentResult,
-    HaltReason, Prompt, Response, TokenUsage,
+    classify_tool_use, AgentResult, AgentTask, AiError, Budget, CacheStats, CostEstimate,
+    ExtractedAgentResult, HaltReason, Prompt, Response, TokenUsage,
 };
 use nyctos_types::event::{AgentEvent, AiEvent, EventSink};
 use semver::Version;
@@ -194,11 +194,214 @@ impl AiRuntime for ClaudeCodeAdapter {
 
     async fn one_shot(
         &self,
-        _prompt: Prompt,
-        _budget: Budget,
-        _sink: EventSink,
+        prompt: Prompt,
+        budget: Budget,
+        sink: EventSink,
     ) -> Result<Response, AiError> {
-        Err(AiError::UnsupportedMode("one_shot"))
+        let model = prompt.model.clone().unwrap_or_else(|| self.default_model.clone());
+
+        // Mirror the Anthropic adapter's cap semantics for structured
+        // one-shot work: the effective ceiling is the tighter of the
+        // tracker row and the per-call envelope.
+        let spent_before = self.tracker.current_spend(&budget.run_id, budget.kind).await?;
+        let tracker_cap = self.tracker.cap(&budget.run_id, budget.kind).await?;
+        let cap = effective_cap(tracker_cap, budget.cap_usd_micros);
+        if spent_before > cap {
+            let _ = sink.send(AgentEvent::Ai {
+                data: AiEvent::TaskHalted {
+                    task_id: prompt.task_id.clone(),
+                    reason: HaltReason::BudgetCapReached,
+                },
+            });
+            return Err(AiError::BudgetExceeded {
+                cap_usd_micros: cap,
+                spent_usd_micros: spent_before,
+            });
+        }
+
+        let prompt_body = render_one_shot_prompt(&prompt);
+        let mut child = Command::new(&self.binary.path)
+            .arg("--print")
+            .arg("--output-format")
+            .arg("stream-json")
+            .arg("--verbose")
+            .arg("--max-turns")
+            .arg("1")
+            .arg("--model")
+            .arg(&model)
+            // TODO(release-hardening): make this opt-in/configured before
+            // shipping beyond local testing.
+            .arg("--dangerously-skip-permissions")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|e| AiError::Transport(format!("spawn claude: {e}")))?;
+
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(prompt_body.as_bytes())
+                .await
+                .map_err(|e| AiError::Transport(format!("write stdin: {e}")))?;
+            stdin.shutdown().await.map_err(|e| AiError::Transport(format!("close stdin: {e}")))?;
+        }
+
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| AiError::Transport("claude stdout missing".to_string()))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| AiError::Transport("claude stderr missing".to_string()))?;
+        let stderr_handle = spawn_stderr_drain(stderr);
+        let mut reader = BufReader::new(stdout).lines();
+
+        let mut content = String::new();
+        let mut usage = TokenUsage { input_tokens: 0, output_tokens: 0 };
+        let mut cache = CacheStats { cache_creation_tokens: 0, cache_read_tokens: 0 };
+        let mut cost_usd_micros: i64 = 0;
+        let mut reported_model: Option<String> = None;
+
+        let read_loop = async {
+            while let Some(line) = reader
+                .next_line()
+                .await
+                .map_err(|e| AiError::Transport(format!("read stdout: {e}")))?
+            {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let Some(event) = parse_stream_json(&line) else {
+                    continue;
+                };
+                match event {
+                    ClaudeEvent::Assistant(msg) => {
+                        for block in msg.content {
+                            if let ContentBlock::Text { text } = block {
+                                content.push_str(&text);
+                                let _ = sink.send(AgentEvent::Ai {
+                                    data: AiEvent::TokenReceived {
+                                        task_id: prompt.task_id.clone(),
+                                        token: text,
+                                    },
+                                });
+                            }
+                        }
+                    }
+                    ClaudeEvent::Result(r) => {
+                        if let Some(model) = r.model {
+                            reported_model = Some(model);
+                        }
+                        if let Some(u) = r.usage {
+                            usage.input_tokens =
+                                usage.input_tokens.saturating_add(u.input_tokens.unwrap_or(0));
+                            usage.output_tokens =
+                                usage.output_tokens.saturating_add(u.output_tokens.unwrap_or(0));
+                            cache.cache_creation_tokens = cache
+                                .cache_creation_tokens
+                                .saturating_add(u.cache_creation_input_tokens.unwrap_or(0));
+                            cache.cache_read_tokens = cache
+                                .cache_read_tokens
+                                .saturating_add(u.cache_read_input_tokens.unwrap_or(0));
+                        }
+                        if let Some(c) = r.total_cost_usd {
+                            cost_usd_micros = (c * 1_000_000.0).round() as i64;
+                        }
+                        if let Some(text) = r.result {
+                            if content.is_empty() {
+                                content = text;
+                            }
+                        }
+                    }
+                    ClaudeEvent::Other => {}
+                }
+            }
+            Ok::<(), AiError>(())
+        };
+
+        match tokio::time::timeout(self.timeout, read_loop).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                let _ = child.kill().await;
+                let stderr_text = await_stderr_drain(stderr_handle).await;
+                return Err(annotate_with_stderr(e, &stderr_text));
+            }
+            Err(_) => {
+                let _ = child.kill().await;
+                let _ = sink.send(AgentEvent::Ai {
+                    data: AiEvent::TaskHalted {
+                        task_id: prompt.task_id.clone(),
+                        reason: HaltReason::OperatorCancelled,
+                    },
+                });
+                let stderr_text = await_stderr_drain(stderr_handle).await;
+                let base = format!("claude one_shot timed out after {}s", self.timeout.as_secs());
+                return Err(AiError::Transport(append_stderr(&base, &stderr_text)));
+            }
+        }
+
+        let status =
+            child.wait().await.map_err(|e| AiError::Transport(format!("wait claude: {e}")))?;
+        if !status.success() {
+            let stderr_text = await_stderr_drain(stderr_handle).await;
+            let base = format!("claude exited {status}");
+            return Err(AiError::UpstreamRefused(append_stderr(&base, &stderr_text)));
+        }
+        drop(stderr_handle);
+
+        if cache.cache_creation_tokens > 0 {
+            let _ = sink.send(AgentEvent::Ai {
+                data: AiEvent::CacheMiss {
+                    task_id: prompt.task_id.clone(),
+                    tokens: cache.cache_creation_tokens,
+                },
+            });
+        }
+        if cache.cache_read_tokens > 0 {
+            let _ = sink.send(AgentEvent::Ai {
+                data: AiEvent::CacheHit {
+                    task_id: prompt.task_id.clone(),
+                    tokens: cache.cache_read_tokens,
+                },
+            });
+        }
+
+        let spent_after =
+            self.tracker.add_spend(&budget.run_id, budget.kind, cost_usd_micros).await?;
+        let _ = sink.send(AgentEvent::Ai {
+            data: AiEvent::BudgetTick {
+                task_id: prompt.task_id.clone(),
+                run_id: budget.run_id.clone(),
+                spent_usd_micros: spent_after,
+            },
+        });
+
+        let tracker_cap = self.tracker.cap(&budget.run_id, budget.kind).await?;
+        let cap = effective_cap(tracker_cap, budget.cap_usd_micros);
+        if spent_after > cap {
+            let _ = sink.send(AgentEvent::Ai {
+                data: AiEvent::TaskHalted {
+                    task_id: prompt.task_id.clone(),
+                    reason: HaltReason::BudgetCapReached,
+                },
+            });
+            return Err(AiError::BudgetExceeded {
+                cap_usd_micros: cap,
+                spent_usd_micros: spent_after,
+            });
+        }
+
+        Ok(Response {
+            prompt_version: prompt.prompt_version,
+            task_id: prompt.task_id,
+            model: reported_model.unwrap_or(model),
+            content,
+            usage,
+            cache: Some(cache),
+            cost_usd_micros,
+        })
     }
 
     async fn agent_loop(
@@ -242,6 +445,9 @@ impl AiRuntime for ClaudeCodeAdapter {
             .arg("--verbose")
             .arg("--max-turns")
             .arg(task.max_turns.to_string())
+            // TODO(release-hardening): make this opt-in/configured before
+            // shipping beyond local testing.
+            .arg("--dangerously-skip-permissions")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             // Pipe stderr so failure paths can surface the upstream reason.
@@ -502,6 +708,38 @@ fn render_task_markdown(task: &AgentTask) -> String {
     )
 }
 
+fn render_one_shot_prompt(prompt: &Prompt) -> String {
+    format!(
+        "# Nyctos one-shot task\n\
+         \n\
+         **prompt_version**: `{pv}`  \n\
+         **task_id**: `{tid}`  \n\
+         **max_output_tokens**: {max_tokens}  \n\
+         **temperature**: {temperature}\n\
+         \n\
+         Return the requested content only. Preserve any JSON contract from the system prompt; \
+         do not add explanation, Markdown fences, or surrounding prose unless the prompt explicitly \
+         asks for them.\n\
+         \n\
+         ## System\n{system}\n\
+         \n\
+         ## User\n{user}\n",
+        pv = prompt.prompt_version,
+        tid = prompt.task_id,
+        max_tokens = prompt.max_output_tokens,
+        temperature = prompt.temperature,
+        system = prompt.system,
+        user = prompt.user,
+    )
+}
+
+fn effective_cap(tracker_cap: Option<i64>, envelope_cap: i64) -> i64 {
+    match tracker_cap {
+        Some(t) => t.min(envelope_cap),
+        None => envelope_cap,
+    }
+}
+
 /// Parse one NDJSON line from `claude --output-format stream-json` into
 /// a typed event. Unknown shapes return `None` so callers can skip
 /// gracefully across Claude Code CLI revisions.
@@ -557,6 +795,8 @@ pub struct ResultPayload {
     #[serde(default)]
     pub result: Option<String>,
     #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
     pub total_cost_usd: Option<f64>,
     #[serde(default)]
     pub usage: Option<ResultUsage>,
@@ -568,6 +808,10 @@ pub struct ResultUsage {
     pub input_tokens: Option<u32>,
     #[serde(default)]
     pub output_tokens: Option<u32>,
+    #[serde(default)]
+    pub cache_creation_input_tokens: Option<u32>,
+    #[serde(default)]
+    pub cache_read_input_tokens: Option<u32>,
 }
 
 #[cfg(test)]
@@ -577,6 +821,8 @@ mod tests {
     use super::*;
     use crate::runtime::InMemoryBudgetTracker;
     use nyctos_types::agent::BudgetKind;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use tokio::sync::broadcast;
 
     fn sample_task() -> AgentTask {
@@ -594,8 +840,26 @@ mod tests {
         Budget { run_id: "run-claude-1".to_string(), kind: BudgetKind::AgentLoop, cap_usd_micros }
     }
 
+    fn one_shot_budget(cap_usd_micros: i64) -> Budget {
+        Budget { run_id: "run-claude-1".to_string(), kind: BudgetKind::OneShot, cap_usd_micros }
+    }
+
     fn fake_binary() -> ClaudeBinary {
         ClaudeBinary { path: PathBuf::from("/usr/bin/false"), version: "0.0.0-test".to_string() }
+    }
+
+    fn fake_cli_script(body: &str) -> (tempfile::TempDir, ClaudeBinary) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("claude");
+        std::fs::write(&path, body).expect("write fake claude");
+        #[cfg(unix)]
+        {
+            let mut perms = std::fs::metadata(&path).expect("metadata").permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&path, perms).expect("chmod");
+        }
+        let binary = ClaudeBinary { path, version: "2.1.146-test".to_string() };
+        (dir, binary)
     }
 
     #[test]
@@ -609,9 +873,45 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn one_shot_returns_unsupported_mode() {
-        let tracker = Arc::new(InMemoryBudgetTracker::new()) as SharedBudgetTracker;
-        let adapter = ClaudeCodeAdapter::new(fake_binary(), tracker);
+    async fn one_shot_parses_stream_json_and_records_budget() {
+        let script = r#"#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"{\"ok\":true}"}]}}'
+printf '%s\n' '{"type":"result","result":"{\"ok\":true}","model":"claude-sonnet-4-6","total_cost_usd":0.001234,"usage":{"input_tokens":10,"output_tokens":3,"cache_creation_input_tokens":4,"cache_read_input_tokens":5}}'
+"#;
+        let (_dir, binary) = fake_cli_script(script);
+        let tracker = Arc::new(InMemoryBudgetTracker::new());
+        let adapter = ClaudeCodeAdapter::new(binary, tracker.clone() as SharedBudgetTracker);
+        let (tx, _rx) = broadcast::channel::<AgentEvent>(4);
+        let prompt = Prompt {
+            prompt_version: "v1".to_string(),
+            task_id: "t".to_string(),
+            model: None,
+            system: "s".to_string(),
+            user: "u".to_string(),
+            max_output_tokens: 8,
+            temperature: 0.0,
+            seed: None,
+        };
+        let resp = adapter.one_shot(prompt, one_shot_budget(10_000), tx).await.expect("one_shot");
+        assert_eq!(resp.content, "{\"ok\":true}");
+        assert_eq!(resp.model, "claude-sonnet-4-6");
+        assert_eq!(resp.usage.input_tokens, 10);
+        assert_eq!(resp.usage.output_tokens, 3);
+        assert_eq!(resp.cache.unwrap().cache_creation_tokens, 4);
+        assert_eq!(resp.cost_usd_micros, 1_234);
+        assert_eq!(tracker.spent("run-claude-1", BudgetKind::OneShot), 1_234);
+    }
+
+    #[tokio::test]
+    async fn one_shot_enforces_post_call_budget_cap() {
+        let script = r#"#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"result","result":"done","total_cost_usd":0.0002,"usage":{"input_tokens":1,"output_tokens":1}}'
+"#;
+        let (_dir, binary) = fake_cli_script(script);
+        let tracker = Arc::new(InMemoryBudgetTracker::new());
+        let adapter = ClaudeCodeAdapter::new(binary, tracker.clone() as SharedBudgetTracker);
         let (tx, _rx) = broadcast::channel::<AgentEvent>(4);
         let prompt = Prompt {
             prompt_version: "v1".to_string(),
@@ -624,10 +924,14 @@ mod tests {
             seed: None,
         };
         let err = adapter
-            .one_shot(prompt, budget(0), tx)
+            .one_shot(prompt, one_shot_budget(100), tx)
             .await
-            .expect_err("one_shot must be unsupported");
-        assert!(matches!(err, AiError::UnsupportedMode("one_shot")));
+            .expect_err("budget should trip");
+        assert!(matches!(
+            err,
+            AiError::BudgetExceeded { cap_usd_micros: 100, spent_usd_micros: 200 }
+        ));
+        assert_eq!(tracker.spent("run-claude-1", BudgetKind::OneShot), 200);
     }
 
     #[test]
@@ -736,12 +1040,14 @@ mod tests {
             "subtype": "success",
             "result": "done",
             "total_cost_usd": 0.0125,
-            "usage": { "input_tokens": 100, "output_tokens": 50 }
+            "usage": { "input_tokens": 100, "output_tokens": 50 },
+            "model": "claude-opus-4-7"
         })
         .to_string();
         let ev = parse_stream_json(&line).expect("parsed");
         let ClaudeEvent::Result(r) = ev else { panic!("expected Result") };
         assert_eq!(r.result.as_deref(), Some("done"));
+        assert_eq!(r.model.as_deref(), Some("claude-opus-4-7"));
         assert!((r.total_cost_usd.unwrap() - 0.0125).abs() < f64::EPSILON);
         assert_eq!(r.usage.unwrap().input_tokens, Some(100));
     }

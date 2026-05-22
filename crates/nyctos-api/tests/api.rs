@@ -1038,6 +1038,59 @@ async fn setup_doctor_accepts_unsaved_anthropic_key() {
 }
 
 #[tokio::test]
+async fn setup_submit_accepts_codex_runtime_without_secrets() {
+    let trigger: Arc<dyn ScanTrigger> =
+        Arc::new(StubScanTrigger { run_id: "irrelevant".to_string() });
+    let srv = TestServer::start_with_options(trigger, false, false).await;
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/v1/setup", srv.base()))
+        .json(&serde_json::json!({
+            "ai_runtime": "codex",
+            "sandbox_backend": "process",
+            "i_own_this": true,
+        }))
+        .send()
+        .await
+        .expect("post");
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    let after: Value = reqwest::get(format!("{}/api/v1/setup/status", srv.base()))
+        .await
+        .expect("get")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(after["ai_runtime"], "codex");
+    assert_eq!(after["ai_provider"], "codex");
+}
+
+#[tokio::test]
+async fn setup_doctor_handles_codex_runtime() {
+    let trigger: Arc<dyn ScanTrigger> =
+        Arc::new(StubScanTrigger { run_id: "irrelevant".to_string() });
+    let srv = TestServer::start_with_options(trigger, false, false).await;
+    let body: Value = reqwest::Client::new()
+        .post(format!("{}/api/v1/setup/doctor", srv.base()))
+        .json(&serde_json::json!({
+            "ai_runtime": "codex",
+            "sandbox_backend": "auto",
+        }))
+        .send()
+        .await
+        .expect("post")
+        .json()
+        .await
+        .expect("json");
+
+    let ai = body["checks"]
+        .as_array()
+        .expect("checks")
+        .iter()
+        .find(|row| row["name"] == "ai-codex")
+        .expect("ai-codex check");
+    assert!(ai["message"].as_str().unwrap_or_default().to_lowercase().contains("codex"));
+}
+
+#[tokio::test]
 async fn setup_submit_rejects_without_ownership_attestation() {
     let trigger: Arc<dyn ScanTrigger> =
         Arc::new(StubScanTrigger { run_id: "irrelevant".to_string() });
