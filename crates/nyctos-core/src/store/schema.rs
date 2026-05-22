@@ -1,17 +1,16 @@
-//! Migration framework. Numbered SQL files under `migrations/` are
+//! Migration framework. The baseline SQL file under `migrations/` is
 //! embedded into the binary via `sqlx::migrate!()`; running migrations is
-//! idempotent because sqlx tracks applied versions in
-//! `_sqlx_migrations`.
+//! idempotent because sqlx tracks applied versions in `_sqlx_migrations`.
 
 use sqlx::migrate::Migrator;
 use sqlx::SqlitePool;
 
 use crate::store::StoreError;
 
-/// Highest schema version shipped by this build. Bump this number when
-/// adding a new migration file (and only ever add - never edit a prior
-/// migration).
-pub const CURRENT_SCHEMA_VERSION: i64 = 8;
+/// Highest schema version shipped by this build. This project has not
+/// shipped with persisted user databases yet, so the early migration
+/// history is squashed into the v1 baseline.
+pub const CURRENT_SCHEMA_VERSION: i64 = 1;
 
 pub static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 

@@ -72,12 +72,11 @@ on <path>: <io error>`.
 SQLite database. The pool opens with WAL journaling, `synchronous =
 NORMAL`, `foreign_keys = ON`, `cache_size = -8000` (8 MiB), and
 `temp_store = MEMORY`. The schema is managed by the bundled
-migrator (`crates/nyctos-core/migrations/`):
+baseline migration (`crates/nyctos-core/migrations/0001_v1.sql`):
 
-| Migration             | Adds                                                                                          |
-|-----------------------|-----------------------------------------------------------------------------------------------|
-| `0001_v1.sql`         | `meta`, `projects`, `repos`, `runs`, `chains`, `findings`, `payloads`, `candidate_findings`, `agent_traces`, `budgets`, `repro_bundles`, `schedules`, `webhooks`, `feedback`, all FK + UI-filter indexes. |
-| `0002_specs.sql`      | `harness_specs` table and the `findings.spec_id` back-link.                                   |
+| Migration     | Adds |
+|---------------|------|
+| `0001_v1.sql` | Full baseline schema: product/projects, repos, runs, findings, harness specs, traces, AI budgets, quarantine data, launch profiles, Nyx signals, pentest candidates, verification attempts, vulnerabilities, phase events, and supporting indexes. |
 
 The singleton `meta` row carries `schema_version` (mirrors
 `MAX(_sqlx_migrations.version)`), `created_at` (epoch ms of first
@@ -92,7 +91,7 @@ sqlite3 "<state>/state.db" \
 `nyctos doctor` prints the schema version on every run:
 
 ```text
-db OK at <state>/state.db (schema v2)
+db OK at <state>/state.db (schema v1)
 ```
 
 If migrations diverge (e.g. a newer binary then an older binary

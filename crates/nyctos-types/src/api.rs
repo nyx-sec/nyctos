@@ -156,11 +156,9 @@ pub struct BundleManifest {
 ///   the current run.
 /// - `Unchanged`: observed during both runs with the same status.
 ///
-/// Sourced from the `run_findings` join table seeded by migration
-/// `0004_run_findings.sql`. Runs whose membership predates the
-/// migration carry no rows in that table; the router classifier
-/// degrades to `New` for them so the chip wallpapers an
-/// unknown-history run rather than mislabelling it `Unchanged`.
+/// Sourced from the `run_findings` join table. Runs with no membership
+/// rows degrade to `New` so the chip wallpapers an unknown-history run
+/// rather than mislabelling it `Unchanged`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "lowercase")]
 pub enum FindingDiffStatus {

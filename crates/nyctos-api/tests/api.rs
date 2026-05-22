@@ -577,10 +577,10 @@ async fn runs_findings_endpoint_applies_facet_filter_to_closed_rows() {
 async fn traces_endpoint_resolves_candidate_id_via_back_link() {
     // `/findings/:id/traces` dispatches on the `cand-` id prefix: a
     // candidate-shaped id walks the `candidate_findings.trace_id`
-    // back-link added in migration 0005, while a finding id keeps
-    // the direct `agent_traces.finding_id` index. Without the
-    // dispatch the quarantine UI would always render "No AI calls
-    // recorded for this finding yet" for a Pending candidate.
+    // back-link, while a finding id keeps the direct
+    // `agent_traces.finding_id` index. Without the dispatch the
+    // quarantine UI would always render "No AI calls recorded for this
+    // finding yet" for a Pending candidate.
     use nyctos_core::store::{AgentTraceRecord, CandidateFindingRecord};
 
     let srv = TestServer::start().await;
@@ -637,9 +637,9 @@ async fn traces_endpoint_resolves_candidate_id_via_back_link() {
 
 #[tokio::test]
 async fn traces_endpoint_returns_empty_for_untraced_candidate() {
-    // A candidate persisted before migration 0005, or one that was
-    // never linked to a trace (legacy / non-AI), must still resolve
-    // its trace lookup as an empty list instead of a 404.
+    // A candidate that was never linked to a trace (legacy / non-AI)
+    // must still resolve its trace lookup as an empty list instead of
+    // a 404.
     use nyctos_core::store::CandidateFindingRecord;
 
     let srv = TestServer::start().await;

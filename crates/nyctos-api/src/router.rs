@@ -1864,10 +1864,9 @@ async fn traces_for_finding(
 ) -> Result<Json<Vec<AgentTraceRow>>, ApiError> {
     // Candidate ids carry a `cand-` prefix (see
     // `nyctos::ai_pipeline::candidate_id`); route those through the
-    // `candidate_findings.trace_id` back-link added in migration
-    // `0005_candidate_trace_id.sql` so the trace viewer can render the
-    // proposing AI call for a Pending candidate. Finding ids hit the
-    // direct `agent_traces.finding_id` index as before.
+    // `candidate_findings.trace_id` back-link so the trace viewer can
+    // render the proposing AI call for a Pending candidate. Finding ids
+    // hit the direct `agent_traces.finding_id` index as before.
     let rows = if id.starts_with("cand-") {
         s.store.agent_traces().list_for_candidate(&id).await?
     } else {

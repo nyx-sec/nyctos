@@ -233,9 +233,7 @@ impl<'a> FindingStore<'a> {
 
     /// All `(finding_id, status)` pairs observed during `run_id`.
     /// Backs the `FindingDiffStatus` classifier in the API layer.
-    /// Returns an empty vec when the run never observed any finding
-    /// (or predates the `run_findings` migration without any later
-    /// upserts touching the run).
+    /// Returns an empty vec when the run never observed any finding.
     pub async fn list_run_membership(
         &self,
         run_id: &str,

@@ -54,7 +54,7 @@ timestamp, and per-row "Scan now" + "Remove" actions:
 `nyctos doctor` prints the runtime probes the daemon uses at
 startup:
 
-![nyctos doctor output showing state dir, config, SQLite schema v2, resolved nyx scanner version, claude-code adapter, sandbox chain lane on docker, sandbox fast lane on birdcage, scheduler and webhook status](assets/screenshots/cli-doctor.png)
+![nyctos doctor output showing state dir, config, SQLite schema v1, resolved nyx scanner version, claude-code adapter, sandbox chain lane on docker, sandbox fast lane on birdcage, scheduler and webhook status](assets/screenshots/cli-doctor.png)
 
 ## Documentation
 

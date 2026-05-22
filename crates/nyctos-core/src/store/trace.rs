@@ -131,10 +131,9 @@ impl<'a> AgentTraceStore<'a> {
     }
 
     /// Return every trace bound to the candidate finding by the
-    /// `candidate_findings.trace_id` back-link added in migration
-    /// `0005_candidate_trace_id.sql`. Empty when the candidate has no
-    /// trace bound (legacy candidates from before the back-link, or
-    /// candidates synthesised outside the AI exploration path).
+    /// `candidate_findings.trace_id` back-link. Empty when the candidate
+    /// has no trace bound, such as candidates synthesised outside the AI
+    /// exploration path.
     pub async fn list_for_candidate(
         &self,
         candidate_id: &str,

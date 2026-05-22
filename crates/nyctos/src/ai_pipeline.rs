@@ -1970,9 +1970,8 @@ async fn persist_verifier_trace(
 ///
 /// Returns `None` when no inputs are available (i.e. the runner failed
 /// before producing a `VerifyResult` AND no spec id was known). The
-/// shape matches the contract in migration `0003_verifier_blob.sql`:
-/// every field is independently optional so callers stamp whatever
-/// they have.
+/// shape matches the `agent_traces.verifier_blob` contract: every field
+/// is independently optional so callers stamp whatever they have.
 fn build_verifier_blob(spec_id: Option<&str>, result: Option<&VerifyResult>) -> Option<String> {
     use sha2::{Digest, Sha256};
     let mut obj = serde_json::Map::new();
@@ -4320,10 +4319,9 @@ mod tests {
         assert!(row.rationale.as_deref().unwrap_or("").contains("list_admins"));
 
         // The proposing AI call's trace row is back-linked on the
-        // candidate via `candidate_findings.trace_id` (migration
-        // `0005_candidate_trace_id.sql`). The quarantine UI's trace
-        // viewer reads this back-link so the operator can see the call
-        // that proposed a Pending candidate without joining on
+        // candidate via `candidate_findings.trace_id`. The quarantine UI's
+        // trace viewer reads this back-link so the operator can see the
+        // call that proposed a Pending candidate without joining on
         // task_kind = NovelFindings alone.
         let trace_id = row.trace_id.clone().expect("candidate must carry trace_id back-link");
         let traces = store.agent_traces().list_for_candidate(&row.id).await.unwrap();
