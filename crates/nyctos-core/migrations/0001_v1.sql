@@ -368,6 +368,16 @@ CREATE TABLE verified_vulnerabilities (
     FOREIGN KEY (chain_id)   REFERENCES chains(id)   ON DELETE SET NULL
 );
 
+CREATE TABLE route_models (
+    id            TEXT    PRIMARY KEY,
+    run_id        TEXT    NOT NULL,
+    project_id    TEXT    NOT NULL,
+    model_blob    TEXT    NOT NULL,
+    created_at    INTEGER NOT NULL,
+    FOREIGN KEY (run_id)     REFERENCES runs(id)     ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+
 CREATE TABLE run_phase_events (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id        TEXT    NOT NULL,
@@ -471,6 +481,9 @@ CREATE INDEX idx_verified_vulnerabilities_run_id     ON verified_vulnerabilities
 CREATE INDEX idx_verified_vulnerabilities_project_id ON verified_vulnerabilities(project_id);
 CREATE INDEX idx_verified_vulnerabilities_status     ON verified_vulnerabilities(status);
 CREATE INDEX idx_verified_vulnerabilities_severity   ON verified_vulnerabilities(severity);
+
+CREATE INDEX idx_route_models_run_id             ON route_models(run_id);
+CREATE INDEX idx_route_models_project_id         ON route_models(project_id);
 
 CREATE INDEX idx_run_phase_events_run_id        ON run_phase_events(run_id);
 CREATE INDEX idx_run_phase_events_phase         ON run_phase_events(phase);

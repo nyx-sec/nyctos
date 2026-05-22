@@ -50,8 +50,8 @@ pub use payload::{PayloadRecord, PayloadStore};
 pub use product::{
     EnvironmentRunRecord, EnvironmentRunStore, LaunchProfileStore, NyxSignalRecord, NyxSignalStore,
     PentestCandidateRecord, PentestCandidateStore, ProjectLaunchProfile, ProjectLaunchProfileInput,
-    VerificationAttemptRecord, VerificationAttemptStore, VerifiedVulnerabilityRecord,
-    VerifiedVulnerabilityStore,
+    RouteModelRecord, RouteModelStore, VerificationAttemptRecord, VerificationAttemptStore,
+    VerifiedVulnerabilityRecord, VerifiedVulnerabilityStore,
 };
 pub use project::{
     ProjectPatch, ProjectPatchOption, ProjectRecord, ProjectRuntimeProfile, ProjectStore,
@@ -259,6 +259,9 @@ impl Store {
     }
     pub fn verified_vulnerabilities(&self) -> VerifiedVulnerabilityStore<'_> {
         VerifiedVulnerabilityStore::new(&self.pool)
+    }
+    pub fn route_models(&self) -> RouteModelStore<'_> {
+        RouteModelStore::new(&self.pool)
     }
     pub fn candidate_findings(&self) -> CandidateFindingStore<'_> {
         CandidateFindingStore::new(&self.pool)

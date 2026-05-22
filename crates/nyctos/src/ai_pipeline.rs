@@ -56,9 +56,13 @@ use nyctos_types::novel::{
 use nyctos_types::payload::{
     AttackProvenance, PayloadSynthesisInput, PAYLOAD_SYNTHESIS_PROMPT_VERSION,
 };
+use nyctos_types::product::RouteModel;
+use nyctos_types::project::ProjectAuthProfile;
 use nyctos_types::spec::{SpecDerivationInput, SPEC_DERIVATION_PROMPT_VERSION};
 use nyctos_types::verify::{Oracle, VerifyResult, VerifyVerdict};
 use tokio::sync::Semaphore;
+
+use crate::{pentest_tools, route_model};
 
 // Per-call PayloadSynthesis / SpecDerivation caps now live on
 // `AiConfig` as
@@ -673,6 +677,180 @@ pub struct LiveTestPlanSynthesisPassReport {
     pub spend_usd_micros: i64,
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct AttackPlanningPassReport {
+    pub candidates_seen: u32,
+    pub candidates_planned: u32,
+    pub skipped: u32,
+    pub failed: u32,
+    pub attempts: u32,
+    pub spend_usd_micros: i64,
+    pub plan_context: Option<String>,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn run_attack_planning_pass(
+    config: &AiConfig,
+    store: &Store,
+    secrets: &SecretStore,
+    bundle: &RunBundle<Diag>,
+    workspaces: &HashMap<String, WorkspaceHandle>,
+    route_model: &RouteModel,
+    auth_profiles: &[ProjectAuthProfile],
+    target_urls: &[String],
+    events: EventSink,
+) -> anyhow::Result<AttackPlanningPassReport> {
+    let candidates = store.pentest_candidates().list_by_run(&bundle.run_id).await?;
+    let candidates: Vec<_> = candidates
+        .into_iter()
+        .filter(|c| matches!(c.status.as_str(), "Proposed" | "NeedsLiveTest"))
+        .collect();
+    let mut report = AttackPlanningPassReport {
+        candidates_seen: candidates.len() as u32,
+        ..AttackPlanningPassReport::default()
+    };
+    if candidates.is_empty() {
+        return Ok(report);
+    }
+    if target_urls.is_empty() {
+        report.skipped = candidates.len() as u32;
+        report.plan_context = Some("attack planning skipped: no live target URL".to_string());
+        return Ok(report);
+    }
+    let adapter = match selected_one_shot_runtime(
+        config,
+        store,
+        secrets,
+        config.default_run_budget_usd_micros_resolved(),
+        "attack planning",
+    )
+    .await?
+    {
+        Some(adapter) => adapter,
+        None => {
+            report.skipped = candidates.len() as u32;
+            report.plan_context =
+                Some("attack planning skipped: no configured one-shot AI runtime".to_string());
+            return Ok(report);
+        }
+    };
+
+    let started_at = now_epoch_ms();
+    let prompt = build_attack_planning_prompt(
+        &candidates,
+        workspaces,
+        route_model,
+        auth_profiles,
+        target_urls,
+    );
+    let budget = Budget {
+        run_id: bundle.run_id.clone(),
+        kind: BudgetKind::OneShot,
+        cap_usd_micros: config.default_run_budget_usd_micros_resolved(),
+    };
+    let runtime_name = adapter.name();
+    let runtime_model = adapter.default_model().to_string();
+    let resp = match adapter.one_shot(prompt, budget, events).await {
+        Ok(resp) => resp,
+        Err(err) => {
+            report.failed = candidates.len() as u32;
+            if matches!(err, AiError::BudgetExceeded { .. }) {
+                report.plan_context =
+                    Some("attack planning halted: AI budget exhausted".to_string());
+                return Ok(report);
+            }
+            return Err(anyhow::anyhow!(err.to_string()));
+        }
+    };
+    let finished_at = now_epoch_ms();
+    report.attempts = 1;
+    report.spend_usd_micros = resp.cost_usd_micros;
+    report.candidates_planned = candidates.len() as u32;
+    report.plan_context = Some(compact_attack_plan_context(&resp.content));
+
+    let metrics = AgentTraceMetrics::from_response(&resp);
+    let mut trace = build_trace_row(
+        TaskKind::AttackPlanning,
+        None,
+        runtime_name,
+        &runtime_model,
+        &resp.prompt_version,
+        resp.cost_usd_micros,
+        started_at,
+        finished_at,
+        Some(&metrics),
+    );
+    trace.verifier_blob = Some(
+        serde_json::json!({
+            "kind": "attack_plan",
+            "run_id": &bundle.run_id,
+            "project_id": &bundle.project_id,
+            "content": resp.content,
+        })
+        .to_string(),
+    );
+    persist_trace_row(store, trace).await;
+    Ok(report)
+}
+
+fn build_attack_planning_prompt(
+    candidates: &[PentestCandidateRecord],
+    workspaces: &HashMap<String, WorkspaceHandle>,
+    route_model: &RouteModel,
+    auth_profiles: &[ProjectAuthProfile],
+    target_urls: &[String],
+) -> Prompt {
+    let targets = target_urls.iter().map(|u| format!("- {u}")).collect::<Vec<_>>().join("\n");
+    let routes = route_model::compact_route_model_for_prompt(route_model, 80);
+    let auth = pentest_tools::auth_profiles_summary(auth_profiles);
+    let candidates_json = serde_json::to_string_pretty(
+        &candidates
+            .iter()
+            .take(30)
+            .map(|c| {
+                serde_json::json!({
+                    "id": c.id,
+                    "title": c.title,
+                    "class": c.vuln_class,
+                    "severity": c.severity_guess,
+                    "hypothesis": c.hypothesis,
+                    "affected_components": c.affected_components,
+                    "source_excerpt": candidate_source_excerpt(c, workspaces).map(|ex| serde_json::json!({
+                        "path": ex.path,
+                        "line": ex.line,
+                        "kind": ex.kind,
+                        "body": ex.body,
+                    })),
+                })
+            })
+            .collect::<Vec<_>>(),
+    )
+    .unwrap_or_else(|_| "[]".to_string());
+    let system = r#"You are Nyctos's senior pentest planner. Produce a ranked, safe attack plan for authorized testing of the operator's local application.
+
+Return exactly one JSON object and no Markdown. Do not claim a vulnerability is verified. For each hypothesis, specify the deterministic evidence the verifier must collect and the rejecting evidence that would disprove it. Prefer harmless probes. Mark destructive or aggressive probes clearly so Nyctos can block them unless explicitly enabled."#
+        .to_string();
+    let user = format!(
+        "TARGET BASE URLS\n{targets}\n\nAUTH PROFILES\n{auth}\n\nROUTE MODEL\n{routes}\n\nCANDIDATES\n{candidates_json}\n\nRequired JSON shape:\n{{\"threat_model_summary\":\"...\",\"top_hypotheses\":[{{\"candidate_id\":\"...\",\"rank\":1,\"mapped_routes\":[\"GET /api/...\"],\"needed_auth_roles\":[\"anonymous\"],\"safest_probe\":\"...\",\"fallback_probe\":\"...\",\"destructiveness\":\"safe|state-changing|aggressive\",\"expected_confirming_evidence\":\"...\",\"expected_rejecting_evidence\":\"...\"}}]}}\n"
+    );
+    Prompt {
+        prompt_version: "phase-live.attack-planning.v1".to_string(),
+        task_id: format!("attack-plan-{}", short_candidate_id(&candidates[0].run_id)),
+        model: None,
+        system,
+        user,
+        max_output_tokens: 3000,
+        temperature: 0.0,
+        seed: None,
+    }
+}
+
+fn compact_attack_plan_context(raw: &str) -> String {
+    let compact =
+        raw.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" ");
+    compact.chars().take(4_000).collect()
+}
+
 /// Convert static `PentestCandidate` rows into executable HTTP plans
 /// before the live verifier runs. This is the missing bridge between
 /// Nyx's source signal and the local dev site: the verifier deliberately
@@ -685,6 +863,9 @@ pub async fn run_live_test_plan_synthesis_pass(
     bundle: &RunBundle<Diag>,
     workspaces: &HashMap<String, WorkspaceHandle>,
     target_urls: &[String],
+    route_model: Option<&RouteModel>,
+    auth_profiles: &[ProjectAuthProfile],
+    attack_plan_context: Option<&str>,
     events: EventSink,
 ) -> anyhow::Result<LiveTestPlanSynthesisPassReport> {
     let mut report = LiveTestPlanSynthesisPassReport::default();
@@ -720,7 +901,14 @@ pub async fn run_live_test_plan_synthesis_pass(
     let runtime_model = adapter.default_model().to_string();
     for candidate in candidates {
         let started_at = now_epoch_ms();
-        let prompt = build_live_test_plan_prompt(&candidate, workspaces, target_urls);
+        let prompt = build_live_test_plan_prompt(
+            &candidate,
+            workspaces,
+            target_urls,
+            route_model,
+            auth_profiles,
+            attack_plan_context,
+        );
         let budget = Budget {
             run_id: bundle.run_id.clone(),
             kind: BudgetKind::OneShot,
@@ -795,6 +983,9 @@ fn build_live_test_plan_prompt(
     candidate: &PentestCandidateRecord,
     workspaces: &HashMap<String, WorkspaceHandle>,
     target_urls: &[String],
+    route_model: Option<&RouteModel>,
+    auth_profiles: &[ProjectAuthProfile],
+    attack_plan_context: Option<&str>,
 ) -> Prompt {
     let excerpt = candidate_source_excerpt(candidate, workspaces)
         .map(|ex| {
@@ -813,14 +1004,23 @@ fn build_live_test_plan_prompt(
         .unwrap_or_else(|_| "[]".to_string());
     let source_ids = serde_json::to_string_pretty(&candidate.source_ids).unwrap_or_default();
     let targets = target_urls.iter().map(|u| format!("- {u}")).collect::<Vec<_>>().join("\n");
+    let routes = route_model
+        .map(|m| route_model::compact_route_model_for_prompt(m, 40))
+        .unwrap_or_else(|| "route model unavailable".to_string());
+    let auth = pentest_tools::auth_profiles_summary(auth_profiles);
+    let attack_plan =
+        attack_plan_context.unwrap_or("no prior attack-planning trace available for this run");
     let system = r#"You are Nyctos's live-test-plan synthesizer. Work like a senior application security tester converting a static signal into one safe, executable HTTP verification plan for a local development app.
 
 Return exactly one JSON object and no Markdown. Prefer harmless probes that demonstrate reachability, authorization bypass, reflection, unsafe redirect, exposed data, or other vulnerability-specific evidence without destroying data. Use only the supplied target base URLs.
+
+Nyctos can execute these deterministic tools in the verifier: http.request and auth.login_as(role) through configured header/cookie/token injection. Browser plans are allowed only when the operator enables browser verification and Playwright is installed, so prefer HTTP unless the source is clearly client-side.
 
 If you cannot derive a meaningful live test from the source context, return {"no_plan_reason":"..."}.
 
 Executable plan schema:
 {
+  "kind": "http",
   "method": "GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS",
   "url": "absolute URL under one supplied target base URL",
   "path": "optional path, useful for audit only",
@@ -835,10 +1035,27 @@ Executable plan schema:
   "rationale": "brief reason this would confirm or reject the candidate"
 }
 
+For authorization boundaries, prefer a differential plan when matching auth roles exist:
+{
+  "kind": "differential_http",
+  "hypothesis": "...",
+  "steps": [
+    {"as": "user_a", "method": "GET", "path": "/api/accounts/123"},
+    {"as": "user_b", "method": "GET", "path": "/api/accounts/123"}
+  ],
+  "oracle": {
+    "type": "forbidden_equivalence_break",
+    "expected_allowed_step": 0,
+    "expected_forbidden_step": 1,
+    "forbidden_status": [401,403,404],
+    "sensitive_body_markers": ["email", "accountId"]
+  }
+}
+
 At least one oracle is required: expect_status, status_range, body_contains, body_not_contains, or header_contains. Do not return generic homepage checks."#
         .to_string();
     let user = format!(
-        "TARGET BASE URLS\n{targets}\n\nCANDIDATE\nid: {id}\ntitle: {title}\nclass: {vuln_class}\nseverity: {severity}\nstatus: {status}\nhypothesis: {hypothesis}\nsource_ids: {source_ids}\naffected_components:\n{components}\n\nSOURCE EXCERPT\n{excerpt}\n",
+        "TARGET BASE URLS\n{targets}\n\nAUTH PROFILES\n{auth}\n\nROUTE MODEL\n{routes}\n\nSENIOR ATTACK PLAN CONTEXT\n{attack_plan}\n\nCANDIDATE\nid: {id}\ntitle: {title}\nclass: {vuln_class}\nseverity: {severity}\nstatus: {status}\nhypothesis: {hypothesis}\nsource_ids: {source_ids}\naffected_components:\n{components}\n\nSOURCE EXCERPT\n{excerpt}\n",
         id = candidate.id,
         title = candidate.title,
         vuln_class = candidate.vuln_class,
@@ -910,76 +1127,7 @@ fn normalise_live_test_plan(
     raw: &str,
     target_urls: &[String],
 ) -> Result<Option<serde_json::Value>, String> {
-    let raw = strip_json_fence(raw);
-    let value: serde_json::Value =
-        serde_json::from_str(raw).map_err(|e| format!("plan is not JSON: {e}"))?;
-    let value = value.get("plan").cloned().unwrap_or(value);
-    if value.get("no_plan_reason").is_some() || value.get("inconclusive_reason").is_some() {
-        return Ok(None);
-    }
-    let mut obj =
-        value.as_object().cloned().ok_or_else(|| "plan JSON must be an object".to_string())?;
-
-    let method =
-        obj.get("method").and_then(|v| v.as_str()).unwrap_or("GET").trim().to_ascii_uppercase();
-    if !matches!(method.as_str(), "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS")
-    {
-        return Err(format!("unsupported HTTP method `{method}`"));
-    }
-    obj.insert("method".to_string(), serde_json::Value::String(method));
-
-    let url = obj
-        .get("url")
-        .and_then(|v| v.as_str())
-        .or_else(|| obj.get("path").and_then(|v| v.as_str()))
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| "plan needs url or path".to_string())?;
-    let url = resolve_plan_url(url, target_urls)
-        .ok_or_else(|| format!("plan URL `{url}` is outside supplied target base URLs"))?;
-    if !target_urls.iter().any(|target| url_is_under_target(&url, target)) {
-        return Err(format!("plan URL `{url}` is outside supplied target base URLs"));
-    }
-    obj.insert("url".to_string(), serde_json::Value::String(url));
-
-    if !plan_has_oracle(&obj) {
-        return Err("plan has no explicit oracle".to_string());
-    }
-    Ok(Some(serde_json::Value::Object(obj)))
-}
-
-fn strip_json_fence(raw: &str) -> &str {
-    let s = raw.trim();
-    if !s.starts_with("```") {
-        return s;
-    }
-    let after_opening = s.split_once('\n').map(|(_, rest)| rest).unwrap_or(s);
-    after_opening.trim().trim_end_matches("```").trim()
-}
-
-fn resolve_plan_url(value: &str, target_urls: &[String]) -> Option<String> {
-    if value.starts_with("http://") || value.starts_with("https://") {
-        return Some(value.to_string());
-    }
-    let base = target_urls.first()?.trim_end_matches('/');
-    if value.starts_with('/') {
-        Some(format!("{base}{value}"))
-    } else {
-        Some(format!("{base}/{value}"))
-    }
-}
-
-fn url_is_under_target(url: &str, target: &str) -> bool {
-    let target = target.trim_end_matches('/');
-    url == target
-        || url.starts_with(&format!("{target}/"))
-        || url.starts_with(&format!("{target}?"))
-}
-
-fn plan_has_oracle(obj: &serde_json::Map<String, serde_json::Value>) -> bool {
-    ["expect_status", "status_range", "body_contains", "body_not_contains", "header_contains"]
-        .iter()
-        .any(|key| obj.get(*key).is_some_and(|v| !v.is_null()))
+    pentest_tools::normalise_live_test_plan(raw, target_urls)
 }
 
 fn short_candidate_id(id: &str) -> String {

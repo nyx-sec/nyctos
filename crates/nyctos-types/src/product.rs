@@ -269,6 +269,98 @@ pub struct VerifiedVulnerabilityRecord {
     pub last_seen: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+pub struct RouteEvidence {
+    pub path: String,
+    #[ts(type = "number | null")]
+    pub line: Option<i64>,
+    pub snippet: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+pub struct RouteModelEndpoint {
+    pub method: String,
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub repo: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub handler_file: Option<String>,
+    #[ts(type = "number | null")]
+    pub line: Option<i64>,
+    #[serde(default)]
+    pub params: Vec<String>,
+    #[serde(default)]
+    pub middleware: Vec<String>,
+    #[serde(default)]
+    pub auth_checks: Vec<String>,
+    #[serde(default)]
+    pub role_checks: Vec<String>,
+    #[serde(default)]
+    pub body_fields: Vec<String>,
+    #[serde(default)]
+    pub state_changing: bool,
+    pub confidence: f64,
+    #[serde(default)]
+    pub evidence: Vec<RouteEvidence>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+pub struct FrontendRouteModel {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub repo: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub file: Option<String>,
+    #[ts(type = "number | null")]
+    pub line: Option<i64>,
+    pub confidence: f64,
+    #[serde(default)]
+    pub evidence: Vec<RouteEvidence>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+pub struct ApiClientCallModel {
+    pub method: String,
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub repo: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub file: Option<String>,
+    #[ts(type = "number | null")]
+    pub line: Option<i64>,
+    pub confidence: f64,
+    #[serde(default)]
+    pub evidence: Vec<RouteEvidence>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+pub struct RouteModel {
+    #[serde(default)]
+    pub backend_routes: Vec<RouteModelEndpoint>,
+    #[serde(default)]
+    pub frontend_routes: Vec<FrontendRouteModel>,
+    #[serde(default)]
+    pub api_client_calls: Vec<ApiClientCallModel>,
+    #[serde(default)]
+    pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+pub struct RouteModelRecord {
+    pub id: String,
+    pub run_id: String,
+    pub project_id: String,
+    pub model: RouteModel,
+    #[ts(type = "number")]
+    pub created_at: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct StartPentestResponse {
     pub run_id: String,

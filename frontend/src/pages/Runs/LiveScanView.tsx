@@ -33,6 +33,15 @@ interface LogLine {
   text: string;
 }
 
+interface PhaseProgress {
+  phase: string;
+  label: string;
+  status: "pending" | "running" | "finished";
+  startedAt?: number;
+  finishedAt?: number;
+  message?: string | null;
+}
+
 interface RunSummary {
   startedAt?: number;
   finishedAt?: number;
@@ -66,6 +75,7 @@ export function LiveScanView() {
   const navigate = useNavigate();
   const [repos, setRepos] = useState<Record<string, RepoProgress>>({});
   const [logs, setLogs] = useState<LogLine[]>([]);
+  const [phases, setPhases] = useState<Record<string, PhaseProgress>>({});
   const [summary, setSummary] = useState<RunSummary>({ done: false });
   const environmentRuns = useRunEnvironmentRuns(runId);
   const vulnerabilities = useRunVulnerabilities(runId);
@@ -75,6 +85,7 @@ export function LiveScanView() {
     onEvent: (ev) => {
       applyToRepos(ev, setRepos);
       applyToLogs(ev, setLogs);
+      applyToPhases(ev, setPhases);
       applyToSummary(ev, setSummary);
     },
   });
@@ -89,6 +100,7 @@ export function LiveScanView() {
   const finishedRepos = orderedRepos.filter(
     (r) => r.phase === "finished" || r.phase === "failed",
   ).length;
+  const orderedPhases = useMemo(() => orderPhases(phases), [phases]);
 
   return (
     <div className="live-scan">
@@ -140,6 +152,21 @@ export function LiveScanView() {
               <RepoProgressRow key={repo.name} repo={repo} />
             ))}
           </ul>
+        )}
+
+        {orderedPhases.length > 0 && (
+          <section className="live-scan__phases">
+            <h3 className="live-scan__h3">Pentest phases</h3>
+            <ol className="live-scan__phase-list">
+              {orderedPhases.map((phase) => (
+                <li key={phase.phase} className={`live-scan__phase live-scan__phase--${phase.status}`}>
+                  <Badge tone={phaseTone(phase.status)}>{phase.status}</Badge>
+                  <span>{phase.label}</span>
+                  {phase.message && <small>{phase.message}</small>}
+                </li>
+              ))}
+            </ol>
+          </section>
         )}
 
         <section className="live-scan__logs">
@@ -240,6 +267,8 @@ function environmentTone(status: string): BadgeTone {
 type RepoMap = Record<string, RepoProgress>;
 type RepoSetter = (updater: (prev: RepoMap) => RepoMap) => void;
 type LogSetter = (updater: (prev: LogLine[]) => LogLine[]) => void;
+type PhaseMap = Record<string, PhaseProgress>;
+type PhaseSetter = (updater: (prev: PhaseMap) => PhaseMap) => void;
 type SummarySetter = (updater: (prev: RunSummary) => RunSummary) => void;
 
 function applyToRepos(ev: AgentEventLike, set: RepoSetter) {
@@ -311,6 +340,66 @@ function applyToRepos(ev: AgentEventLike, set: RepoSetter) {
       }));
       return;
   }
+}
+
+const PHASE_ORDER = [
+  "EnvironmentBuildStarted",
+  "NyxSignalsStarted",
+  "RouteModelStarted",
+  "OptionalScannersStarted",
+  "AgentReviewStarted",
+  "AiAttackPlanningStarted",
+  "LiveVerificationStarted",
+  "BrowserVerificationStarted",
+];
+
+function applyToPhases(ev: AgentEventLike, set: PhaseSetter) {
+  if (!("kind" in ev) || ev.kind !== "Run") return;
+  const data = ev.data;
+  if (data.kind === "PhaseStarted") {
+    set((prev) => ({
+      ...prev,
+      [data.phase]: {
+        ...(prev[data.phase] ?? {
+          phase: data.phase,
+          label: formatPhase(data.phase),
+          status: "pending",
+        }),
+        status: "running",
+        startedAt: data.started_at_ms,
+      },
+    }));
+  }
+  if (data.kind === "PhaseFinished") {
+    set((prev) => ({
+      ...prev,
+      [data.phase]: {
+        ...(prev[data.phase] ?? {
+          phase: data.phase,
+          label: formatPhase(data.phase),
+          status: "pending",
+        }),
+        status: "finished",
+        finishedAt: data.finished_at_ms,
+        message: data.message,
+      },
+    }));
+  }
+}
+
+function orderPhases(phases: PhaseMap): PhaseProgress[] {
+  return Object.values(phases).sort((a, b) => {
+    const ai = PHASE_ORDER.indexOf(a.phase);
+    const bi = PHASE_ORDER.indexOf(b.phase);
+    if (ai !== -1 || bi !== -1) return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+    return a.label.localeCompare(b.label);
+  });
+}
+
+function phaseTone(status: PhaseProgress["status"]): BadgeTone {
+  if (status === "running") return "info";
+  if (status === "finished") return "success";
+  return "neutral";
 }
 
 function applyToLogs(ev: AgentEventLike, set: LogSetter) {
@@ -429,8 +518,12 @@ function formatPhase(phase: string): string {
   if (phase === "EnvironmentBuildStarted") return "App launch";
   if (phase === "EnvironmentReady") return "App ready";
   if (phase === "NyxSignalsStarted") return "Static analysis";
+  if (phase === "RouteModelStarted") return "Route/auth modeling";
+  if (phase === "OptionalScannersStarted") return "Optional scanners";
   if (phase === "AgentReviewStarted") return "AI pentest review";
+  if (phase === "AiAttackPlanningStarted") return "AI attack planning";
   if (phase === "LiveVerificationStarted") return "Live verification";
+  if (phase === "BrowserVerificationStarted") return "Browser verification";
   return phase;
 }
 

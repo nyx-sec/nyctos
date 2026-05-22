@@ -5,7 +5,7 @@ use sqlx::{Row, SqlitePool};
 pub use nyctos_types::product::{
     EnvironmentRunRecord, LaunchEnvRef, LaunchHealthCheck, LaunchStep, LaunchWorkingDir,
     NyxSignalRecord, PentestCandidateRecord, ProjectLaunchProfile, ProjectLaunchProfileInput,
-    VerificationAttemptRecord, VerifiedVulnerabilityRecord,
+    RouteModelRecord, VerificationAttemptRecord, VerifiedVulnerabilityRecord,
 };
 
 use crate::store::StoreError;
@@ -592,6 +592,52 @@ impl<'a> VerifiedVulnerabilityStore<'a> {
     }
 }
 
+pub struct RouteModelStore<'a> {
+    pool: &'a SqlitePool,
+}
+
+impl<'a> RouteModelStore<'a> {
+    pub fn new(pool: &'a SqlitePool) -> Self {
+        Self { pool }
+    }
+
+    pub async fn upsert(&self, rec: &RouteModelRecord) -> Result<(), StoreError> {
+        sqlx::query(
+            r#"
+            INSERT INTO route_models (id, run_id, project_id, model_blob, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                model_blob = excluded.model_blob,
+                created_at = excluded.created_at
+            "#,
+        )
+        .bind(&rec.id)
+        .bind(&rec.run_id)
+        .bind(&rec.project_id)
+        .bind(serde_json::to_string(&rec.model)?)
+        .bind(rec.created_at)
+        .execute(self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn get_by_run(&self, run_id: &str) -> Result<Option<RouteModelRecord>, StoreError> {
+        let row = sqlx::query(
+            r#"
+            SELECT id, run_id, project_id, model_blob, created_at
+            FROM route_models
+            WHERE run_id = ?
+            ORDER BY created_at DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(run_id)
+        .fetch_optional(self.pool)
+        .await?;
+        row.map(row_to_route_model).transpose()
+    }
+}
+
 fn launch_profile_readiness(input: &ProjectLaunchProfileInput) -> &'static str {
     if input.target_urls.is_empty() {
         "NeedsTarget"
@@ -733,6 +779,16 @@ fn row_to_vulnerability(
     })
 }
 
+fn row_to_route_model(row: sqlx::sqlite::SqliteRow) -> Result<RouteModelRecord, StoreError> {
+    Ok(RouteModelRecord {
+        id: row.try_get("id")?,
+        run_id: row.try_get("run_id")?,
+        project_id: row.try_get("project_id")?,
+        model: parse_json(row.try_get::<String, _>("model_blob")?)?,
+        created_at: row.try_get::<i64, _>("created_at")?,
+    })
+}
+
 fn parse_json<T: serde::de::DeserializeOwned>(raw: String) -> Result<T, StoreError> {
     Ok(serde_json::from_str(&raw)?)
 }
@@ -803,6 +859,44 @@ mod tests {
         assert_eq!(row.readiness, "Ready");
         assert!(row.start_steps.is_empty());
         assert!(row.health_checks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn route_model_roundtrips_for_run() {
+        let (_tmp, s) = fresh_store().await;
+        s.projects().create("p-1", "acme", None, None, None, 1_000).await.unwrap();
+        let mut run = sample_run("run-routes");
+        run.project_id = Some("p-1".to_string());
+        s.runs().insert(&run).await.unwrap();
+        let rec = RouteModelRecord {
+            id: "routes-run-routes".to_string(),
+            run_id: "run-routes".to_string(),
+            project_id: "p-1".to_string(),
+            model: nyctos_types::product::RouteModel {
+                backend_routes: vec![nyctos_types::product::RouteModelEndpoint {
+                    method: "GET".to_string(),
+                    path: "/api/accounts/:id".to_string(),
+                    repo: Some("web".to_string()),
+                    handler_file: Some("src/routes.ts".to_string()),
+                    line: Some(7),
+                    params: vec!["id".to_string()],
+                    middleware: vec!["requireAuth".to_string()],
+                    auth_checks: vec!["requireauth".to_string()],
+                    role_checks: Vec::new(),
+                    body_fields: Vec::new(),
+                    state_changing: false,
+                    confidence: 0.82,
+                    evidence: Vec::new(),
+                }],
+                ..nyctos_types::product::RouteModel::default()
+            },
+            created_at: 2_000,
+        };
+        s.route_models().upsert(&rec).await.unwrap();
+
+        let got = s.route_models().get_by_run("run-routes").await.unwrap().expect("route model");
+        assert_eq!(got.model.backend_routes[0].method, "GET");
+        assert_eq!(got.model.backend_routes[0].params, vec!["id"]);
     }
 
     #[tokio::test]

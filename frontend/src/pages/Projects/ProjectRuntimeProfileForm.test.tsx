@@ -65,9 +65,37 @@ describe("ProjectRuntimeProfileForm", () => {
       target_base_url: "http://localhost:3000",
       allowed_hosts: ["localhost", "127.0.0.1"],
       env_vars: [{ name: "NODE_ENV", value: "test", secret: false }],
+      auth_profiles: [],
       env_file: ".env.test",
       timeout_seconds: 300,
     });
+  });
+
+  it("serializes auth profile metadata without raw secrets", () => {
+    const draft = emptyRuntimeProfileDraft("http://localhost:3000");
+    draft.auth_profiles = [
+      {
+        role: " user_a ",
+        label: "",
+        login_url: " /login ",
+        username: " alice@example.test ",
+        password_env: " NYCTOS_USER_A_PASSWORD ",
+        cookie_env: "",
+        bearer_token_env: " NYCTOS_USER_A_TOKEN ",
+        post_login_assertion: "",
+      },
+    ];
+
+    expect(runtimeProfileFromDraft(draft)?.auth_profiles).toEqual([
+      {
+        role: "user_a",
+        login_url: "/login",
+        username: "alice@example.test",
+        password_env: "NYCTOS_USER_A_PASSWORD",
+        bearer_token_env: "NYCTOS_USER_A_TOKEN",
+        headers: [],
+      },
+    ]);
   });
 
   it("keeps launch commands optional and lets the operator add one", () => {

@@ -1961,6 +1961,7 @@ dependencies = [
  "nyctos-types",
  "nyctos-ui",
  "predicates",
+ "regex",
  "reqwest",
  "semver",
  "serde",
@@ -1972,6 +1973,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "webbrowser",
+ "which",
  "wiremock",
 ]
 

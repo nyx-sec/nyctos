@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -12,7 +12,7 @@ use nyctos_api::{
 };
 use nyctos_core::store::{
     finding_id_hash, NyxSignalRecord, PentestCandidateRecord, ProjectRecord, RepoOutcomeLabel,
-    RepoRecord, RunRecord, RunRepoOutcomeRecord, VerificationAttemptRecord,
+    RepoRecord, RouteModelRecord, RunRecord, RunRepoOutcomeRecord, VerificationAttemptRecord,
     VerifiedVulnerabilityRecord,
 };
 use nyctos_core::{
@@ -30,6 +30,8 @@ mod ai_pipeline;
 mod banner;
 mod cmd;
 mod launch;
+mod pentest_tools;
+mod route_model;
 mod scheduler;
 
 use banner::print_startup_banner;
@@ -845,8 +847,54 @@ async fn drive_scan(
         Some(format!("recorded {signal_count} signal(s)")),
     );
 
+    emit_phase(&events, &run.id, project.id.as_str(), "RouteModelStarted", true, None);
+    let route_workspaces: BTreeMap<String, WorkspaceHandle> =
+        workspaces_for_ai.iter().map(|(name, ws)| (name.clone(), ws.clone())).collect();
+    let route_model = route_model::extract_route_model(&route_workspaces);
+    let route_summary = route_model::route_model_summary(&route_model);
+    let route_record = RouteModelRecord {
+        id: format!("routes-{}", run.id),
+        run_id: run.id.clone(),
+        project_id: project.id.as_str().to_string(),
+        model: route_model.clone(),
+        created_at: now_epoch_ms(),
+    };
+    match store.route_models().upsert(&route_record).await {
+        Ok(()) => emit_phase(
+            &events,
+            &run.id,
+            project.id.as_str(),
+            "RouteModelStarted",
+            false,
+            Some(route_summary.clone()),
+        ),
+        Err(err) => {
+            tracing::warn!(error = %err, "failed to persist route model");
+            emit_phase(
+                &events,
+                &run.id,
+                project.id.as_str(),
+                "RouteModelStarted",
+                false,
+                Some(format!("route model extraction failed to persist: {err}")),
+            );
+        }
+    }
+
+    emit_phase(&events, &run.id, project.id.as_str(), "OptionalScannersStarted", true, None);
+    emit_phase(
+        &events,
+        &run.id,
+        project.id.as_str(),
+        "OptionalScannersStarted",
+        false,
+        Some(pentest_tools::scanner_availability(&config.run).join("; ")),
+    );
+
     emit_phase(&events, &run.id, project.id.as_str(), "AgentReviewStarted", true, None);
     let mut agent_review_notes: Vec<String> = Vec::new();
+    let auth_profiles = pentest_tools::configured_auth_profiles(project.runtime_profile.as_ref());
+    agent_review_notes.push(pentest_tools::auth_profiles_summary(&auth_profiles));
     if matches!(config.ai.runtime, nyctos_core::AiRuntime::None | nyctos_core::AiRuntime::LocalLlm)
     {
         agent_review_notes.push(format!(
@@ -1057,6 +1105,53 @@ async fn drive_scan(
         }
     }
 
+    emit_phase(&events, &run.id, project.id.as_str(), "AiAttackPlanningStarted", true, None);
+    let mut attack_plan_context: Option<String> = None;
+    match ai_pipeline::run_attack_planning_pass(
+        &config.ai,
+        store,
+        &secrets,
+        &bundle,
+        &workspaces_for_ai,
+        &route_model,
+        &auth_profiles,
+        &live_target_urls,
+        events.clone(),
+    )
+    .await
+    {
+        Ok(report) => {
+            attack_plan_context = report.plan_context.clone();
+            agent_review_notes.push(format!(
+                "attack planning: {} planned, {} skipped, {} failed",
+                report.candidates_planned, report.skipped, report.failed
+            ));
+            emit_phase(
+                &events,
+                &run.id,
+                project.id.as_str(),
+                "AiAttackPlanningStarted",
+                false,
+                Some(format!(
+                    "{} candidate(s) planned, {} skipped, {} failed",
+                    report.candidates_planned, report.skipped, report.failed
+                )),
+            );
+        }
+        Err(err) => {
+            agent_review_notes.push(format!("attack planning failed: {err}"));
+            tracing::warn!(error = %err, "attack planning pass failed");
+            emit_phase(
+                &events,
+                &run.id,
+                project.id.as_str(),
+                "AiAttackPlanningStarted",
+                false,
+                Some(format!("attack planning failed: {err}")),
+            );
+        }
+    }
+
     // Static candidates need an executable HTTP plan before the live
     // verifier can touch the already-running app. This pass is the
     // bridge from "Nyx found a risky source location" to "try this
@@ -1068,6 +1163,9 @@ async fn drive_scan(
         &bundle,
         &workspaces_for_ai,
         &live_target_urls,
+        Some(&route_model),
+        &auth_profiles,
+        attack_plan_context.as_deref(),
         events.clone(),
     )
     .await
@@ -1155,6 +1253,8 @@ async fn drive_scan(
             project.id.as_str(),
             &env.environment_run_id,
             &live_target_urls,
+            &config.run,
+            &auth_profiles,
         )
         .await
         {
@@ -1184,6 +1284,22 @@ async fn drive_scan(
         verification_notes
             .push("candidate verifier skipped: no running app environment".to_string());
     }
+    emit_phase(&events, &run.id, project.id.as_str(), "BrowserVerificationStarted", true, None);
+    let browser_msg = if config.run.browser_checks_enabled {
+        "browser verification skipped unless a candidate contains a browser plan and Playwright is available"
+            .to_string()
+    } else {
+        "browser verification skipped: disabled by run config".to_string()
+    };
+    emit_phase(
+        &events,
+        &run.id,
+        project.id.as_str(),
+        "BrowserVerificationStarted",
+        false,
+        Some(browser_msg.clone()),
+    );
+    verification_notes.push(browser_msg);
     emit_phase(
         &events,
         &run.id,
@@ -1848,6 +1964,8 @@ async fn verify_pentest_candidates(
     project_id: &str,
     environment_run_id: &str,
     target_urls: &[String],
+    run_config: &nyctos_core::RunConfig,
+    auth_profiles: &[nyctos_types::project::ProjectAuthProfile],
 ) -> anyhow::Result<CandidateVerificationReport> {
     let candidates = store.pentest_candidates().list_by_run(run_id).await?;
     let mut report = CandidateVerificationReport::default();
@@ -1855,7 +1973,13 @@ async fn verify_pentest_candidates(
         candidates.into_iter().filter(|c| matches!(c.status.as_str(), "Proposed" | "NeedsLiveTest"))
     {
         let started = now_epoch_ms();
-        let outcome = execute_candidate_test_plan(&candidate, target_urls).await;
+        let options = pentest_tools::LiveVerifierOptions {
+            target_urls: target_urls.to_vec(),
+            auth_profiles: auth_profiles.to_vec(),
+            allow_state_changing: run_config.allow_state_changing_live_probes,
+            browser_checks_enabled: run_config.browser_checks_enabled,
+        };
+        let outcome = execute_candidate_test_plan(&candidate, &options).await;
         let finished = now_epoch_ms();
         let (status, request, response, oracle, error) = match outcome {
             Ok(VerificationOutcome::Confirmed { request, response, oracle }) => {
@@ -1866,9 +1990,9 @@ async fn verify_pentest_candidates(
                 report.rejected += 1;
                 ("Rejected", Some(request), Some(response), Some(oracle), None)
             }
-            Ok(VerificationOutcome::Inconclusive { reason }) => {
+            Ok(VerificationOutcome::Inconclusive { reason, trace }) => {
                 report.inconclusive += 1;
-                ("Inconclusive", None, None, None, Some(reason))
+                ("Inconclusive", trace, None, None, Some(reason))
             }
             Err(err) => {
                 report.errored += 1;
@@ -1926,272 +2050,24 @@ async fn verify_pentest_candidates(
 enum VerificationOutcome {
     Confirmed { request: serde_json::Value, response: serde_json::Value, oracle: serde_json::Value },
     Rejected { request: serde_json::Value, response: serde_json::Value, oracle: serde_json::Value },
-    Inconclusive { reason: String },
+    Inconclusive { reason: String, trace: Option<serde_json::Value> },
 }
 
 async fn execute_candidate_test_plan(
     candidate: &PentestCandidateRecord,
-    target_urls: &[String],
+    options: &pentest_tools::LiveVerifierOptions,
 ) -> anyhow::Result<VerificationOutcome> {
-    let Ok(plan) = serde_json::from_str::<serde_json::Value>(&candidate.test_plan) else {
-        return Ok(VerificationOutcome::Inconclusive {
-            reason: "candidate has no executable structured live test plan".to_string(),
-        });
-    };
-    let plan = plan.get("plan").unwrap_or(&plan);
-    if let Some(reason) = plan
-        .get("no_plan_reason")
-        .or_else(|| plan.get("inconclusive_reason"))
-        .and_then(|v| v.as_str())
-    {
-        return Ok(VerificationOutcome::Inconclusive {
-            reason: format!("candidate has no executable structured live test plan: {reason}"),
-        });
-    }
-    let Some(plan_obj) = plan.as_object() else {
-        return Ok(VerificationOutcome::Inconclusive {
-            reason: "candidate live test plan is not a JSON object".to_string(),
-        });
-    };
-    if !candidate_plan_has_oracle(plan_obj) {
-        return Ok(VerificationOutcome::Inconclusive {
-            reason: "structured live test plan has no oracle".to_string(),
-        });
-    }
-
-    let method_raw = plan.get("method").and_then(|v| v.as_str()).unwrap_or("GET").trim();
-    let method = match reqwest::Method::from_bytes(method_raw.as_bytes()) {
-        Ok(method) => method,
-        Err(_) => {
-            return Ok(VerificationOutcome::Inconclusive {
-                reason: format!("verification method `{method_raw}` is invalid"),
-            });
+    Ok(match pentest_tools::execute_live_test_plan(&candidate.test_plan, options).await? {
+        pentest_tools::ToolVerificationOutcome::Confirmed { request, response, oracle } => {
+            VerificationOutcome::Confirmed { request, response, oracle }
         }
-    };
-    if !matches!(method.as_str(), "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS")
-    {
-        return Ok(VerificationOutcome::Inconclusive {
-            reason: format!("verification method `{method_raw}` is not supported"),
-        });
-    }
-
-    let url_raw = plan
-        .get("url")
-        .and_then(|v| v.as_str())
-        .or_else(|| plan.get("path").and_then(|v| v.as_str()));
-    let url = match resolve_candidate_plan_url(url_raw, target_urls) {
-        Ok(url) => url,
-        Err(reason) => return Ok(VerificationOutcome::Inconclusive { reason }),
-    };
-    if !target_urls.is_empty()
-        && !target_urls.iter().any(|target| candidate_url_under_target(&url, target))
-    {
-        return Ok(VerificationOutcome::Inconclusive {
-            reason: format!("candidate URL `{url}` is outside configured target URLs"),
-        });
-    }
-
-    let expect_status = expected_statuses(plan);
-    let status_range = plan.get("status_range").and_then(|v| v.as_str()).map(str::to_string);
-    let body_contains = string_or_string_array(plan.get("body_contains"));
-    let body_not_contains = string_or_string_array(plan.get("body_not_contains"));
-    let header_contains = header_contains_expectations(plan.get("header_contains"));
-    let request_headers = request_headers_from_plan(plan.get("headers"))?;
-    let request_body = plan.get("body").and_then(|v| v.as_str()).map(str::to_string);
-    let json_body = plan.get("json").filter(|v| !v.is_null()).cloned();
-
-    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(10)).build()?;
-    let mut request_builder = client.request(method.clone(), &url);
-    for (name, value) in &request_headers {
-        request_builder = request_builder.header(name, value);
-    }
-    if let Some(json_body) = &json_body {
-        request_builder = request_builder.json(json_body);
-    } else if let Some(request_body) = &request_body {
-        request_builder = request_builder.body(request_body.clone());
-    }
-    let resp = request_builder.send().await?;
-    let status = resp.status().as_u16();
-    let headers = resp.headers().clone();
-    let body = resp.text().await.unwrap_or_default();
-    let status_ok = if expect_status.is_empty() {
-        status_range
-            .as_deref()
-            .map(|range| status_matches_range(status, range))
-            .unwrap_or((200..400).contains(&status))
-    } else {
-        expect_status.iter().any(|s| *s == status)
-    };
-    let body_contains_ok = body_contains.iter().all(|needle| body.contains(needle));
-    let body_not_contains_ok = body_not_contains.iter().all(|needle| !body.contains(needle));
-    let header_contains_ok = header_contains
-        .iter()
-        .all(|(name, needle)| response_header_contains(&headers, name, needle));
-    let request = serde_json::json!({
-        "method": method.as_str(),
-        "url": url,
-        "headers": request_headers_json(&request_headers),
-        "body_preview": request_body_preview(request_body.as_deref(), json_body.as_ref()),
-    });
-    let response = serde_json::json!({
-        "status": status,
-        "headers": response_headers_json(&headers),
-        "body_preview": body.chars().take(512).collect::<String>(),
-    });
-    let oracle = serde_json::json!({
-        "expect_status": expect_status,
-        "status_range": status_range,
-        "body_contains": body_contains,
-        "body_not_contains": body_not_contains,
-        "header_contains": header_contains,
-        "status_ok": status_ok,
-        "body_contains_ok": body_contains_ok,
-        "body_not_contains_ok": body_not_contains_ok,
-        "header_contains_ok": header_contains_ok,
-    });
-    if status_ok && body_contains_ok && body_not_contains_ok && header_contains_ok {
-        Ok(VerificationOutcome::Confirmed { request, response, oracle })
-    } else {
-        Ok(VerificationOutcome::Rejected { request, response, oracle })
-    }
-}
-
-fn resolve_candidate_plan_url(raw: Option<&str>, target_urls: &[String]) -> Result<String, String> {
-    let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
-        return target_urls
-            .first()
-            .cloned()
-            .ok_or_else(|| "no target URL available for live verification".to_string());
-    };
-    if raw.starts_with("http://") || raw.starts_with("https://") {
-        return Ok(raw.to_string());
-    }
-    let Some(base) = target_urls.first() else {
-        return Err(
-            "relative live test plan URL cannot be resolved without a target URL".to_string()
-        );
-    };
-    let base = base.trim_end_matches('/');
-    if raw.starts_with('/') {
-        Ok(format!("{base}{raw}"))
-    } else {
-        Ok(format!("{base}/{raw}"))
-    }
-}
-
-fn candidate_url_under_target(url: &str, target: &str) -> bool {
-    let target = target.trim_end_matches('/');
-    url == target
-        || url.starts_with(&format!("{target}/"))
-        || url.starts_with(&format!("{target}?"))
-}
-
-fn candidate_plan_has_oracle(obj: &serde_json::Map<String, serde_json::Value>) -> bool {
-    ["expect_status", "status_range", "body_contains", "body_not_contains", "header_contains"]
-        .iter()
-        .any(|key| obj.get(*key).is_some_and(|v| !v.is_null()))
-}
-
-fn expected_statuses(plan: &serde_json::Value) -> Vec<u16> {
-    match plan.get("expect_status") {
-        Some(serde_json::Value::Number(n)) => {
-            n.as_u64().and_then(|v| u16::try_from(v).ok()).into_iter().collect()
+        pentest_tools::ToolVerificationOutcome::Rejected { request, response, oracle } => {
+            VerificationOutcome::Rejected { request, response, oracle }
         }
-        Some(serde_json::Value::String(s)) => s.trim().parse::<u16>().ok().into_iter().collect(),
-        Some(serde_json::Value::Array(items)) => items
-            .iter()
-            .filter_map(|v| match v {
-                serde_json::Value::Number(n) => n.as_u64().and_then(|v| u16::try_from(v).ok()),
-                serde_json::Value::String(s) => s.trim().parse::<u16>().ok(),
-                _ => None,
-            })
-            .collect(),
-        _ => Vec::new(),
-    }
-}
-
-fn status_matches_range(status: u16, range: &str) -> bool {
-    match range.trim().to_ascii_lowercase().as_str() {
-        "1xx" => (100..200).contains(&status),
-        "2xx" => (200..300).contains(&status),
-        "3xx" => (300..400).contains(&status),
-        "4xx" => (400..500).contains(&status),
-        "5xx" => (500..600).contains(&status),
-        _ => false,
-    }
-}
-
-fn string_or_string_array(value: Option<&serde_json::Value>) -> Vec<String> {
-    match value {
-        Some(serde_json::Value::String(s)) => vec![s.clone()],
-        Some(serde_json::Value::Array(items)) => {
-            items.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()
+        pentest_tools::ToolVerificationOutcome::Inconclusive { reason, trace } => {
+            VerificationOutcome::Inconclusive { reason, trace }
         }
-        _ => Vec::new(),
-    }
-}
-
-fn header_contains_expectations(value: Option<&serde_json::Value>) -> Vec<(String, String)> {
-    let Some(obj) = value.and_then(|v| v.as_object()) else {
-        return Vec::new();
-    };
-    obj.iter()
-        .filter_map(|(name, needle)| needle.as_str().map(|s| (name.clone(), s.to_string())))
-        .collect()
-}
-
-fn request_headers_from_plan(
-    value: Option<&serde_json::Value>,
-) -> anyhow::Result<Vec<(String, String)>> {
-    let Some(obj) = value.and_then(|v| v.as_object()) else {
-        return Ok(Vec::new());
-    };
-    let mut out = Vec::with_capacity(obj.len());
-    for (name, value) in obj {
-        let Some(value) = value.as_str() else {
-            anyhow::bail!("request header `{name}` value must be a string");
-        };
-        out.push((name.clone(), value.to_string()));
-    }
-    Ok(out)
-}
-
-fn response_header_contains(
-    headers: &reqwest::header::HeaderMap,
-    name: &str,
-    needle: &str,
-) -> bool {
-    headers.get(name).and_then(|v| v.to_str().ok()).map(|v| v.contains(needle)).unwrap_or(false)
-}
-
-fn request_headers_json(headers: &[(String, String)]) -> serde_json::Value {
-    let mut obj = serde_json::Map::new();
-    for (name, value) in headers {
-        obj.insert(name.clone(), serde_json::Value::String(value.clone()));
-    }
-    serde_json::Value::Object(obj)
-}
-
-fn response_headers_json(headers: &reqwest::header::HeaderMap) -> serde_json::Value {
-    let mut obj = serde_json::Map::new();
-    for (name, value) in headers {
-        if let Ok(value) = value.to_str() {
-            obj.insert(name.as_str().to_string(), serde_json::Value::String(value.to_string()));
-        }
-    }
-    serde_json::Value::Object(obj)
-}
-
-fn request_body_preview(
-    raw_body: Option<&str>,
-    json_body: Option<&serde_json::Value>,
-) -> Option<String> {
-    let body = match (json_body, raw_body) {
-        (Some(json), _) => serde_json::to_string(json).ok()?,
-        (None, Some(raw)) => raw.to_string(),
-        (None, None) => return None,
-    };
-    Some(body.chars().take(512).collect())
+    })
 }
 
 fn vulnerability_from_candidate(

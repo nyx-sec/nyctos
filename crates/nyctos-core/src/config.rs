@@ -497,6 +497,29 @@ pub struct RunConfig {
     /// the resulting `VerifyResult`. Adds ~2× cost per verify; default
     /// is `false` so the verifier stays fast on the happy path.
     pub replay_stable_check: bool,
+    /// Allow live verification plans to send methods that are likely to
+    /// mutate target state (`POST`, `PUT`, `PATCH`, `DELETE`). Defaults
+    /// to false so Nyctos only runs safe probes unless the operator
+    /// explicitly opts in for their local app.
+    #[serde(default)]
+    pub allow_state_changing_live_probes: bool,
+    /// Opt in to browser-driven checks when a local Playwright runtime is
+    /// available. When false, browser plans are recorded as skipped with
+    /// an explicit reason.
+    #[serde(default)]
+    pub browser_checks_enabled: bool,
+    /// Optional passive ZAP baseline orchestration. The binary is only
+    /// used when present on PATH; findings become candidates.
+    #[serde(default)]
+    pub enable_zap_baseline: bool,
+    /// Optional Nuclei orchestration. The binary is only used when
+    /// present on PATH; findings become candidates.
+    #[serde(default)]
+    pub enable_nuclei: bool,
+    /// Aggressive external tooling is off unless this explicit gate is
+    /// true. Nyctos does not run sqlmap by default.
+    #[serde(default)]
+    pub enable_aggressive_sqlmap: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -749,7 +772,7 @@ mod tests {
                 binary_path: Some(PathBuf::from("/opt/nyx/bin/nyx")),
                 min_version: Some("0.2.0".to_string()),
             },
-            run: RunConfig { replay_stable_check: true },
+            run: RunConfig { replay_stable_check: true, ..RunConfig::default() },
             env: EnvConfig { pull_policy: Some(EnvPullPolicy::Never) },
             projects: vec![ProjectConfig {
                 name: "acme-app".to_string(),

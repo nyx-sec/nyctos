@@ -91,6 +91,7 @@ pub fn build_router(state: ServerState) -> Router {
         .route("/api/v1/runs/{id}", get(get_run))
         .route("/api/v1/runs/{id}/findings", get(findings_for_run))
         .route("/api/v1/runs/{id}/signals", get(signals_for_run))
+        .route("/api/v1/runs/{id}/route-model", get(route_model_for_run))
         .route("/api/v1/runs/{id}/environment-runs", get(environment_runs_for_run))
         .route("/api/v1/runs/{id}/vulnerabilities", get(run_vulnerabilities))
         .route("/api/v1/runs/{id}/summary", get(run_summary))
@@ -1545,6 +1546,19 @@ async fn signals_for_run(
 ) -> Result<Json<Vec<nyctos_types::product::NyxSignalRecord>>, ApiError> {
     require_run(&s, &id).await?;
     Ok(Json(s.store.nyx_signals().list_by_run(&id, q.meaningful_only).await?))
+}
+
+async fn route_model_for_run(
+    State(s): State<ServerState>,
+    Path(id): Path<String>,
+) -> Result<Json<nyctos_types::product::RouteModelRecord>, ApiError> {
+    require_run(&s, &id).await?;
+    s.store
+        .route_models()
+        .get_by_run(&id)
+        .await?
+        .map(Json)
+        .ok_or_else(|| ApiError::NotFound(format!("route model for run `{id}` not found")))
 }
 
 async fn run_vulnerabilities(

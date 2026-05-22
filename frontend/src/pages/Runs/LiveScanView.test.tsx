@@ -296,4 +296,43 @@ describe("LiveScanView", () => {
       ),
     ).toBeInTheDocument();
   });
+
+  it("renders new live pentest phases and skipped reasons", async () => {
+    render(wrap(<LiveScanView />));
+    await screen.findByText(/Run run-1/);
+    const ws = FakeWebSocket.instances[0];
+
+    act(() =>
+      ws.emit({
+        kind: "Run",
+        data: {
+          kind: "PhaseStarted",
+          run_id: "run-1",
+          project_id: "p-1",
+          phase: "RouteModelStarted",
+          started_at_ms: 1200,
+        },
+      }),
+    );
+    expect(await screen.findByText("Route/auth modeling")).toBeInTheDocument();
+    expect(screen.getByText("running")).toBeInTheDocument();
+
+    act(() =>
+      ws.emit({
+        kind: "Run",
+        data: {
+          kind: "PhaseFinished",
+          run_id: "run-1",
+          project_id: "p-1",
+          phase: "BrowserVerificationStarted",
+          status: "Finished",
+          message: "browser verification skipped: disabled by run config",
+          finished_at_ms: 2200,
+        },
+      }),
+    );
+
+    expect(await screen.findByText("Browser verification")).toBeInTheDocument();
+    expect(screen.getByText("browser verification skipped: disabled by run config")).toBeInTheDocument();
+  });
 });

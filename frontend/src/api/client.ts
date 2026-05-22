@@ -28,6 +28,8 @@ import type {
   NyxSignalRecord,
   PatchProjectRequest,
   PatchRepoRequest,
+  ProjectAuthHeaderRef,
+  ProjectAuthProfile,
   ProjectLaunchProfile,
   ProjectLaunchProfileInput,
   ProjectRecord,
@@ -39,6 +41,7 @@ import type {
   ReplayEvent,
   ReplayEventKind,
   RepoRecord,
+  RouteModelRecord,
   RunFindingsResponse,
   RunRecord,
   SetupRequest,
@@ -70,6 +73,8 @@ export type {
   NyxSignalRecord,
   PatchProjectRequest,
   PatchRepoRequest,
+  ProjectAuthHeaderRef,
+  ProjectAuthProfile,
   ProjectLaunchProfile,
   ProjectLaunchProfileInput,
   ProjectRecord,
@@ -81,6 +86,7 @@ export type {
   ReplayEvent,
   ReplayEventKind,
   RepoRecord,
+  RouteModelRecord,
   RunFindingsResponse,
   RunRecord,
   SetupRequest,
@@ -213,6 +219,7 @@ export const qk = {
   run: (id: string) => ["runs", id] as const,
   runEnvironment: (id: string) => ["runs", id, "environment-runs"] as const,
   runVulnerabilities: (id: string) => ["runs", id, "vulnerabilities"] as const,
+  runRouteModel: (id: string) => ["runs", id, "route-model"] as const,
   vulnerabilities: () => ["vulnerabilities"] as const,
   projectVulnerabilities: (id: string) => ["projects", id, "vulnerabilities"] as const,
   runSignals: (id: string, meaningfulOnly: boolean) =>
@@ -525,6 +532,14 @@ export function useRunVulnerabilities(id: string | undefined) {
     queryKey: id ? qk.runVulnerabilities(id) : ["runs", "_disabled", "vulnerabilities"],
     queryFn: () =>
       request<VerifiedVulnerabilityRecord[]>(`/runs/${encodeURIComponent(id!)}/vulnerabilities`),
+    enabled: Boolean(id),
+  });
+}
+
+export function useRunRouteModel(id: string | undefined) {
+  return useQuery({
+    queryKey: id ? qk.runRouteModel(id) : ["runs", "_disabled", "route-model"],
+    queryFn: () => request<RouteModelRecord>(`/runs/${encodeURIComponent(id!)}/route-model`),
     enabled: Boolean(id),
   });
 }

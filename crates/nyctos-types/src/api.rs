@@ -61,7 +61,7 @@ pub struct SetupStatusResponse {
     /// Configured per-run AI budget cap in USD micros. `None` means
     /// runs are uncapped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[ts(optional, type = "number | null")]
     pub default_run_budget_usd_micros: Option<i64>,
     /// Currently-configured sandbox backend (matches `[sandbox].backend`).
     pub sandbox_backend: String,
@@ -114,7 +114,7 @@ pub struct SetupRequest {
     /// Optional per-run AI budget cap in USD micros. `None` disables
     /// the cap; a positive value enables it.
     #[serde(default)]
-    #[ts(optional)]
+    #[ts(optional, type = "number | null")]
     pub default_run_budget_usd_micros: Option<i64>,
     /// Sandbox backend: `auto` | `process` | `birdcage` | `libkrun`
     /// | `firecracker` | `docker`.

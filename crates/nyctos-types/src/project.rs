@@ -81,6 +81,56 @@ pub struct ProjectRuntimeEnvVar {
     pub secret: bool,
 }
 
+/// Secret-safe authentication profile metadata for live testing.
+///
+/// Profiles intentionally carry references to secret material rather
+/// than raw passwords, cookies, or bearer tokens. The verifier resolves
+/// `*_env` fields from the daemon environment at execution time and
+/// persists only the role name plus redacted request evidence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ProjectAuthHeaderRef {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub value_env: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub value_secret_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ProjectAuthProfile {
+    /// Stable role name used by live plans, e.g. `anonymous`, `user`,
+    /// `admin`, `user_a`, or `user_b`.
+    pub role: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub login_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub username: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub password_env: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub password_secret_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub cookie_env: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub bearer_token_env: Option<String>,
+    #[serde(default)]
+    pub headers: Vec<ProjectAuthHeaderRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub post_login_assertion: Option<String>,
+}
+
 /// Project-level build/run profile for launching the full local app before
 /// pentest exploration and live verification. Stored in SQLite as JSON for
 /// now, but kept as a typed API contract so the later normalized launch
@@ -104,6 +154,8 @@ pub struct ProjectRuntimeProfile {
     pub allowed_hosts: Vec<String>,
     #[serde(default)]
     pub env_vars: Vec<ProjectRuntimeEnvVar>,
+    #[serde(default)]
+    pub auth_profiles: Vec<ProjectAuthProfile>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub env_file: Option<String>,

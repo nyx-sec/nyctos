@@ -3,6 +3,7 @@ import type {
   LaunchEnvRef,
   LaunchHealthCheck,
   LaunchStep,
+  ProjectAuthProfile,
   ProjectLaunchProfile,
   ProjectLaunchProfileInput,
   ProjectRuntimeCommand,
@@ -34,6 +35,17 @@ export interface RuntimeEnvDraft {
   secret: boolean;
 }
 
+export interface AuthProfileDraft {
+  role: string;
+  label: string;
+  login_url: string;
+  username: string;
+  password_env: string;
+  cookie_env: string;
+  bearer_token_env: string;
+  post_login_assertion: string;
+}
+
 export interface RuntimeProfileDraft {
   mode: LaunchMode;
   target_base_url: string;
@@ -46,6 +58,7 @@ export interface RuntimeProfileDraft {
   build_commands: RuntimeCommandDraft[];
   start_commands: RuntimeCommandDraft[];
   env_vars: RuntimeEnvDraft[];
+  auth_profiles: AuthProfileDraft[];
 }
 
 const LAUNCH_MODES: Array<{ value: LaunchMode; label: string }> = [
@@ -70,6 +83,17 @@ const blankCommand = (): RuntimeCommandDraft => ({
 
 const blankEnv = (): RuntimeEnvDraft => ({ name: "", value: "", secret: false });
 
+const blankAuthProfile = (): AuthProfileDraft => ({
+  role: "",
+  label: "",
+  login_url: "",
+  username: "",
+  password_env: "",
+  cookie_env: "",
+  bearer_token_env: "",
+  post_login_assertion: "",
+});
+
 export function emptyRuntimeProfileDraft(targetBaseUrl = ""): RuntimeProfileDraft {
   return {
     mode: "already-running",
@@ -83,6 +107,7 @@ export function emptyRuntimeProfileDraft(targetBaseUrl = ""): RuntimeProfileDraf
     build_commands: [],
     start_commands: [],
     env_vars: [],
+    auth_profiles: [],
   };
 }
 
@@ -106,6 +131,7 @@ export function runtimeProfileToDraft(
     build_commands: commandDrafts(profile.build_commands ?? []),
     start_commands: commandDrafts(profile.start_commands ?? []),
     env_vars: envDrafts(profile.env_vars ?? []),
+    auth_profiles: authDrafts(profile.auth_profiles ?? []),
   };
 }
 
@@ -118,6 +144,7 @@ export function runtimeProfileFromDraft(
     draft.readiness_kind === "command" ? commandFromDraft(draft.health_check_command) : undefined;
   const allowed_hosts = splitList(draft.allowed_hosts);
   const env_vars = draft.env_vars.map(envFromDraft).filter(isDefined);
+  const auth_profiles = draft.auth_profiles.map(authFromDraft).filter(isDefined);
   const target_base_url = trimOrUndefined(draft.target_base_url);
   const health_check_url = runtimeHealthUrlFromDraft(draft, target_base_url);
   const env_file = trimOrUndefined(draft.env_file);
@@ -131,6 +158,7 @@ export function runtimeProfileFromDraft(
     Boolean(health_check_url) ||
     allowed_hosts.length > 0 ||
     env_vars.length > 0 ||
+    auth_profiles.length > 0 ||
     Boolean(env_file) ||
     timeout_seconds !== undefined;
 
@@ -141,6 +169,7 @@ export function runtimeProfileFromDraft(
     start_commands,
     allowed_hosts,
     env_vars,
+    auth_profiles,
   };
   if (target_base_url) profile.target_base_url = target_base_url;
   if (health_check_url) profile.health_check_url = health_check_url;
@@ -165,6 +194,13 @@ export function runtimeProfileDraftError(draft: RuntimeProfileDraft): string | n
   ];
   if (timeoutFields.some(isInvalidPositiveInteger)) {
     return "Timeouts must be whole seconds greater than zero";
+  }
+  const roles = draft.auth_profiles.map((p) => p.role.trim()).filter(Boolean);
+  if (new Set(roles).size !== roles.length) {
+    return "Auth profile roles must be unique";
+  }
+  if (draft.auth_profiles.some((p) => p.role.trim().toLowerCase() === "anonymous")) {
+    return "Anonymous is built in; use a named role for auth profiles";
   }
   return null;
 }
@@ -199,6 +235,7 @@ export function launchProfileToDraft(
     build_commands: launchStepDrafts(profile.build_steps),
     start_commands: launchStepDrafts(profile.start_steps),
     env_vars: envVars,
+    auth_profiles: [],
   };
 }
 
@@ -257,6 +294,7 @@ export function ProjectRuntimeProfileForm({ value, onChange }: Props) {
   const hasEnvironment =
     Boolean(trimOrUndefined(value.env_file)) ||
     value.env_vars.some((row) => Boolean(trimOrUndefined(row.name)));
+  const hasAuthProfiles = value.auth_profiles.some((row) => Boolean(trimOrUndefined(row.role)));
 
   return (
     <div className="runtime-profile-form">
@@ -365,6 +403,14 @@ export function ProjectRuntimeProfileForm({ value, onChange }: Props) {
         <EnvRows
           rows={value.env_vars}
           onChange={(rows) => onChange({ ...value, env_vars: rows })}
+        />
+      </details>
+
+      <details className="runtime-profile-details" open={hasAuthProfiles}>
+        <summary>Auth profiles</summary>
+        <AuthProfileRows
+          rows={value.auth_profiles}
+          onChange={(rows) => onChange({ ...value, auth_profiles: rows })}
         />
       </details>
     </div>
@@ -660,6 +706,117 @@ function EnvRows({
   );
 }
 
+function AuthProfileRows({
+  rows,
+  onChange,
+}: {
+  rows: AuthProfileDraft[];
+  onChange: (rows: AuthProfileDraft[]) => void;
+}) {
+  return (
+    <div className="runtime-profile-list">
+      <div className="runtime-profile-section__header">
+        <h4>Roles</h4>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() => onChange([...rows, blankAuthProfile()])}
+        >
+          Add role
+        </Button>
+      </div>
+      {rows.map((row, index) => (
+        <div className="runtime-auth-row" key={`runtime-auth-${index}`}>
+          <div className="setup-field">
+            <label htmlFor={`runtime-auth-role-${index}`}>Role</label>
+            <input
+              id={`runtime-auth-role-${index}`}
+              type="text"
+              autoComplete="off"
+              placeholder="user_a"
+              value={row.role}
+              onChange={(e) => onChange(replaceAt(rows, index, { ...row, role: e.target.value }))}
+            />
+          </div>
+          <div className="setup-field">
+            <label htmlFor={`runtime-auth-login-${index}`}>Login URL</label>
+            <input
+              id={`runtime-auth-login-${index}`}
+              type="text"
+              autoComplete="off"
+              placeholder="/login"
+              value={row.login_url}
+              onChange={(e) =>
+                onChange(replaceAt(rows, index, { ...row, login_url: e.target.value }))
+              }
+            />
+          </div>
+          <div className="setup-field">
+            <label htmlFor={`runtime-auth-username-${index}`}>Username</label>
+            <input
+              id={`runtime-auth-username-${index}`}
+              type="text"
+              autoComplete="off"
+              placeholder="alice@example.test"
+              value={row.username}
+              onChange={(e) =>
+                onChange(replaceAt(rows, index, { ...row, username: e.target.value }))
+              }
+            />
+          </div>
+          <div className="setup-field">
+            <label htmlFor={`runtime-auth-password-env-${index}`}>Password env</label>
+            <input
+              id={`runtime-auth-password-env-${index}`}
+              type="text"
+              autoComplete="off"
+              placeholder="NYCTOS_USER_A_PASSWORD"
+              value={row.password_env}
+              onChange={(e) =>
+                onChange(replaceAt(rows, index, { ...row, password_env: e.target.value }))
+              }
+            />
+          </div>
+          <div className="setup-field">
+            <label htmlFor={`runtime-auth-cookie-env-${index}`}>Cookie env</label>
+            <input
+              id={`runtime-auth-cookie-env-${index}`}
+              type="text"
+              autoComplete="off"
+              placeholder="NYCTOS_USER_A_COOKIE"
+              value={row.cookie_env}
+              onChange={(e) =>
+                onChange(replaceAt(rows, index, { ...row, cookie_env: e.target.value }))
+              }
+            />
+          </div>
+          <div className="setup-field">
+            <label htmlFor={`runtime-auth-bearer-env-${index}`}>Bearer env</label>
+            <input
+              id={`runtime-auth-bearer-env-${index}`}
+              type="text"
+              autoComplete="off"
+              placeholder="NYCTOS_USER_A_TOKEN"
+              value={row.bearer_token_env}
+              onChange={(e) =>
+                onChange(replaceAt(rows, index, { ...row, bearer_token_env: e.target.value }))
+              }
+            />
+          </div>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="runtime-profile-row__remove"
+            onClick={() => onChange(rows.filter((_, i) => i !== index))}
+          >
+            Remove
+          </Button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function commandDrafts(commands: ProjectRuntimeCommand[]): RuntimeCommandDraft[] {
   return commands.map(commandToDraft);
 }
@@ -669,6 +826,19 @@ function envDrafts(vars: ProjectRuntimeEnvVar[]): RuntimeEnvDraft[] {
     name: v.name,
     value: v.value,
     secret: v.secret,
+  }));
+}
+
+function authDrafts(profiles: ProjectAuthProfile[]): AuthProfileDraft[] {
+  return profiles.map((profile) => ({
+    role: profile.role,
+    label: profile.label ?? "",
+    login_url: profile.login_url ?? "",
+    username: profile.username ?? "",
+    password_env: profile.password_env ?? "",
+    cookie_env: profile.cookie_env ?? "",
+    bearer_token_env: profile.bearer_token_env ?? "",
+    post_login_assertion: profile.post_login_assertion ?? "",
   }));
 }
 
@@ -730,6 +900,27 @@ function envFromDraft(draft: RuntimeEnvDraft): ProjectRuntimeEnvVar | undefined 
     value: draft.value.trim(),
     secret: draft.secret,
   };
+}
+
+function authFromDraft(draft: AuthProfileDraft): ProjectAuthProfile | undefined {
+  const role = trimOrUndefined(draft.role);
+  if (!role) return undefined;
+  const out: ProjectAuthProfile = { role, headers: [] };
+  const label = trimOrUndefined(draft.label);
+  const login_url = trimOrUndefined(draft.login_url);
+  const username = trimOrUndefined(draft.username);
+  const password_env = trimOrUndefined(draft.password_env);
+  const cookie_env = trimOrUndefined(draft.cookie_env);
+  const bearer_token_env = trimOrUndefined(draft.bearer_token_env);
+  const post_login_assertion = trimOrUndefined(draft.post_login_assertion);
+  if (label) out.label = label;
+  if (login_url) out.login_url = login_url;
+  if (username) out.username = username;
+  if (password_env) out.password_env = password_env;
+  if (cookie_env) out.cookie_env = cookie_env;
+  if (bearer_token_env) out.bearer_token_env = bearer_token_env;
+  if (post_login_assertion) out.post_login_assertion = post_login_assertion;
+  return out;
 }
 
 function launchHealthChecksFromDraft(

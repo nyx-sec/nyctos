@@ -107,7 +107,14 @@ cache: CacheStats | null,
  */
 cost_usd_micros: number, };
 
-export type AgentTask = { prompt_version: string, task_id: string, system: string, objective: string, tools: Array<string>, max_turns: number, };
+export type AgentTask = { prompt_version: string, task_id: string, system: string, objective: string, tools: Array<string>, 
+/**
+ * Optional working directory for CLI-backed agent loops. When set,
+ * adapters launch the agent from this directory so native file,
+ * search, and shell tools operate on the target repository rather
+ * than the daemon's process cwd.
+ */
+working_directory?: string, max_turns: number, };
 
 export type ExtractedAgentResult = { "kind": "PayloadFound", rule_id: string, body: string, } | { "kind": "SpecFound", capability: string, spec: string, } | { "kind": "ChainsRanked", chain_ids: Array<string>, rationale: string, } | { "kind": "ExplorationFinding", path: string, line: number | null, cap: string, rationale: string, endpoint: string | null, suggested_payload_hint: string | null, } | { "kind": "ExplorationEvent", message: string, };
 
@@ -183,7 +190,16 @@ export type ProjectRuntimeCommand = { command: string, repo_name?: string, worki
 
 export type ProjectRuntimeEnvVar = { name: string, value: string, secret: boolean, };
 
-export type ProjectRuntimeProfile = { build_commands: Array<ProjectRuntimeCommand>, start_commands: Array<ProjectRuntimeCommand>, health_check_url?: string, health_check_command?: ProjectRuntimeCommand, target_base_url?: string, allowed_hosts: Array<string>, env_vars: Array<ProjectRuntimeEnvVar>, env_file?: string, timeout_seconds?: number, };
+export type ProjectAuthHeaderRef = { name: string, value_env?: string, value_secret_ref?: string, };
+
+export type ProjectAuthProfile = { 
+/**
+ * Stable role name used by live plans, e.g. `anonymous`, `user`,
+ * `admin`, `user_a`, or `user_b`.
+ */
+role: string, label?: string, login_url?: string, username?: string, password_env?: string, password_secret_ref?: string, cookie_env?: string, bearer_token_env?: string, headers: Array<ProjectAuthHeaderRef>, post_login_assertion?: string, };
+
+export type ProjectRuntimeProfile = { build_commands: Array<ProjectRuntimeCommand>, start_commands: Array<ProjectRuntimeCommand>, health_check_url?: string, health_check_command?: ProjectRuntimeCommand, target_base_url?: string, allowed_hosts: Array<string>, env_vars: Array<ProjectRuntimeEnvVar>, auth_profiles: Array<ProjectAuthProfile>, env_file?: string, timeout_seconds?: number, };
 
 export type LaunchStep = { command: string, repo_id?: string, repo_name?: string, working_directory?: string, timeout_seconds?: number, };
 
@@ -206,6 +222,18 @@ export type PentestCandidateRecord = { id: string, run_id: string, project_id: s
 export type VerificationAttemptRecord = { id: string, run_id: string, project_id: string, environment_run_id: string, candidate_id?: string, chain_id?: string, method: string, status: string, started_at: number, finished_at: number | null, duration_ms: number | null, request?: unknown, response?: unknown, oracle?: unknown, artifact_paths: Array<string>, error?: string, replay_stable?: boolean, };
 
 export type VerifiedVulnerabilityRecord = { id: string, run_id: string, project_id: string, title: string, severity: string, confidence: number, vuln_class: string, affected_components: Array<unknown>, business_impact: string, evidence_summary: string, repro_steps: string, remediation: string, source_candidate_ids: Array<string>, source_signal_ids: Array<string>, verification_attempt_ids: Array<string>, chain_id?: string, status: string, first_seen: number, last_seen: number, };
+
+export type RouteEvidence = { path: string, line: number | null, snippet: string, };
+
+export type RouteModelEndpoint = { method: string, path: string, repo?: string, handler_file?: string, line: number | null, params: Array<string>, middleware: Array<string>, auth_checks: Array<string>, role_checks: Array<string>, body_fields: Array<string>, state_changing: boolean, confidence: number, evidence: Array<RouteEvidence>, };
+
+export type FrontendRouteModel = { path: string, repo?: string, file?: string, line: number | null, confidence: number, evidence: Array<RouteEvidence>, };
+
+export type ApiClientCallModel = { method: string, path: string, repo?: string, file?: string, line: number | null, confidence: number, evidence: Array<RouteEvidence>, };
+
+export type RouteModel = { backend_routes: Array<RouteModelEndpoint>, frontend_routes: Array<FrontendRouteModel>, api_client_calls: Array<ApiClientCallModel>, notes: Array<string>, };
+
+export type RouteModelRecord = { id: string, run_id: string, project_id: string, model: RouteModel, created_at: number, };
 
 export type StartPentestResponse = { run_id: string, };
 
@@ -262,7 +290,7 @@ ai_api_base?: string,
  * Configured per-run AI budget cap in USD micros. `None` means
  * runs are uncapped.
  */
-default_run_budget_usd_micros?: number, 
+default_run_budget_usd_micros?: number | null, 
 /**
  * Currently-configured sandbox backend (matches `[sandbox].backend`).
  */

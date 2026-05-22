@@ -15,6 +15,7 @@ pub enum TaskKind {
     ChainReasoning,
     NovelFindings,
     Exploration,
+    AttackPlanning,
     /// Deterministic payload-runner verifier call. Inputs are a
     /// `(harness_spec, payload)` pair already persisted by upstream
     /// tasks; the trace row points back to those rows via
@@ -31,6 +32,7 @@ impl TaskKind {
             TaskKind::ChainReasoning => "ChainReasoning",
             TaskKind::NovelFindings => "NovelFindings",
             TaskKind::Exploration => "Exploration",
+            TaskKind::AttackPlanning => "AttackPlanning",
             TaskKind::Verifier => "Verifier",
         }
     }
