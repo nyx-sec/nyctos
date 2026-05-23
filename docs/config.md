@@ -176,6 +176,13 @@ exploit_reset_after_state_changing = true
 Use `exploit_dry_run = true` to inspect generated policy audit
 records before sending live traffic.
 
+Business-logic templates that seed objects, submit coupon/price data,
+or send chatbot prompts are only generated when the same two gates are
+enabled. They still pass through request caps, rate limits, target URL
+scope checks, auth-session acquisition, and reset-after-state-changing
+handling. See [`business-logic-templates.md`](business-logic-templates.md)
+for examples of the generated workflows.
+
 Optional scanner findings are persisted as pentest candidates. Live web
 findings still pass live verification before surfacing as verified
 vulnerabilities; source/package findings are recorded as bounded context

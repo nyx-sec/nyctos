@@ -31,6 +31,7 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 mod ai_pipeline;
 mod auth_sessions;
 mod banner;
+mod business_logic_templates;
 mod candidate_sources;
 mod cmd;
 mod launch;
@@ -911,6 +912,8 @@ async fn drive_scan(
         Some(scanner_summary),
     );
 
+    let auth_profiles = pentest_tools::configured_auth_profiles(project.runtime_profile.as_ref());
+
     emit_phase(&events, &run.id, project.id.as_str(), "CandidateSynthesisStarted", true, None);
     let synthesis_summary = match candidate_sources::synthesize_weak_signal_candidates(
         store,
@@ -926,18 +929,34 @@ async fn drive_scan(
             format!("weak-signal candidate synthesis failed: {err}")
         }
     };
+    let business_logic_summary =
+        match business_logic_templates::synthesize_business_logic_template_candidates(
+            store,
+            &run.id,
+            project.id.as_str(),
+            &route_model,
+            &auth_profiles,
+            &config.run,
+        )
+        .await
+        {
+            Ok(report) => report.summary(),
+            Err(err) => {
+                tracing::warn!(error = %err, "business-logic template synthesis failed");
+                format!("business-logic template synthesis failed: {err}")
+            }
+        };
     emit_phase(
         &events,
         &run.id,
         project.id.as_str(),
         "CandidateSynthesisStarted",
         false,
-        Some(synthesis_summary),
+        Some(format!("{synthesis_summary}; business templates: {business_logic_summary}")),
     );
 
     emit_phase(&events, &run.id, project.id.as_str(), "AgentReviewStarted", true, None);
     let mut agent_review_notes: Vec<String> = Vec::new();
-    let auth_profiles = pentest_tools::configured_auth_profiles(project.runtime_profile.as_ref());
     agent_review_notes.push(pentest_tools::auth_profiles_summary(&auth_profiles));
     if matches!(config.ai.runtime, nyctos_core::AiRuntime::None | nyctos_core::AiRuntime::LocalLlm)
     {

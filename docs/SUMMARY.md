@@ -36,6 +36,9 @@ Both names appear in these pages for the reasons explained in
 - [attack-graph.md](attack-graph.md): the run-scoped graph index
   over routes, endpoints, signals, candidates, verification
   attempts, verified vulnerabilities, and chains.
+- [business-logic-templates.md](business-logic-templates.md):
+  reusable live-test templates for tenant/object isolation,
+  coupon/price manipulation, and AI chatbot exploitability probes.
 - [events.md](events.md): `AgentEvent` envelope, the fixed
   per-run / per-project / per-repo ordering, the AI runtime
   stream, the WS replay buffer, and the `Lagged` warning frame.
