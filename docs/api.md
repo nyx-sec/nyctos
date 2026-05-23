@@ -60,6 +60,7 @@ concern.
 | GET    | `/api/v1/runs/:id/findings` | Findings for run plus diff status |
 | GET    | `/api/v1/runs/:id/verification-attempts` | Live verification attempts and artifacts |
 | GET    | `/api/v1/runs/:id/vulnerabilities` | Verified vulnerabilities for run |
+| GET    | `/api/v1/runs/:id/events.jsonl` | Download persisted run event stream |
 | GET    | `/api/v1/runs/:id/summary` | Run-card JSON |
 | GET    | `/api/v1/runs/:id/summary.md` | Run-card markdown |
 | GET    | `/api/v1/runs/:id/summary.html` | Run-card HTML |
@@ -359,6 +360,11 @@ trace-unavailable note when trace capture could not be used safely.
 Returns live-verified vulnerabilities for the run. Each row carries
 `verification_attempt_ids`; resolve those through
 `/runs/:id/verification-attempts` to inspect replay evidence.
+
+`GET /api/v1/runs/:id/events.jsonl`
+
+Streams the persisted live-event log for the run as newline-delimited
+JSON. Each line is `{ "ts_ms": <epoch-ms>, "event": <AgentEvent> }`.
 
 `GET /api/v1/runs/:id/summary`
 

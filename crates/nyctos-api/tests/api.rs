@@ -22,7 +22,7 @@ use nyctos_core::store::{
     ChainRecord, EnvironmentRunRecord, FindingRecord, ProjectLaunchProfileInput, RepoRecord,
     RunRecord, VerificationAttemptRecord, DEFAULT_PROJECT_ID,
 };
-use nyctos_core::{Config, SecretStore, Store};
+use nyctos_core::{run_event_log_path, Config, SecretStore, Store};
 use nyctos_types::event::{AgentEvent, EventSink, RepoOutcomeTag, ReproEvent, RunEvent};
 
 struct StubScanTrigger {
@@ -45,6 +45,7 @@ struct TestServer {
     addr: std::net::SocketAddr,
     events: EventSink,
     store: Store,
+    logs_dir: std::path::PathBuf,
     _tmp: tempfile::TempDir,
     handle: tokio::task::JoinHandle<()>,
     token: Option<String>,
@@ -84,7 +85,9 @@ impl TestServer {
             AuthConfig::default()
         };
         let token = auth.token.clone();
-        let state = ServerState::new(store.clone(), events.clone(), trigger, setup, auth);
+        let logs_dir = tmp.path().join("logs");
+        let state = ServerState::new(store.clone(), events.clone(), trigger, setup, auth)
+            .with_state_logs_dir(logs_dir.clone());
         let app = build_router(state);
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
@@ -92,7 +95,7 @@ impl TestServer {
         let handle = tokio::spawn(async move {
             let _ = axum::serve(listener, app).await;
         });
-        TestServer { addr, events, store, _tmp: tmp, handle, token }
+        TestServer { addr, events, store, logs_dir, _tmp: tmp, handle, token }
     }
 
     fn base(&self) -> String {
@@ -266,6 +269,34 @@ async fn runs_endpoint_lists_and_gets_by_id() {
 
     let missing =
         reqwest::get(format!("{}/api/v1/runs/does-not-exist", srv.base())).await.expect("get");
+    assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn run_event_log_endpoint_streams_persisted_jsonl() {
+    let srv = TestServer::start().await;
+    srv.store.runs().insert(&sample_run("run-log")).await.expect("insert");
+    let path = run_event_log_path(&srv.logs_dir, "run-log");
+    tokio::fs::create_dir_all(path.parent().expect("parent")).await.expect("mkdir");
+    tokio::fs::write(
+        &path,
+        br#"{"ts_ms":1,"event":{"kind":"Run","data":{"kind":"RunStarted","run_id":"run-log","project_id":"project","repos":[],"started_at_ms":1}}}
+"#,
+    )
+    .await
+    .expect("write log");
+
+    let resp = reqwest::get(format!("{}/api/v1/runs/run-log/events.jsonl", srv.base()))
+        .await
+        .expect("get");
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    assert_eq!(resp.headers().get(reqwest::header::CONTENT_TYPE).unwrap(), "application/x-ndjson");
+    let body = resp.text().await.expect("body");
+    assert!(body.contains("\"RunStarted\""));
+
+    let missing = reqwest::get(format!("{}/api/v1/runs/run-A/events.jsonl", srv.base()))
+        .await
+        .expect("get missing run");
     assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
 }
 

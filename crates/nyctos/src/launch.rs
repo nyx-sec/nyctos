@@ -8,7 +8,7 @@ use nyctos_core::store::{EnvironmentRunRecord, ProjectLaunchProfile};
 use nyctos_core::{now_epoch_ms, Project, StateDir, Store, WorkspaceHandle};
 use nyctos_sandbox::env::{EnvBuilder, RepoInput, RunningEnv};
 use nyctos_types::event::{AgentEvent, EventSink, RunEvent};
-use nyctos_types::product::{LaunchHealthCheck, LaunchStep};
+use nyctos_types::product::{LaunchEnvRef, LaunchHealthCheck, LaunchStep};
 use tokio::fs::OpenOptions;
 use tokio::process::{Child, Command};
 
@@ -29,11 +29,13 @@ pub struct RunningProjectEnvironment {
     pub target_urls: Vec<String>,
     mode: RunningMode,
     stop_steps: Vec<LaunchStep>,
+    env_refs: Vec<LaunchEnvRef>,
     logs_dir: PathBuf,
     store: Store,
     events: EventSink,
     run_id: String,
     project_id: String,
+    workspaces: HashMap<String, WorkspaceHandle>,
 }
 
 #[derive(Debug)]
@@ -119,11 +121,13 @@ async fn start_launch_profile(ctx: LaunchContext<'_>) -> anyhow::Result<RunningP
                 target_urls,
                 mode,
                 stop_steps: ctx.profile.stop_steps.clone(),
+                env_refs: ctx.profile.env_refs.clone(),
                 logs_dir,
                 store: ctx.store.clone(),
                 events: ctx.events,
                 run_id: ctx.run_id.to_string(),
                 project_id: ctx.project.id.as_str().to_string(),
+                workspaces: ctx.workspaces.clone(),
             })
         }
         Err(err) => {
@@ -166,7 +170,15 @@ async fn start_custom(
             &ctx.profile.target_urls,
         );
         for (index, step) in ctx.profile.build_steps.iter().enumerate() {
-            run_step_to_completion(step, ctx.workspaces, logs_dir, "build", index).await?;
+            run_step_to_completion(
+                step,
+                &ctx.profile.env_refs,
+                ctx.workspaces,
+                logs_dir,
+                "build",
+                index,
+            )
+            .await?;
         }
     }
 
@@ -186,7 +198,10 @@ async fn start_custom(
             &ctx.profile.target_urls,
         );
         for (index, step) in ctx.profile.start_steps.iter().enumerate() {
-            children.push(spawn_start_step(step, ctx.workspaces, logs_dir, index).await?);
+            children.push(
+                spawn_start_step(step, &ctx.profile.env_refs, ctx.workspaces, logs_dir, index)
+                    .await?,
+            );
         }
     } else {
         ctx.store
@@ -268,8 +283,15 @@ impl RunningProjectEnvironment {
         let started = now_epoch_ms();
         let mut errors = Vec::new();
         for (index, step) in self.stop_steps.iter().enumerate() {
-            if let Err(err) =
-                run_step_to_completion(step, &HashMap::new(), &self.logs_dir, "stop", index).await
+            if let Err(err) = run_step_to_completion(
+                step,
+                &self.env_refs,
+                &self.workspaces,
+                &self.logs_dir,
+                "stop",
+                index,
+            )
+            .await
             {
                 errors.push(err.to_string());
             }
@@ -329,6 +351,7 @@ impl RunningProjectEnvironment {
 
 async fn run_step_to_completion(
     step: &LaunchStep,
+    env_refs: &[LaunchEnvRef],
     workspaces: &HashMap<String, WorkspaceHandle>,
     logs_dir: &Path,
     phase: &str,
@@ -336,7 +359,7 @@ async fn run_step_to_completion(
 ) -> anyhow::Result<()> {
     let stdout_path = logs_dir.join(format!("{phase}-{index}-stdout.log"));
     let stderr_path = logs_dir.join(format!("{phase}-{index}-stderr.log"));
-    let mut child = command_for_step(step, workspaces)
+    let mut child = command_for_step(step, env_refs, workspaces)?
         .stdout(Stdio::from(std::fs::File::create(stdout_path)?))
         .stderr(Stdio::from(std::fs::File::create(stderr_path)?))
         .stdin(Stdio::null())
@@ -364,6 +387,7 @@ fn step_label(phase: &str) -> &'static str {
 
 async fn spawn_start_step(
     step: &LaunchStep,
+    env_refs: &[LaunchEnvRef],
     workspaces: &HashMap<String, WorkspaceHandle>,
     logs_dir: &Path,
     index: usize,
@@ -382,7 +406,7 @@ async fn spawn_start_step(
         .await?
         .into_std()
         .await;
-    let child = command_for_step(step, workspaces)
+    let child = command_for_step(step, env_refs, workspaces)?
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr))
         .stdin(Stdio::null())
@@ -391,24 +415,30 @@ async fn spawn_start_step(
     Ok(child)
 }
 
-fn command_for_step(step: &LaunchStep, workspaces: &HashMap<String, WorkspaceHandle>) -> Command {
+fn command_for_step(
+    step: &LaunchStep,
+    env_refs: &[LaunchEnvRef],
+    workspaces: &HashMap<String, WorkspaceHandle>,
+) -> anyhow::Result<Command> {
     let mut cmd = Command::new("sh");
     cmd.arg("-lc").arg(&step.command);
     if let Some(dir) = working_dir_for_step(step, workspaces) {
         cmd.current_dir(dir);
     }
-    cmd
+    for (key, value) in resolve_launch_env(env_refs, step, workspaces)? {
+        cmd.env(key, value);
+    }
+    Ok(cmd)
 }
 
 fn working_dir_for_step(
     step: &LaunchStep,
     workspaces: &HashMap<String, WorkspaceHandle>,
 ) -> Option<PathBuf> {
-    let base = step
-        .repo_name
-        .as_deref()
-        .and_then(|name| workspaces.get(name))
-        .map(|w| w.workspace().to_path_buf());
+    let base = match step.repo_name.as_deref() {
+        Some(name) => workspaces.get(name).map(|w| w.workspace().to_path_buf()),
+        None => single_workspace_root(workspaces),
+    };
     match (base, step.working_directory.as_deref()) {
         (Some(base), Some(rel)) => Some(resolve_working_dir(&base, rel)),
         (Some(base), None) => Some(base),
@@ -428,6 +458,7 @@ fn resolve_working_dir(base: &Path, dir: &str) -> PathBuf {
 
 async fn wait_for_health(
     checks: &[LaunchHealthCheck],
+    env_refs: &[LaunchEnvRef],
     workspaces: &HashMap<String, WorkspaceHandle>,
     logs_dir: &Path,
 ) -> anyhow::Result<serde_json::Value> {
@@ -441,9 +472,11 @@ async fn wait_for_health(
         let result = match check.kind.as_str() {
             "http" => wait_for_http(check.url.as_deref(), timeout).await,
             "command" => match &check.command {
-                Some(step) => run_step_to_completion(step, workspaces, logs_dir, "health", index)
-                    .await
-                    .map(|_| serde_json::json!({"ok": true, "kind": "command"})),
+                Some(step) => {
+                    run_step_to_completion(step, env_refs, workspaces, logs_dir, "health", index)
+                        .await
+                        .map(|_| serde_json::json!({"ok": true, "kind": "command"}))
+                }
                 None => Err(anyhow::anyhow!("command health check is missing command")),
             },
             other => Err(anyhow::anyhow!("unsupported health check kind `{other}`")),
@@ -479,9 +512,155 @@ async fn wait_for_profile_health(
                 timeout_seconds: Some(60),
             })
             .collect();
-        return wait_for_health(&checks, workspaces, logs_dir).await;
+        return wait_for_health(&checks, &profile.env_refs, workspaces, logs_dir).await;
     }
-    wait_for_health(&profile.health_checks, workspaces, logs_dir).await
+    wait_for_health(&profile.health_checks, &profile.env_refs, workspaces, logs_dir).await
+}
+
+fn resolve_launch_env(
+    refs: &[LaunchEnvRef],
+    step: &LaunchStep,
+    workspaces: &HashMap<String, WorkspaceHandle>,
+) -> anyhow::Result<HashMap<String, String>> {
+    let mut env = HashMap::new();
+    for env_ref in refs {
+        match env_ref.kind.as_str() {
+            "env-file" => {
+                let path = resolve_env_file_path(&env_ref.value, step, workspaces)?;
+                for (key, value) in read_env_file(&path)? {
+                    env.insert(key, value);
+                }
+            }
+            "env-var" => {
+                let key = env_ref.value.trim();
+                if key.is_empty() {
+                    continue;
+                }
+                validate_env_key(key)?;
+                let value = std::env::var(key)
+                    .map_err(|_| anyhow::anyhow!("env variable `{key}` is not set"))?;
+                env.insert(key.to_string(), value);
+            }
+            other => anyhow::bail!("unsupported launch env ref kind `{other}`"),
+        }
+    }
+    Ok(env)
+}
+
+fn resolve_env_file_path(
+    raw: &str,
+    step: &LaunchStep,
+    workspaces: &HashMap<String, WorkspaceHandle>,
+) -> anyhow::Result<PathBuf> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("env file path is empty");
+    }
+    let path = PathBuf::from(trimmed);
+    if path.is_absolute() {
+        return Ok(path);
+    }
+    let base = working_dir_for_step(step, workspaces)
+        .or_else(|| single_workspace_root(workspaces))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "env file `{trimmed}` is relative, but the launch step has no code source"
+            )
+        })?;
+    Ok(base.join(path))
+}
+
+fn single_workspace_root(workspaces: &HashMap<String, WorkspaceHandle>) -> Option<PathBuf> {
+    let mut values = workspaces.values();
+    let first = values.next()?;
+    values.next().is_none().then(|| first.workspace().to_path_buf())
+}
+
+fn read_env_file(path: &Path) -> anyhow::Result<Vec<(String, String)>> {
+    let raw = std::fs::read_to_string(path)
+        .map_err(|source| anyhow::anyhow!("read env file `{}`: {source}", path.display()))?;
+    let mut out = Vec::new();
+    for (index, line) in raw.lines().enumerate() {
+        if let Some((key, value)) = parse_env_line(line).map_err(|err| {
+            anyhow::anyhow!("parse env file `{}` line {}: {err}", path.display(), index + 1)
+        })? {
+            out.push((key, value));
+        }
+    }
+    Ok(out)
+}
+
+fn parse_env_line(line: &str) -> anyhow::Result<Option<(String, String)>> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.starts_with('#') {
+        return Ok(None);
+    }
+    let assignment = trimmed.strip_prefix("export ").unwrap_or(trimmed).trim_start();
+    let Some((key, raw_value)) = assignment.split_once('=') else {
+        anyhow::bail!("expected KEY=VALUE");
+    };
+    let key = key.trim();
+    validate_env_key(key)?;
+    Ok(Some((key.to_string(), parse_env_value(raw_value)?)))
+}
+
+fn validate_env_key(key: &str) -> anyhow::Result<()> {
+    let mut chars = key.chars();
+    let Some(first) = chars.next() else {
+        anyhow::bail!("env variable name is empty");
+    };
+    if !(first == '_' || first.is_ascii_alphabetic())
+        || !chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+    {
+        anyhow::bail!("invalid env variable name `{key}`");
+    }
+    Ok(())
+}
+
+fn parse_env_value(raw: &str) -> anyhow::Result<String> {
+    let value = raw.trim_start();
+    if let Some(rest) = value.strip_prefix('"') {
+        return parse_double_quoted_env_value(rest);
+    }
+    if let Some(rest) = value.strip_prefix('\'') {
+        let Some(end) = rest.find('\'') else {
+            anyhow::bail!("unterminated single-quoted value");
+        };
+        return Ok(rest[..end].to_string());
+    }
+    Ok(strip_unquoted_env_comment(value).trim_end().to_string())
+}
+
+fn parse_double_quoted_env_value(rest: &str) -> anyhow::Result<String> {
+    let mut out = String::new();
+    let mut escaped = false;
+    for ch in rest.chars() {
+        if escaped {
+            match ch {
+                'n' => out.push('\n'),
+                'r' => out.push('\r'),
+                't' => out.push('\t'),
+                other => out.push(other),
+            }
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' => escaped = true,
+            '"' => return Ok(out),
+            other => out.push(other),
+        }
+    }
+    anyhow::bail!("unterminated double-quoted value")
+}
+
+fn strip_unquoted_env_comment(value: &str) -> &str {
+    for (index, ch) in value.char_indices() {
+        if ch == '#' && (index == 0 || value[..index].ends_with(char::is_whitespace)) {
+            return &value[..index];
+        }
+    }
+    value
 }
 
 async fn wait_for_http(url: Option<&str>, timeout: Duration) -> anyhow::Result<serde_json::Value> {
@@ -535,4 +714,79 @@ fn emit_env(
             ts_ms: now_epoch_ms(),
         },
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn launch_step(repo_name: Option<&str>) -> LaunchStep {
+        LaunchStep {
+            command: "printenv".to_string(),
+            repo_id: None,
+            repo_name: repo_name.map(str::to_string),
+            working_directory: None,
+            timeout_seconds: None,
+        }
+    }
+
+    fn env_file_ref(path: &str) -> LaunchEnvRef {
+        LaunchEnvRef { kind: "env-file".to_string(), value: path.to_string(), secret: true }
+    }
+
+    #[test]
+    fn parses_env_file_values() {
+        assert_eq!(parse_env_line("# comment").unwrap(), None);
+        assert_eq!(
+            parse_env_line("export API_URL=http://localhost:3000").unwrap(),
+            Some(("API_URL".to_string(), "http://localhost:3000".to_string()))
+        );
+        assert_eq!(
+            parse_env_line("GREETING=\"hello\\nthere\"").unwrap(),
+            Some(("GREETING".to_string(), "hello\nthere".to_string()))
+        );
+        assert_eq!(
+            parse_env_line("TOKEN=abc#kept").unwrap(),
+            Some(("TOKEN".to_string(), "abc#kept".to_string()))
+        );
+        assert_eq!(
+            parse_env_line("TRIMMED=abc # dropped").unwrap(),
+            Some(("TRIMMED".to_string(), "abc".to_string()))
+        );
+    }
+
+    #[test]
+    fn resolves_relative_env_file_against_single_workspace() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            tmp.path().join(".env.dev"),
+            "API_URL=http://localhost:3000\nQUOTED='two words'\n",
+        )
+        .expect("write env");
+        let mut workspaces = HashMap::new();
+        workspaces
+            .insert("web".to_string(), WorkspaceHandle::for_local_path_test("web", tmp.path()));
+
+        let env = resolve_launch_env(&[env_file_ref(".env.dev")], &launch_step(None), &workspaces)
+            .expect("resolve env");
+
+        assert_eq!(env.get("API_URL").map(String::as_str), Some("http://localhost:3000"));
+        assert_eq!(env.get("QUOTED").map(String::as_str), Some("two words"));
+    }
+
+    #[test]
+    fn rejects_relative_env_file_without_repo_context_when_ambiguous() {
+        let tmp_a = tempfile::tempdir().expect("tempdir a");
+        let tmp_b = tempfile::tempdir().expect("tempdir b");
+        let mut workspaces = HashMap::new();
+        workspaces
+            .insert("web".to_string(), WorkspaceHandle::for_local_path_test("web", tmp_a.path()));
+        workspaces
+            .insert("api".to_string(), WorkspaceHandle::for_local_path_test("api", tmp_b.path()));
+
+        let err = resolve_launch_env(&[env_file_ref(".env.dev")], &launch_step(None), &workspaces)
+            .expect_err("relative env file needs context");
+
+        assert!(err.to_string().contains("no code source"));
+    }
 }

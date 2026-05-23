@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProjectAddModal } from "./ProjectAddModal";
 import {
   emptyRuntimeProfileDraft,
+  launchProfileFromDraft,
   ProjectRuntimeProfileForm,
   type RuntimeProfileDraft,
   runtimeProfileFromDraft,
@@ -111,6 +112,17 @@ describe("ProjectRuntimeProfileForm", () => {
         headers: [{ name: "X-Test-Role", value_env: "NYCTOS_USER_A_ROLE" }],
         post_login_assertions: [{ kind: "cookie_exists", value: "sid" }],
       },
+    ]);
+  });
+
+  it("serializes launch environment as references only", () => {
+    const draft = emptyRuntimeProfileDraft("http://localhost:3000");
+    draft.env_file = " .env.dev ";
+    draft.env_vars = [{ name: " NODE_ENV ", value: "ignored", secret: false }];
+
+    expect(launchProfileFromDraft(draft)?.env_refs).toEqual([
+      { kind: "env-file", value: ".env.dev", secret: true },
+      { kind: "env-var", value: "NODE_ENV", secret: false },
     ]);
   });
 

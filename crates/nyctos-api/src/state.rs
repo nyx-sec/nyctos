@@ -285,6 +285,10 @@ pub struct ServerState {
     /// stamps a `repro_bundles` row pointing at the resulting path.
     /// `None` in tests that do not exercise bundle creation.
     pub state_bundles_dir: Option<PathBuf>,
+    /// Per-run live-stream event logs (`<state>/logs/runs/*.events.jsonl`).
+    /// The daemon's event-log tap writes these; the API serves them as
+    /// authenticated post-run artifacts.
+    pub state_logs_dir: Option<PathBuf>,
     /// `POST /webhook/git` config. `None` disables the route (the
     /// daemon hands a populated struct only when the operator has
     /// configured `triggers.webhook_secret_ref`).
@@ -308,6 +312,7 @@ impl ServerState {
             replay: Arc::new(EventReplay::new()),
             state_repos_dir: None,
             state_bundles_dir: None,
+            state_logs_dir: None,
             webhook: None,
         }
     }
@@ -323,6 +328,13 @@ impl ServerState {
     /// handler can write `<state_bundles_dir>/<finding-id>.tar`.
     pub fn with_state_bundles_dir(mut self, dir: PathBuf) -> Self {
         self.state_bundles_dir = Some(dir);
+        self
+    }
+
+    /// Attach the logs root so the run event-log handler can serve
+    /// `<state_logs_dir>/runs/<run>.events.jsonl`.
+    pub fn with_state_logs_dir(mut self, dir: PathBuf) -> Self {
+        self.state_logs_dir = Some(dir);
         self
     }
 

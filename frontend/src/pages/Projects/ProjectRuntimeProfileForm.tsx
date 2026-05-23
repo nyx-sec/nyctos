@@ -475,21 +475,23 @@ export function ProjectRuntimeProfileForm({ value, onChange }: Props) {
 
       <details className="runtime-profile-details" open={hasEnvironment}>
         <summary>Environment</summary>
-        <div className="setup-field">
-          <label htmlFor="runtime-env-file">Env file</label>
-          <input
-            id="runtime-env-file"
-            type="text"
-            autoComplete="off"
-            placeholder=".env.test"
-            value={value.env_file}
-            onChange={setField("env_file")}
+        <div className="runtime-profile-env">
+          <div className="setup-field">
+            <label htmlFor="runtime-env-file">Env file path</label>
+            <input
+              id="runtime-env-file"
+              type="text"
+              autoComplete="off"
+              placeholder=".env.dev"
+              value={value.env_file}
+              onChange={setField("env_file")}
+            />
+          </div>
+          <EnvRows
+            rows={value.env_vars}
+            onChange={(rows) => onChange({ ...value, env_vars: rows })}
           />
         </div>
-        <EnvRows
-          rows={value.env_vars}
-          onChange={(rows) => onChange({ ...value, env_vars: rows })}
-        />
       </details>
 
       <details className="runtime-profile-details" open={hasAuthProfiles}>
@@ -739,7 +741,7 @@ function EnvRows({
   return (
     <div className="runtime-profile-list">
       <div className="runtime-profile-section__header">
-        <h4>Env variables</h4>
+        <h4>Forwarded env vars</h4>
         <Button size="sm" variant="ghost" onClick={() => onChange([...rows, blankEnv()])}>
           Add variable
         </Button>
@@ -747,7 +749,7 @@ function EnvRows({
       {rows.map((row, index) => (
         <div className="runtime-env-row" key={`runtime-env-${index}`}>
           <div className="setup-field">
-            <label htmlFor={`runtime-env-name-${index}`}>Name</label>
+            <label htmlFor={`runtime-env-name-${index}`}>Variable name</label>
             <input
               id={`runtime-env-name-${index}`}
               type="text"
@@ -755,17 +757,6 @@ function EnvRows({
               placeholder="NODE_ENV"
               value={row.name}
               onChange={(e) => onChange(replaceAt(rows, index, { ...row, name: e.target.value }))}
-            />
-          </div>
-          <div className="setup-field">
-            <label htmlFor={`runtime-env-value-${index}`}>Value</label>
-            <input
-              id={`runtime-env-value-${index}`}
-              type={row.secret ? "password" : "text"}
-              autoComplete="off"
-              placeholder="test"
-              value={row.value}
-              onChange={(e) => onChange(replaceAt(rows, index, { ...row, value: e.target.value }))}
             />
           </div>
           <label className="runtime-env-row__secret">

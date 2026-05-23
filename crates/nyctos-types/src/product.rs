@@ -44,6 +44,9 @@ pub struct LaunchHealthCheck {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct LaunchEnvRef {
+    /// `env-file` values are paths resolved relative to the launch
+    /// step's working directory. `env-var` values are process env var
+    /// names forwarded from the daemon environment.
     pub kind: String,
     pub value: String,
     #[serde(default)]

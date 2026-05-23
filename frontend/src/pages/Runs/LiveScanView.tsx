@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   type AgentEventLike,
+  runEventLogDownloadUrl,
   useAgentEvents,
   useRunEnvironmentRuns,
   useRunVulnerabilities,
@@ -78,6 +79,23 @@ const PHASE_TONE: Record<RepoPhase, BadgeTone> = {
   failed: "danger",
 };
 
+const MAX_LIVE_LOG_LINES = 500;
+
+const RUN_PROGRESS_PHASES = [
+  { phase: "EnvironmentBuildStarted", weight: 10 },
+  { phase: "EnvironmentReady", weight: 5 },
+  { phase: "NyxSignalsStarted", weight: 25 },
+  { phase: "RouteModelStarted", weight: 10 },
+  { phase: "OptionalScannersStarted", weight: 10 },
+  { phase: "AgentReviewStarted", weight: 15 },
+  { phase: "AiAttackPlanningStarted", weight: 5 },
+  { phase: "AuthSessionAcquisitionStarted", weight: 5 },
+  { phase: "LiveVerificationStarted", weight: 12 },
+  { phase: "BrowserVerificationStarted", weight: 3 },
+];
+
+const PHASE_ORDER = RUN_PROGRESS_PHASES.map((phase) => phase.phase);
+
 export function LiveScanView() {
   const { runId = "" } = useParams<{ runId: string }>();
   const navigate = useNavigate();
@@ -112,6 +130,11 @@ export function LiveScanView() {
   ).length;
   const orderedPhases = useMemo(() => orderPhases(phases), [phases]);
   const orderedAuthSessions = useMemo(() => orderAuthSessions(authSessions), [authSessions]);
+  const runProgress = useMemo(
+    () => runProgressPercent(orderedRepos, orderedPhases, summary),
+    [orderedRepos, orderedPhases, summary],
+  );
+  const showRunProgress = summary.done || totalRepos > 0 || orderedPhases.length > 0;
 
   return (
     <div className="live-scan">
@@ -134,12 +157,36 @@ export function LiveScanView() {
             >
               View vulnerabilities
             </Button>
+            <a className="btn btn--ghost" href={runEventLogDownloadUrl(runId)} download>
+              Download log
+            </a>
           </div>
         }
       >
         {!summary.done && totalRepos === 0 && (
           <div className="live-scan__pending">
             <Spinner /> Preparing app...
+          </div>
+        )}
+
+        {showRunProgress && (
+          <div className="live-scan__run-progress">
+            <div
+              className="live-scan__bar"
+              role="progressbar"
+              aria-label="Run progress"
+              aria-valuenow={runProgress}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuetext={`${runProgress}% complete`}
+            >
+              <div
+                className={`live-scan__bar-fill${
+                  summary.done ? " live-scan__bar-fill--finished" : ""
+                }`}
+                style={{ width: `${runProgress}%` }}
+              />
+            </div>
           </div>
         )}
 
@@ -205,7 +252,7 @@ export function LiveScanView() {
             <p className="live-scan__muted">No log lines yet.</p>
           ) : (
             <ol className="live-scan__log">
-              {logs.slice(-200).map((line, idx) => (
+              {logs.map((line, idx) => (
                 <li key={idx} className={`live-scan__log-line live-scan__log-line--${line.level}`}>
                   <time>{new Date(line.ts).toLocaleTimeString()}</time>
                   <span>{line.text}</span>
@@ -233,7 +280,6 @@ interface RepoProgressRowProps {
 }
 
 function RepoProgressRow({ repo }: RepoProgressRowProps) {
-  const pct = phaseToPercent(repo.phase);
   return (
     <li className="live-scan__repo">
       <div className="live-scan__repo-header">
@@ -249,18 +295,6 @@ function RepoProgressRow({ repo }: RepoProgressRowProps) {
           <span className="live-scan__repo-elapsed">{repo.elapsedMs}ms</span>
         )}
       </div>
-      <div
-        className="live-scan__bar"
-        role="progressbar"
-        aria-valuenow={pct}
-        aria-valuemin={0}
-        aria-valuemax={100}
-      >
-        <div
-          className={`live-scan__bar-fill live-scan__bar-fill--${repo.phase}`}
-          style={{ width: `${pct}%` }}
-        />
-      </div>
       {repo.message && (
         <p className="live-scan__repo-msg" title={repo.message}>
           {repo.message}
@@ -270,21 +304,54 @@ function RepoProgressRow({ repo }: RepoProgressRowProps) {
   );
 }
 
-function phaseToPercent(phase: RepoPhase): number {
+function sourceScanProgress(phase: RepoPhase): number {
   switch (phase) {
     case "queued":
-      return 5;
+      return 0.05;
     case "static":
-      return 40;
+      return 0.4;
     case "static-done":
-      return 70;
+      return 0.85;
     case "dynamic-done":
-      return 90;
+      return 1;
     case "finished":
-      return 100;
+      return 1;
     case "failed":
-      return 100;
+      return 1;
   }
+}
+
+function runProgressPercent(
+  repos: RepoProgress[],
+  phases: PhaseProgress[],
+  summary: RunSummary,
+): number {
+  if (summary.done) return 100;
+
+  const phaseStatus = new Map(phases.map((phase) => [phase.phase, phase.status]));
+  const sourceProgress =
+    repos.length === 0
+      ? 0
+      : repos.reduce((sum, repo) => sum + sourceScanProgress(repo.phase), 0) / repos.length;
+
+  let weightedProgress = 0;
+  let totalWeight = 0;
+  for (const step of RUN_PROGRESS_PHASES) {
+    const phaseProgress = phaseStatusProgress(phaseStatus.get(step.phase));
+    const progress =
+      step.phase === "NyxSignalsStarted" ? Math.max(phaseProgress, sourceProgress) : phaseProgress;
+    weightedProgress += progress * step.weight;
+    totalWeight += step.weight;
+  }
+
+  if (totalWeight === 0 || (repos.length === 0 && phases.length === 0)) return 0;
+  return Math.min(95, Math.max(5, Math.round((weightedProgress / totalWeight) * 100)));
+}
+
+function phaseStatusProgress(status?: PhaseProgress["status"]): number {
+  if (status === "finished") return 1;
+  if (status === "running") return 0.5;
+  return 0;
 }
 
 function environmentTone(status: string): BadgeTone {
@@ -374,18 +441,6 @@ function applyToRepos(ev: AgentEventLike, set: RepoSetter) {
   }
 }
 
-const PHASE_ORDER = [
-  "EnvironmentBuildStarted",
-  "NyxSignalsStarted",
-  "RouteModelStarted",
-  "OptionalScannersStarted",
-  "AgentReviewStarted",
-  "AiAttackPlanningStarted",
-  "AuthSessionAcquisitionStarted",
-  "LiveVerificationStarted",
-  "BrowserVerificationStarted",
-];
-
 function applyToAuthSessions(ev: AgentEventLike, set: AuthSessionSetter) {
   if (!("kind" in ev) || ev.kind !== "Run") return;
   const data = ev.data;
@@ -469,26 +524,24 @@ function authTone(status: string): BadgeTone {
 function applyToLogs(ev: AgentEventLike, set: LogSetter) {
   if (!("kind" in ev)) return;
   if (ev.kind === "Lagged") {
-    set((prev) =>
-      prev.concat({
-        ts: Date.now(),
-        level: "warn",
-        text: `[lagged] skipped ${ev.skipped} frame(s)`,
-      }),
-    );
+    appendLog(set, {
+      ts: Date.now(),
+      level: "warn",
+      text: `[lagged] skipped ${ev.skipped} frame(s)`,
+    });
     return;
   }
   if (ev.kind === "Ai") {
     const text = describeAiEvent(ev.data);
     if (!text) return;
     const level: LogLine["level"] = ev.data.kind === "TaskHalted" ? "warn" : "info";
-    set((prev) => prev.concat({ ts: Date.now(), level, text }).slice(-500));
+    appendLog(set, { ts: Date.now(), level, text });
     return;
   }
   if (ev.kind === "Sandbox") {
     const text = describeSandboxEvent(ev.data);
     if (!text) return;
-    set((prev) => prev.concat({ ts: Date.now(), level: "info", text }).slice(-500));
+    appendLog(set, { ts: Date.now(), level: "info", text });
     return;
   }
   if (ev.kind !== "Run") return;
@@ -496,7 +549,11 @@ function applyToLogs(ev: AgentEventLike, set: LogSetter) {
   const text = describeRunEvent(data);
   if (!text) return;
   const level: LogLine["level"] = data.kind === "RepoFailed" ? "error" : "info";
-  set((prev) => prev.concat({ ts: Date.now(), level, text }).slice(-500));
+  appendLog(set, { ts: Date.now(), level, text });
+}
+
+function appendLog(set: LogSetter, line: LogLine) {
+  set((prev) => prev.concat(line).slice(-MAX_LIVE_LOG_LINES));
 }
 
 function describeRunEvent(data: RunEvent): string | undefined {

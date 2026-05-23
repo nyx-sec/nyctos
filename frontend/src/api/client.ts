@@ -747,6 +747,12 @@ export function reproBundleDownloadUrl(id: string): string {
   return `${API_BASE}/findings/${encodeURIComponent(id)}/repro-bundle.tar${qs}`;
 }
 
+export function runEventLogDownloadUrl(id: string): string {
+  const token = getAuthToken();
+  const qs = token ? `?token=${encodeURIComponent(token)}` : "";
+  return `${API_BASE}/runs/${encodeURIComponent(id)}/events.jsonl${qs}`;
+}
+
 /**
  * Open an EventSource against `/findings/:id/replay` and yield parsed
  * `ReplayEvent` frames. Returns the close handle so the caller can

@@ -1,6 +1,7 @@
 //! Config, state, logging, and persistence surface shared by every binary.
 
 pub mod config;
+pub mod event_log;
 pub mod ids;
 pub mod log_init;
 pub mod project;
@@ -17,6 +18,7 @@ pub use config::{
     PerformanceConfig, ProjectConfig, RepoConfig, RepoSourceConfig, RunConfig, SandboxBackend,
     SandboxConfig, ScheduleConfig, TriggersConfig, UiConfig,
 };
+pub use event_log::{run_event_log_path, safe_run_log_segment, RunEventLogWriter};
 pub use log_init::{init as init_logging, json_log_path, LogConfig, LogInitError};
 pub use project::{Project, ProjectId};
 pub use repo::{

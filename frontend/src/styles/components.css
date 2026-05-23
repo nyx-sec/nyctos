@@ -12,6 +12,7 @@
   color: var(--text);
   font-size: 0.85rem;
   font-weight: var(--weight-semibold);
+  text-decoration: none;
   cursor: pointer;
   line-height: 1;
   transition:
@@ -1616,6 +1617,7 @@
 .runtime-profile-section__header {
   align-items: center;
   display: flex;
+  flex-wrap: wrap;
   gap: var(--space-3);
   justify-content: space-between;
 }
@@ -1690,6 +1692,12 @@
   gap: var(--space-3);
 }
 
+.runtime-profile-env {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
 .runtime-profile-row {
   border-top: 1px solid var(--border);
   display: flex;
@@ -1761,7 +1769,7 @@
   align-items: end;
   display: grid;
   gap: var(--space-3);
-  grid-template-columns: minmax(140px, 1fr) minmax(180px, 1.4fr) auto auto;
+  grid-template-columns: minmax(180px, 1fr) auto auto;
 }
 
 .runtime-env-row__secret {
@@ -2305,6 +2313,10 @@
   gap: var(--space-2);
   color: var(--text-tertiary);
   font-size: var(--text-sm);
+}
+
+.live-scan__run-progress {
+  margin-bottom: var(--space-4);
 }
 
 .live-scan__repos {

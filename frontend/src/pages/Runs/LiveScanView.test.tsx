@@ -63,6 +63,10 @@ describe("LiveScanView", () => {
     render(wrap(<LiveScanView />));
     expect(await screen.findByText(/Run run-1/)).toBeInTheDocument();
     expect(screen.getByText(/Preparing app/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Download log" })).toHaveAttribute(
+      "href",
+      "/api/v1/runs/run-1/events.jsonl",
+    );
     expect(FakeWebSocket.instances).toHaveLength(1);
   });
 
@@ -138,6 +142,115 @@ describe("LiveScanView", () => {
     expect(await screen.findByText("Source done")).toBeInTheDocument();
     expect(screen.getByText("Success")).toBeInTheDocument();
     expect(screen.getByText("[alpha] source scan finished: Success (420ms).")).toBeInTheDocument();
+  });
+
+  it("keeps run progress incomplete after the source scan while later pentest phases run", async () => {
+    render(wrap(<LiveScanView />));
+    await screen.findByText(/Run run-1/);
+    const ws = FakeWebSocket.instances[0];
+
+    act(() =>
+      ws.emit({
+        kind: "Run",
+        data: {
+          kind: "RunStarted",
+          run_id: "run-1",
+          project_id: "p-1",
+          repos: ["alpha"],
+          started_at_ms: 1000,
+        },
+      }),
+    );
+    act(() =>
+      ws.emit({
+        kind: "Run",
+        data: {
+          kind: "PhaseStarted",
+          run_id: "run-1",
+          project_id: "p-1",
+          phase: "NyxSignalsStarted",
+          started_at_ms: 1010,
+        },
+      }),
+    );
+    act(() =>
+      ws.emit({
+        kind: "Run",
+        data: {
+          kind: "RepoStarted",
+          run_id: "run-1",
+          project_id: "p-1",
+          repo: "alpha",
+          started_at_ms: 1020,
+        },
+      }),
+    );
+    act(() =>
+      ws.emit({
+        kind: "Run",
+        data: {
+          kind: "RepoStaticDone",
+          run_id: "run-1",
+          project_id: "p-1",
+          repo: "alpha",
+          n_diags: 3,
+          elapsed_ms: 220,
+        },
+      }),
+    );
+    act(() =>
+      ws.emit({
+        kind: "Run",
+        data: {
+          kind: "RepoFinished",
+          run_id: "run-1",
+          project_id: "p-1",
+          repo: "alpha",
+          outcome: "Success",
+          elapsed_ms: 420,
+        },
+      }),
+    );
+    act(() =>
+      ws.emit({
+        kind: "Run",
+        data: {
+          kind: "PhaseStarted",
+          run_id: "run-1",
+          project_id: "p-1",
+          phase: "OptionalScannersStarted",
+          started_at_ms: 1500,
+        },
+      }),
+    );
+
+    const progress = await screen.findByRole("progressbar", { name: "Run progress" });
+    const valueAfterSourceScan = Number(progress.getAttribute("aria-valuenow"));
+    expect(valueAfterSourceScan).toBeGreaterThan(0);
+    expect(valueAfterSourceScan).toBeLessThan(100);
+
+    act(() =>
+      ws.emit({
+        kind: "Run",
+        data: {
+          kind: "RunFinished",
+          run_id: "run-1",
+          project_id: "p-1",
+          finished_at_ms: 5000,
+          wall_clock_ms: 4321,
+          succeeded: 1,
+          inconclusive: 0,
+          failed: 0,
+        },
+      }),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByRole("progressbar", { name: "Run progress" })).toHaveAttribute(
+        "aria-valuenow",
+        "100",
+      ),
+    );
   });
 
   it("renders the RunFinished tally and unlocks the Open-vulnerabilities link", async () => {

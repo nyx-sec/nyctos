@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use axum::{
-    body::Body,
+    body::{Body, Bytes},
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         Path, Query, Request, State,
@@ -24,6 +24,7 @@ use axum::{
 use futures_util::{SinkExt, Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tokio::io::AsyncReadExt;
 use tokio::sync::broadcast::error::RecvError;
 use tower_http::trace::TraceLayer;
 
@@ -37,8 +38,8 @@ use nyctos_core::store::{
     ProjectPatch, ProjectPatchOption, ProjectRecord, RepoRecord, RunRecord,
 };
 use nyctos_core::{
-    now_epoch_ms, parse_git_auth, AiRuntime, IngestError, SandboxBackend, ACCOUNT_AI_ANTHROPIC,
-    ACCOUNT_AI_LOCAL_LLM,
+    now_epoch_ms, parse_git_auth, run_event_log_path, safe_run_log_segment, AiRuntime, IngestError,
+    SandboxBackend, ACCOUNT_AI_ANTHROPIC, ACCOUNT_AI_LOCAL_LLM,
 };
 use nyctos_types::api::{
     AgentTraceRow, DoctorCheck, DoctorRequest, DoctorResponse, FindingDiffStatus, FindingWithDiff,
@@ -93,6 +94,7 @@ pub fn build_router(state: ServerState) -> Router {
         .route("/api/v1/runs/{id}/signals", get(signals_for_run))
         .route("/api/v1/runs/{id}/route-model", get(route_model_for_run))
         .route("/api/v1/runs/{id}/environment-runs", get(environment_runs_for_run))
+        .route("/api/v1/runs/{id}/events.jsonl", get(run_event_log))
         .route("/api/v1/runs/{id}/verification-attempts", get(verification_attempts_for_run))
         .route("/api/v1/runs/{id}/vulnerabilities", get(run_vulnerabilities))
         .route("/api/v1/runs/{id}/summary", get(run_summary))
@@ -1532,6 +1534,52 @@ async fn environment_runs_for_run(
 ) -> Result<Json<Vec<nyctos_types::product::EnvironmentRunRecord>>, ApiError> {
     require_run(&s, &id).await?;
     Ok(Json(s.store.environment_runs().list_by_run(&id).await?))
+}
+
+async fn run_event_log(
+    State(s): State<ServerState>,
+    Path(id): Path<String>,
+) -> Result<Response, ApiError> {
+    require_run(&s, &id).await?;
+    let logs_dir = s
+        .state_logs_dir
+        .as_ref()
+        .ok_or_else(|| ApiError::Internal("logs directory is not configured".to_string()))?;
+    let path = run_event_log_path(logs_dir, &id);
+    let file = match tokio::fs::File::open(&path).await {
+        Ok(file) => file,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Err(ApiError::NotFound(format!("event log for run `{id}` not found")));
+        }
+        Err(err) => {
+            return Err(ApiError::Internal(format!(
+                "open run event log `{}`: {err}",
+                path.display()
+            )));
+        }
+    };
+
+    let stream = async_stream::stream! {
+        let mut file = file;
+        let mut buf = vec![0_u8; 16 * 1024];
+        loop {
+            match file.read(&mut buf).await {
+                Ok(0) => break,
+                Ok(n) => yield Ok::<Bytes, std::io::Error>(Bytes::copy_from_slice(&buf[..n])),
+                Err(err) => {
+                    yield Err(err);
+                    break;
+                }
+            }
+        }
+    };
+    let filename = format!("{}.events.jsonl", safe_run_log_segment(&id));
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/x-ndjson")
+        .header(header::CONTENT_DISPOSITION, format!("attachment; filename=\"{filename}\""))
+        .body(Body::from_stream(stream))
+        .map_err(|err| ApiError::Internal(format!("build run event log response: {err}")))
 }
 
 async fn verification_attempts_for_run(

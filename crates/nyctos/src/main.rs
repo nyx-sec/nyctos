@@ -19,11 +19,12 @@ use nyctos_core::store::{
 use nyctos_core::{
     ingest, now_epoch_ms, repo_from_config, AiConfig, Config, InconclusiveReason, IngestError,
     IngestedRepo, LogConfig, Project, ProjectId, Repo, RepoOutcome, RepoSource, Run, RunBundle,
-    RunCounts, RunDispatcher, SandboxBackend, SecretStore, StateDir, Store, WorkspaceHandle,
+    RunCounts, RunDispatcher, RunEventLogWriter, SandboxBackend, SecretStore, StateDir, Store,
+    WorkspaceHandle,
 };
 use nyctos_nyx::{Diag, NyxError, NyxRunner, NyxScanLane, MINIMUM_NYX_VERSION};
 use nyctos_sandbox::{select_backend, BackendChoice, BackendKind, Lane};
-use nyctos_types::event::{AgentEvent, EventSink, RunEvent};
+use nyctos_types::event::{AgentEvent, AiEvent, EventSink, RunEvent, SandboxEvent};
 use semver::Version;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -1481,7 +1482,8 @@ async fn serve(
     let mut server_state =
         ServerState::new(store.clone(), events_tx.clone(), trigger.clone(), setup, auth_config)
             .with_state_repos_dir(state_dir.repos())
-            .with_state_bundles_dir(state_dir.bundles());
+            .with_state_bundles_dir(state_dir.bundles())
+            .with_state_logs_dir(state_dir.logs());
 
     // Enable `POST /webhook/git` when the operator has configured a
     // shared secret. Resolves the env-backed ref on each request so a
@@ -1529,6 +1531,7 @@ async fn serve(
             }
         }
     });
+    let _event_log_task = spawn_run_event_log_task(events_tx.clone(), state_dir.logs());
     let ui_fallback = {
         let bootstrap = Arc::clone(&ui_bootstrap);
         move |uri: axum::http::Uri| {
@@ -2333,6 +2336,83 @@ fn safe_artifact_segment(raw: &str) -> String {
         "attempt".to_string()
     } else {
         trimmed.to_string()
+    }
+}
+
+fn spawn_run_event_log_task(events: EventSink, logs_dir: PathBuf) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut rx = events.subscribe();
+        let mut writer = RunEventLogWriter::new(logs_dir);
+        let mut active_runs = HashSet::<String>::new();
+        loop {
+            let ev = match rx.recv().await {
+                Ok(ev) => ev,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    tracing::warn!(skipped, "run event-log writer lagged");
+                    continue;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            };
+
+            let target_run_ids = event_log_run_ids(&ev, &active_runs);
+            for run_id in &target_run_ids {
+                if let Err(err) = writer.append(run_id, &ev).await {
+                    tracing::warn!(run_id = %run_id, error = %err, "failed to append run event log");
+                }
+            }
+
+            match &ev {
+                AgentEvent::Run { data: RunEvent::RunStarted { run_id, .. } } => {
+                    active_runs.insert(run_id.clone());
+                }
+                AgentEvent::Run { data: RunEvent::RunFinished { run_id, .. } } => {
+                    active_runs.remove(run_id);
+                    if let Err(err) = writer.finish_run(run_id).await {
+                        tracing::warn!(run_id = %run_id, error = %err, "failed to finish run event log");
+                    }
+                }
+                _ => {}
+            }
+        }
+    })
+}
+
+fn event_log_run_ids(ev: &AgentEvent, active_runs: &HashSet<String>) -> Vec<String> {
+    if let Some(run_id) = event_run_id(ev) {
+        return vec![run_id.to_string()];
+    }
+    active_runs.iter().cloned().collect()
+}
+
+fn event_run_id(ev: &AgentEvent) -> Option<&str> {
+    match ev {
+        AgentEvent::Run { data } => match data {
+            RunEvent::Heartbeat { .. } => None,
+            RunEvent::RunStarted { run_id, .. }
+            | RunEvent::ProjectStarted { run_id, .. }
+            | RunEvent::PhaseStarted { run_id, .. }
+            | RunEvent::PhaseFinished { run_id, .. }
+            | RunEvent::EnvironmentStatus { run_id, .. }
+            | RunEvent::AuthSessionStatus { run_id, .. }
+            | RunEvent::RepoStarted { run_id, .. }
+            | RunEvent::RepoStaticDone { run_id, .. }
+            | RunEvent::RepoDynamicDone { run_id, .. }
+            | RunEvent::RepoFailed { run_id, .. }
+            | RunEvent::RepoIngestFailed { run_id, .. }
+            | RunEvent::RepoFinished { run_id, .. }
+            | RunEvent::ProjectFinished { run_id, .. }
+            | RunEvent::RunFinished { run_id, .. } => Some(run_id.as_str()),
+        },
+        AgentEvent::Ai { data: AiEvent::BudgetTick { run_id, .. } } => Some(run_id.as_str()),
+        AgentEvent::Sandbox { data } => match data {
+            SandboxEvent::VerifierStarted { run_id, .. }
+            | SandboxEvent::VerifierFinished { run_id, .. } => Some(run_id.as_str()),
+        },
+        AgentEvent::Ai { .. }
+        | AgentEvent::Finding { .. }
+        | AgentEvent::Budget { .. }
+        | AgentEvent::Quarantine { .. }
+        | AgentEvent::Repro { .. } => None,
     }
 }
 
