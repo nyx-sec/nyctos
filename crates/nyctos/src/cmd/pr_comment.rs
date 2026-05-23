@@ -643,6 +643,7 @@ mod tests {
             verified_vulnerabilities: Vec::new(),
             verified_chains: Vec::new(),
             signal_counts: ReportSignalCounts::default(),
+            pentest_candidates: Vec::new(),
             findings: Vec::new(),
             chains: Vec::new(),
         }

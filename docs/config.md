@@ -140,6 +140,11 @@ See `docs/triggers/webhook.md` for the full handler contract.
 | `replay_stable_check`              | bool | `false` | When `true`, the deterministic payload runner re-executes each `(vuln, benign)` pair a second time and stamps `replay_stable` on the resulting `VerifyResult`. Adds roughly 2x cost per verify. |
 | `allow_state_changing_live_probes` | bool | `false` | Allow live verification plans to use HTTP methods likely to mutate target state (`POST`, `PUT`, `PATCH`, `DELETE`). |
 | `browser_checks_enabled`           | bool | `false` | Allow browser-driven verification and auth-session acquisition when the local runtime is available. Confirmed browser attempts save redacted replay evidence under the run trace directory. |
+| `exploit_mode_enabled`             | bool | `false` | Master opt-in for invasive verification. State-changing probes still require `allow_state_changing_live_probes = true`; setting that older flag by itself is not enough. |
+| `exploit_dry_run`                  | bool | `false` | Evaluate guarded live plans and write audit records without sending HTTP/browser traffic where feasible. |
+| `exploit_request_cap`              | int (optional) | unset (`10`) | Per-candidate cap for guarded live HTTP/browser actions. `0` is floored to `1`. |
+| `exploit_requests_per_second`      | int (optional) | unset (`5`) | Per-candidate rate limit for guarded live HTTP/browser actions. `0` is floored to `1`. |
+| `exploit_reset_after_state_changing` | bool | `true` | Ask the environment orchestration layer to reset/rollback after allowed state-changing probes when the active environment supports it. |
 | `enable_zap_baseline`              | bool | `true`  | Run `zap-baseline.py` against live target URLs when the binary is present on PATH. Missing binaries are skipped. |
 | `enable_nuclei`                    | bool | `true`  | Run `nuclei` against live target URLs when the binary is present on PATH. Missing binaries are skipped. |
 | `enable_trivy`                     | bool | `true`  | Run `trivy fs` against repo workspaces when present on PATH. Dependency, IaC, and secret findings become AI exploration context. |
@@ -148,6 +153,28 @@ See `docs/triggers/webhook.md` for the full handler contract.
 | `enable_katana`                    | bool | `true`  | Run `katana` against live target URLs when present on PATH. Sensitive crawled routes become live-test candidates. |
 | `enable_httpx`                     | bool | `true`  | Run ProjectDiscovery `httpx` against live target URLs when present on PATH. Interesting HTTP metadata becomes live-test candidates. |
 | `enable_aggressive_sqlmap`         | bool | `false` | Reserved for explicit sqlmap use. sqlmap is not auto-enabled because it is aggressive and has GPL/proprietary-integration constraints. |
+
+Exploit mode is intentionally a two-key system. Nyctos defaults to
+non-destructive live verification. State-changing HTTP methods,
+browser actions that may mutate data, and aggressive external probes
+are rejected unless exploit mode is enabled and the specific
+state-changing gate is also enabled. The local server UI exposes the
+same per-run controls in the **Start pentest** modal, so an operator
+can opt into an invasive run without editing `nyctos.toml`.
+
+Example opt-in for a disposable local target:
+
+```toml
+[run]
+exploit_mode_enabled = true
+allow_state_changing_live_probes = true
+exploit_request_cap = 5
+exploit_requests_per_second = 2
+exploit_reset_after_state_changing = true
+```
+
+Use `exploit_dry_run = true` to inspect generated policy audit
+records before sending live traffic.
 
 Optional scanner findings are persisted as pentest candidates. Live web
 findings still pass live verification before surfacing as verified

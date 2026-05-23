@@ -402,11 +402,14 @@ chain-lane sandbox with three guard rails:
 
 Before dispatch, the binary also attaches a bounded `KNOWN SCANNER
 LEADS` digest built from `pentest_candidates` rows for the run. Nyx,
-ZAP baseline, Nuclei, Trivy, OSV-Scanner, Gitleaks/detect-secrets,
-Katana, httpx, and future candidate-producing scanners reach
-exploration through this normalized summary rather than raw scanner
-JSON/log output, so the agent can pivot from existing leads without
-overloading the prompt or trusting them as verified proof.
+route/API discovery, OpenAPI specs, JavaScript bundle endpoint
+extraction, form discovery, ZAP baseline, Nuclei, Trivy, OSV-Scanner,
+Gitleaks/detect-secrets, Katana, httpx, and future candidate-producing
+scanners reach exploration through this normalized summary rather than
+raw scanner JSON/log output, so the agent can pivot from existing leads
+without overloading the prompt or trusting them as verified proof. The
+candidate row's `source` and `source_ids` carry attribution; live
+verification remains the only path to `Verified`.
 
 ## Determinism
 

@@ -11,7 +11,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use nyctos_core::store::{
-    ChainRecord, FindingRecord, NyxSignalRecord, Store, StoreError, VerifiedVulnerabilityRecord,
+    ChainRecord, FindingRecord, NyxSignalRecord, PentestCandidateRecord, Store, StoreError,
+    VerifiedVulnerabilityRecord,
 };
 use serde::{Deserialize, Serialize};
 
@@ -35,6 +36,8 @@ pub struct ScanReport {
     pub verified_chains: Vec<ReportVerifiedChain>,
     #[serde(default)]
     pub signal_counts: ReportSignalCounts,
+    #[serde(default)]
+    pub pentest_candidates: Vec<ReportCandidate>,
     #[serde(default)]
     pub findings: Vec<ReportFinding>,
     #[serde(default)]
@@ -76,6 +79,19 @@ pub struct ReportSignalCounts {
     pub suppressed: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReportCandidate {
+    pub id: String,
+    pub source: String,
+    pub source_ids: Vec<String>,
+    pub title: String,
+    pub vuln_class: String,
+    pub severity_guess: String,
+    pub status: String,
+    pub confidence: f64,
+    pub affected_components: Vec<serde_json::Value>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReportFinding {
     pub id: String,
@@ -98,12 +114,12 @@ pub struct ReportChain {
     pub rationale: Option<String>,
 }
 
-pub const REPORT_SCHEMA_VERSION: u32 = 3;
+pub const REPORT_SCHEMA_VERSION: u32 = 4;
 
 /// Schema versions this binary knows how to read. A future minor /
 /// compatible bump can append here so older readers refuse loudly
 /// rather than silently dropping fields they cannot parse.
-pub const SUPPORTED_REPORT_SCHEMA_VERSIONS: &[u32] = &[1, 2, 3];
+pub const SUPPORTED_REPORT_SCHEMA_VERSIONS: &[u32] = &[1, 2, 3, 4];
 
 #[derive(Debug, thiserror::Error)]
 pub enum ScanReportError {
@@ -145,6 +161,7 @@ impl ScanReport {
     pub fn retain_pr_worthy(&mut self) {
         self.findings.clear();
         self.chains.clear();
+        self.pentest_candidates.clear();
         self.verified_vulnerabilities.retain(|v| v.status != "FalsePositive");
         self.verified_chains
             .retain(|c| c.status == "Verified" || c.verification_attempt_id.is_some());
@@ -190,6 +207,7 @@ pub async fn build_report(
     let raw_vulnerabilities = store.verified_vulnerabilities().list_by_run(run_id).await?;
     let raw_signals = store.nyx_signals().list_by_run(run_id, false).await?;
     let raw_attempts = store.verification_attempts().list_by_run(run_id).await?;
+    let raw_candidates = store.pentest_candidates().list_by_run(run_id).await?;
 
     let findings: Vec<ReportFinding> = raw_findings
         .into_iter()
@@ -228,6 +246,7 @@ pub async fn build_report(
         verified_vulnerabilities,
         verified_chains,
         signal_counts,
+        pentest_candidates: raw_candidates.into_iter().map(map_candidate).collect(),
         findings,
         chains: raw_chains.into_iter().map(map_chain).collect(),
     })
@@ -327,6 +346,20 @@ fn signal_counts(signals: &[NyxSignalRecord]) -> ReportSignalCounts {
     let total = signals.len() as u32;
     let meaningful = signals.iter().filter(|s| s.meaningful).count() as u32;
     ReportSignalCounts { total, meaningful, suppressed: total.saturating_sub(meaningful) }
+}
+
+fn map_candidate(c: PentestCandidateRecord) -> ReportCandidate {
+    ReportCandidate {
+        id: c.id,
+        source: c.source,
+        source_ids: c.source_ids,
+        title: c.title,
+        vuln_class: c.vuln_class,
+        severity_guess: c.severity_guess,
+        status: c.status,
+        confidence: c.confidence,
+        affected_components: c.affected_components,
+    }
 }
 
 pub fn vulnerability_repos(v: &ReportVulnerability) -> Vec<String> {
@@ -440,6 +473,17 @@ mod tests {
                 rationale: Some("live chain verified".into()),
             }],
             signal_counts: ReportSignalCounts { total: 4, meaningful: 2, suppressed: 2 },
+            pentest_candidates: vec![ReportCandidate {
+                id: "pc-route".into(),
+                source: "RouteDiscovery+JavaScriptBundle".into(),
+                source_ids: vec!["route:admin".into(), "bundle:admin".into()],
+                title: "Administrative surface discovered".into(),
+                vuln_class: "ADMIN_SURFACE".into(),
+                severity_guess: "Medium".into(),
+                status: "NeedsLiveTest".into(),
+                confidence: 0.6,
+                affected_components: vec![serde_json::json!({"url_path":"/api/admin"})],
+            }],
             findings: vec![sample_finding("f-a", "alpha", "src/a.py")],
             chains: vec![ReportChain {
                 id: "c1".into(),
@@ -589,6 +633,17 @@ mod tests {
                 },
             ],
             signal_counts: ReportSignalCounts::default(),
+            pentest_candidates: vec![ReportCandidate {
+                id: "pc-open".into(),
+                source: "RouteDiscovery".into(),
+                source_ids: vec!["route:/api/admin".into()],
+                title: "Admin route".into(),
+                vuln_class: "ADMIN_SURFACE".into(),
+                severity_guess: "Medium".into(),
+                status: "NeedsLiveTest".into(),
+                confidence: 0.5,
+                affected_components: Vec::new(),
+            }],
             findings: vec![
                 ReportFinding {
                     status: "Verified".into(),
@@ -629,6 +684,7 @@ mod tests {
         assert_eq!(ids, vec!["v-confirmed"]);
         assert!(report.findings.is_empty());
         assert!(report.chains.is_empty());
+        assert!(report.pentest_candidates.is_empty());
         assert_eq!(report.verified_chains.len(), 1);
         assert_eq!(report.verified_chains[0].id, "c-verified");
         assert_eq!(report.repos, vec!["alpha"]);
@@ -650,6 +706,7 @@ mod tests {
             verified_vulnerabilities: vec![],
             verified_chains: vec![],
             signal_counts: ReportSignalCounts::default(),
+            pentest_candidates: vec![],
             findings: vec![],
             chains: vec![],
         };

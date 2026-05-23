@@ -512,6 +512,33 @@ pub struct RunConfig {
     /// an explicit reason.
     #[serde(default)]
     pub browser_checks_enabled: bool,
+    /// Master opt-in for exploit mode. Defaults to false; when false,
+    /// live verification stays non-destructive even if an older config
+    /// sets `allow_state_changing_live_probes = true`.
+    #[serde(default)]
+    pub exploit_mode_enabled: bool,
+    /// Evaluate guarded live probes and write audit records without
+    /// sending HTTP/browser traffic. Static analysis and source-only
+    /// scanners still run normally.
+    #[serde(default)]
+    pub exploit_dry_run: bool,
+    /// Per-candidate cap on guarded live HTTP/browser actions. `None`
+    /// falls back to [`RunConfig::DEFAULT_EXPLOIT_REQUEST_CAP`]; a
+    /// configured `0` is floored to `1`.
+    #[serde(default)]
+    pub exploit_request_cap: Option<u32>,
+    /// Per-candidate rate limit for guarded live requests/actions.
+    /// `None` falls back to
+    /// [`RunConfig::DEFAULT_EXPLOIT_REQUESTS_PER_SECOND`]; `0` floors
+    /// to `1`.
+    #[serde(default)]
+    pub exploit_requests_per_second: Option<u32>,
+    /// After an allowed state-changing probe, ask the environment
+    /// orchestration layer to reset/rollback when it supports that
+    /// operation. Defaults true so opt-in exploit runs clean up after
+    /// themselves when docker-compose orchestration is available.
+    #[serde(default = "default_true")]
+    pub exploit_reset_after_state_changing: bool,
     /// Optional passive ZAP baseline orchestration. Enabled by default,
     /// but the binary is only used when present on PATH; findings become
     /// candidates.
@@ -557,6 +584,11 @@ impl Default for RunConfig {
             replay_stable_check: false,
             allow_state_changing_live_probes: false,
             browser_checks_enabled: false,
+            exploit_mode_enabled: false,
+            exploit_dry_run: false,
+            exploit_request_cap: None,
+            exploit_requests_per_second: None,
+            exploit_reset_after_state_changing: true,
             enable_zap_baseline: true,
             enable_nuclei: true,
             enable_trivy: true,
@@ -566,6 +598,29 @@ impl Default for RunConfig {
             enable_httpx: true,
             enable_aggressive_sqlmap: false,
         }
+    }
+}
+
+impl RunConfig {
+    /// Default request/action cap for one candidate live-verification
+    /// attempt. This keeps malformed or model-generated workflows from
+    /// fanning out indefinitely.
+    pub const DEFAULT_EXPLOIT_REQUEST_CAP: u32 = 10;
+    /// Default per-candidate live request/action rate. Optional
+    /// scanners have their own CLI-level throttles; this cap covers
+    /// the built-in verifier.
+    pub const DEFAULT_EXPLOIT_REQUESTS_PER_SECOND: u32 = 5;
+
+    pub fn exploit_request_cap_resolved(&self) -> u32 {
+        self.exploit_request_cap.unwrap_or(Self::DEFAULT_EXPLOIT_REQUEST_CAP).max(1)
+    }
+
+    pub fn exploit_requests_per_second_resolved(&self) -> u32 {
+        self.exploit_requests_per_second.unwrap_or(Self::DEFAULT_EXPLOIT_REQUESTS_PER_SECOND).max(1)
+    }
+
+    pub fn state_changing_live_probes_allowed(&self) -> bool {
+        self.exploit_mode_enabled && self.allow_state_changing_live_probes
     }
 }
 
@@ -767,6 +822,36 @@ mod tests {
         assert!(cfg.run.enable_katana);
         assert!(cfg.run.enable_httpx);
         assert!(!cfg.run.enable_aggressive_sqlmap);
+        assert!(!cfg.run.exploit_mode_enabled);
+        assert!(!cfg.run.exploit_dry_run);
+        assert_eq!(cfg.run.exploit_request_cap_resolved(), RunConfig::DEFAULT_EXPLOIT_REQUEST_CAP);
+        assert_eq!(
+            cfg.run.exploit_requests_per_second_resolved(),
+            RunConfig::DEFAULT_EXPLOIT_REQUESTS_PER_SECOND
+        );
+        assert!(cfg.run.exploit_reset_after_state_changing);
+        assert!(!cfg.run.state_changing_live_probes_allowed());
+    }
+
+    #[test]
+    fn exploit_policy_config_parses_and_resolves() {
+        let raw = r#"
+[run]
+exploit_mode_enabled = true
+allow_state_changing_live_probes = true
+exploit_dry_run = true
+exploit_request_cap = 0
+exploit_requests_per_second = 0
+exploit_reset_after_state_changing = false
+"#;
+        let cfg = Config::parse(raw, &PathBuf::from("<test>")).expect("parse exploit policy");
+        assert!(cfg.run.exploit_mode_enabled);
+        assert!(cfg.run.allow_state_changing_live_probes);
+        assert!(cfg.run.state_changing_live_probes_allowed());
+        assert!(cfg.run.exploit_dry_run);
+        assert_eq!(cfg.run.exploit_request_cap_resolved(), 1);
+        assert_eq!(cfg.run.exploit_requests_per_second_resolved(), 1);
+        assert!(!cfg.run.exploit_reset_after_state_changing);
     }
 
     #[test]
@@ -832,7 +917,17 @@ mod tests {
                 binary_path: Some(PathBuf::from("/opt/nyx/bin/nyx")),
                 min_version: Some("0.2.0".to_string()),
             },
-            run: RunConfig { replay_stable_check: true, ..RunConfig::default() },
+            run: RunConfig {
+                replay_stable_check: true,
+                allow_state_changing_live_probes: true,
+                browser_checks_enabled: true,
+                exploit_mode_enabled: true,
+                exploit_dry_run: true,
+                exploit_request_cap: Some(3),
+                exploit_requests_per_second: Some(2),
+                exploit_reset_after_state_changing: false,
+                ..RunConfig::default()
+            },
             env: EnvConfig { pull_policy: Some(EnvPullPolicy::Never) },
             projects: vec![ProjectConfig {
                 name: "acme-app".to_string(),

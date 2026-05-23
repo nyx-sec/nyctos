@@ -389,6 +389,26 @@ impl RunningEnv {
         result
     }
 
+    /// Reset a running compose environment in place by dropping named
+    /// volumes and recreating services from the already-merged compose
+    /// file. This is the rollback hook Nyctos uses after explicitly
+    /// opted-in state-changing exploit probes.
+    pub async fn reset(&mut self) -> Result<(), EnvError> {
+        self.down_inner().await?;
+        let mut cmd = self.compose_command();
+        cmd.arg("up").arg("-d").arg("--build");
+        let outcome = run_command(cmd, self.command_timeout).await?;
+        if !outcome.status_ok() {
+            self.running = false;
+            return Err(EnvError::UpFailed {
+                code: outcome.exit_code,
+                stderr: outcome.stderr_string(),
+            });
+        }
+        self.running = true;
+        Ok(())
+    }
+
     async fn down_inner(&self) -> Result<(), EnvError> {
         let mut cmd = self.compose_command();
         cmd.arg("down").arg("--volumes").arg("--remove-orphans");

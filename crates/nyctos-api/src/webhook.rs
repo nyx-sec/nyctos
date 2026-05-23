@@ -818,7 +818,7 @@ pub async fn webhook_git(
     // preserved by passing `None` for project_id. An optional
     // `project = "..."` field in the trigger config block could narrow
     // this later.
-    let run_id = trigger.trigger(ScanTriggerSource::Webhook, None, cfg.repo.clone()).await?;
+    let run_id = trigger.trigger(ScanTriggerSource::Webhook, None, cfg.repo.clone(), None).await?;
     Ok((
         StatusCode::ACCEPTED,
         Json(WebhookResponse { triggered: true, run_id: Some(run_id), message: String::new() }),

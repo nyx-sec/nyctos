@@ -160,9 +160,13 @@ Field reference:
 
 Three ways to kick a scan, all using the same dispatcher.
 
-**From the UI:** click "Scan now" in the SPA. The page subscribes
-to the WebSocket and streams `RunStarted`, `RepoStarted`,
-`RepoFinished`, and `RunCompleted` frames as they arrive.
+**From the UI:** open the project detail page and click **Start
+pentest**. The button opens a safety modal. Leave exploit mode and
+state-changing probes off for the default non-destructive run; turn
+both on only for an owned, disposable target where mutating live
+probes are acceptable. The page subscribes to the WebSocket and
+streams `RunStarted`, `RepoStarted`, `RepoFinished`, and
+`RunCompleted` frames as they arrive.
 
 **From the CLI:**
 

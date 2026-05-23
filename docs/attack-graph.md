@@ -38,7 +38,7 @@ The shipped graph writers can represent these node kinds:
 |---|---|
 | `route` | A discovered application path, shared across frontend, backend, and API-client evidence for the same run. |
 | `endpoint` | A method-specific backend route, API client call, or concrete request target. |
-| `form` | Reserved for future form extraction. |
+| `form` | A discovered HTML/JSX form, including action, method, and field metadata when available. |
 | `parameter` | Path or body parameter discovered from route models. |
 | `role` | Auth role or role-like check such as `authenticated`. |
 | `object` | Application resource or source object, including route resources and file locations. |
@@ -66,9 +66,9 @@ The graph keeps edge labels intentionally small:
 
 Graph rows are dual-written by the existing store accessors:
 
-- `RouteModelStore::upsert` records route, endpoint, parameter, role,
-  and object nodes, then links route-source locations to existing Nyx
-  signal nodes when line information overlaps.
+- `RouteModelStore::upsert` records route, endpoint, form, parameter,
+  role, and object nodes, then links route-source locations to existing
+  Nyx signal nodes when line information overlaps.
 - `NyxSignalStore::insert` records signal nodes and file object links.
 - `PentestCandidateStore::insert` and `CandidateFindingStore::insert`
   record candidate nodes, source edges, and target/object/role links.

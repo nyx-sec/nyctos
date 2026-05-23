@@ -87,6 +87,7 @@ const RUN_PROGRESS_PHASES = [
   { phase: "NyxSignalsStarted", weight: 25 },
   { phase: "RouteModelStarted", weight: 10 },
   { phase: "OptionalScannersStarted", weight: 10 },
+  { phase: "CandidateSynthesisStarted", weight: 5 },
   { phase: "AgentReviewStarted", weight: 15 },
   { phase: "AiAttackPlanningStarted", weight: 5 },
   { phase: "AuthSessionAcquisitionStarted", weight: 5 },
@@ -645,6 +646,7 @@ function formatPhase(phase: string): string {
   if (phase === "NyxSignalsStarted") return "Static analysis";
   if (phase === "RouteModelStarted") return "Route/auth modeling";
   if (phase === "OptionalScannersStarted") return "Optional scanners";
+  if (phase === "CandidateSynthesisStarted") return "Candidate synthesis";
   if (phase === "AgentReviewStarted") return "AI pentest review";
   if (phase === "AiAttackPlanningStarted") return "AI attack planning";
   if (phase === "AuthSessionAcquisitionStarted") return "Auth sessions";

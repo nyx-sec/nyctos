@@ -53,6 +53,15 @@ impl ScanTriggerSource {
     }
 }
 
+/// Per-run safety overrides requested by an interactive UI flow. These
+/// do not persist to `nyctos.toml`; scheduled/webhook scans keep the
+/// daemon defaults.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ScanRunOverrides {
+    pub exploit_mode_enabled: bool,
+    pub allow_state_changing_live_probes: bool,
+}
+
 /// Plug that lets the API hand off a manual scan request to the daemon
 /// that owns the run dispatcher. The daemon wires the production impl;
 /// tests substitute a stub.
@@ -69,6 +78,7 @@ pub trait ScanTrigger: Send + Sync + 'static {
         source: ScanTriggerSource,
         project_id: Option<String>,
         repo: Option<String>,
+        run_overrides: Option<ScanRunOverrides>,
     ) -> ScanFuture<'a>;
 }
 

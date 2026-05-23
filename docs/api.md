@@ -54,6 +54,7 @@ concern.
 | PATCH  | `/api/v1/projects/:id/repos/:name` | Patch repo |
 | DELETE | `/api/v1/projects/:id/repos/:name` | Delete repo (clears workspace) |
 | POST   | `/api/v1/projects/:id/scan` | Trigger a scan |
+| POST   | `/api/v1/projects/:id/pentest` | Start a project pentest |
 | GET    | `/api/v1/projects/:id/vulnerabilities` | Verified vulnerabilities for project |
 | GET    | `/api/v1/runs` | List runs by status |
 | GET    | `/api/v1/runs/:id` | Get run |
@@ -312,6 +313,37 @@ Status codes: 200 on dispatch, 400 (`scan_rejected`) on bad
 input, 429 (`scan_backpressure`) when the dispatcher queue is
 full, 503 (`shutting_down`) during a graceful exit.
 
+`POST /api/v1/projects/:id/pentest`
+
+Starts a project-scoped pentest after launch-profile readiness
+checks pass. The request body is optional; omitted fields default to
+safe mode:
+
+```json
+{
+  "exploit_mode_enabled": false,
+  "allow_state_changing_live_probes": false
+}
+```
+
+These fields are per-run overrides, not persistent config writes.
+The project detail page's **Start pentest** button opens the same
+safety options. Leave both values `false` for the default
+non-destructive run. Set both to `true` only for owned, disposable
+targets where state-changing probes are acceptable.
+
+`allow_state_changing_live_probes = true` is rejected unless
+`exploit_mode_enabled = true`; this prevents older clients or stale
+config from enabling mutating live probes without the explicit
+exploit-mode opt-in.
+
+Response: `{ "run_id": "run-..." }`.
+
+Status codes: 200 on dispatch, 400 (`scan_rejected`) on incomplete
+launch profile, missing repos, unsafe exploit options, or other bad
+input; 429 (`scan_backpressure`) when the dispatcher queue is full;
+503 (`shutting_down`) during a graceful exit.
+
 ## Runs
 
 `GET /api/v1/runs?status=<status>`
@@ -354,6 +386,14 @@ evidence files under the state directory: redacted replay JSON and
 script files, screenshots, DOM/focused HTML captures, console logs,
 action/navigation timelines, and either a Playwright trace zip or a
 trace-unavailable note when trace capture could not be used safely.
+
+`GET /api/v1/runs/:id/candidates`
+
+Returns `Vec<PentestCandidateRecord>` for the run. Candidates are
+unverified hypotheses until a live verification attempt confirms them.
+`source` and `source_ids` preserve attribution across Nyx signals,
+route/API discovery, OpenAPI specs, JavaScript bundle endpoint
+extraction, forms, and optional scanner imports.
 
 `GET /api/v1/runs/:id/vulnerabilities`
 

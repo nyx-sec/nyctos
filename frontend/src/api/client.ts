@@ -28,6 +28,7 @@ import type {
   NyxSignalRecord,
   PatchProjectRequest,
   PatchRepoRequest,
+  PentestCandidateRecord,
   ProjectAuthHeaderRef,
   ProjectAuthProfile,
   ProjectLaunchProfile,
@@ -46,6 +47,7 @@ import type {
   RunRecord,
   SetupRequest,
   SetupStatusResponse,
+  StartPentestRequest,
   TestLaunchTargetRequest,
   TestLaunchTargetResponse,
   TestRepoRequest,
@@ -74,6 +76,7 @@ export type {
   NyxSignalRecord,
   PatchProjectRequest,
   PatchRepoRequest,
+  PentestCandidateRecord,
   ProjectAuthHeaderRef,
   ProjectAuthProfile,
   ProjectLaunchProfile,
@@ -92,6 +95,7 @@ export type {
   RunRecord,
   SetupRequest,
   SetupStatusResponse,
+  StartPentestRequest,
   TestLaunchTargetRequest,
   TestLaunchTargetResponse,
   TestRepoRequest,
@@ -223,6 +227,7 @@ export const qk = {
   runVerificationAttempts: (id: string) => ["runs", id, "verification-attempts"] as const,
   runVulnerabilities: (id: string) => ["runs", id, "vulnerabilities"] as const,
   runRouteModel: (id: string) => ["runs", id, "route-model"] as const,
+  runCandidates: (id: string) => ["runs", id, "candidates"] as const,
   vulnerabilities: () => ["vulnerabilities"] as const,
   projectVulnerabilities: (id: string) => ["projects", id, "vulnerabilities"] as const,
   runSignals: (id: string, meaningfulOnly: boolean) =>
@@ -492,9 +497,10 @@ export function useTriggerScan(projectId: string) {
 export function useStartPentest(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: () =>
+    mutationFn: (body: StartPentestRequest) =>
       request<{ run_id: string }>(`/projects/${encodeURIComponent(projectId)}/pentest`, {
         method: "POST",
+        body: JSON.stringify(body),
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["runs"] });
@@ -554,6 +560,14 @@ export function useRunRouteModel(id: string | undefined) {
   return useQuery({
     queryKey: id ? qk.runRouteModel(id) : ["runs", "_disabled", "route-model"],
     queryFn: () => request<RouteModelRecord>(`/runs/${encodeURIComponent(id!)}/route-model`),
+    enabled: Boolean(id),
+  });
+}
+
+export function useRunCandidates(id: string | undefined) {
+  return useQuery({
+    queryKey: id ? qk.runCandidates(id) : ["runs", "_disabled", "candidates"],
+    queryFn: () => request<PentestCandidateRecord[]>(`/runs/${encodeURIComponent(id!)}/candidates`),
     enabled: Boolean(id),
   });
 }

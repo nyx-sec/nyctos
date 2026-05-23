@@ -164,7 +164,7 @@ impl Scheduler {
             }
             entry.last_fired_minute = Some(minute);
             let source = ScanTriggerSource::Scheduler { label: entry.label.clone() };
-            match self.trigger.trigger(source, None, entry.repo.clone()).await {
+            match self.trigger.trigger(source, None, entry.repo.clone(), None).await {
                 Ok(run_id) => {
                     debug!(
                         schedule = %entry.label,
@@ -350,6 +350,7 @@ mod tests {
             source: ScanTriggerSource,
             _project_id: Option<String>,
             repo: Option<String>,
+            _run_overrides: Option<nyctos_api::ScanRunOverrides>,
         ) -> Pin<Box<dyn Future<Output = Result<String, ScanTriggerError>> + Send + 'a>> {
             Box::pin(async move {
                 let mut g = self.calls.lock().await;
@@ -552,6 +553,7 @@ mod tests {
                 _source: ScanTriggerSource,
                 _project_id: Option<String>,
                 _repo: Option<String>,
+                _run_overrides: Option<nyctos_api::ScanRunOverrides>,
             ) -> Pin<Box<dyn Future<Output = Result<String, ScanTriggerError>> + Send + 'a>>
             {
                 Box::pin(async { Err(ScanTriggerError::Backpressure("queue full".to_string())) })

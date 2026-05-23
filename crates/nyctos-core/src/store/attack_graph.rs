@@ -13,12 +13,12 @@ use sqlx::{Row, SqlitePool};
 use nyctos_types::attack_graph::{
     AttackGraphEdgeRecord, AttackGraphEvidenceTrail, AttackGraphNodeRecord, EDGE_CHAINED_WITH,
     EDGE_DERIVED_CANDIDATE, EDGE_TARGETS, EDGE_TOUCHES_OBJECT, EDGE_USES_ROLE, EDGE_VERIFIED_AS,
-    NODE_CANDIDATE, NODE_CHAIN, NODE_ENDPOINT, NODE_OBJECT, NODE_PARAMETER, NODE_ROLE, NODE_ROUTE,
-    NODE_SIGNAL, NODE_VERIFICATION_ATTEMPT, NODE_VERIFIED_VULNERABILITY,
+    NODE_CANDIDATE, NODE_CHAIN, NODE_ENDPOINT, NODE_FORM, NODE_OBJECT, NODE_PARAMETER, NODE_ROLE,
+    NODE_ROUTE, NODE_SIGNAL, NODE_VERIFICATION_ATTEMPT, NODE_VERIFIED_VULNERABILITY,
 };
 use nyctos_types::chain::ChainRecord;
 use nyctos_types::product::{
-    ApiClientCallModel, FrontendRouteModel, NyxSignalRecord, PentestCandidateRecord,
+    ApiClientCallModel, FormModel, FrontendRouteModel, NyxSignalRecord, PentestCandidateRecord,
     RouteModelEndpoint, RouteModelRecord, VerificationAttemptRecord, VerifiedVulnerabilityRecord,
 };
 
@@ -421,6 +421,9 @@ impl<'a> AttackGraphStore<'a> {
         }
         for call in &rec.model.api_client_calls {
             self.record_api_client_call(rec, call, now).await?;
+        }
+        for form in &rec.model.forms {
+            self.record_form(rec, form, now).await?;
         }
         Ok(())
     }
@@ -985,6 +988,121 @@ impl<'a> AttackGraphStore<'a> {
         .await?;
         self.record_route_objects(&rec.run_id, &rec.project_id, &route_node.id, &call.path, now)
             .await?;
+        Ok(())
+    }
+
+    async fn record_form(
+        &self,
+        rec: &RouteModelRecord,
+        form: &FormModel,
+        now: i64,
+    ) -> Result<(), StoreError> {
+        let form_node = self
+            .upsert_node_by_key(
+                &rec.run_id,
+                &rec.project_id,
+                NODE_FORM,
+                &form_key(form),
+                &format!("FORM {} {}", form.method, form.action),
+                None,
+                serde_json::json!({
+                    "source": "form_discovery",
+                    "repo": form.repo,
+                    "method": form.method,
+                    "action": form.action,
+                    "file": form.file,
+                    "line": form.line,
+                    "fields": form.fields,
+                    "csrf_markers": form.csrf_markers,
+                    "state_changing": form.state_changing,
+                    "confidence": form.confidence,
+                    "evidence": form.evidence,
+                }),
+                now,
+            )
+            .await?;
+        if let (Some(repo), Some(path)) = (form.repo.as_deref(), form.file.as_deref()) {
+            let file = self
+                .upsert_file_object(&rec.run_id, &rec.project_id, Some(repo), path, now)
+                .await?;
+            self.upsert_edge_by_key(
+                &rec.run_id,
+                &rec.project_id,
+                EDGE_TOUCHES_OBJECT,
+                &form_node.id,
+                &file.id,
+                None,
+                serde_json::json!({"source": "form_location"}),
+                now,
+            )
+            .await?;
+        }
+        if form.action.starts_with('/') {
+            let route_node = self
+                .upsert_route_node(&rec.run_id, &rec.project_id, &form.action, "form", now)
+                .await?;
+            let endpoint = self
+                .upsert_node_by_key(
+                    &rec.run_id,
+                    &rec.project_id,
+                    NODE_ENDPOINT,
+                    &endpoint_key(
+                        "form",
+                        form.repo.as_deref(),
+                        &form.method,
+                        &form.action,
+                        form.file.as_deref(),
+                        form.line,
+                    ),
+                    &format!("{} {}", form.method, form.action),
+                    None,
+                    serde_json::json!({
+                        "source": "form_action",
+                        "repo": form.repo,
+                        "method": form.method,
+                        "path": form.action,
+                        "file": form.file,
+                        "line": form.line,
+                    }),
+                    now,
+                )
+                .await?;
+            self.upsert_edge_by_key(
+                &rec.run_id,
+                &rec.project_id,
+                EDGE_TARGETS,
+                &form_node.id,
+                &endpoint.id,
+                None,
+                serde_json::json!({"source": "form.action"}),
+                now,
+            )
+            .await?;
+            self.upsert_edge_by_key(
+                &rec.run_id,
+                &rec.project_id,
+                EDGE_TARGETS,
+                &endpoint.id,
+                &route_node.id,
+                None,
+                serde_json::json!({"source": "form.action"}),
+                now,
+            )
+            .await?;
+            self.record_route_details(
+                &rec.run_id,
+                &rec.project_id,
+                &endpoint.id,
+                &route_node.id,
+                &form.action,
+                &[],
+                &form.fields,
+                &form.csrf_markers,
+                &[],
+                now,
+            )
+            .await?;
+        }
         Ok(())
     }
 
@@ -1765,6 +1883,17 @@ fn endpoint_key(
         key.push_str(&line.to_string());
     }
     key
+}
+
+fn form_key(form: &FormModel) -> String {
+    format!(
+        "form:{}:{}:{}:{}:{}",
+        form.repo.as_deref().unwrap_or("*"),
+        form.method.to_ascii_uppercase(),
+        normalise_path(&form.action),
+        form.file.as_deref().unwrap_or("*"),
+        form.line.map(|line| line.to_string()).unwrap_or_else(|| "*".to_string())
+    )
 }
 
 fn role_key(role: &str) -> String {

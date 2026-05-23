@@ -279,6 +279,67 @@ async fn start_compose(
 }
 
 impl RunningProjectEnvironment {
+    pub async fn reset_after_state_change(&mut self) -> anyhow::Result<bool> {
+        emit_env(
+            &self.events,
+            &self.run_id,
+            &self.project_id,
+            &self.environment_run_id,
+            "Resetting",
+            Some("resetting environment after state-changing verification probe"),
+            &self.target_urls,
+        );
+        match &mut self.mode {
+            RunningMode::Compose { env } => {
+                env.reset().await?;
+                let health = env.services_health().await.unwrap_or_default();
+                let reset = serde_json::json!({
+                    "ok": true,
+                    "mode": "docker-compose",
+                    "services": health.iter().map(|s| serde_json::json!({
+                        "service": s.service,
+                        "state": s.state,
+                        "health": s.health,
+                        "status": s.status,
+                    })).collect::<Vec<_>>(),
+                });
+                self.store
+                    .environment_runs()
+                    .update_lifecycle(
+                        &self.environment_run_id,
+                        "Ready",
+                        None,
+                        None,
+                        Some(&reset),
+                        None,
+                    )
+                    .await?;
+                emit_env(
+                    &self.events,
+                    &self.run_id,
+                    &self.project_id,
+                    &self.environment_run_id,
+                    "Ready",
+                    Some("environment reset complete"),
+                    &self.target_urls,
+                );
+                Ok(true)
+            }
+            RunningMode::Custom { .. } | RunningMode::None => {
+                emit_env(
+                    &self.events,
+                    &self.run_id,
+                    &self.project_id,
+                    &self.environment_run_id,
+                    "Ready",
+                    Some("environment reset hook unavailable for this launch mode"),
+                    &self.target_urls,
+                );
+                Ok(false)
+            }
+        }
+    }
+
     pub async fn stop(mut self) -> anyhow::Result<()> {
         let started = now_epoch_ms();
         let mut errors = Vec::new();

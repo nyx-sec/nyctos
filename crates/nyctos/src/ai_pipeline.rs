@@ -812,9 +812,13 @@ fn build_attack_planning_prompt(
             .map(|c| {
                 serde_json::json!({
                     "id": c.id,
+                    "source": c.source,
+                    "source_ids": c.source_ids,
                     "title": c.title,
                     "class": c.vuln_class,
                     "severity": c.severity_guess,
+                    "status": c.status,
+                    "confidence": c.confidence,
                     "hypothesis": c.hypothesis,
                     "affected_components": c.affected_components,
                     "source_excerpt": candidate_source_excerpt(c, workspaces).map(|ex| serde_json::json!({
@@ -6176,6 +6180,41 @@ mod tests {
         assert_eq!(leads[2].location.as_deref(), Some("GET http://localhost:3000/login"));
         assert!(leads.iter().all(|lead| lead.id != "pc-nyx-b"));
         assert!(leads.iter().all(|lead| lead.id != "pc-rejected"));
+    }
+
+    #[test]
+    fn attack_planning_prompt_includes_candidate_source_attribution() {
+        let candidate = PentestCandidateRecord {
+            source: "RouteDiscovery+JavaScriptBundle".to_string(),
+            source_ids: vec![
+                "RouteDiscovery:api:GET:/api/admin/debug".to_string(),
+                "JavaScriptBundle:web:GET:/api/admin/debug".to_string(),
+            ],
+            affected_components: vec![serde_json::json!({
+                "kind": "route",
+                "repo": "api",
+                "method": "GET",
+                "url_path": "/api/admin/debug"
+            })],
+            ..pentest_candidate(
+                "pc-weak-admin",
+                "RouteDiscovery",
+                "Medium",
+                "NeedsLiveTest",
+                serde_json::json!({"repo":"api","path":"src/routes.rs","line":42}),
+            )
+        };
+        let prompt = build_attack_planning_prompt(
+            &[candidate],
+            &HashMap::new(),
+            &RouteModel::default(),
+            &[],
+            &["http://localhost:3000".to_string()],
+        );
+
+        assert!(prompt.user.contains("\"source\": \"RouteDiscovery+JavaScriptBundle\""));
+        assert!(prompt.user.contains("JavaScriptBundle:web:GET:/api/admin/debug"));
+        assert!(prompt.user.contains("\"confidence\""));
     }
 
     #[tokio::test]

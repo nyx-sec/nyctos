@@ -8,8 +8,8 @@ use std::sync::Arc;
 use clap::{Parser, Subcommand};
 use nyctos_ai::{LiveEvidenceReviewDecision, LiveEvidenceReviewOutput};
 use nyctos_api::{
-    build_router, AuthConfig, EnvSecretResolver, ScanTrigger, ScanTriggerError, ScanTriggerSource,
-    ServerState, SetupContext, WebhookConfig, WebhookSecretResolver,
+    build_router, AuthConfig, EnvSecretResolver, ScanRunOverrides, ScanTrigger, ScanTriggerError,
+    ScanTriggerSource, ServerState, SetupContext, WebhookConfig, WebhookSecretResolver,
 };
 use nyctos_core::store::{
     finding_id_hash, NyxSignalRecord, PentestCandidateRecord, ProjectRecord, RepoOutcomeLabel,
@@ -31,6 +31,7 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 mod ai_pipeline;
 mod auth_sessions;
 mod banner;
+mod candidate_sources;
 mod cmd;
 mod launch;
 mod pentest_tools;
@@ -910,6 +911,30 @@ async fn drive_scan(
         Some(scanner_summary),
     );
 
+    emit_phase(&events, &run.id, project.id.as_str(), "CandidateSynthesisStarted", true, None);
+    let synthesis_summary = match candidate_sources::synthesize_weak_signal_candidates(
+        store,
+        &run.id,
+        project.id.as_str(),
+        &route_model,
+    )
+    .await
+    {
+        Ok(count) => format!("weak-signal synthesis persisted or updated {count} candidate(s)"),
+        Err(err) => {
+            tracing::warn!(error = %err, "weak-signal candidate synthesis failed");
+            format!("weak-signal candidate synthesis failed: {err}")
+        }
+    };
+    emit_phase(
+        &events,
+        &run.id,
+        project.id.as_str(),
+        "CandidateSynthesisStarted",
+        false,
+        Some(synthesis_summary),
+    );
+
     emit_phase(&events, &run.id, project.id.as_str(), "AgentReviewStarted", true, None);
     let mut agent_review_notes: Vec<String> = Vec::new();
     let auth_profiles = pentest_tools::configured_auth_profiles(project.runtime_profile.as_ref());
@@ -1267,7 +1292,7 @@ async fn drive_scan(
     }
 
     let mut browser_attempts_executed = 0_u32;
-    if let Some(env) = environment.as_ref() {
+    if let Some(env) = environment.as_mut() {
         let auth_workspace_paths = workspaces_for_ai
             .values()
             .map(|workspace| workspace.workspace().to_path_buf())
@@ -1278,12 +1303,13 @@ async fn drive_scan(
             &secrets,
             &run.id,
             project.id.as_str(),
-            &env.environment_run_id,
+            env,
             &live_target_urls,
             &config.run,
             &auth_profiles,
             &state_dir.traces_for_run(&run.id).join("auth_sessions"),
             &state_dir.traces_for_run(&run.id).join("browser_verification"),
+            &state_dir.traces_for_run(&run.id).join("exploit_audit"),
             &auth_workspace_paths,
             events.clone(),
         )
@@ -1291,9 +1317,10 @@ async fn drive_scan(
         {
             Ok(report) => {
                 verification_notes.push(format!(
-                    "candidate verifier: {} confirmed, {} rejected, {} inconclusive, {} errored ({} HTTP, {} browser)",
+                    "candidate verifier: {} confirmed, {} rejected, {} policy-blocked, {} inconclusive, {} errored ({} HTTP, {} browser)",
                     report.confirmed,
                     report.rejected,
+                    report.blocked,
                     report.inconclusive,
                     report.errored,
                     report.http_attempts,
@@ -1303,12 +1330,13 @@ async fn drive_scan(
                 if verbose
                     && (report.confirmed > 0
                         || report.rejected > 0
+                        || report.blocked > 0
                         || report.inconclusive > 0
                         || report.errored > 0)
                 {
                     println!(
-                        "pentest verification - {} confirmed, {} rejected, {} inconclusive, {} errored",
-                        report.confirmed, report.rejected, report.inconclusive, report.errored,
+                        "pentest verification - {} confirmed, {} rejected, {} policy-blocked, {} inconclusive, {} errored",
+                        report.confirmed, report.rejected, report.blocked, report.inconclusive, report.errored,
                     );
                 }
             }
@@ -1458,6 +1486,7 @@ async fn serve(
                     &req.source,
                     req.project_id.as_deref(),
                     req.repo.as_deref(),
+                    req.run_overrides,
                     events,
                 )
                 .await;
@@ -1622,6 +1651,7 @@ struct ScanRequest {
     source: ScanTriggerSource,
     project_id: Option<String>,
     repo: Option<String>,
+    run_overrides: Option<ScanRunOverrides>,
     reply: oneshot::Sender<Result<String, ScanTriggerError>>,
 }
 
@@ -1635,6 +1665,7 @@ impl ScanTrigger for MpscScanTrigger {
         source: ScanTriggerSource,
         project_id: Option<String>,
         repo: Option<String>,
+        run_overrides: Option<ScanRunOverrides>,
     ) -> Pin<Box<dyn Future<Output = Result<String, ScanTriggerError>> + Send + 'a>> {
         Box::pin(async move {
             let (reply, rx) = oneshot::channel();
@@ -1643,15 +1674,15 @@ impl ScanTrigger for MpscScanTrigger {
             // `send().await` when the dispatcher is saturated. The
             // bound is set in `serve()`; raise it there if a real load
             // profile demands a deeper queue.
-            self.tx.try_send(ScanRequest { source, project_id, repo, reply }).map_err(|err| {
-                match err {
+            self.tx
+                .try_send(ScanRequest { source, project_id, repo, run_overrides, reply })
+                .map_err(|err| match err {
                     mpsc::error::TrySendError::Full(_) => ScanTriggerError::Backpressure(
                         "scan request queue is full; retry after the current run completes"
                             .to_string(),
                     ),
                     mpsc::error::TrySendError::Closed(_) => ScanTriggerError::Closed,
-                }
-            })?;
+                })?;
             rx.await.map_err(|_| ScanTriggerError::Closed)?
         })
     }
@@ -1663,6 +1694,7 @@ async fn run_scan_for_api(
     source: &ScanTriggerSource,
     project_id: Option<&str>,
     repo: Option<&str>,
+    run_overrides: Option<ScanRunOverrides>,
     events: EventSink,
 ) -> Result<String, ScanTriggerError> {
     let store = Store::open(state_dir.root()).await.map_err(internal_string)?;
@@ -1714,7 +1746,11 @@ async fn run_scan_for_api(
     store.runs().insert(&run_record).await.map_err(internal_string)?;
 
     let run_id_out = run.id.clone();
-    let cfg = config.clone();
+    let mut cfg = config.clone();
+    if let Some(overrides) = run_overrides {
+        cfg.run.exploit_mode_enabled = overrides.exploit_mode_enabled;
+        cfg.run.allow_state_changing_live_probes = overrides.allow_state_changing_live_probes;
+    }
     let sd = state_dir.clone();
     tokio::spawn(async move {
         for (project, repos) in targets {
@@ -1996,6 +2032,7 @@ fn candidate_from_signal(
 struct CandidateVerificationReport {
     confirmed: u32,
     rejected: u32,
+    blocked: u32,
     inconclusive: u32,
     errored: u32,
     http_attempts: u32,
@@ -2008,12 +2045,13 @@ async fn verify_pentest_candidates(
     secrets: &SecretStore,
     run_id: &str,
     project_id: &str,
-    environment_run_id: &str,
+    environment: &mut launch::RunningProjectEnvironment,
     target_urls: &[String],
     run_config: &nyctos_core::RunConfig,
     auth_profiles: &[nyctos_types::project::ProjectAuthProfile],
     auth_artifact_dir: &std::path::Path,
     browser_artifact_root: &std::path::Path,
+    policy_audit_root: &std::path::Path,
     auth_workspace_paths: &[std::path::PathBuf],
     events: EventSink,
 ) -> anyhow::Result<CandidateVerificationReport> {
@@ -2047,6 +2085,7 @@ async fn verify_pentest_candidates(
         let started = now_epoch_ms();
         let attempt_id = format!("va-{}-{}", candidate.id, started);
         let browser_artifact_dir = browser_artifact_root.join(safe_artifact_segment(&attempt_id));
+        let audit_log = pentest_tools::ExploitAuditLog::default();
         let options = pentest_tools::LiveVerifierOptions {
             target_urls: target_urls.to_vec(),
             auth_profiles: auth_profiles.to_vec(),
@@ -2054,8 +2093,9 @@ async fn verify_pentest_candidates(
             auth_artifact_dir: auth_artifact_dir.to_path_buf(),
             auth_workspace_paths: auth_workspace_paths.to_vec(),
             browser_artifact_dir: Some(browser_artifact_dir),
-            allow_state_changing: run_config.allow_state_changing_live_probes,
             browser_checks_enabled: run_config.browser_checks_enabled,
+            policy: pentest_tools::ExploitSafetyPolicy::from_run_config(run_config),
+            audit_log: audit_log.clone(),
         };
         let outcome = execute_candidate_test_plan(&candidate, &options).await;
         let finished = now_epoch_ms();
@@ -2066,6 +2106,10 @@ async fn verify_pentest_candidates(
             Ok(VerificationOutcome::Rejected { request, response, oracle }) => {
                 report.rejected += 1;
                 ("Rejected", Some(request), Some(response), Some(oracle), None)
+            }
+            Ok(VerificationOutcome::Blocked { reason, trace }) => {
+                report.blocked += 1;
+                ("Blocked", trace, None, None, Some(reason))
             }
             Ok(VerificationOutcome::Inconclusive { reason, trace }) => {
                 report.inconclusive += 1;
@@ -2167,11 +2211,44 @@ async fn verify_pentest_candidates(
         } else {
             report.http_attempts += 1;
         }
+        let mut artifact_paths = artifact_paths;
+        if audit_log.has_executed_state_changing_action()
+            && run_config.exploit_reset_after_state_changing
+        {
+            audit_log.record_reset(
+                "started",
+                "state-changing action executed; requesting environment reset hook",
+                &options.policy,
+            );
+            match environment.reset_after_state_change().await {
+                Ok(true) => audit_log.record_reset(
+                    "finished",
+                    "environment reset hook completed",
+                    &options.policy,
+                ),
+                Ok(false) => audit_log.record_reset(
+                    "skipped",
+                    "environment reset hook unavailable for this launch mode",
+                    &options.policy,
+                ),
+                Err(err) => {
+                    tracing::warn!(error = %err, "environment reset hook failed after guarded action");
+                    audit_log.record_reset(
+                        "failed",
+                        format!("environment reset hook failed: {err}"),
+                        &options.policy,
+                    );
+                }
+            }
+        }
+        if let Some(path) = write_exploit_audit_jsonl(policy_audit_root, &attempt_id, &audit_log) {
+            artifact_paths.push(path);
+        }
         let attempt = VerificationAttemptRecord {
             id: attempt_id.clone(),
             run_id: run_id.to_string(),
             project_id: project_id.to_string(),
-            environment_run_id: environment_run_id.to_string(),
+            environment_run_id: environment.environment_run_id.clone(),
             candidate_id: Some(candidate.id.clone()),
             chain_id: None,
             method,
@@ -2202,6 +2279,12 @@ async fn verify_pentest_candidates(
                 store.verified_vulnerabilities().upsert(&vuln).await?;
             }
             "Rejected" => {
+                store
+                    .pentest_candidates()
+                    .set_status(&candidate.id, "Rejected", error.as_deref(), finished)
+                    .await?;
+            }
+            "Blocked" => {
                 store
                     .pentest_candidates()
                     .set_status(&candidate.id, "Rejected", error.as_deref(), finished)
@@ -2292,6 +2375,7 @@ enum VerificationOutcome {
     Confirmed { request: serde_json::Value, response: serde_json::Value, oracle: serde_json::Value },
     Rejected { request: serde_json::Value, response: serde_json::Value, oracle: serde_json::Value },
     Inconclusive { reason: String, trace: Option<serde_json::Value> },
+    Blocked { reason: String, trace: Option<serde_json::Value> },
 }
 
 async fn execute_candidate_test_plan(
@@ -2308,10 +2392,24 @@ async fn execute_candidate_test_plan(
         pentest_tools::ToolVerificationOutcome::Inconclusive { reason, trace } => {
             VerificationOutcome::Inconclusive { reason, trace }
         }
+        pentest_tools::ToolVerificationOutcome::Blocked { reason, trace } => {
+            VerificationOutcome::Blocked { reason, trace }
+        }
     })
 }
 
 fn verification_attempt_method(request: Option<&serde_json::Value>) -> String {
+    if let Some(tool) = request
+        .and_then(|v| v.get("policy_audit"))
+        .and_then(|v| v.as_array())
+        .and_then(|items| items.first())
+        .and_then(|entry| entry.get("tool"))
+        .and_then(|v| v.as_str())
+    {
+        if tool.starts_with("browser.") || tool == "browser.workflow" {
+            return "browser".to_string();
+        }
+    }
     match request.and_then(|v| v.get("kind")).and_then(|v| v.as_str()) {
         Some("browser") | Some("browser_workflow") => "browser".to_string(),
         Some("http_workflow") | Some("multi_step_http") => "http_workflow".to_string(),
@@ -2319,6 +2417,41 @@ fn verification_attempt_method(request: Option<&serde_json::Value>) -> String {
         Some("single_http") | Some("http") => "http".to_string(),
         Some(other) => other.to_string(),
         None => "http".to_string(),
+    }
+}
+
+fn write_exploit_audit_jsonl(
+    audit_root: &std::path::Path,
+    attempt_id: &str,
+    audit_log: &pentest_tools::ExploitAuditLog,
+) -> Option<String> {
+    let entries = audit_log.entries();
+    if entries.is_empty() {
+        return None;
+    }
+    if let Err(err) = std::fs::create_dir_all(audit_root) {
+        tracing::warn!(error = %err, path = %audit_root.display(), "failed to create exploit audit directory");
+        return None;
+    }
+    let path = audit_root.join(format!("{}.jsonl", safe_artifact_segment(attempt_id)));
+    let mut body = Vec::new();
+    for entry in entries {
+        match serde_json::to_vec(&entry) {
+            Ok(mut line) => {
+                line.push(b'\n');
+                body.extend(line);
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "failed to serialise exploit audit entry");
+            }
+        }
+    }
+    match std::fs::write(&path, body) {
+        Ok(()) => Some(path.display().to_string()),
+        Err(err) => {
+            tracing::warn!(error = %err, path = %path.display(), "failed to write exploit audit log");
+            None
+        }
     }
 }
 
@@ -3444,6 +3577,15 @@ fn report_run(config: &Config) {
             "verifier: replay_stable_check disabled (default; set [run].replay_stable_check = true to enable)"
         );
     }
+    println!(
+        "exploit mode: {} (state-changing probes {}, dry-run {}, cap {} request/action(s), rate {}/s, reset hook {})",
+        if config.run.exploit_mode_enabled { "enabled" } else { "disabled" },
+        if config.run.state_changing_live_probes_allowed() { "allowed" } else { "blocked" },
+        if config.run.exploit_dry_run { "enabled" } else { "disabled" },
+        config.run.exploit_request_cap_resolved(),
+        config.run.exploit_requests_per_second_resolved(),
+        if config.run.exploit_reset_after_state_changing { "enabled" } else { "disabled" },
+    );
 }
 
 fn report_scheduler(config: &Config) {
@@ -3505,6 +3647,7 @@ impl ScanTrigger for DoctorScanTrigger {
         _source: ScanTriggerSource,
         _project_id: Option<String>,
         _repo: Option<String>,
+        _run_overrides: Option<ScanRunOverrides>,
     ) -> Pin<Box<dyn Future<Output = Result<String, ScanTriggerError>> + Send + 'a>> {
         Box::pin(async move {
             Err(ScanTriggerError::Internal("doctor probe must not fire a scan".to_string()))

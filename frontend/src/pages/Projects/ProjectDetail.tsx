@@ -45,6 +45,7 @@ export function ProjectDetail() {
   const [banner, setBanner] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [showProfileEdit, setShowProfileEdit] = useState(false);
+  const [showPentestOptions, setShowPentestOptions] = useState(false);
   const [editTarget, setEditTarget] = useState<RepoRecord | null>(null);
   const [removeTarget, setRemoveTarget] = useState<RepoRecord | null>(null);
 
@@ -55,11 +56,15 @@ export function ProjectDetail() {
     },
   });
 
-  async function onStartPentest() {
+  async function onStartPentest(options: StartPentestOptions) {
     setBanner("Starting pentest for this app...");
     try {
-      const { run_id } = await startPentest.mutateAsync();
+      const { run_id } = await startPentest.mutateAsync({
+        exploit_mode_enabled: options.exploitMode,
+        allow_state_changing_live_probes: options.allowStateChanging,
+      });
       setBanner(`Pentest started (run ${run_id}).`);
+      setShowPentestOptions(false);
       navigate(`/runs/${encodeURIComponent(run_id)}`);
     } catch (err) {
       setBanner(`Could not start pentest: ${String(err)}`);
@@ -162,7 +167,7 @@ export function ProjectDetail() {
             <div className="project-hero__actions">
               <Button
                 variant="primary"
-                onClick={onStartPentest}
+                onClick={() => setShowPentestOptions(true)}
                 disabled={!canStartPentest || startPentest.isPending}
               >
                 {startPentest.isPending ? "Starting..." : "Start pentest"}
@@ -310,6 +315,14 @@ export function ProjectDetail() {
         />
       )}
 
+      {showPentestOptions && (
+        <StartPentestModal
+          busy={startPentest.isPending}
+          onConfirm={onStartPentest}
+          onCancel={() => setShowPentestOptions(false)}
+        />
+      )}
+
       {removeTarget && (
         <ConfirmModal
           title={`Remove "${removeTarget.name}"?`}
@@ -332,6 +345,68 @@ export function ProjectDetail() {
         />
       )}
     </>
+  );
+}
+
+interface StartPentestOptions {
+  exploitMode: boolean;
+  allowStateChanging: boolean;
+}
+
+interface StartPentestModalProps {
+  busy: boolean;
+  onConfirm: (options: StartPentestOptions) => void;
+  onCancel: () => void;
+}
+
+function StartPentestModal({ busy, onConfirm, onCancel }: StartPentestModalProps) {
+  const [exploitMode, setExploitMode] = useState(false);
+  const [allowStateChanging, setAllowStateChanging] = useState(false);
+
+  function setExploitModeChecked(checked: boolean) {
+    setExploitMode(checked);
+    if (!checked) setAllowStateChanging(false);
+  }
+
+  return (
+    <ConfirmModal
+      title="Start pentest"
+      confirmLabel={exploitMode ? "Start with exploit mode" : "Start safe pentest"}
+      busy={busy}
+      onConfirm={() => onConfirm({ exploitMode, allowStateChanging })}
+      onCancel={onCancel}
+      body={
+        <div className="pentest-options">
+          <p className="pentest-options__note">
+            Safe mode is the default. State-changing probes stay blocked unless both switches are
+            enabled for this run.
+          </p>
+          <label className="pentest-options__check">
+            <input
+              type="checkbox"
+              checked={exploitMode}
+              onChange={(event) => setExploitModeChecked(event.currentTarget.checked)}
+            />
+            <span>
+              <strong>Exploit mode</strong>
+              <small>Allow Nyctos to evaluate invasive live-verification plans.</small>
+            </span>
+          </label>
+          <label className="pentest-options__check">
+            <input
+              type="checkbox"
+              checked={allowStateChanging}
+              disabled={!exploitMode}
+              onChange={(event) => setAllowStateChanging(event.currentTarget.checked)}
+            />
+            <span>
+              <strong>State-changing probes</strong>
+              <small>Permit POST, PUT, PATCH, DELETE, and browser workflows that may mutate data.</small>
+            </span>
+          </label>
+        </div>
+      }
+    />
   );
 }
 

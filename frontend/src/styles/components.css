@@ -1410,6 +1410,54 @@
   flex: 0 0 auto;
 }
 
+.pentest-options {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.pentest-options__note {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+.pentest-options__check {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  gap: var(--space-3);
+  align-items: start;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+}
+
+.pentest-options__check input {
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+}
+
+.pentest-options__check span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.pentest-options__check strong {
+  color: var(--text);
+  font-size: var(--text-sm);
+}
+
+.pentest-options__check small {
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
+  line-height: 1.45;
+}
+
 /* Repo-add modal specifics */
 .project-add-basic {
   display: grid;

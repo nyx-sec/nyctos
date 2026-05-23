@@ -321,8 +321,24 @@ impl<'a> PentestCandidateStore<'a> {
                 rejection_reason, confidence, trace_id, created_at, updated_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
-                status = excluded.status,
-                rejection_reason = excluded.rejection_reason,
+                source = excluded.source,
+                source_ids_json = excluded.source_ids_json,
+                title = excluded.title,
+                vuln_class = excluded.vuln_class,
+                severity_guess = excluded.severity_guess,
+                affected_components_json = excluded.affected_components_json,
+                hypothesis = excluded.hypothesis,
+                test_plan = excluded.test_plan,
+                status = CASE
+                    WHEN pentest_candidates.status = 'Verified' THEN pentest_candidates.status
+                    ELSE excluded.status
+                END,
+                rejection_reason = CASE
+                    WHEN pentest_candidates.status = 'Verified' THEN pentest_candidates.rejection_reason
+                    ELSE excluded.rejection_reason
+                END,
+                confidence = excluded.confidence,
+                trace_id = COALESCE(excluded.trace_id, pentest_candidates.trace_id),
                 updated_at = excluded.updated_at
             "#,
         )

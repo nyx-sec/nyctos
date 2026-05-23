@@ -35,9 +35,40 @@ impl ScanTrigger for StubScanTrigger {
         _source: ScanTriggerSource,
         _project_id: Option<String>,
         _repo: Option<String>,
+        _run_overrides: Option<nyctos_api::ScanRunOverrides>,
     ) -> Pin<Box<dyn Future<Output = Result<String, ScanTriggerError>> + Send + 'a>> {
         let id = self.run_id.clone();
         Box::pin(async move { Ok(id) })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RecordedScanCall {
+    source: ScanTriggerSource,
+    project_id: Option<String>,
+    repo: Option<String>,
+    run_overrides: Option<nyctos_api::ScanRunOverrides>,
+}
+
+#[derive(Default)]
+struct RecordingOverridesTrigger {
+    calls: tokio::sync::Mutex<Vec<RecordedScanCall>>,
+}
+
+impl ScanTrigger for RecordingOverridesTrigger {
+    fn trigger<'a>(
+        &'a self,
+        source: ScanTriggerSource,
+        project_id: Option<String>,
+        repo: Option<String>,
+        run_overrides: Option<nyctos_api::ScanRunOverrides>,
+    ) -> Pin<Box<dyn Future<Output = Result<String, ScanTriggerError>> + Send + 'a>> {
+        Box::pin(async move {
+            let mut calls = self.calls.lock().await;
+            let id = format!("run-{}", calls.len());
+            calls.push(RecordedScanCall { source, project_id, repo, run_overrides });
+            Ok(id)
+        })
     }
 }
 
@@ -144,6 +175,29 @@ fn sample_run(id: &str) -> RunRecord {
         wall_clock_ms: None,
         total_ai_spend_usd_micros: 0,
     }
+}
+
+async fn make_default_project_ready(srv: &TestServer) {
+    srv.store.repos().upsert(&sample_repo("web")).await.expect("repo");
+    srv.store
+        .launch_profiles()
+        .upsert_default(
+            DEFAULT_PROJECT_ID,
+            &ProjectLaunchProfileInput {
+                name: None,
+                mode: None,
+                build_steps: Vec::new(),
+                start_steps: Vec::new(),
+                stop_steps: Vec::new(),
+                health_checks: Vec::new(),
+                target_urls: vec!["http://localhost:3000".to_string()],
+                env_refs: Vec::new(),
+                working_dirs: Vec::new(),
+            },
+            2_000,
+        )
+        .await
+        .expect("launch profile");
 }
 
 fn sample_finding(run_id: &str, repo: &str, path: &str, rule: &str) -> FindingRecord {
@@ -890,6 +944,62 @@ async fn scan_endpoint_stamps_manual_source_for_runs_triggered_by() {
 }
 
 #[tokio::test]
+async fn start_pentest_rejects_state_changing_without_exploit_mode() {
+    let trigger = Arc::new(RecordingOverridesTrigger::default());
+    let srv = TestServer::start_with_trigger(trigger.clone() as Arc<dyn ScanTrigger>).await;
+    make_default_project_ready(&srv).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/v1/projects/{}/pentest", srv.base(), DEFAULT_PROJECT_ID))
+        .json(&serde_json::json!({
+            "exploit_mode_enabled": false,
+            "allow_state_changing_live_probes": true,
+        }))
+        .send()
+        .await
+        .expect("post");
+
+    assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
+    let body: Value = resp.json().await.expect("json");
+    assert!(body["error"]["message"].as_str().unwrap().contains("require exploit mode"));
+    assert!(trigger.calls.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn start_pentest_passes_exploit_overrides_to_trigger() {
+    let trigger = Arc::new(RecordingOverridesTrigger::default());
+    let srv = TestServer::start_with_trigger(trigger.clone() as Arc<dyn ScanTrigger>).await;
+    make_default_project_ready(&srv).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/v1/projects/{}/pentest", srv.base(), DEFAULT_PROJECT_ID))
+        .json(&serde_json::json!({
+            "exploit_mode_enabled": true,
+            "allow_state_changing_live_probes": true,
+        }))
+        .send()
+        .await
+        .expect("post");
+
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    let body: Value = resp.json().await.expect("json");
+    assert_eq!(body["run_id"], "run-0");
+
+    let calls = trigger.calls.lock().await.clone();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].source, ScanTriggerSource::Manual);
+    assert_eq!(calls[0].project_id.as_deref(), Some(DEFAULT_PROJECT_ID));
+    assert_eq!(calls[0].repo, None);
+    assert_eq!(
+        calls[0].run_overrides,
+        Some(nyctos_api::ScanRunOverrides {
+            exploit_mode_enabled: true,
+            allow_state_changing_live_probes: true,
+        }),
+    );
+}
+
+#[tokio::test]
 async fn websocket_receives_repo_started_and_finished() {
     let srv = TestServer::start().await;
     let url = format!("{}/api/v1/events?run_id=run-ws", srv.ws_base());
@@ -1398,6 +1508,7 @@ async fn delete_repo_removes_workspace_dir_when_configured() {
             _source: ScanTriggerSource,
             _project_id: Option<String>,
             _repo: Option<String>,
+            _run_overrides: Option<nyctos_api::ScanRunOverrides>,
         ) -> Pin<Box<dyn Future<Output = Result<String, ScanTriggerError>> + Send + 'a>> {
             Box::pin(async { Ok("r".to_string()) })
         }
@@ -2164,6 +2275,7 @@ impl ScanTrigger for RecordingTrigger {
         source: ScanTriggerSource,
         _project_id: Option<String>,
         repo: Option<String>,
+        _run_overrides: Option<nyctos_api::ScanRunOverrides>,
     ) -> Pin<Box<dyn Future<Output = Result<String, ScanTriggerError>> + Send + 'a>> {
         Box::pin(async move {
             let mut g = self.calls.lock().await;
@@ -2650,6 +2762,7 @@ impl ScanTrigger for BlockingTrigger {
         _source: ScanTriggerSource,
         _project_id: Option<String>,
         _repo: Option<String>,
+        _run_overrides: Option<nyctos_api::ScanRunOverrides>,
     ) -> Pin<Box<dyn Future<Output = Result<String, ScanTriggerError>> + Send + 'a>> {
         Box::pin(async move {
             *self.in_flight.lock().await = true;

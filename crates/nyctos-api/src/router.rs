@@ -48,7 +48,7 @@ use nyctos_types::api::{
 };
 use nyctos_types::event::{AgentEvent, AiEvent, ReproEvent, RunEvent, SandboxEvent};
 use nyctos_types::product::{
-    ProjectLaunchProfileInput, StartPentestResponse, TestLaunchTargetRequest,
+    ProjectLaunchProfileInput, StartPentestRequest, StartPentestResponse, TestLaunchTargetRequest,
     TestLaunchTargetResponse,
 };
 use nyctos_types::project::{
@@ -57,7 +57,7 @@ use nyctos_types::project::{
 };
 use nyctos_types::repo::{CreateRepoRequest, PatchRepoRequest, TestRepoRequest, TestRepoResponse};
 
-use crate::state::{ApiError, ScanTriggerSource, ServerState};
+use crate::state::{ApiError, ScanRunOverrides, ScanTriggerSource, ServerState};
 
 /// Build the production router with every `/api/v1/...` route attached.
 pub fn build_router(state: ServerState) -> Router {
@@ -92,6 +92,7 @@ pub fn build_router(state: ServerState) -> Router {
         .route("/api/v1/runs/{id}", get(get_run))
         .route("/api/v1/runs/{id}/findings", get(findings_for_run))
         .route("/api/v1/runs/{id}/signals", get(signals_for_run))
+        .route("/api/v1/runs/{id}/candidates", get(candidates_for_run))
         .route("/api/v1/runs/{id}/route-model", get(route_model_for_run))
         .route("/api/v1/runs/{id}/environment-runs", get(environment_runs_for_run))
         .route("/api/v1/runs/{id}/events.jsonl", get(run_event_log))
@@ -1475,13 +1476,14 @@ async fn scan_project(
     // A `?repo=...` filter scopes the trigger to a single repo; the
     // dispatcher / config-resolver downstream is responsible for
     // rejecting unknown names so this handler stays a thin pass-through.
-    let run_id = s.scan.trigger(ScanTriggerSource::Manual, Some(project_id), q.repo).await?;
+    let run_id = s.scan.trigger(ScanTriggerSource::Manual, Some(project_id), q.repo, None).await?;
     Ok(Json(ScanResponse { run_id }))
 }
 
 async fn start_pentest_project(
     State(s): State<ServerState>,
     Path(project_id): Path<String>,
+    body: Option<Json<StartPentestRequest>>,
 ) -> Result<Json<StartPentestResponse>, ApiError> {
     let project = require_project(&s, &project_id).await?;
     let profile = project.default_launch_profile.ok_or_else(|| {
@@ -1495,7 +1497,24 @@ async fn start_pentest_project(
             profile.readiness
         )));
     }
-    let run_id = s.scan.trigger(ScanTriggerSource::Manual, Some(project_id), None).await?;
+    let request = body.map(|Json(body)| body).unwrap_or_default();
+    if request.allow_state_changing_live_probes && !request.exploit_mode_enabled {
+        return Err(ApiError::BadRequest(
+            "state-changing live probes require exploit mode to be enabled".to_string(),
+        ));
+    }
+    let run_id = s
+        .scan
+        .trigger(
+            ScanTriggerSource::Manual,
+            Some(project_id),
+            None,
+            Some(ScanRunOverrides {
+                exploit_mode_enabled: request.exploit_mode_enabled,
+                allow_state_changing_live_probes: request.allow_state_changing_live_probes,
+            }),
+        )
+        .await?;
     Ok(Json(StartPentestResponse { run_id }))
 }
 
@@ -1603,6 +1622,14 @@ async fn signals_for_run(
 ) -> Result<Json<Vec<nyctos_types::product::NyxSignalRecord>>, ApiError> {
     require_run(&s, &id).await?;
     Ok(Json(s.store.nyx_signals().list_by_run(&id, q.meaningful_only).await?))
+}
+
+async fn candidates_for_run(
+    State(s): State<ServerState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<nyctos_types::product::PentestCandidateRecord>>, ApiError> {
+    require_run(&s, &id).await?;
+    Ok(Json(s.store.pentest_candidates().list_by_run(&id).await?))
 }
 
 async fn route_model_for_run(

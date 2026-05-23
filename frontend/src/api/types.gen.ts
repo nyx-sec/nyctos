@@ -247,9 +247,13 @@ export type FrontendRouteModel = { path: string, repo?: string, file?: string, l
 
 export type ApiClientCallModel = { method: string, path: string, repo?: string, file?: string, line: number | null, confidence: number, evidence: Array<RouteEvidence>, };
 
-export type RouteModel = { backend_routes: Array<RouteModelEndpoint>, frontend_routes: Array<FrontendRouteModel>, api_client_calls: Array<ApiClientCallModel>, notes: Array<string>, };
+export type FormModel = { method: string, action: string, repo?: string, file?: string, line: number | null, fields: Array<string>, csrf_markers: Array<string>, state_changing: boolean, confidence: number, evidence: Array<RouteEvidence>, };
+
+export type RouteModel = { backend_routes: Array<RouteModelEndpoint>, frontend_routes: Array<FrontendRouteModel>, api_client_calls: Array<ApiClientCallModel>, forms: Array<FormModel>, notes: Array<string>, };
 
 export type RouteModelRecord = { id: string, run_id: string, project_id: string, model: RouteModel, created_at: number, };
+
+export type StartPentestRequest = { exploit_mode_enabled: boolean, allow_state_changing_live_probes: boolean, };
 
 export type StartPentestResponse = { run_id: string, };
 
