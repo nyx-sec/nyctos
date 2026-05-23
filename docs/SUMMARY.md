@@ -37,8 +37,8 @@ Both names appear in these pages for the reasons explained in
   over routes, endpoints, signals, candidates, verification
   attempts, verified vulnerabilities, and chains.
 - [business-logic-templates.md](business-logic-templates.md):
-  reusable live-test templates for tenant/object isolation,
-  coupon/price manipulation, and AI chatbot exploitability probes.
+  first-class live-test template registry, selection controls,
+  dry-run behavior, provenance, and shipped business-logic probes.
 - [events.md](events.md): `AgentEvent` envelope, the fixed
   per-run / per-project / per-repo ordering, the AI runtime
   stream, the WS replay buffer, and the `Lagged` warning frame.

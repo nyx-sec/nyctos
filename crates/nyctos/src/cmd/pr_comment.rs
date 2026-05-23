@@ -149,7 +149,7 @@ pub fn filter_for_pr(report: &ScanReport) -> FilteredFindings<'_> {
     let mut rows: Vec<CommentRow> = report
         .verified_vulnerabilities
         .iter()
-        .filter(|v| v.status != "FalsePositive")
+        .filter(|v| matches!(v.status.as_str(), "Open" | "Verified" | "Confirmed"))
         .map(comment_row_from_vulnerability)
         .collect();
     if rows.is_empty() && report.schema_version == 1 {
@@ -674,6 +674,10 @@ mod tests {
         let mut report = empty_report();
         report.verified_vulnerabilities = vec![
             vulnerability("a", "alpha", "src/a.py", "High"),
+            ReportVulnerability {
+                status: "NeedsReview".into(),
+                ..vulnerability("review", "alpha", "src/review.py", "Medium")
+            },
             ReportVulnerability {
                 status: "FalsePositive".into(),
                 ..vulnerability("b", "alpha", "src/b.py", "Low")

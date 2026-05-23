@@ -522,6 +522,15 @@ pub struct RunConfig {
     /// scanners still run normally.
     #[serde(default)]
     pub exploit_dry_run: bool,
+    /// Generate first-class business-logic pentest candidates from the
+    /// route/auth model. The generated plans still pass through the
+    /// normal live-verifier safety gates.
+    #[serde(default = "default_true")]
+    pub business_logic_templates_enabled: bool,
+    /// Optional allowlist of business-logic template ids. Empty means
+    /// every registered template is considered.
+    #[serde(default)]
+    pub business_logic_template_ids: Vec<String>,
     /// Per-candidate cap on guarded live HTTP/browser actions. `None`
     /// falls back to [`RunConfig::DEFAULT_EXPLOIT_REQUEST_CAP`]; a
     /// configured `0` is floored to `1`.
@@ -586,6 +595,8 @@ impl Default for RunConfig {
             browser_checks_enabled: false,
             exploit_mode_enabled: false,
             exploit_dry_run: false,
+            business_logic_templates_enabled: true,
+            business_logic_template_ids: Vec::new(),
             exploit_request_cap: None,
             exploit_requests_per_second: None,
             exploit_reset_after_state_changing: true,
@@ -824,6 +835,8 @@ mod tests {
         assert!(!cfg.run.enable_aggressive_sqlmap);
         assert!(!cfg.run.exploit_mode_enabled);
         assert!(!cfg.run.exploit_dry_run);
+        assert!(cfg.run.business_logic_templates_enabled);
+        assert!(cfg.run.business_logic_template_ids.is_empty());
         assert_eq!(cfg.run.exploit_request_cap_resolved(), RunConfig::DEFAULT_EXPLOIT_REQUEST_CAP);
         assert_eq!(
             cfg.run.exploit_requests_per_second_resolved(),
@@ -840,6 +853,8 @@ mod tests {
 exploit_mode_enabled = true
 allow_state_changing_live_probes = true
 exploit_dry_run = true
+business_logic_templates_enabled = false
+business_logic_template_ids = ["tenant_object_isolation", "webhook_callback_trust_boundary"]
 exploit_request_cap = 0
 exploit_requests_per_second = 0
 exploit_reset_after_state_changing = false
@@ -849,6 +864,14 @@ exploit_reset_after_state_changing = false
         assert!(cfg.run.allow_state_changing_live_probes);
         assert!(cfg.run.state_changing_live_probes_allowed());
         assert!(cfg.run.exploit_dry_run);
+        assert!(!cfg.run.business_logic_templates_enabled);
+        assert_eq!(
+            cfg.run.business_logic_template_ids,
+            vec![
+                "tenant_object_isolation".to_string(),
+                "webhook_callback_trust_boundary".to_string()
+            ]
+        );
         assert_eq!(cfg.run.exploit_request_cap_resolved(), 1);
         assert_eq!(cfg.run.exploit_requests_per_second_resolved(), 1);
         assert!(!cfg.run.exploit_reset_after_state_changing);

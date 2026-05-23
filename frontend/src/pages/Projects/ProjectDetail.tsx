@@ -62,6 +62,8 @@ export function ProjectDetail() {
       const { run_id } = await startPentest.mutateAsync({
         exploit_mode_enabled: options.exploitMode,
         allow_state_changing_live_probes: options.allowStateChanging,
+        browser_checks_enabled: options.browserChecks,
+        business_logic_template_ids: [],
       });
       setBanner(`Pentest started (run ${run_id}).`);
       setShowPentestOptions(false);
@@ -351,6 +353,7 @@ export function ProjectDetail() {
 interface StartPentestOptions {
   exploitMode: boolean;
   allowStateChanging: boolean;
+  browserChecks: boolean;
 }
 
 interface StartPentestModalProps {
@@ -362,6 +365,7 @@ interface StartPentestModalProps {
 function StartPentestModal({ busy, onConfirm, onCancel }: StartPentestModalProps) {
   const [exploitMode, setExploitMode] = useState(false);
   const [allowStateChanging, setAllowStateChanging] = useState(false);
+  const [browserChecks, setBrowserChecks] = useState(false);
 
   function setExploitModeChecked(checked: boolean) {
     setExploitMode(checked);
@@ -373,7 +377,7 @@ function StartPentestModal({ busy, onConfirm, onCancel }: StartPentestModalProps
       title="Start pentest"
       confirmLabel={exploitMode ? "Start with exploit mode" : "Start safe pentest"}
       busy={busy}
-      onConfirm={() => onConfirm({ exploitMode, allowStateChanging })}
+      onConfirm={() => onConfirm({ exploitMode, allowStateChanging, browserChecks })}
       onCancel={onCancel}
       body={
         <div className="pentest-options">
@@ -381,6 +385,17 @@ function StartPentestModal({ busy, onConfirm, onCancel }: StartPentestModalProps
             Safe mode is the default. State-changing probes stay blocked unless both switches are
             enabled for this run.
           </p>
+          <label className="pentest-options__check">
+            <input
+              type="checkbox"
+              checked={browserChecks}
+              onChange={(event) => setBrowserChecks(event.currentTarget.checked)}
+            />
+            <span>
+              <strong>Browser verification</strong>
+              <small>Allow Playwright-backed checks for DOM and browser-only workflows.</small>
+            </span>
+          </label>
           <label className="pentest-options__check">
             <input
               type="checkbox"

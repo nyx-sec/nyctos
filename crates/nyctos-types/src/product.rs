@@ -395,6 +395,17 @@ pub struct StartPentestRequest {
     pub exploit_mode_enabled: bool,
     #[serde(default)]
     pub allow_state_changing_live_probes: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub exploit_dry_run: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub browser_checks_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub business_logic_templates_enabled: Option<bool>,
+    #[serde(default)]
+    pub business_logic_template_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

@@ -93,7 +93,7 @@ sqlite3 "<state>/state.db" \
 `nyctos doctor` prints the schema version on every run:
 
 ```text
-db OK at <state>/state.db (schema v2)
+db OK at <state>/state.db (schema v3)
 ```
 
 If migrations diverge (e.g. a newer binary then an older binary

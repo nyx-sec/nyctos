@@ -157,6 +157,7 @@ Two tables touch each run:
 |----------------|---------------------------------------------|
 | `runs`         | `finalise_run` (`status`, `finished_at`, `wall_clock_ms`) |
 | `findings`     | `persist_run_results` (one row per static-pass diag) |
+| `business_logic_template_runs` | Business-logic template synthesis counts and skip reasons. |
 | `verification_attempts` | Live HTTP/browser verifier rows. Browser attempts attach replay artifact paths. |
 | `verified_vulnerabilities` | User-facing confirmed vulnerabilities promoted from successful live attempts. |
 | `attack_graph_nodes`, `attack_graph_edges` | Store dual-writes for route models, signals, candidates, verification attempts, verified vulnerabilities, and chains. |

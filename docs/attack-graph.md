@@ -3,8 +3,9 @@
 Nyctos stores an attack graph as a run-scoped index over the artifacts
 the scanner and agent pipeline already persist. It does not replace the
 source tables; `nyx_signals`, `pentest_candidates`,
-`verification_attempts`, `verified_vulnerabilities`, `chains`, and
-`route_models` remain authoritative. The graph gives those records a
+`verification_attempts`, `verified_vulnerabilities`, `chains`,
+`route_models`, and `business_logic_template_runs` remain
+authoritative. The graph gives those records a
 common set of nodes and edges so later UI and report surfaces can answer
 provenance and blast-radius questions without hand-joining every table.
 
@@ -44,6 +45,7 @@ The shipped graph writers can represent these node kinds:
 | `object` | Application resource or source object, including route resources and file locations. |
 | `signal` | Static or scanner signal, including placeholder source nodes for external scanner leads. |
 | `candidate` | Pentest candidate from Nyx signals, optional scanners, or AI candidate finding discovery. |
+| `business_logic_template` | Registered template provenance for template-generated candidates. |
 | `verification_attempt` | Live verification attempt that exercised a candidate or chain. |
 | `verified_vulnerability` | Confirmed vulnerability row. |
 | `chain` | Chain reasoning row and its members. |
@@ -72,6 +74,9 @@ Graph rows are dual-written by the existing store accessors:
 - `NyxSignalStore::insert` records signal nodes and file object links.
 - `PentestCandidateStore::insert` and `CandidateFindingStore::insert`
   record candidate nodes, source edges, and target/object/role links.
+  Business-logic candidates additionally link their template node to
+  the candidate and expose route, role, and object touch points from
+  structured template metadata.
 - `VerificationAttemptStore::insert` records attempt nodes and request
   targets.
 - `VerifiedVulnerabilityStore::upsert` records verified vulnerability

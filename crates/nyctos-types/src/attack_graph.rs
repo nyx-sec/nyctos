@@ -16,6 +16,7 @@ pub const NODE_ROLE: &str = "role";
 pub const NODE_OBJECT: &str = "object";
 pub const NODE_SIGNAL: &str = "signal";
 pub const NODE_CANDIDATE: &str = "candidate";
+pub const NODE_BUSINESS_LOGIC_TEMPLATE: &str = "business_logic_template";
 pub const NODE_VERIFICATION_ATTEMPT: &str = "verification_attempt";
 pub const NODE_VERIFIED_VULNERABILITY: &str = "verified_vulnerability";
 pub const NODE_CHAIN: &str = "chain";

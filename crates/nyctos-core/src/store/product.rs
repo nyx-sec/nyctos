@@ -2,6 +2,7 @@
 
 use sqlx::{Row, SqlitePool};
 
+pub use nyctos_types::business_logic::BusinessLogicTemplateRunRecord;
 pub use nyctos_types::product::{
     EnvironmentRunRecord, LaunchEnvRef, LaunchHealthCheck, LaunchStep, LaunchWorkingDir,
     NyxSignalRecord, PentestCandidateRecord, ProjectLaunchProfile, ProjectLaunchProfileInput,
@@ -434,6 +435,66 @@ impl<'a> PentestCandidateStore<'a> {
     }
 }
 
+pub struct BusinessLogicTemplateRunStore<'a> {
+    pool: &'a SqlitePool,
+}
+
+impl<'a> BusinessLogicTemplateRunStore<'a> {
+    pub fn new(pool: &'a SqlitePool) -> Self {
+        Self { pool }
+    }
+
+    pub async fn upsert(&self, rec: &BusinessLogicTemplateRunRecord) -> Result<(), StoreError> {
+        sqlx::query(
+            r#"
+            INSERT INTO business_logic_template_runs (
+                run_id, project_id, template_id, template_version, generated_count,
+                skipped_count, skip_reasons_json, dry_run, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(run_id, template_id, template_version) DO UPDATE SET
+                project_id = excluded.project_id,
+                generated_count = excluded.generated_count,
+                skipped_count = excluded.skipped_count,
+                skip_reasons_json = excluded.skip_reasons_json,
+                dry_run = excluded.dry_run,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(&rec.run_id)
+        .bind(&rec.project_id)
+        .bind(&rec.template_id)
+        .bind(&rec.template_version)
+        .bind(i64::from(rec.generated_count))
+        .bind(i64::from(rec.skipped_count))
+        .bind(serde_json::to_string(&rec.skip_reasons)?)
+        .bind(if rec.dry_run { 1_i64 } else { 0_i64 })
+        .bind(rec.created_at)
+        .bind(rec.updated_at)
+        .execute(self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn list_by_run(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<BusinessLogicTemplateRunRecord>, StoreError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT run_id, project_id, template_id, template_version, generated_count,
+                   skipped_count, skip_reasons_json, dry_run, created_at, updated_at
+            FROM business_logic_template_runs
+            WHERE run_id = ?
+            ORDER BY template_id, template_version
+            "#,
+        )
+        .bind(run_id)
+        .fetch_all(self.pool)
+        .await?;
+        rows.into_iter().map(row_to_business_logic_template_run).collect()
+    }
+}
+
 pub struct VerificationAttemptStore<'a> {
     pool: &'a SqlitePool,
 }
@@ -752,6 +813,23 @@ fn row_to_candidate(row: sqlx::sqlite::SqliteRow) -> Result<PentestCandidateReco
     })
 }
 
+fn row_to_business_logic_template_run(
+    row: sqlx::sqlite::SqliteRow,
+) -> Result<BusinessLogicTemplateRunRecord, StoreError> {
+    Ok(BusinessLogicTemplateRunRecord {
+        run_id: row.try_get("run_id")?,
+        project_id: row.try_get("project_id")?,
+        template_id: row.try_get("template_id")?,
+        template_version: row.try_get("template_version")?,
+        generated_count: row.try_get::<i64, _>("generated_count")? as u32,
+        skipped_count: row.try_get::<i64, _>("skipped_count")? as u32,
+        skip_reasons: parse_json(row.try_get::<String, _>("skip_reasons_json")?)?,
+        dry_run: row.try_get::<i64, _>("dry_run")? != 0,
+        created_at: row.try_get::<i64, _>("created_at")?,
+        updated_at: row.try_get::<i64, _>("updated_at")?,
+    })
+}
+
 fn row_to_attempt(row: sqlx::sqlite::SqliteRow) -> Result<VerificationAttemptRecord, StoreError> {
     Ok(VerificationAttemptRecord {
         id: row.try_get("id")?,
@@ -1061,6 +1139,89 @@ mod tests {
             s.verified_vulnerabilities().list_by_run("run-1").await.unwrap()[0].id,
             "vuln-1"
         );
+    }
+
+    #[tokio::test]
+    async fn business_logic_template_run_roundtrips() {
+        let (_tmp, s) = fresh_store().await;
+        s.projects().create("p-1", "acme", None, None, None, 1_000).await.unwrap();
+        let mut run = sample_run("run-bl");
+        run.project_id = Some("p-1".to_string());
+        s.runs().insert(&run).await.unwrap();
+
+        let rec = BusinessLogicTemplateRunRecord {
+            run_id: "run-bl".to_string(),
+            project_id: "p-1".to_string(),
+            template_id: "tenant_object_isolation".to_string(),
+            template_version: "1".to_string(),
+            generated_count: 2,
+            skipped_count: 1,
+            skip_reasons: vec!["example skip".to_string()],
+            dry_run: true,
+            created_at: 10,
+            updated_at: 11,
+        };
+        s.business_logic_template_runs().upsert(&rec).await.unwrap();
+
+        let rows = s.business_logic_template_runs().list_by_run("run-bl").await.unwrap();
+        assert_eq!(rows, vec![rec]);
+    }
+
+    #[tokio::test]
+    async fn pentest_candidate_template_provenance_roundtrips() {
+        let (_tmp, s) = fresh_store().await;
+        s.projects().create("p-1", "acme", None, None, None, 1_000).await.unwrap();
+        let mut run = sample_run("run-bl-candidate");
+        run.project_id = Some("p-1".to_string());
+        s.runs().insert(&run).await.unwrap();
+
+        let candidate = PentestCandidateRecord {
+            id: "pc-bl-1".to_string(),
+            run_id: "run-bl-candidate".to_string(),
+            project_id: "p-1".to_string(),
+            source: "BusinessLogicTemplate".to_string(),
+            source_ids: vec![
+                "business-template:tenant_object_isolation:api:GET:/api/files:*".to_string()
+            ],
+            title: "Tenant object isolation".to_string(),
+            vuln_class: "BUSINESS_LOGIC_OBJECT_ISOLATION".to_string(),
+            severity_guess: "High".to_string(),
+            affected_components: vec![serde_json::json!({
+                "kind": "business_logic_template",
+                "template_provenance": {
+                    "template_id": "tenant_object_isolation",
+                    "template_version": "1"
+                },
+                "route_path": "/api/files/:id",
+                "roles": ["user_a", "user_b"]
+            })],
+            hypothesis: "Cross-role object read should fail".to_string(),
+            test_plan: serde_json::json!({
+                "kind": "http_workflow",
+                "template_provenance": {
+                    "template_id": "tenant_object_isolation",
+                    "template_version": "1"
+                },
+                "steps": [],
+                "oracle": {"body_contains": "marker"}
+            })
+            .to_string(),
+            status: "NeedsLiveTest".to_string(),
+            rejection_reason: None,
+            confidence: 0.7,
+            trace_id: None,
+            created_at: 20,
+            updated_at: 20,
+        };
+        s.pentest_candidates().insert(&candidate).await.unwrap();
+
+        let got = s.pentest_candidates().list_by_run("run-bl-candidate").await.unwrap();
+        assert_eq!(
+            got[0].affected_components[0]["template_provenance"]["template_id"],
+            "tenant_object_isolation"
+        );
+        let plan: serde_json::Value = serde_json::from_str(&got[0].test_plan).unwrap();
+        assert_eq!(plan["template_provenance"]["template_version"], "1");
     }
 
     fn empty_input() -> ProjectLaunchProfileInput {

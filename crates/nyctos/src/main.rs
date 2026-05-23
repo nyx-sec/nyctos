@@ -12,9 +12,9 @@ use nyctos_api::{
     ScanTriggerSource, ServerState, SetupContext, WebhookConfig, WebhookSecretResolver,
 };
 use nyctos_core::store::{
-    finding_id_hash, NyxSignalRecord, PentestCandidateRecord, ProjectRecord, RepoOutcomeLabel,
-    RepoRecord, RouteModelRecord, RunRecord, RunRepoOutcomeRecord, VerificationAttemptRecord,
-    VerifiedVulnerabilityRecord,
+    finding_id_hash, CandidateFindingRecord, FindingRecord, NyxSignalRecord,
+    PentestCandidateRecord, ProjectRecord, RepoOutcomeLabel, RepoRecord, RouteModelRecord,
+    RunRecord, RunRepoOutcomeRecord, VerificationAttemptRecord, VerifiedVulnerabilityRecord,
 };
 use nyctos_core::{
     ingest, now_epoch_ms, repo_from_config, AiConfig, Config, InconclusiveReason, IngestError,
@@ -113,6 +113,16 @@ enum ProjectAction {
 }
 
 #[derive(Debug, Subcommand)]
+enum BusinessLogicAction {
+    /// List registered business-logic pentest templates.
+    Templates {
+        /// Emit JSON instead of the operator-friendly table.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum Command {
     /// Scan one or more repositories for findings. Selection is
     /// project-scoped: `--project NAME` (repeatable) targets a whole
@@ -152,6 +162,36 @@ enum Command {
         /// loudly surfaces the misconfiguration.
         #[arg(long, value_name = "REF")]
         since_ref: Option<String>,
+        /// Enable exploit mode for this scan without editing
+        /// `nyctos.toml`. State-changing probes still also require
+        /// `--allow-state-changing-live-probes`.
+        #[arg(long)]
+        exploit_mode: bool,
+        /// Allow state-changing live probes for this scan. Requires
+        /// exploit mode through config or `--exploit-mode`.
+        #[arg(long)]
+        allow_state_changing_live_probes: bool,
+        /// Evaluate guarded live probes and write audit records without
+        /// sending HTTP/browser traffic.
+        #[arg(long)]
+        exploit_dry_run: bool,
+        /// Enable browser-driven verification for this scan without
+        /// editing `nyctos.toml`.
+        #[arg(long)]
+        browser_checks: bool,
+        /// Disable business-logic template candidate synthesis for this
+        /// scan.
+        #[arg(long)]
+        no_business_logic_templates: bool,
+        /// Restrict business-logic candidate synthesis to specific
+        /// template ids. Repeat for multiple templates.
+        #[arg(long = "business-template", value_name = "ID")]
+        business_logic_template_ids: Vec<String>,
+    },
+    /// Inspect business-logic pentest template metadata.
+    BusinessLogic {
+        #[command(subcommand)]
+        action: BusinessLogicAction,
     },
     /// Manage `Project` rows in the agent's state DB. Projects own
     /// repos; the daemon's scan/run pipeline operates per project.
@@ -277,11 +317,43 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         open_cmd: None,
     }) {
         Command::Doctor => doctor(&state_dir, &config_path, &log_cfg, &config).await,
-        Command::Scan { projects, repos, headless, output, output_only_pr_worthy, since_ref } => {
+        Command::Scan {
+            projects,
+            repos,
+            headless,
+            output,
+            output_only_pr_worthy,
+            since_ref,
+            exploit_mode,
+            allow_state_changing_live_probes,
+            exploit_dry_run,
+            browser_checks,
+            no_business_logic_templates,
+            business_logic_template_ids,
+        } => {
             nyctos_core::init_logging(&log_cfg)?;
+            let mut run_config = config.clone();
+            if exploit_mode {
+                run_config.run.exploit_mode_enabled = true;
+            }
+            if allow_state_changing_live_probes {
+                run_config.run.allow_state_changing_live_probes = true;
+            }
+            if exploit_dry_run {
+                run_config.run.exploit_dry_run = true;
+            }
+            if browser_checks {
+                run_config.run.browser_checks_enabled = true;
+            }
+            if no_business_logic_templates {
+                run_config.run.business_logic_templates_enabled = false;
+            }
+            if !business_logic_template_ids.is_empty() {
+                run_config.run.business_logic_template_ids = business_logic_template_ids;
+            }
             scan(
                 &state_dir,
-                &config,
+                &run_config,
                 &projects,
                 &repos,
                 "Manual",
@@ -292,6 +364,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             )
             .await
         }
+        Command::BusinessLogic { action } => business_logic_command(action),
         Command::Project { action } => {
             nyctos_core::init_logging(&log_cfg)?;
             project_command(&state_dir, action).await
@@ -503,6 +576,34 @@ async fn scan(
 
     store.close().await;
     Ok(if overall_success { ExitCode::SUCCESS } else { ExitCode::from(1) })
+}
+
+fn business_logic_command(action: BusinessLogicAction) -> anyhow::Result<ExitCode> {
+    match action {
+        BusinessLogicAction::Templates { json } => {
+            let templates = nyctos_types::business_logic::business_logic_template_metadata();
+            if json {
+                println!("{}", serde_json::to_string_pretty(&templates)?);
+                return Ok(ExitCode::SUCCESS);
+            }
+            println!(
+                "{:<38} {:<7} {:<18} {:<15} {:<13} {}",
+                "id", "version", "category", "mutability", "availability", "title"
+            );
+            for template in templates {
+                println!(
+                    "{:<38} {:<7} {:<18} {:<15} {:<13} {}",
+                    template.id,
+                    template.version,
+                    template.category,
+                    format!("{:?}", template.mutability).to_ascii_lowercase(),
+                    format!("{:?}", template.availability).to_ascii_lowercase(),
+                    template.title,
+                );
+            }
+        }
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 struct ScanReport {
@@ -1336,11 +1437,12 @@ async fn drive_scan(
         {
             Ok(report) => {
                 verification_notes.push(format!(
-                    "candidate verifier: {} confirmed, {} rejected, {} policy-blocked, {} inconclusive, {} errored ({} HTTP, {} browser)",
+                    "candidate verifier: {} confirmed, {} rejected, {} policy-blocked, {} inconclusive, {} skipped no-plan, {} errored ({} HTTP, {} browser)",
                     report.confirmed,
                     report.rejected,
                     report.blocked,
                     report.inconclusive,
+                    report.skipped_no_plan,
                     report.errored,
                     report.http_attempts,
                     report.browser_attempts
@@ -1351,11 +1453,12 @@ async fn drive_scan(
                         || report.rejected > 0
                         || report.blocked > 0
                         || report.inconclusive > 0
+                        || report.skipped_no_plan > 0
                         || report.errored > 0)
                 {
                     println!(
-                        "pentest verification - {} confirmed, {} rejected, {} policy-blocked, {} inconclusive, {} errored",
-                        report.confirmed, report.rejected, report.blocked, report.inconclusive, report.errored,
+                        "pentest verification - {} confirmed, {} rejected, {} policy-blocked, {} inconclusive, {} skipped no-plan, {} errored",
+                        report.confirmed, report.rejected, report.blocked, report.inconclusive, report.skipped_no_plan, report.errored,
                     );
                 }
             }
@@ -1386,6 +1489,28 @@ async fn drive_scan(
         Some(browser_msg.clone()),
     );
     verification_notes.push(browser_msg);
+    match materialize_review_vulnerabilities(store, &run.id, project.id.as_str(), now_epoch_ms())
+        .await
+    {
+        Ok(report) if report.total() > 0 => {
+            verification_notes.push(format!(
+                "review surface: {} needs-review vulnerabilit{} surfaced ({} quarantined finding{}, {} pending AI candidate{}, {} observed pentest candidate{})",
+                report.total(),
+                if report.total() == 1 { "y" } else { "ies" },
+                report.quarantined_findings,
+                if report.quarantined_findings == 1 { "" } else { "s" },
+                report.pending_ai_candidates,
+                if report.pending_ai_candidates == 1 { "" } else { "s" },
+                report.observed_pentest_candidates,
+                if report.observed_pentest_candidates == 1 { "" } else { "s" },
+            ));
+        }
+        Ok(_) => {}
+        Err(err) => {
+            verification_notes.push(format!("review surface failed: {err}"));
+            tracing::warn!(error = %err, "failed to surface needs-review vulnerabilities");
+        }
+    }
     emit_phase(
         &events,
         &run.id,
@@ -1437,7 +1562,7 @@ async fn drive_scan(
         report.write(path)?;
         if verbose {
             println!(
-                "scan: wrote report to {} ({} verified vulnerabilit{}, {} verified chain(s){})",
+                "scan: wrote report to {} ({} vulnerabilit{}, {} verified chain(s){})",
                 path.display(),
                 report.verified_vulnerabilities.len(),
                 if report.verified_vulnerabilities.len() == 1 { "y" } else { "ies" },
@@ -1769,6 +1894,18 @@ async fn run_scan_for_api(
     if let Some(overrides) = run_overrides {
         cfg.run.exploit_mode_enabled = overrides.exploit_mode_enabled;
         cfg.run.allow_state_changing_live_probes = overrides.allow_state_changing_live_probes;
+        if let Some(dry_run) = overrides.exploit_dry_run {
+            cfg.run.exploit_dry_run = dry_run;
+        }
+        if let Some(enabled) = overrides.browser_checks_enabled {
+            cfg.run.browser_checks_enabled = enabled;
+        }
+        if let Some(enabled) = overrides.business_logic_templates_enabled {
+            cfg.run.business_logic_templates_enabled = enabled;
+        }
+        if let Some(ids) = overrides.business_logic_template_ids {
+            cfg.run.business_logic_template_ids = ids;
+        }
     }
     let sd = state_dir.clone();
     tokio::spawn(async move {
@@ -2053,6 +2190,7 @@ struct CandidateVerificationReport {
     rejected: u32,
     blocked: u32,
     inconclusive: u32,
+    skipped_no_plan: u32,
     errored: u32,
     http_attempts: u32,
     browser_attempts: u32,
@@ -2101,6 +2239,14 @@ async fn verify_pentest_candidates(
     for candidate in
         candidates.into_iter().filter(|c| matches!(c.status.as_str(), "Proposed" | "NeedsLiveTest"))
     {
+        if !candidate_has_runnable_test_plan(
+            &candidate,
+            target_urls,
+            run_config.browser_checks_enabled,
+        ) {
+            report.skipped_no_plan += 1;
+            continue;
+        }
         let started = now_epoch_ms();
         let attempt_id = format!("va-{}-{}", candidate.id, started);
         let browser_artifact_dir = browser_artifact_root.join(safe_artifact_segment(&attempt_id));
@@ -2118,7 +2264,7 @@ async fn verify_pentest_candidates(
         };
         let outcome = execute_candidate_test_plan(&candidate, &options).await;
         let finished = now_epoch_ms();
-        let (mut status, request, response, mut oracle, mut error) = match outcome {
+        let (mut status, mut request, response, mut oracle, mut error) = match outcome {
             Ok(VerificationOutcome::Confirmed { request, response, oracle }) => {
                 ("Confirmed", Some(request), Some(response), Some(oracle), None)
             }
@@ -2139,6 +2285,14 @@ async fn verify_pentest_candidates(
                 ("Errored", None, None, None, Some(err.to_string()))
             }
         };
+        if let Some(provenance) = business_logic_provenance_from_candidate(&candidate) {
+            if let Some(request_value) = request.take() {
+                request = Some(with_business_logic_provenance(request_value, provenance.clone()));
+            }
+            if let Some(oracle_value) = oracle.take() {
+                oracle = Some(with_business_logic_provenance(oracle_value, provenance));
+            }
+        }
         let mut accepted_review: Option<LiveEvidenceReviewOutput> = None;
         if status == "Confirmed" {
             if let (Some(request_value), Some(response_value), Some(oracle_value)) =
@@ -2417,6 +2571,20 @@ async fn execute_candidate_test_plan(
     })
 }
 
+fn candidate_has_runnable_test_plan(
+    candidate: &PentestCandidateRecord,
+    target_urls: &[String],
+    browser_checks_enabled: bool,
+) -> bool {
+    let Some(plan) =
+        pentest_tools::normalise_live_test_plan(&candidate.test_plan, target_urls).ok().flatten()
+    else {
+        return false;
+    };
+    let kind = plan.get("kind").and_then(|v| v.as_str()).unwrap_or("http");
+    browser_checks_enabled || !matches!(kind, "browser" | "browser_workflow")
+}
+
 fn verification_attempt_method(request: Option<&serde_json::Value>) -> String {
     if let Some(tool) = request
         .and_then(|v| v.get("policy_audit"))
@@ -2436,6 +2604,43 @@ fn verification_attempt_method(request: Option<&serde_json::Value>) -> String {
         Some("single_http") | Some("http") => "http".to_string(),
         Some(other) => other.to_string(),
         None => "http".to_string(),
+    }
+}
+
+fn business_logic_provenance_from_candidate(
+    candidate: &PentestCandidateRecord,
+) -> Option<serde_json::Value> {
+    candidate.affected_components.iter().find_map(|component| {
+        component.get("template_provenance").cloned().or_else(|| {
+            component.get("template_id").map(|id| {
+                serde_json::json!({
+                    "template_id": id,
+                    "template_version": component
+                        .get("template_version")
+                        .cloned()
+                        .unwrap_or_else(|| serde_json::json!("unknown")),
+                    "title": component
+                        .get("template_name")
+                        .cloned()
+                        .unwrap_or_else(|| id.clone()),
+                })
+            })
+        })
+    })
+}
+
+fn with_business_logic_provenance(
+    mut value: serde_json::Value,
+    provenance: serde_json::Value,
+) -> serde_json::Value {
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert("business_logic_template".to_string(), provenance);
+        value
+    } else {
+        serde_json::json!({
+            "value": value,
+            "business_logic_template": provenance,
+        })
     }
 }
 
@@ -2472,6 +2677,261 @@ fn write_exploit_audit_jsonl(
             None
         }
     }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct ReviewSurfaceReport {
+    quarantined_findings: u32,
+    pending_ai_candidates: u32,
+    observed_pentest_candidates: u32,
+}
+
+impl ReviewSurfaceReport {
+    fn total(self) -> u32 {
+        self.quarantined_findings + self.pending_ai_candidates + self.observed_pentest_candidates
+    }
+}
+
+async fn materialize_review_vulnerabilities(
+    store: &Store,
+    run_id: &str,
+    project_id: &str,
+    now_ms: i64,
+) -> anyhow::Result<ReviewSurfaceReport> {
+    let mut report = ReviewSurfaceReport::default();
+
+    for finding in
+        store.findings().list_by_run(run_id).await?.into_iter().filter(|f| f.status == "Quarantine")
+    {
+        let vuln = review_vulnerability_from_finding(&finding, project_id, now_ms);
+        store.verified_vulnerabilities().upsert(&vuln).await?;
+        report.quarantined_findings += 1;
+    }
+
+    for candidate in
+        store.candidate_findings().list_pending().await?.into_iter().filter(|c| c.run_id == run_id)
+    {
+        let vuln = review_vulnerability_from_ai_candidate(&candidate, project_id, now_ms);
+        store.verified_vulnerabilities().upsert(&vuln).await?;
+        report.pending_ai_candidates += 1;
+    }
+
+    for candidate in store
+        .pentest_candidates()
+        .list_by_run(run_id)
+        .await?
+        .into_iter()
+        .filter(|c| c.status == "Observed")
+    {
+        let vuln = review_vulnerability_from_observed_candidate(&candidate, project_id, now_ms);
+        store.verified_vulnerabilities().upsert(&vuln).await?;
+        report.observed_pentest_candidates += 1;
+    }
+
+    Ok(report)
+}
+
+fn review_vulnerability_from_finding(
+    finding: &FindingRecord,
+    project_id: &str,
+    now_ms: i64,
+) -> VerifiedVulnerabilityRecord {
+    let verdict = exploration_verdict_blob(finding.verdict_blob.as_deref());
+    let rationale = verdict
+        .as_ref()
+        .and_then(|v| json_string_field(v, "rationale"))
+        .unwrap_or_else(|| "AI exploration produced a quarantined finding.".to_string());
+    let endpoint = verdict.as_ref().and_then(|v| json_string_field(v, "endpoint"));
+    let hint = verdict.as_ref().and_then(|v| json_string_field(v, "suggested_payload_hint"));
+    let title = format_location_title(&finding.cap, &finding.path, finding.line);
+    VerifiedVulnerabilityRecord {
+        id: format!("vuln-review-{}-{}", finding.run_id, finding.id),
+        run_id: finding.run_id.clone(),
+        project_id: project_id.to_string(),
+        title,
+        severity: finding.severity.clone(),
+        confidence: 0.74,
+        vuln_class: finding.cap.clone(),
+        affected_components: vec![serde_json::json!({
+            "kind": "quarantined_finding",
+            "repo": &finding.repo,
+            "path": &finding.path,
+            "line": finding.line,
+            "finding_id": &finding.id,
+            "finding_origin": &finding.finding_origin,
+        })],
+        business_impact: rationale.clone(),
+        evidence_summary: format!(
+            "Needs review: AI exploration produced source or live evidence, but deterministic verification has not confirmed it yet. {rationale}"
+        ),
+        repro_steps: review_repro_steps(endpoint.as_deref(), hint.as_deref(), Some(&rationale)),
+        remediation: review_remediation(&finding.cap),
+        source_candidate_ids: Vec::new(),
+        source_signal_ids: Vec::new(),
+        verification_attempt_ids: Vec::new(),
+        chain_id: finding.chain_id.clone(),
+        status: "NeedsReview".to_string(),
+        first_seen: now_ms,
+        last_seen: now_ms,
+    }
+}
+
+fn review_vulnerability_from_ai_candidate(
+    candidate: &CandidateFindingRecord,
+    project_id: &str,
+    now_ms: i64,
+) -> VerifiedVulnerabilityRecord {
+    let title =
+        candidate.rule_hint.as_deref().map(human_title_from_rule).unwrap_or_else(|| {
+            format_location_title(&candidate.cap, &candidate.path, candidate.line)
+        });
+    let rationale = candidate
+        .rationale
+        .clone()
+        .unwrap_or_else(|| "AI novel-finding discovery proposed this issue.".to_string());
+    VerifiedVulnerabilityRecord {
+        id: format!("vuln-review-{}-{}", candidate.run_id, candidate.id),
+        run_id: candidate.run_id.clone(),
+        project_id: project_id.to_string(),
+        title,
+        severity: "High".to_string(),
+        confidence: 0.68,
+        vuln_class: candidate.cap.clone(),
+        affected_components: vec![serde_json::json!({
+            "kind": "pending_ai_candidate",
+            "repo": &candidate.repo,
+            "path": &candidate.path,
+            "line": candidate.line,
+            "candidate_id": &candidate.id,
+            "rule_hint": &candidate.rule_hint,
+        })],
+        business_impact: rationale.clone(),
+        evidence_summary: format!(
+            "Needs review: AI discovery proposed this candidate, but no deterministic live verification has confirmed it yet. {rationale}"
+        ),
+        repro_steps: review_repro_steps(
+            None,
+            candidate.suggested_payload_hint.as_deref(),
+            Some(&rationale),
+        ),
+        remediation: review_remediation(&candidate.cap),
+        source_candidate_ids: vec![candidate.id.clone()],
+        source_signal_ids: Vec::new(),
+        verification_attempt_ids: Vec::new(),
+        chain_id: None,
+        status: "NeedsReview".to_string(),
+        first_seen: now_ms,
+        last_seen: now_ms,
+    }
+}
+
+fn review_vulnerability_from_observed_candidate(
+    candidate: &PentestCandidateRecord,
+    project_id: &str,
+    now_ms: i64,
+) -> VerifiedVulnerabilityRecord {
+    VerifiedVulnerabilityRecord {
+        id: format!("vuln-review-{}-{}", candidate.run_id, candidate.id),
+        run_id: candidate.run_id.clone(),
+        project_id: project_id.to_string(),
+        title: candidate.title.clone(),
+        severity: candidate.severity_guess.clone(),
+        confidence: candidate.confidence,
+        vuln_class: candidate.vuln_class.clone(),
+        affected_components: vec![serde_json::json!({
+            "kind": "observed_pentest_candidate",
+            "candidate_id": &candidate.id,
+            "source": &candidate.source,
+            "source_ids": &candidate.source_ids,
+            "components": &candidate.affected_components,
+        })],
+        business_impact: candidate.hypothesis.clone(),
+        evidence_summary: format!(
+            "Needs review: {} observed this issue, but deterministic live verification has not confirmed it yet. {}",
+            candidate.source, candidate.hypothesis
+        ),
+        repro_steps: review_repro_steps(
+            None,
+            Some(&candidate.test_plan),
+            Some(&candidate.hypothesis),
+        ),
+        remediation: review_remediation(&candidate.vuln_class),
+        source_candidate_ids: vec![candidate.id.clone()],
+        source_signal_ids: Vec::new(),
+        verification_attempt_ids: Vec::new(),
+        chain_id: None,
+        status: "NeedsReview".to_string(),
+        first_seen: now_ms,
+        last_seen: now_ms,
+    }
+}
+
+fn exploration_verdict_blob(raw: Option<&str>) -> Option<serde_json::Value> {
+    let value: serde_json::Value = serde_json::from_str(raw?).ok()?;
+    if value.get("kind").and_then(|v| v.as_str()) == Some("AiExploration") {
+        Some(value)
+    } else {
+        None
+    }
+}
+
+fn json_string_field(value: &serde_json::Value, field: &str) -> Option<String> {
+    value.get(field).and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty()).map(str::to_string)
+}
+
+fn format_location_title(cap: &str, path: &str, line: Option<i64>) -> String {
+    match line {
+        Some(line) if line > 0 => format!("{cap} in {path}:{line}"),
+        _ => format!("{cap} in {path}"),
+    }
+}
+
+fn human_title_from_rule(rule: &str) -> String {
+    let mut out = String::new();
+    for (idx, part) in rule.split(['.', '_', '-']).filter(|p| !p.is_empty()).enumerate() {
+        if idx > 0 {
+            out.push(' ');
+        }
+        let mut chars = part.chars();
+        if let Some(first) = chars.next() {
+            out.push(first.to_ascii_uppercase());
+            out.push_str(chars.as_str());
+        }
+    }
+    if out.is_empty() {
+        rule.to_string()
+    } else {
+        out
+    }
+}
+
+fn review_repro_steps(
+    endpoint: Option<&str>,
+    hint: Option<&str>,
+    rationale: Option<&str>,
+) -> String {
+    let mut steps = Vec::new();
+    if let Some(endpoint) = endpoint.filter(|s| !s.trim().is_empty()) {
+        steps.push(format!("Endpoint or surface: {endpoint}"));
+    }
+    if let Some(hint) = hint.filter(|s| !s.trim().is_empty()) {
+        steps.push(format!("Suggested verification hint: {hint}"));
+    }
+    if let Some(rationale) = rationale.filter(|s| !s.trim().is_empty()) {
+        steps.push(format!("Review context: {rationale}"));
+    }
+    if steps.is_empty() {
+        "Review the source location and derive a safe HTTP or browser verification plan."
+            .to_string()
+    } else {
+        steps.join("\n")
+    }
+}
+
+fn review_remediation(cap: &str) -> String {
+    format!(
+        "Review the affected component, confirm exploitability, then apply the framework-specific fix for `{cap}` before marking this item verified or dismissed."
+    )
 }
 
 fn safe_artifact_segment(raw: &str) -> String {
@@ -3760,6 +4220,69 @@ mod tests {
             created_at: 1,
             updated_at: 1,
         }
+    }
+
+    fn pending_ai_candidate() -> CandidateFindingRecord {
+        CandidateFindingRecord {
+            id: "cand-review".to_string(),
+            run_id: "run-review".to_string(),
+            repo: "web".to_string(),
+            path: "src/routes.ts".to_string(),
+            line: Some(12),
+            cap: "AUTH_BYPASS".to_string(),
+            rule_hint: Some("auth.trusted_forwarded_identity_header".to_string()),
+            rationale: Some("A trusted identity header is accepted from the request.".to_string()),
+            suggested_payload_hint: Some(
+                "Cf-Access-Authenticated-User-Email: admin@example.com".to_string(),
+            ),
+            status: "Pending".to_string(),
+            prompt_version: Some("novel.v1".to_string()),
+            trace_id: None,
+        }
+    }
+
+    #[test]
+    fn verifier_skips_non_json_placeholder_plans() {
+        let mut candidate = review_candidate("XSS");
+        candidate.test_plan =
+            "Derive a live HTTP/browser test from the affected route before confirmation."
+                .to_string();
+
+        assert!(!candidate_has_runnable_test_plan(
+            &candidate,
+            &["http://localhost:8787".to_string()],
+            false
+        ));
+    }
+
+    #[test]
+    fn review_surface_marks_ai_candidates_as_needs_review() {
+        let vuln = review_vulnerability_from_ai_candidate(
+            &pending_ai_candidate(),
+            "project-review",
+            1_000,
+        );
+
+        assert_eq!(vuln.status, "NeedsReview");
+        assert_eq!(vuln.confidence, 0.68);
+        assert!(vuln.verification_attempt_ids.is_empty());
+        assert!(vuln.evidence_summary.contains("Needs review"));
+    }
+
+    #[test]
+    fn review_surface_marks_observed_candidates_as_needs_review() {
+        let mut candidate = review_candidate("VULNERABLE_DEPENDENCY");
+        candidate.source = "Trivy".to_string();
+        candidate.status = "Observed".to_string();
+        candidate.title = "vulnerable dependency".to_string();
+
+        let vuln =
+            review_vulnerability_from_observed_candidate(&candidate, "project-review", 1_000);
+
+        assert_eq!(vuln.status, "NeedsReview");
+        assert_eq!(vuln.source_candidate_ids, vec!["pc-review".to_string()]);
+        assert!(vuln.verification_attempt_ids.is_empty());
+        assert!(vuln.evidence_summary.contains("Trivy observed"));
     }
 
     fn single_http_request(url: &str) -> serde_json::Value {

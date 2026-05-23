@@ -46,6 +46,10 @@ use nyctos_types::api::{
     HealthResponse, QuarantineItem, QuarantineKind, RunFindingsResponse, SetupRequest,
     SetupStatusResponse,
 };
+use nyctos_types::business_logic::{
+    business_logic_template_by_id, business_logic_template_metadata, BusinessLogicRunSummary,
+    BusinessLogicTemplateMetadata,
+};
 use nyctos_types::event::{AgentEvent, AiEvent, ReproEvent, RunEvent, SandboxEvent};
 use nyctos_types::product::{
     ProjectLaunchProfileInput, StartPentestRequest, StartPentestResponse, TestLaunchTargetRequest,
@@ -66,6 +70,7 @@ pub fn build_router(state: ServerState) -> Router {
         .route("/api/v1/setup/status", get(setup_status))
         .route("/api/v1/setup", post(submit_setup))
         .route("/api/v1/setup/doctor", post(setup_doctor))
+        .route("/api/v1/business-logic/templates", get(business_logic_templates))
         .route("/api/v1/launch-target/test", post(test_launch_target))
         .route("/api/v1/projects", get(list_projects).post(create_project))
         .route(
@@ -99,6 +104,7 @@ pub fn build_router(state: ServerState) -> Router {
         .route("/api/v1/runs/{id}/verification-attempts", get(verification_attempts_for_run))
         .route("/api/v1/runs/{id}/vulnerabilities", get(run_vulnerabilities))
         .route("/api/v1/runs/{id}/summary", get(run_summary))
+        .route("/api/v1/runs/{id}/business-logic", get(run_business_logic))
         .route("/api/v1/runs/{id}/summary.md", get(run_summary_markdown))
         .route("/api/v1/runs/{id}/summary.html", get(run_summary_html))
         .route("/api/v1/findings", get(list_findings))
@@ -119,6 +125,10 @@ pub fn build_router(state: ServerState) -> Router {
         .layer(middleware::from_fn_with_state(state.clone(), auth_layer))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
+}
+
+async fn business_logic_templates() -> Json<Vec<BusinessLogicTemplateMetadata>> {
+    Json(business_logic_template_metadata())
 }
 
 /// Bearer-token gate. Skipped entirely when [`AuthConfig::token`] is
@@ -1503,6 +1513,13 @@ async fn start_pentest_project(
             "state-changing live probes require exploit mode to be enabled".to_string(),
         ));
     }
+    for template_id in &request.business_logic_template_ids {
+        if business_logic_template_by_id(template_id).is_none() {
+            return Err(ApiError::BadRequest(format!(
+                "unknown business-logic template id `{template_id}`"
+            )));
+        }
+    }
     let run_id = s
         .scan
         .trigger(
@@ -1512,6 +1529,14 @@ async fn start_pentest_project(
             Some(ScanRunOverrides {
                 exploit_mode_enabled: request.exploit_mode_enabled,
                 allow_state_changing_live_probes: request.allow_state_changing_live_probes,
+                exploit_dry_run: request.exploit_dry_run,
+                browser_checks_enabled: request.browser_checks_enabled,
+                business_logic_templates_enabled: request.business_logic_templates_enabled,
+                business_logic_template_ids: if request.business_logic_template_ids.is_empty() {
+                    None
+                } else {
+                    Some(request.business_logic_template_ids)
+                },
             }),
         )
         .await?;
@@ -1553,6 +1578,25 @@ async fn environment_runs_for_run(
 ) -> Result<Json<Vec<nyctos_types::product::EnvironmentRunRecord>>, ApiError> {
     require_run(&s, &id).await?;
     Ok(Json(s.store.environment_runs().list_by_run(&id).await?))
+}
+
+async fn run_business_logic(
+    State(s): State<ServerState>,
+    Path(id): Path<String>,
+) -> Result<Json<BusinessLogicRunSummary>, ApiError> {
+    let run = require_run(&s, &id).await?;
+    let rows = s.store.business_logic_template_runs().list_by_run(&id).await?;
+    let candidates_generated = rows.iter().map(|row| row.generated_count).sum();
+    let templates_skipped = rows.iter().filter(|row| row.skipped_count > 0).count() as u32;
+    let dry_run = rows.iter().any(|row| row.dry_run);
+    Ok(Json(BusinessLogicRunSummary {
+        run_id: run.id,
+        templates_considered: rows.len() as u32,
+        candidates_generated,
+        templates_skipped,
+        dry_run,
+        templates: rows,
+    }))
 }
 
 async fn run_event_log(

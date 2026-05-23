@@ -96,6 +96,9 @@ pub struct RunCard {
     /// (`Pending` / `Promoted` / `Dismissed`). Empty when the run
     /// produced no candidates.
     pub by_candidate_status: Vec<BySplit>,
+    pub business_logic_templates_considered: i64,
+    pub business_logic_candidates_generated: i64,
+    pub business_logic_templates_skipped: i64,
 }
 
 #[derive(Debug, Error)]
@@ -160,6 +163,15 @@ pub async fn build_run_card(pool: &SqlitePool, run_id: &str) -> Result<RunCard, 
         by_candidate_status_map.insert(row.status, row.count);
         candidate_findings_total += row.count;
     }
+    let business_logic_row: BusinessLogicSummaryRow = sqlx::query_as::<_, BusinessLogicSummaryRow>(
+        "SELECT COUNT(*) AS templates_considered, \
+                COALESCE(SUM(generated_count), 0) AS candidates_generated, \
+                COALESCE(SUM(CASE WHEN skipped_count > 0 THEN 1 ELSE 0 END), 0) AS templates_skipped \
+         FROM business_logic_template_runs WHERE run_id = ?",
+    )
+    .bind(run_id)
+    .fetch_one(pool)
+    .await?;
 
     let traces: Vec<TraceRow> = sqlx::query_as::<_, TraceRow>(
         "SELECT t.task_kind, t.cost_usd_micros, t.started_at, t.finished_at \
@@ -246,6 +258,9 @@ pub async fn build_run_card(pool: &SqlitePool, run_id: &str) -> Result<RunCard, 
         phase_durations,
         candidate_findings_total,
         by_candidate_status: into_sorted_split(by_candidate_status_map),
+        business_logic_templates_considered: business_logic_row.templates_considered,
+        business_logic_candidates_generated: business_logic_row.candidates_generated,
+        business_logic_templates_skipped: business_logic_row.templates_skipped,
     })
 }
 
@@ -293,7 +308,8 @@ pub fn render_html(card: &RunCard) -> String {
          <dt>Started</dt><dd>{}</dd><dt>Finished</dt><dd>{}</dd>\
          <dt>Wall clock</dt><dd>{} ms</dd>\
          <dt>Total findings</dt><dd>{}</dd>\
-         <dt>Candidate findings</dt><dd>{}</dd></dl></section>",
+         <dt>Candidate findings</dt><dd>{}</dd>\
+         <dt>Business-logic templates</dt><dd>{} considered, {} generated candidate(s), {} skipped</dd></dl></section>",
         escape_html(&card.run_id),
         escape_html(&card.status),
         escape_html(&card.triggered_by),
@@ -302,6 +318,9 @@ pub fn render_html(card: &RunCard) -> String {
         card.wall_clock_ms.unwrap_or(0),
         card.total_findings,
         card.candidate_findings_total,
+        card.business_logic_templates_considered,
+        card.business_logic_candidates_generated,
+        card.business_logic_templates_skipped,
     ));
     push_html_split(&mut out, "Status", &card.by_status);
     push_html_split(&mut out, "Capability", &card.by_cap);
@@ -386,7 +405,13 @@ pub fn render_markdown(card: &RunCard) -> String {
     ));
     out.push_str(&format!("- **Wall clock**: {} ms\n", card.wall_clock_ms.unwrap_or(0)));
     out.push_str(&format!("- **Total findings**: {}\n", card.total_findings));
-    out.push_str(&format!("- **Candidate findings**: {}\n\n", card.candidate_findings_total));
+    out.push_str(&format!("- **Candidate findings**: {}\n", card.candidate_findings_total));
+    out.push_str(&format!(
+        "- **Business-logic templates**: {} considered, {} generated candidate(s), {} skipped\n\n",
+        card.business_logic_templates_considered,
+        card.business_logic_candidates_generated,
+        card.business_logic_templates_skipped,
+    ));
 
     push_markdown_split(&mut out, "Status", &card.by_status);
     push_markdown_split(&mut out, "Capability", &card.by_cap);
@@ -504,6 +529,13 @@ struct TraceRow {
 struct CandidateRow {
     status: String,
     count: i64,
+}
+
+#[derive(sqlx::FromRow)]
+struct BusinessLogicSummaryRow {
+    templates_considered: i64,
+    candidates_generated: i64,
+    templates_skipped: i64,
 }
 
 #[cfg(test)]
@@ -725,6 +757,9 @@ mod tests {
             phase_durations: Vec::new(),
             candidate_findings_total: 0,
             by_candidate_status: Vec::new(),
+            business_logic_templates_considered: 0,
+            business_logic_candidates_generated: 0,
+            business_logic_templates_skipped: 0,
         };
         let md = render_markdown(&card);
         // The dangerous chars are inside a code span; the literal `<`

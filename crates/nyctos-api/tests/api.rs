@@ -19,8 +19,9 @@ use nyctos_api::{
     SetupContext,
 };
 use nyctos_core::store::{
-    ChainRecord, EnvironmentRunRecord, FindingRecord, ProjectLaunchProfileInput, RepoRecord,
-    RunRecord, VerificationAttemptRecord, DEFAULT_PROJECT_ID,
+    ChainRecord, EnvironmentRunRecord, FindingRecord, PentestCandidateRecord,
+    ProjectLaunchProfileInput, RepoRecord, RunRecord, VerificationAttemptRecord,
+    DEFAULT_PROJECT_ID,
 };
 use nyctos_core::{run_event_log_path, Config, SecretStore, Store};
 use nyctos_types::event::{AgentEvent, EventSink, RepoOutcomeTag, ReproEvent, RunEvent};
@@ -324,6 +325,133 @@ async fn runs_endpoint_lists_and_gets_by_id() {
     let missing =
         reqwest::get(format!("{}/api/v1/runs/does-not-exist", srv.base())).await.expect("get");
     assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn business_logic_templates_endpoint_lists_registry() {
+    let srv = TestServer::start().await;
+    let templates: Vec<Value> =
+        reqwest::get(format!("{}/api/v1/business-logic/templates", srv.base()))
+            .await
+            .expect("get")
+            .json()
+            .await
+            .expect("json");
+
+    assert!(templates.iter().any(|template| {
+        template["id"] == "tenant_object_isolation"
+            && template["version"] == "1"
+            && template["mutability"] == "state_changing"
+    }));
+    assert!(templates.iter().any(|template| {
+        template["id"] == "password_reset_token_misuse"
+            && template["availability"] == "metadata_only"
+    }));
+}
+
+#[tokio::test]
+async fn run_business_logic_summary_roundtrips_counts() {
+    let srv = TestServer::start().await;
+    let mut run = sample_run("run-bl");
+    run.project_id = Some(DEFAULT_PROJECT_ID.to_string());
+    srv.store.runs().insert(&run).await.expect("run");
+    srv.store
+        .business_logic_template_runs()
+        .upsert(&nyctos_types::business_logic::BusinessLogicTemplateRunRecord {
+            run_id: "run-bl".to_string(),
+            project_id: DEFAULT_PROJECT_ID.to_string(),
+            template_id: "tenant_object_isolation".to_string(),
+            template_version: "1".to_string(),
+            generated_count: 2,
+            skipped_count: 0,
+            skip_reasons: Vec::new(),
+            dry_run: true,
+            created_at: 1,
+            updated_at: 1,
+        })
+        .await
+        .expect("summary");
+    srv.store
+        .business_logic_template_runs()
+        .upsert(&nyctos_types::business_logic::BusinessLogicTemplateRunRecord {
+            run_id: "run-bl".to_string(),
+            project_id: DEFAULT_PROJECT_ID.to_string(),
+            template_id: "password_reset_token_misuse".to_string(),
+            template_version: "1".to_string(),
+            generated_count: 0,
+            skipped_count: 1,
+            skip_reasons: vec!["metadata-only".to_string()],
+            dry_run: true,
+            created_at: 1,
+            updated_at: 1,
+        })
+        .await
+        .expect("summary");
+
+    let body: Value = reqwest::get(format!("{}/api/v1/runs/run-bl/business-logic", srv.base()))
+        .await
+        .expect("get")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(body["templates_considered"], 2);
+    assert_eq!(body["candidates_generated"], 2);
+    assert_eq!(body["templates_skipped"], 1);
+    assert_eq!(body["dry_run"], true);
+    assert_eq!(body["templates"].as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn candidates_endpoint_preserves_business_logic_template_provenance() {
+    let srv = TestServer::start().await;
+    let mut run = sample_run("run-bl-candidate");
+    run.project_id = Some(DEFAULT_PROJECT_ID.to_string());
+    srv.store.runs().insert(&run).await.expect("run");
+    srv.store
+        .pentest_candidates()
+        .insert(&PentestCandidateRecord {
+            id: "pc-bl-1".to_string(),
+            run_id: "run-bl-candidate".to_string(),
+            project_id: DEFAULT_PROJECT_ID.to_string(),
+            source: "BusinessLogicTemplate".to_string(),
+            source_ids: vec![
+                "business-template:tenant_object_isolation:api:GET:/api/files:*".to_string()
+            ],
+            title: "Tenant object isolation".to_string(),
+            vuln_class: "BUSINESS_LOGIC_OBJECT_ISOLATION".to_string(),
+            severity_guess: "High".to_string(),
+            affected_components: vec![serde_json::json!({
+                "kind": "business_logic_template",
+                "template_provenance": {
+                    "template_id": "tenant_object_isolation",
+                    "template_version": "1"
+                },
+                "route_path": "/api/files/:id",
+                "roles": ["user_a", "user_b"]
+            })],
+            hypothesis: "Cross-role object read should fail".to_string(),
+            test_plan: "{}".to_string(),
+            status: "NeedsLiveTest".to_string(),
+            rejection_reason: None,
+            confidence: 0.7,
+            trace_id: None,
+            created_at: 20,
+            updated_at: 20,
+        })
+        .await
+        .expect("candidate");
+
+    let body: Vec<Value> =
+        reqwest::get(format!("{}/api/v1/runs/run-bl-candidate/candidates", srv.base()))
+            .await
+            .expect("get")
+            .json()
+            .await
+            .expect("json");
+    assert_eq!(
+        body[0]["affected_components"][0]["template_provenance"]["template_id"],
+        "tenant_object_isolation"
+    );
 }
 
 #[tokio::test]
@@ -976,6 +1104,10 @@ async fn start_pentest_passes_exploit_overrides_to_trigger() {
         .json(&serde_json::json!({
             "exploit_mode_enabled": true,
             "allow_state_changing_live_probes": true,
+            "exploit_dry_run": true,
+            "browser_checks_enabled": true,
+            "business_logic_templates_enabled": true,
+            "business_logic_template_ids": ["tenant_object_isolation"],
         }))
         .send()
         .await
@@ -995,6 +1127,10 @@ async fn start_pentest_passes_exploit_overrides_to_trigger() {
         Some(nyctos_api::ScanRunOverrides {
             exploit_mode_enabled: true,
             allow_state_changing_live_probes: true,
+            exploit_dry_run: Some(true),
+            browser_checks_enabled: Some(true),
+            business_logic_templates_enabled: Some(true),
+            business_logic_template_ids: Some(vec!["tenant_object_isolation".to_string()]),
         }),
     );
 }

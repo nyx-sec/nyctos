@@ -313,6 +313,31 @@ Status codes: 200 on dispatch, 400 (`scan_rejected`) on bad
 input, 429 (`scan_backpressure`) when the dispatcher queue is
 full, 503 (`shutting_down`) during a graceful exit.
 
+### Business-Logic Template Registry
+
+`GET /api/v1/business-logic/templates`
+
+Lists registered business-logic templates. Each row includes stable
+`id`, `version`, title, category, mutability, required role
+descriptor, seed-data description, supported route patterns, oracle
+description, default severity, and whether the template is executable
+or metadata-only.
+
+```json
+[
+  {
+    "id": "tenant_object_isolation",
+    "version": "1",
+    "title": "Tenant/object isolation",
+    "category": "authorization",
+    "mutability": "state_changing",
+    "required_roles": ["two_distinct_non_anonymous_roles"],
+    "supported_route_patterns": ["POST collection route paired with GET detail route"],
+    "availability": "executable"
+  }
+]
+```
+
 `POST /api/v1/projects/:id/pentest`
 
 Starts a project-scoped pentest after launch-profile readiness
@@ -322,7 +347,10 @@ safe mode:
 ```json
 {
   "exploit_mode_enabled": false,
-  "allow_state_changing_live_probes": false
+  "allow_state_changing_live_probes": false,
+  "exploit_dry_run": false,
+  "business_logic_templates_enabled": true,
+  "business_logic_template_ids": ["tenant_object_isolation"]
 }
 ```
 
@@ -336,6 +364,11 @@ targets where state-changing probes are acceptable.
 `exploit_mode_enabled = true`; this prevents older clients or stale
 config from enabling mutating live probes without the explicit
 exploit-mode opt-in.
+
+`business_logic_template_ids` restricts synthesis to specific
+template ids for this run. Unknown ids are rejected with 400.
+`exploit_dry_run = true` lets operators inspect generated candidates
+and policy audit rows without sending guarded live traffic.
 
 Response: `{ "run_id": "run-..." }`.
 
@@ -394,12 +427,49 @@ unverified hypotheses until a live verification attempt confirms them.
 `source` and `source_ids` preserve attribution across Nyx signals,
 route/API discovery, OpenAPI specs, JavaScript bundle endpoint
 extraction, forms, and optional scanner imports.
+Business-logic template candidates also include
+`affected_components[*].template_provenance` with `template_id` and
+`template_version`.
+
+`GET /api/v1/runs/:id/business-logic`
+
+Returns per-run business-logic synthesis counts and skip reasons:
+
+```json
+{
+  "run_id": "run-...",
+  "templates_considered": 2,
+  "candidates_generated": 1,
+  "templates_skipped": 1,
+  "dry_run": true,
+  "templates": [
+    {
+      "template_id": "tenant_object_isolation",
+      "template_version": "1",
+      "generated_count": 1,
+      "skipped_count": 0,
+      "skip_reasons": [],
+      "dry_run": true
+    },
+    {
+      "template_id": "password_reset_token_misuse",
+      "template_version": "1",
+      "generated_count": 0,
+      "skipped_count": 1,
+      "skip_reasons": ["current route/auth model does not expose reset-token seed data or a safe inbox capture path"],
+      "dry_run": true
+    }
+  ]
+}
+```
 
 `GET /api/v1/runs/:id/vulnerabilities`
 
 Returns live-verified vulnerabilities for the run. Each row carries
 `verification_attempt_ids`; resolve those through
 `/runs/:id/verification-attempts` to inspect replay evidence.
+Business-logic verified vulnerabilities retain the candidate's
+`template_provenance` in `affected_components`.
 
 `GET /api/v1/runs/:id/events.jsonl`
 

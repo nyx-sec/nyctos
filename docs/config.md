@@ -142,6 +142,8 @@ See `docs/triggers/webhook.md` for the full handler contract.
 | `browser_checks_enabled`           | bool | `false` | Allow browser-driven verification and auth-session acquisition when the local runtime is available. Confirmed browser attempts save redacted replay evidence under the run trace directory. |
 | `exploit_mode_enabled`             | bool | `false` | Master opt-in for invasive verification. State-changing probes still require `allow_state_changing_live_probes = true`; setting that older flag by itself is not enough. |
 | `exploit_dry_run`                  | bool | `false` | Evaluate guarded live plans and write audit records without sending HTTP/browser traffic where feasible. |
+| `business_logic_templates_enabled` | bool | `true` | Generate first-class business-logic pentest candidates from route/auth metadata. Generated plans still pass through normal verifier safety gates. |
+| `business_logic_template_ids`      | array of strings | `[]` | Optional allowlist of template ids. Empty means every registered template is considered. Use `nyctos business-logic templates` or `GET /api/v1/business-logic/templates` to list ids. |
 | `exploit_request_cap`              | int (optional) | unset (`10`) | Per-candidate cap for guarded live HTTP/browser actions. `0` is floored to `1`. |
 | `exploit_requests_per_second`      | int (optional) | unset (`5`) | Per-candidate rate limit for guarded live HTTP/browser actions. `0` is floored to `1`. |
 | `exploit_reset_after_state_changing` | bool | `true` | Ask the environment orchestration layer to reset/rollback after allowed state-changing probes when the active environment supports it. |
@@ -171,17 +173,22 @@ allow_state_changing_live_probes = true
 exploit_request_cap = 5
 exploit_requests_per_second = 2
 exploit_reset_after_state_changing = true
+business_logic_template_ids = ["tenant_object_isolation", "file_permission_revalidation"]
 ```
 
 Use `exploit_dry_run = true` to inspect generated policy audit
-records before sending live traffic.
+records before sending live traffic. With both safety keys enabled,
+dry-run still generates selected business-logic candidates and records
+template summary rows, but the live verifier does not send guarded
+HTTP/browser traffic.
 
 Business-logic templates that seed objects, submit coupon/price data,
-or send chatbot prompts are only generated when the same two gates are
-enabled. They still pass through request caps, rate limits, target URL
-scope checks, auth-session acquisition, and reset-after-state-changing
-handling. See [`business-logic-templates.md`](business-logic-templates.md)
-for examples of the generated workflows.
+change permissions, deliver webhook payloads, or send chatbot prompts
+are only generated when the same two gates are enabled. They still
+pass through request caps, rate limits, target URL scope checks,
+auth-session acquisition, and reset-after-state-changing handling.
+See [`business-logic-templates.md`](business-logic-templates.md) for
+template ids, dry-run examples, skip reasons, and provenance shape.
 
 Optional scanner findings are persisted as pentest candidates. Live web
 findings still pass live verification before surfacing as verified
@@ -282,6 +289,8 @@ webhook_branch = "main"
 
 [run]
 replay_stable_check = false
+business_logic_templates_enabled = true
+business_logic_template_ids = []
 
 [[project]]
 name = "acme-app"

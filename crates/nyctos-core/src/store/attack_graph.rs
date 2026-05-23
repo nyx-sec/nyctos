@@ -13,8 +13,9 @@ use sqlx::{Row, SqlitePool};
 use nyctos_types::attack_graph::{
     AttackGraphEdgeRecord, AttackGraphEvidenceTrail, AttackGraphNodeRecord, EDGE_CHAINED_WITH,
     EDGE_DERIVED_CANDIDATE, EDGE_TARGETS, EDGE_TOUCHES_OBJECT, EDGE_USES_ROLE, EDGE_VERIFIED_AS,
-    NODE_CANDIDATE, NODE_CHAIN, NODE_ENDPOINT, NODE_FORM, NODE_OBJECT, NODE_PARAMETER, NODE_ROLE,
-    NODE_ROUTE, NODE_SIGNAL, NODE_VERIFICATION_ATTEMPT, NODE_VERIFIED_VULNERABILITY,
+    NODE_BUSINESS_LOGIC_TEMPLATE, NODE_CANDIDATE, NODE_CHAIN, NODE_ENDPOINT, NODE_FORM,
+    NODE_OBJECT, NODE_PARAMETER, NODE_ROLE, NODE_ROUTE, NODE_SIGNAL, NODE_VERIFICATION_ATTEMPT,
+    NODE_VERIFIED_VULNERABILITY,
 };
 use nyctos_types::chain::ChainRecord;
 use nyctos_types::product::{
@@ -521,6 +522,37 @@ impl<'a> AttackGraphStore<'a> {
                 &node.id,
                 Some(source_id),
                 serde_json::json!({"source": rec.source}),
+                now,
+            )
+            .await?;
+        }
+        if let Some(provenance) = business_logic_template_provenance(&rec.affected_components) {
+            let template = self
+                .upsert_node_by_key(
+                    &rec.run_id,
+                    &rec.project_id,
+                    NODE_BUSINESS_LOGIC_TEMPLATE,
+                    &business_logic_template_key(&provenance.template_id, &provenance.version),
+                    &provenance.title,
+                    Some(&provenance.template_id),
+                    serde_json::json!({
+                        "template_id": provenance.template_id,
+                        "template_version": provenance.version,
+                        "title": provenance.title,
+                        "category": provenance.category,
+                        "mutability": provenance.mutability,
+                    }),
+                    now,
+                )
+                .await?;
+            self.upsert_edge_by_key(
+                &rec.run_id,
+                &rec.project_id,
+                EDGE_DERIVED_CANDIDATE,
+                &template.id,
+                &node.id,
+                Some(&provenance.template_id),
+                serde_json::json!({"source": "business_logic_template"}),
                 now,
             )
             .await?;
@@ -1208,6 +1240,8 @@ impl<'a> AttackGraphStore<'a> {
             };
             if let Some(raw) = obj
                 .get("url")
+                .or_else(|| obj.get("url_path"))
+                .or_else(|| obj.get("route_path"))
                 .or_else(|| obj.get("target"))
                 .or_else(|| obj.get("matched_at"))
                 .and_then(|v| v.as_str())
@@ -1848,6 +1882,10 @@ fn verification_attempt_key(id: &str) -> String {
     format!("verification_attempt:{id}")
 }
 
+fn business_logic_template_key(template_id: &str, version: &str) -> String {
+    format!("business_logic_template:{template_id}:{version}")
+}
+
 fn verified_vulnerability_key(id: &str) -> String {
     format!("verified_vulnerability:{id}")
 }
@@ -1955,6 +1993,55 @@ fn route_objects(path: &str) -> Vec<String> {
         out.push(object.to_string());
     }
     out
+}
+
+struct BusinessLogicTemplateGraphProvenance {
+    template_id: String,
+    version: String,
+    title: String,
+    category: String,
+    mutability: String,
+}
+
+fn business_logic_template_provenance(
+    components: &[serde_json::Value],
+) -> Option<BusinessLogicTemplateGraphProvenance> {
+    for component in components {
+        let Some(obj) = component.as_object() else {
+            continue;
+        };
+        let provenance = obj.get("template_provenance").and_then(|v| v.as_object()).unwrap_or(obj);
+        let template_id = provenance
+            .get("template_id")
+            .or_else(|| provenance.get("id"))
+            .and_then(|v| v.as_str())?;
+        let version = provenance
+            .get("template_version")
+            .or_else(|| provenance.get("version"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        return Some(BusinessLogicTemplateGraphProvenance {
+            template_id: template_id.to_string(),
+            version: version.to_string(),
+            title: provenance
+                .get("title")
+                .or_else(|| obj.get("template_name"))
+                .and_then(|v| v.as_str())
+                .unwrap_or(template_id)
+                .to_string(),
+            category: provenance
+                .get("category")
+                .and_then(|v| v.as_str())
+                .unwrap_or("business_logic")
+                .to_string(),
+            mutability: provenance
+                .get("mutability")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string(),
+        });
+    }
+    None
 }
 
 fn roles_from_checks(auth_checks: &[String], role_checks: &[String]) -> Vec<String> {

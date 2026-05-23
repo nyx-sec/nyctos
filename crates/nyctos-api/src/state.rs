@@ -60,6 +60,10 @@ impl ScanTriggerSource {
 pub struct ScanRunOverrides {
     pub exploit_mode_enabled: bool,
     pub allow_state_changing_live_probes: bool,
+    pub exploit_dry_run: Option<bool>,
+    pub browser_checks_enabled: Option<bool>,
+    pub business_logic_templates_enabled: Option<bool>,
+    pub business_logic_template_ids: Option<Vec<String>>,
 }
 
 /// Plug that lets the API hand off a manual scan request to the daemon

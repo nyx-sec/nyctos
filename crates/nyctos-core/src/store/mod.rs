@@ -50,7 +50,8 @@ pub use finding::{
 };
 pub use payload::{PayloadRecord, PayloadStore};
 pub use product::{
-    EnvironmentRunRecord, EnvironmentRunStore, LaunchProfileStore, NyxSignalRecord, NyxSignalStore,
+    BusinessLogicTemplateRunRecord, BusinessLogicTemplateRunStore, EnvironmentRunRecord,
+    EnvironmentRunStore, LaunchProfileStore, NyxSignalRecord, NyxSignalStore,
     PentestCandidateRecord, PentestCandidateStore, ProjectLaunchProfile, ProjectLaunchProfileInput,
     RouteModelRecord, RouteModelStore, VerificationAttemptRecord, VerificationAttemptStore,
     VerifiedVulnerabilityRecord, VerifiedVulnerabilityStore,
@@ -258,6 +259,9 @@ impl Store {
     }
     pub fn pentest_candidates(&self) -> PentestCandidateStore<'_> {
         PentestCandidateStore::new(&self.pool)
+    }
+    pub fn business_logic_template_runs(&self) -> BusinessLogicTemplateRunStore<'_> {
+        BusinessLogicTemplateRunStore::new(&self.pool)
     }
     pub fn verification_attempts(&self) -> VerificationAttemptStore<'_> {
         VerificationAttemptStore::new(&self.pool)

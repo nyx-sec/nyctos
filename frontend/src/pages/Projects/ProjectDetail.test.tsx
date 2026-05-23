@@ -130,10 +130,13 @@ describe("ProjectDetail", () => {
 
     expect(screen.getByRole("dialog", { name: "Start pentest" })).toBeInTheDocument();
     const exploitMode = screen.getByLabelText(/Exploit mode/) as HTMLInputElement;
+    const browserChecks = screen.getByLabelText(/Browser verification/) as HTMLInputElement;
     const stateChanging = screen.getByLabelText(/State-changing probes/) as HTMLInputElement;
     expect(exploitMode.checked).toBe(false);
+    expect(browserChecks.checked).toBe(false);
     expect(stateChanging).toBeDisabled();
 
+    fireEvent.click(browserChecks);
     fireEvent.click(exploitMode);
     expect(stateChanging).not.toBeDisabled();
     fireEvent.click(stateChanging);
@@ -144,6 +147,8 @@ describe("ProjectDetail", () => {
         {
           exploit_mode_enabled: true,
           allow_state_changing_live_probes: true,
+          browser_checks_enabled: true,
+          business_logic_template_ids: [],
         },
       ]),
     );

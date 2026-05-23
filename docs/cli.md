@@ -83,6 +83,7 @@ nyctos scan
 nyctos scan --project acme-app
 nyctos scan --project acme-app --repo acme-backend
 nyctos scan --project acme-app --output report.json --since-ref origin/main
+nyctos scan --project acme-app --exploit-mode --allow-state-changing-live-probes --business-template tenant_object_isolation
 ```
 
 | Flag | Effect |
@@ -92,6 +93,11 @@ nyctos scan --project acme-app --output report.json --since-ref origin/main
 | `--headless` | Suppress human-readable stdout so only `--output PATH` carries machine-readable signal. Errors still go to stderr. Pair with `--output` in CI lanes that consume the JSON report and ignore console output. |
 | `--output PATH` | Write a machine-readable JSON report to `PATH`. Consumed by `pr-comment --report` and external dashboards. |
 | `--since-ref REF` | Filter the report to findings whose `path` was touched by `git diff --name-only --diff-filter=AMR REF...HEAD` in each workspace. Computed per repo; requires a git workspace. |
+| `--exploit-mode` | Enable exploit mode for this scan without editing `nyctos.toml`. State-changing probes still also require `--allow-state-changing-live-probes`. |
+| `--allow-state-changing-live-probes` | Allow mutating live probes for this scan when exploit mode is enabled. |
+| `--exploit-dry-run` | Evaluate guarded live plans and write audit records without sending HTTP/browser traffic. |
+| `--no-business-logic-templates` | Disable business-logic template candidate synthesis for this scan. |
+| `--business-template ID` | Restrict business-logic template synthesis to the given id. Repeat for multiple ids. |
 
 Each invocation drives the full pipeline per project: ingest, static
 lane via the upstream `nyx` scanner, AI payload synthesis, spec
@@ -137,6 +143,20 @@ and any cross-repo chains discovered in the run.
 **Exit codes.** `0` if every repo succeeded and no ingest errors
 occurred. `1` if any repo failed or scan refused to start. `2` if
 `--repo` was passed without `--project`.
+
+## `business-logic`
+
+Inspect business-logic pentest template metadata.
+
+```bash
+nyctos business-logic templates
+nyctos business-logic templates --json
+```
+
+The JSON form returns the same registry exposed by
+`GET /api/v1/business-logic/templates`, including template id,
+version, category, mutability, route-pattern support, oracle
+description, and whether the template is executable or metadata-only.
 
 ## `project`
 

@@ -162,7 +162,8 @@ impl ScanReport {
         self.findings.clear();
         self.chains.clear();
         self.pentest_candidates.clear();
-        self.verified_vulnerabilities.retain(|v| v.status != "FalsePositive");
+        self.verified_vulnerabilities
+            .retain(|v| matches!(v.status.as_str(), "Open" | "Verified" | "Confirmed"));
         self.verified_chains
             .retain(|c| c.status == "Verified" || c.verification_attempt_id.is_some());
 
@@ -610,8 +611,12 @@ mod tests {
             verified_vulnerabilities: vec![
                 sample_vulnerability("v-confirmed", "alpha", "src/a.py"),
                 ReportVulnerability {
+                    status: "NeedsReview".into(),
+                    ..sample_vulnerability("v-review", "beta", "src/review.py")
+                },
+                ReportVulnerability {
                     status: "FalsePositive".into(),
-                    ..sample_vulnerability("v-fp", "beta", "src/b.py")
+                    ..sample_vulnerability("v-fp", "gamma", "src/b.py")
                 },
             ],
             verified_chains: vec![
