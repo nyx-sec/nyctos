@@ -7,10 +7,8 @@ use sqlx::SqlitePool;
 
 use crate::store::StoreError;
 
-/// Highest schema version shipped by this build. This project has not
-/// shipped with persisted user databases yet, so the early migration
-/// history is squashed into the v1 baseline.
-pub const CURRENT_SCHEMA_VERSION: i64 = 1;
+/// Highest schema version shipped by this build.
+pub const CURRENT_SCHEMA_VERSION: i64 = 2;
 
 pub static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 

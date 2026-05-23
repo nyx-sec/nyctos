@@ -44,6 +44,7 @@ around it.
 │       └── repos/
 │           └── <repo-name>/   Project-scoped workspace. New ingestions write here.
 ├── bundles/            Repro bundles. One tarball per finding when the operator builds one.
+├── traces/             AI conversation logs and live-verification evidence.
 ├── cache/              Reserved.
 ├── findings/           Reserved.
 └── runs/               Reserved.
@@ -71,12 +72,13 @@ on <path>: <io error>`.
 
 SQLite database. The pool opens with WAL journaling, `synchronous =
 NORMAL`, `foreign_keys = ON`, `cache_size = -8000` (8 MiB), and
-`temp_store = MEMORY`. The schema is managed by the bundled
-baseline migration (`crates/nyctos-core/migrations/0001_v1.sql`):
+`temp_store = MEMORY`. The schema is managed by bundled SQLx
+migrations under `crates/nyctos-core/migrations/`:
 
 | Migration     | Adds |
 |---------------|------|
 | `0001_v1.sql` | Full baseline schema: product/projects, repos, runs, findings, harness specs, traces, AI budgets, quarantine data, launch profiles, Nyx signals, pentest candidates, verification attempts, vulnerabilities, phase events, and supporting indexes. |
+| `0002_attack_graph.sql` | Run-scoped attack graph nodes and edges for routes, endpoints, forms, parameters, roles, objects, signals, candidates, verification attempts, verified vulnerabilities, and chains. |
 
 The singleton `meta` row carries `schema_version` (mirrors
 `MAX(_sqlx_migrations.version)`), `created_at` (epoch ms of first
@@ -91,7 +93,7 @@ sqlite3 "<state>/state.db" \
 `nyctos doctor` prints the schema version on every run:
 
 ```text
-db OK at <state>/state.db (schema v1)
+db OK at <state>/state.db (schema v2)
 ```
 
 If migrations diverge (e.g. a newer binary then an older binary
@@ -128,6 +130,30 @@ tail -f "<state>/logs/agent.jsonl" | jq -c 'select(.level=="ERROR")'
 The stderr layer mirrors the same events at the level set by
 `--log-level` / `[general] log_level`; the JSON layer is always at
 full verbosity so the file is the canonical record.
+
+### `traces/<run-id>/browser_verification/<attempt-id>/`
+
+Browser-driven verification writes durable replay evidence here when a
+candidate is exercised through Playwright. The verification attempt row
+stores the file paths in `verification_attempts.artifact_paths_json`.
+Typical files are:
+
+- `browser-replay.json` and `browser-replay.mjs`: deterministic,
+  redacted replay inputs.
+- `browser-final.png` plus any explicit screenshot-step captures.
+- `browser-dom.html` and `browser-focused-html.json`: redacted DOM
+  evidence.
+- `browser-console.json` and `browser-timeline.json`: console output
+  and action/navigation history.
+- `playwright-trace.zip` when trace capture is available and safe, or
+  `playwright-trace-unavailable.json` when the executor falls back to
+  the redacted replay artifacts.
+
+Session headers, cookies, bearer tokens, and token-like query/body
+values are redacted before Nyctos writes JSON, HTML, console, timeline,
+or replay files. Playwright traces are skipped when the plan or injected
+session headers contain secret-like values because the zip is not
+post-process-redacted.
 
 ## Directories
 

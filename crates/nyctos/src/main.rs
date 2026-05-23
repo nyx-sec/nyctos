@@ -6,6 +6,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
+use nyctos_ai::{LiveEvidenceReviewDecision, LiveEvidenceReviewOutput};
 use nyctos_api::{
     build_router, AuthConfig, EnvSecretResolver, ScanTrigger, ScanTriggerError, ScanTriggerSource,
     ServerState, SetupContext, WebhookConfig, WebhookSecretResolver,
@@ -16,9 +17,9 @@ use nyctos_core::store::{
     VerifiedVulnerabilityRecord,
 };
 use nyctos_core::{
-    ingest, now_epoch_ms, repo_from_config, Config, InconclusiveReason, IngestError, IngestedRepo,
-    LogConfig, Project, ProjectId, Repo, RepoOutcome, RepoSource, Run, RunBundle, RunCounts,
-    RunDispatcher, SandboxBackend, SecretStore, StateDir, Store, WorkspaceHandle,
+    ingest, now_epoch_ms, repo_from_config, AiConfig, Config, InconclusiveReason, IngestError,
+    IngestedRepo, LogConfig, Project, ProjectId, Repo, RepoOutcome, RepoSource, Run, RunBundle,
+    RunCounts, RunDispatcher, SandboxBackend, SecretStore, StateDir, Store, WorkspaceHandle,
 };
 use nyctos_nyx::{Diag, NyxError, NyxRunner, NyxScanLane, MINIMUM_NYX_VERSION};
 use nyctos_sandbox::{select_backend, BackendChoice, BackendKind, Lane};
@@ -1271,7 +1272,9 @@ async fn drive_scan(
             .map(|workspace| workspace.workspace().to_path_buf())
             .collect::<Vec<_>>();
         match verify_pentest_candidates(
+            &config.ai,
             store,
+            &secrets,
             &run.id,
             project.id.as_str(),
             &env.environment_run_id,
@@ -1279,6 +1282,7 @@ async fn drive_scan(
             &config.run,
             &auth_profiles,
             &state_dir.traces_for_run(&run.id).join("auth_sessions"),
+            &state_dir.traces_for_run(&run.id).join("browser_verification"),
             &auth_workspace_paths,
             events.clone(),
         )
@@ -1996,7 +2000,9 @@ struct CandidateVerificationReport {
 }
 
 async fn verify_pentest_candidates(
+    ai_config: &AiConfig,
     store: &Store,
+    secrets: &SecretStore,
     run_id: &str,
     project_id: &str,
     environment_run_id: &str,
@@ -2004,6 +2010,7 @@ async fn verify_pentest_candidates(
     run_config: &nyctos_core::RunConfig,
     auth_profiles: &[nyctos_types::project::ProjectAuthProfile],
     auth_artifact_dir: &std::path::Path,
+    browser_artifact_root: &std::path::Path,
     auth_workspace_paths: &[std::path::PathBuf],
     events: EventSink,
 ) -> anyhow::Result<CandidateVerificationReport> {
@@ -2035,20 +2042,22 @@ async fn verify_pentest_candidates(
         candidates.into_iter().filter(|c| matches!(c.status.as_str(), "Proposed" | "NeedsLiveTest"))
     {
         let started = now_epoch_ms();
+        let attempt_id = format!("va-{}-{}", candidate.id, started);
+        let browser_artifact_dir = browser_artifact_root.join(safe_artifact_segment(&attempt_id));
         let options = pentest_tools::LiveVerifierOptions {
             target_urls: target_urls.to_vec(),
             auth_profiles: auth_profiles.to_vec(),
             auth_session_manager: auth_session_manager.clone(),
             auth_artifact_dir: auth_artifact_dir.to_path_buf(),
             auth_workspace_paths: auth_workspace_paths.to_vec(),
+            browser_artifact_dir: Some(browser_artifact_dir),
             allow_state_changing: run_config.allow_state_changing_live_probes,
             browser_checks_enabled: run_config.browser_checks_enabled,
         };
         let outcome = execute_candidate_test_plan(&candidate, &options).await;
         let finished = now_epoch_ms();
-        let (status, request, response, oracle, error) = match outcome {
+        let (mut status, request, response, mut oracle, mut error) = match outcome {
             Ok(VerificationOutcome::Confirmed { request, response, oracle }) => {
-                report.confirmed += 1;
                 ("Confirmed", Some(request), Some(response), Some(oracle), None)
             }
             Ok(VerificationOutcome::Rejected { request, response, oracle }) => {
@@ -2064,8 +2073,92 @@ async fn verify_pentest_candidates(
                 ("Errored", None, None, None, Some(err.to_string()))
             }
         };
-        let attempt_id = format!("va-{}-{}", candidate.id, finished);
+        let mut accepted_review: Option<LiveEvidenceReviewOutput> = None;
+        if status == "Confirmed" {
+            if let (Some(request_value), Some(response_value), Some(oracle_value)) =
+                (request.clone(), response.clone(), oracle.clone())
+            {
+                let deterministic_review = review_confirmed_live_evidence(
+                    &candidate,
+                    &request_value,
+                    &response_value,
+                    &oracle_value,
+                );
+                let proposed_plan = proposed_plan_for_review(&candidate, target_urls);
+                let mut ai_review = None;
+                let mut reviewer_error = None;
+                if deterministic_review.decision == LiveEvidenceReviewDecision::Accept {
+                    match ai_pipeline::run_live_evidence_review_pass(
+                        ai_config,
+                        store,
+                        secrets,
+                        run_id,
+                        &candidate,
+                        proposed_plan,
+                        serde_json::json!({
+                            "request": &request_value,
+                            "response": &response_value,
+                        }),
+                        oracle_value.clone(),
+                        deterministic_review.clone(),
+                        events.clone(),
+                    )
+                    .await
+                    {
+                        Ok(review) => ai_review = review,
+                        Err(err) => {
+                            tracing::warn!(
+                                error = %err,
+                                candidate = %candidate.id,
+                                "live evidence reviewer failed; falling back to deterministic review"
+                            );
+                            reviewer_error = Some(err.to_string());
+                        }
+                    }
+                }
+                let final_review =
+                    ai_review.clone().unwrap_or_else(|| deterministic_review.clone());
+                oracle = Some(oracle_with_evidence_review(
+                    oracle_value,
+                    &deterministic_review,
+                    ai_review.as_ref(),
+                    reviewer_error.as_deref(),
+                    &final_review,
+                ));
+                match final_review.decision {
+                    LiveEvidenceReviewDecision::Accept => {
+                        report.confirmed += 1;
+                        accepted_review = Some(final_review);
+                    }
+                    LiveEvidenceReviewDecision::Downgrade => {
+                        status = "Inconclusive";
+                        report.inconclusive += 1;
+                        error = Some(format!(
+                            "evidence reviewer downgraded: {}",
+                            final_review.rationale
+                        ));
+                    }
+                    LiveEvidenceReviewDecision::Block => {
+                        status = "Rejected";
+                        report.rejected += 1;
+                        error =
+                            Some(format!("evidence reviewer blocked: {}", final_review.rationale));
+                    }
+                }
+            } else {
+                status = "Inconclusive";
+                report.inconclusive += 1;
+                error = Some(
+                    "confirmed attempt lacked request, response, or oracle evidence".to_string(),
+                );
+            }
+        }
         let method = verification_attempt_method(request.as_ref());
+        let artifact_paths = if method == "browser" {
+            pentest_tools::artifact_paths_from_response(response.as_ref())
+        } else {
+            Vec::new()
+        };
         if method == "browser" {
             report.browser_attempts += 1;
         } else {
@@ -2086,7 +2179,7 @@ async fn verify_pentest_candidates(
             request,
             response,
             oracle,
-            artifact_paths: Vec::new(),
+            artifact_paths,
             error: error.clone(),
             replay_stable: None,
         };
@@ -2097,7 +2190,12 @@ async fn verify_pentest_candidates(
                     .pentest_candidates()
                     .set_status(&candidate.id, "Verified", None, finished)
                     .await?;
-                let vuln = vulnerability_from_candidate(&candidate, &attempt_id, finished);
+                let vuln = vulnerability_from_candidate(
+                    &candidate,
+                    &attempt_id,
+                    finished,
+                    accepted_review.as_ref(),
+                );
                 store.verified_vulnerabilities().upsert(&vuln).await?;
             }
             "Rejected" => {
@@ -2110,6 +2208,12 @@ async fn verify_pentest_candidates(
                 store
                     .pentest_candidates()
                     .set_status(&candidate.id, "Errored", error.as_deref(), finished)
+                    .await?;
+            }
+            "Inconclusive" => {
+                store
+                    .pentest_candidates()
+                    .set_status(&candidate.id, "NeedsLiveTest", error.as_deref(), finished)
                     .await?;
             }
             _ => {}
@@ -2215,13 +2319,42 @@ fn verification_attempt_method(request: Option<&serde_json::Value>) -> String {
     }
 }
 
+fn safe_artifact_segment(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    let trimmed = out.trim_matches(['.', '_', '-']);
+    if trimmed.is_empty() {
+        "attempt".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 fn vulnerability_from_candidate(
     candidate: &PentestCandidateRecord,
     attempt_id: &str,
     now_ms: i64,
+    accepted_review: Option<&LiveEvidenceReviewOutput>,
 ) -> VerifiedVulnerabilityRecord {
     let source_signal_ids: Vec<String> =
         candidate.source_ids.iter().filter(|id| id.starts_with("sig-")).cloned().collect();
+    let evidence_summary = accepted_review
+        .map(|review| {
+            format!(
+                "Live verification and evidence review confirmed the candidate: {}",
+                review.rationale
+            )
+        })
+        .unwrap_or_else(|| {
+            "Live verification attempt confirmed the candidate against the running local app."
+                .to_string()
+        });
     VerifiedVulnerabilityRecord {
         id: format!("vuln-{}", candidate.id.trim_start_matches("pc-")),
         run_id: candidate.run_id.clone(),
@@ -2232,8 +2365,7 @@ fn vulnerability_from_candidate(
         vuln_class: candidate.vuln_class.clone(),
         affected_components: candidate.affected_components.clone(),
         business_impact: candidate.hypothesis.clone(),
-        evidence_summary: "Live verification attempt confirmed the candidate against the running local app."
-            .to_string(),
+        evidence_summary,
         repro_steps: candidate.test_plan.clone(),
         remediation: "Review the affected component and apply the framework-specific fix for this vulnerability class."
             .to_string(),
@@ -2321,6 +2453,315 @@ fn emit_auth_session_status(
             ts_ms: now_epoch_ms(),
         },
     });
+}
+
+fn proposed_plan_for_review(
+    candidate: &PentestCandidateRecord,
+    target_urls: &[String],
+) -> serde_json::Value {
+    match pentest_tools::normalise_live_test_plan(&candidate.test_plan, target_urls) {
+        Ok(Some(plan)) => plan,
+        Ok(None) => serde_json::json!({ "raw": candidate.test_plan, "normalised": null }),
+        Err(err) => serde_json::json!({ "raw": candidate.test_plan, "normalise_error": err }),
+    }
+}
+
+fn review_confirmed_live_evidence(
+    candidate: &PentestCandidateRecord,
+    request: &serde_json::Value,
+    response: &serde_json::Value,
+    oracle: &serde_json::Value,
+) -> LiveEvidenceReviewOutput {
+    if !oracle.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
+        return blocked_evidence_review(
+            "The deterministic oracle did not report success.",
+            vec!["hard verifier result was not confirming".to_string()],
+        );
+    }
+
+    let positive = positive_oracle_evidence(oracle);
+    if positive.is_empty() {
+        return blocked_evidence_review(
+            "The oracle is status-only and has no exploit-specific live marker.",
+            vec!["missing body/header/reflection/sensitive-data evidence".to_string()],
+        );
+    }
+
+    if let Some(status) = confirmed_error_status(response, oracle) {
+        return blocked_evidence_review(
+            format!("The confirming evidence came from HTTP {status}, which is an error or blocked page."),
+            vec!["unauthenticated or generic error response treated as success".to_string()],
+        );
+    }
+
+    if static_source_evidence(request, &positive) {
+        return blocked_evidence_review(
+            "The evidence only proves a static source asset or served bundle contains the marker.",
+            vec!["static source hit is not live exploit evidence".to_string()],
+        );
+    }
+
+    if let Some(marker) = missing_body_marker(response, oracle) {
+        return blocked_evidence_review(
+            format!("The recorded response does not contain the required live reflection marker `{marker}`."),
+            vec!["missing reflection in captured response".to_string()],
+        );
+    }
+
+    LiveEvidenceReviewOutput {
+        decision: LiveEvidenceReviewDecision::Accept,
+        confidence: candidate.confidence.max(0.75).min(0.95),
+        rationale: "Deterministic oracle found positive, vulnerability-specific live evidence."
+            .to_string(),
+        evidence_strengths: positive,
+        evidence_gaps: Vec::new(),
+        required_followup: Vec::new(),
+    }
+}
+
+fn blocked_evidence_review(
+    rationale: impl Into<String>,
+    evidence_gaps: Vec<String>,
+) -> LiveEvidenceReviewOutput {
+    LiveEvidenceReviewOutput {
+        decision: LiveEvidenceReviewDecision::Block,
+        confidence: 0.95,
+        rationale: rationale.into(),
+        evidence_strengths: Vec::new(),
+        evidence_gaps,
+        required_followup: vec![
+            "collect live evidence tied to attacker-controlled input or sensitive data".to_string(),
+        ],
+    }
+}
+
+fn positive_oracle_evidence(oracle: &serde_json::Value) -> Vec<String> {
+    let mut out = Vec::new();
+    for marker in json_string_or_array(oracle.get("body_contains")) {
+        out.push(format!("body_contains `{}`", marker));
+    }
+    if let Some(obj) = oracle.get("header_contains").and_then(|v| v.as_object()) {
+        for (name, value) in obj {
+            if let Some(marker) = value.as_str().filter(|s| !s.trim().is_empty()) {
+                out.push(format!("header `{name}` contains `{marker}`"));
+            }
+        }
+    }
+    for marker in json_string_or_array(oracle.get("markers_found")) {
+        out.push(format!("sensitive marker `{}`", marker));
+    }
+    for key in [
+        "text_contains",
+        "html_contains",
+        "selector_exists",
+        "selector_text_contains",
+        "url_contains",
+        "title_contains",
+        "console_contains",
+        "alert_contains",
+        "dialog_contains",
+    ] {
+        if let Some(value) = oracle.get(key).filter(|v| !v.is_null()) {
+            out.push(format!("{key} {}", compact_json(value)));
+        }
+    }
+    out
+}
+
+fn confirmed_error_status(response: &serde_json::Value, oracle: &serde_json::Value) -> Option<u16> {
+    let statuses = response_statuses(response);
+    if statuses.is_empty() {
+        return None;
+    }
+    let target_status = oracle
+        .get("step")
+        .and_then(|v| v.as_u64())
+        .and_then(|idx| statuses.get(idx as usize).copied())
+        .or_else(|| statuses.last().copied());
+    target_status.filter(|s| matches!(*s, 401 | 403 | 404) || *s >= 500)
+}
+
+fn response_statuses(value: &serde_json::Value) -> Vec<u16> {
+    let mut out = Vec::new();
+    if let Some(status) = value
+        .get("response")
+        .and_then(|v| v.get("status"))
+        .and_then(|v| v.as_u64())
+        .and_then(|n| u16::try_from(n).ok())
+    {
+        out.push(status);
+    }
+    if let Some(steps) = value.get("steps").and_then(|v| v.as_array()) {
+        for step in steps {
+            if let Some(status) =
+                step.get("status").and_then(|v| v.as_u64()).and_then(|n| u16::try_from(n).ok())
+            {
+                out.push(status);
+            }
+        }
+    }
+    out
+}
+
+fn static_source_evidence(request: &serde_json::Value, positive_markers: &[String]) -> bool {
+    request_urls(request).iter().any(|url| url_points_to_static_source_asset(url))
+        && positive_markers.iter().any(|marker| marker_looks_like_source_code(marker))
+}
+
+fn request_urls(value: &serde_json::Value) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(url) = value
+        .get("request")
+        .and_then(|v| v.get("url"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+    {
+        out.push(url.to_string());
+    }
+    if let Some(steps) = value.get("steps").and_then(|v| v.as_array()) {
+        for step in steps {
+            if let Some(url) =
+                step.get("url").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty())
+            {
+                out.push(url.to_string());
+            }
+        }
+    }
+    if let Some(url) = value
+        .get("plan")
+        .and_then(|v| v.get("url"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+    {
+        out.push(url.to_string());
+    }
+    out
+}
+
+fn url_points_to_static_source_asset(url: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    let path = url.path().to_ascii_lowercase();
+    let Some((_, ext)) = path.rsplit_once('.') else {
+        return false;
+    };
+    matches!(ext, "js" | "mjs" | "cjs" | "map" | "ts" | "tsx" | "jsx" | "css" | "scss" | "sass")
+}
+
+fn marker_looks_like_source_code(marker: &str) -> bool {
+    let marker = marker.to_ascii_lowercase();
+    [
+        "innerhtml",
+        "outerhtml",
+        "insertadjacenthtml",
+        "escapehtml",
+        "dompurify",
+        "addeventlistener",
+        "queryselector",
+        "document.",
+        "window.",
+        "function ",
+        "const ",
+        "let ",
+        "var ",
+        ".map(",
+        ".join(",
+        "=>",
+        "${",
+        "onclick=",
+        "class=",
+    ]
+    .iter()
+    .any(|needle| marker.contains(needle))
+}
+
+fn missing_body_marker(response: &serde_json::Value, oracle: &serde_json::Value) -> Option<String> {
+    let markers = json_string_or_array(oracle.get("body_contains"));
+    if markers.is_empty() {
+        return None;
+    }
+    let previews = response_body_previews(response);
+    if previews.is_empty() {
+        return None;
+    }
+    for marker in markers {
+        let seen = previews.iter().any(|preview| preview.body.contains(&marker));
+        let complete = previews.iter().any(|preview| preview.complete);
+        if !seen && complete {
+            return Some(marker);
+        }
+    }
+    None
+}
+
+struct BodyPreview {
+    body: String,
+    complete: bool,
+}
+
+fn response_body_previews(value: &serde_json::Value) -> Vec<BodyPreview> {
+    let mut out = Vec::new();
+    if let Some(response) = value.get("response") {
+        push_body_preview(response, &mut out);
+    }
+    if let Some(steps) = value.get("steps").and_then(|v| v.as_array()) {
+        for step in steps {
+            push_body_preview(step, &mut out);
+        }
+    }
+    out
+}
+
+fn push_body_preview(value: &serde_json::Value, out: &mut Vec<BodyPreview>) {
+    let Some(body) = value.get("body_preview").and_then(|v| v.as_str()) else {
+        return;
+    };
+    let body_len = value.get("body_len").and_then(|v| v.as_u64()).unwrap_or(body.len() as u64);
+    out.push(BodyPreview { body: body.to_string(), complete: body_len <= body.len() as u64 });
+}
+
+fn json_string_or_array(value: Option<&serde_json::Value>) -> Vec<String> {
+    match value {
+        Some(serde_json::Value::String(s)) if !s.trim().is_empty() => vec![s.clone()],
+        Some(serde_json::Value::Array(items)) => items
+            .iter()
+            .filter_map(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
+            .map(str::to_string)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn compact_json(value: &serde_json::Value) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| "unknown".to_string())
+}
+
+fn oracle_with_evidence_review(
+    oracle: serde_json::Value,
+    deterministic_review: &LiveEvidenceReviewOutput,
+    ai_review: Option<&LiveEvidenceReviewOutput>,
+    reviewer_error: Option<&str>,
+    final_review: &LiveEvidenceReviewOutput,
+) -> serde_json::Value {
+    let review = serde_json::json!({
+        "kind": "LiveEvidenceReview",
+        "final_decision": final_review.decision.as_str(),
+        "deterministic": deterministic_review,
+        "ai": ai_review,
+        "ai_error": reviewer_error,
+    });
+    match oracle {
+        serde_json::Value::Object(mut obj) => {
+            obj.insert("evidence_review".to_string(), review);
+            serde_json::Value::Object(obj)
+        }
+        other => serde_json::json!({
+            "oracle": other,
+            "evidence_review": review,
+        }),
+    }
 }
 
 async fn finalise_and_emit_run(
@@ -3053,6 +3494,150 @@ fn resolve_min_nyx_version(config: &Config) -> anyhow::Result<Version> {
 mod tests {
     use super::*;
 
+    fn review_candidate(class: &str) -> PentestCandidateRecord {
+        PentestCandidateRecord {
+            id: "pc-review".to_string(),
+            run_id: "run-review".to_string(),
+            project_id: "project-review".to_string(),
+            source: "NyxSignal".to_string(),
+            source_ids: vec!["sig-review".to_string()],
+            title: format!("{class} candidate"),
+            vuln_class: class.to_string(),
+            severity_guess: "High".to_string(),
+            affected_components: vec![serde_json::json!({
+                "repo": "web",
+                "path": "src/routes.ts",
+                "line": 12,
+            })],
+            hypothesis: "Attacker-controlled input reaches the response.".to_string(),
+            test_plan: "{}".to_string(),
+            status: "NeedsLiveTest".to_string(),
+            rejection_reason: None,
+            confidence: 0.6,
+            trace_id: None,
+            created_at: 1,
+            updated_at: 1,
+        }
+    }
+
+    fn single_http_request(url: &str) -> serde_json::Value {
+        serde_json::json!({
+            "kind": "single_http",
+            "request": {
+                "method": "GET",
+                "url": url,
+                "role": "anonymous",
+                "headers": {},
+            },
+            "tool_calls": [],
+        })
+    }
+
+    fn single_http_response(status: u16, body: &str) -> serde_json::Value {
+        serde_json::json!({
+            "response": {
+                "status": status,
+                "headers": {},
+                "body_preview": body,
+                "body_len": body.len(),
+            }
+        })
+    }
+
+    #[test]
+    fn evidence_review_rejects_status_only_confirmation() {
+        let review = review_confirmed_live_evidence(
+            &review_candidate("ACCESS_CONTROL"),
+            &single_http_request("http://localhost:3000/admin"),
+            &single_http_response(200, "admin dashboard"),
+            &serde_json::json!({
+                "type": "single_http",
+                "status_ok": true,
+                "success": true,
+            }),
+        );
+
+        assert_eq!(review.decision, LiveEvidenceReviewDecision::Block);
+        assert!(review.rationale.contains("status-only"));
+    }
+
+    #[test]
+    fn evidence_review_rejects_static_source_hits() {
+        let review = review_confirmed_live_evidence(
+            &review_candidate("XSS"),
+            &single_http_request("http://localhost:3000/assets/app.js"),
+            &single_http_response(200, "const sink = element.innerHTML"),
+            &serde_json::json!({
+                "type": "single_http",
+                "status_ok": true,
+                "body_contains": ["innerHTML"],
+                "body_contains_ok": true,
+                "success": true,
+            }),
+        );
+
+        assert_eq!(review.decision, LiveEvidenceReviewDecision::Block);
+        assert!(review.rationale.contains("static source"));
+    }
+
+    #[test]
+    fn evidence_review_rejects_unauthenticated_error_pages() {
+        let review = review_confirmed_live_evidence(
+            &review_candidate("AUTH_BYPASS"),
+            &single_http_request("http://localhost:3000/admin"),
+            &single_http_response(401, "Unauthorized"),
+            &serde_json::json!({
+                "type": "single_http",
+                "expect_status": [401],
+                "status_ok": true,
+                "body_contains": ["Unauthorized"],
+                "body_contains_ok": true,
+                "success": true,
+            }),
+        );
+
+        assert_eq!(review.decision, LiveEvidenceReviewDecision::Block);
+        assert!(review.rationale.contains("401"));
+    }
+
+    #[test]
+    fn evidence_review_rejects_missing_reflection_marker() {
+        let review = review_confirmed_live_evidence(
+            &review_candidate("XSS"),
+            &single_http_request("http://localhost:3000/search?q=nyctos-probe"),
+            &single_http_response(200, "no reflected input here"),
+            &serde_json::json!({
+                "type": "single_http",
+                "status_ok": true,
+                "body_contains": ["nyctos-probe"],
+                "body_contains_ok": true,
+                "success": true,
+            }),
+        );
+
+        assert_eq!(review.decision, LiveEvidenceReviewDecision::Block);
+        assert!(review.rationale.contains("nyctos-probe"));
+    }
+
+    #[test]
+    fn evidence_review_accepts_specific_live_reflection() {
+        let review = review_confirmed_live_evidence(
+            &review_candidate("XSS"),
+            &single_http_request("http://localhost:3000/search?q=nyctos-probe"),
+            &single_http_response(200, "<div>nyctos-probe</div>"),
+            &serde_json::json!({
+                "type": "single_http",
+                "status_ok": true,
+                "body_contains": ["nyctos-probe"],
+                "body_contains_ok": true,
+                "success": true,
+            }),
+        );
+
+        assert_eq!(review.decision, LiveEvidenceReviewDecision::Accept);
+        assert!(review.evidence_strengths.iter().any(|s| s.contains("nyctos-probe")));
+    }
+
     #[test]
     fn static_verdict_blob_lifts_full_evidence_with_kind_discriminator() {
         let mut diag = Diag {
@@ -3132,6 +3717,103 @@ mod tests {
         // Existing evidence.message wins over Diag.message so the upstream
         // payload remains authoritative.
         assert_eq!(parsed.get("message").and_then(|v| v.as_str()), Some("inner"));
+    }
+
+    #[tokio::test]
+    async fn persist_run_results_populates_attack_graph_for_static_leads() -> anyhow::Result<()> {
+        let state = tempfile::tempdir()?;
+        let store = Store::open(state.path()).await?;
+        let project =
+            store.projects().create("proj-graph", "Graph", None, None, None, 1_000).await?;
+        let repo = RepoRecord {
+            id: "repo-proj-graph-web".to_string(),
+            name: "web".to_string(),
+            project_id: project.id.clone(),
+            source_kind: "local-path".to_string(),
+            source_url_or_path: "/tmp/web".to_string(),
+            branch: None,
+            auth_ref: None,
+            i_own_this: true,
+            last_scan_run_id: None,
+            last_scan_finished_at: None,
+            created_at: 1_001,
+            updated_at: 1_001,
+        };
+        store.repos().upsert(&repo).await?;
+        let run = RunRecord {
+            id: "run-graph".to_string(),
+            project_id: Some(project.id.clone()),
+            kind: "Scan".to_string(),
+            started_at: 2_000,
+            finished_at: None,
+            status: "Running".to_string(),
+            triggered_by: "Manual".to_string(),
+            git_ref: None,
+            parent_run_id: None,
+            wall_clock_ms: None,
+            total_ai_spend_usd_micros: 0,
+        };
+        store.runs().insert(&run).await?;
+        let diag = Diag {
+            path: "src/routes/users.ts".to_string(),
+            line: 42,
+            col: Some(9),
+            severity: "High".to_string(),
+            rule: "sql-injection".to_string(),
+            cap: "SQLI".to_string(),
+            message: Some("query uses request-controlled id".to_string()),
+            confidence: Some("high".to_string()),
+            evidence: serde_json::json!({"sink": {"callee": "db.query"}}),
+            flow_steps: Vec::new(),
+        };
+        let bundle = RunBundle {
+            run_id: run.id.clone(),
+            project_id: project.id.clone(),
+            started_at_ms: 2_000,
+            finished_at_ms: 2_500,
+            wall_clock_ms: 500,
+            per_repo: vec![nyctos_core::RepoBundle {
+                repo: "web".to_string(),
+                outcome: RepoOutcome::Success(vec![diag]),
+                started_at_ms: 2_000,
+                finished_at_ms: 2_500,
+                elapsed_ms: 500,
+            }],
+            callgraph: nyctos_core::CrossRepoCallgraphStub::default(),
+        };
+
+        persist_run_results(&store, &bundle).await?;
+
+        let signal_id = nyx_signal_id(
+            &project.id,
+            &repo.id,
+            "web",
+            "src/routes/users.ts",
+            Some(42),
+            "SQLI",
+            "sql-injection",
+        );
+        let candidate_id = format!("pc-{}", signal_id.trim_start_matches("sig-"));
+        let graph = store.attack_graph();
+        let signal = graph
+            .get_node_by_ref("run-graph", nyctos_types::attack_graph::NODE_SIGNAL, &signal_id)
+            .await?
+            .expect("signal graph node");
+        let candidate = graph
+            .get_node_by_ref("run-graph", nyctos_types::attack_graph::NODE_CANDIDATE, &candidate_id)
+            .await?
+            .expect("candidate graph node");
+        assert_eq!(signal.properties["path"], "src/routes/users.ts");
+        assert_eq!(candidate.properties["source"], "NyxSignal");
+        let edges = graph.list_edges_by_run("run-graph").await?;
+        assert!(edges.iter().any(|edge| {
+            edge.kind == nyctos_types::attack_graph::EDGE_DERIVED_CANDIDATE
+                && edge.from_node_id == signal.id
+                && edge.to_node_id == candidate.id
+        }));
+
+        store.close().await;
+        Ok(())
     }
 
     #[tokio::test]

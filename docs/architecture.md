@@ -145,8 +145,16 @@ the pool is shared via `Arc` inside `Store`.
 Tables live under `crates/nyctos-core/src/store/`: `repo`,
 `run`, `finding`, `payload`, `chain`, `candidate`, `spec`,
 `trace`, `budget`, `feedback`, `repro`, `project`, `schedule`,
-`webhook`. SQLx migrations live alongside; the prepared-query
-cache regen flow is documented in [`dev/sqlx.md`](dev/sqlx.md).
+`webhook`, `product`, and `attack_graph`. SQLx migrations live
+alongside; the prepared-query cache regen flow is documented in
+[`dev/sqlx.md`](dev/sqlx.md).
+
+The attack graph is a run-scoped index over existing artifacts, not
+a replacement for them. Route models, Nyx signals, pentest
+candidates, verification attempts, verified vulnerabilities, and
+chains dual-write graph nodes / edges so callers can ask "what
+evidence led to this vuln?" and "what vulns touch this route,
+object, or role?" See [`attack-graph.md`](attack-graph.md).
 
 The state directory layout (where the SQLite file, logs, repo
 workspaces, and repro bundles land) is documented in

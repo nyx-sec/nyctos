@@ -186,6 +186,12 @@ export type FindingRecord = { id: string, run_id: string, repo: string, path: st
  */
 spec_id: string | null, };
 
+export type AttackGraphNodeRecord = { id: string, run_id: string, project_id: string, kind: string, stable_key: string, label: string, ref_id?: string, properties: unknown, created_at: number, updated_at: number, };
+
+export type AttackGraphEdgeRecord = { id: string, run_id: string, project_id: string, kind: string, from_node_id: string, to_node_id: string, evidence_ref?: string, properties: unknown, created_at: number, };
+
+export type AttackGraphEvidenceTrail = { focus: AttackGraphNodeRecord, nodes: Array<AttackGraphNodeRecord>, edges: Array<AttackGraphEdgeRecord>, };
+
 export type ProjectRuntimeCommand = { command: string, repo_name?: string, working_directory?: string, timeout_seconds?: number, };
 
 export type ProjectRuntimeEnvVar = { name: string, value: string, secret: boolean, };

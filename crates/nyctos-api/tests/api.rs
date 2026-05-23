@@ -18,7 +18,10 @@ use nyctos_api::{
     build_router, AuthConfig, ScanTrigger, ScanTriggerError, ScanTriggerSource, ServerState,
     SetupContext,
 };
-use nyctos_core::store::{ChainRecord, FindingRecord, RepoRecord, RunRecord, DEFAULT_PROJECT_ID};
+use nyctos_core::store::{
+    ChainRecord, EnvironmentRunRecord, FindingRecord, ProjectLaunchProfileInput, RepoRecord,
+    RunRecord, VerificationAttemptRecord, DEFAULT_PROJECT_ID,
+};
 use nyctos_core::{Config, SecretStore, Store};
 use nyctos_types::event::{AgentEvent, EventSink, RepoOutcomeTag, ReproEvent, RunEvent};
 
@@ -264,6 +267,93 @@ async fn runs_endpoint_lists_and_gets_by_id() {
     let missing =
         reqwest::get(format!("{}/api/v1/runs/does-not-exist", srv.base())).await.expect("get");
     assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn verification_attempts_endpoint_returns_artifact_paths() {
+    let srv = TestServer::start().await;
+    let mut run = sample_run("run-A");
+    run.project_id = Some(DEFAULT_PROJECT_ID.to_string());
+    srv.store.runs().insert(&run).await.expect("run");
+    let profile = srv
+        .store
+        .launch_profiles()
+        .upsert_default(
+            DEFAULT_PROJECT_ID,
+            &ProjectLaunchProfileInput {
+                name: None,
+                mode: None,
+                build_steps: Vec::new(),
+                start_steps: Vec::new(),
+                stop_steps: Vec::new(),
+                health_checks: Vec::new(),
+                target_urls: vec!["http://localhost:3000".to_string()],
+                env_refs: Vec::new(),
+                working_dirs: Vec::new(),
+            },
+            2_100,
+        )
+        .await
+        .expect("profile");
+    srv.store
+        .environment_runs()
+        .insert(&EnvironmentRunRecord {
+            id: "env-1".to_string(),
+            run_id: "run-A".to_string(),
+            project_id: DEFAULT_PROJECT_ID.to_string(),
+            profile_id: profile.id,
+            status: "Ready".to_string(),
+            started_at: Some(2_200),
+            ready_at: Some(2_300),
+            stopped_at: None,
+            target_urls: vec!["http://localhost:3000".to_string()],
+            health: None,
+            logs_dir: None,
+            teardown: None,
+        })
+        .await
+        .expect("env");
+    srv.store
+        .verification_attempts()
+        .insert(&VerificationAttemptRecord {
+            id: "va-browser-1".to_string(),
+            run_id: "run-A".to_string(),
+            project_id: DEFAULT_PROJECT_ID.to_string(),
+            environment_run_id: "env-1".to_string(),
+            candidate_id: None,
+            chain_id: None,
+            method: "browser".to_string(),
+            status: "Confirmed".to_string(),
+            started_at: 2_400,
+            finished_at: Some(2_700),
+            duration_ms: Some(300),
+            request: Some(serde_json::json!({"kind":"browser"})),
+            response: Some(
+                serde_json::json!({"browser":{"artifact_paths":["/state/browser-final.png"]}}),
+            ),
+            oracle: Some(serde_json::json!({"success":true})),
+            artifact_paths: vec![
+                "/state/browser-final.png".to_string(),
+                "/state/browser-replay.json".to_string(),
+            ],
+            error: None,
+            replay_stable: None,
+        })
+        .await
+        .expect("attempt");
+
+    let attempts: Vec<VerificationAttemptRecord> =
+        reqwest::get(format!("{}/api/v1/runs/run-A/verification-attempts", srv.base()))
+            .await
+            .expect("get")
+            .json()
+            .await
+            .expect("json");
+
+    assert_eq!(attempts.len(), 1);
+    assert_eq!(attempts[0].id, "va-browser-1");
+    assert!(attempts[0].artifact_paths.iter().any(|path| path.ends_with("browser-final.png")));
+    assert!(attempts[0].artifact_paths.iter().any(|path| path.ends_with("browser-replay.json")));
 }
 
 #[tokio::test]

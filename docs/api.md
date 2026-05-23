@@ -54,13 +54,17 @@ concern.
 | PATCH  | `/api/v1/projects/:id/repos/:name` | Patch repo |
 | DELETE | `/api/v1/projects/:id/repos/:name` | Delete repo (clears workspace) |
 | POST   | `/api/v1/projects/:id/scan` | Trigger a scan |
+| GET    | `/api/v1/projects/:id/vulnerabilities` | Verified vulnerabilities for project |
 | GET    | `/api/v1/runs` | List runs by status |
 | GET    | `/api/v1/runs/:id` | Get run |
 | GET    | `/api/v1/runs/:id/findings` | Findings for run plus diff status |
+| GET    | `/api/v1/runs/:id/verification-attempts` | Live verification attempts and artifacts |
+| GET    | `/api/v1/runs/:id/vulnerabilities` | Verified vulnerabilities for run |
 | GET    | `/api/v1/runs/:id/summary` | Run-card JSON |
 | GET    | `/api/v1/runs/:id/summary.md` | Run-card markdown |
 | GET    | `/api/v1/runs/:id/summary.html` | Run-card HTML |
 | GET    | `/api/v1/findings` | List findings (filtered) |
+| GET    | `/api/v1/vulnerabilities` | Verified vulnerabilities across projects |
 | GET    | `/api/v1/findings/:id` | Get finding |
 | POST   | `/api/v1/findings/:id/repro-bundle` | Build a repro bundle |
 | GET    | `/api/v1/findings/:id/repro-bundle.tar` | Download bundle tar |
@@ -340,6 +344,21 @@ against the most recent prior run on the install:
 `diff_status` is `new` when `first_seen >= run.started_at`,
 otherwise `unchanged`. The `regressed` and `closed` variants are
 reserved for when a per-run finding-membership history lands.
+
+`GET /api/v1/runs/:id/verification-attempts`
+
+Returns `Vec<VerificationAttemptRecord>` for the run. Browser
+verification attempts include `artifact_paths` pointing at durable
+evidence files under the state directory: redacted replay JSON and
+script files, screenshots, DOM/focused HTML captures, console logs,
+action/navigation timelines, and either a Playwright trace zip or a
+trace-unavailable note when trace capture could not be used safely.
+
+`GET /api/v1/runs/:id/vulnerabilities`
+
+Returns live-verified vulnerabilities for the run. Each row carries
+`verification_attempt_ids`; resolve those through
+`/runs/:id/verification-attempts` to inspect replay evidence.
 
 `GET /api/v1/runs/:id/summary`
 

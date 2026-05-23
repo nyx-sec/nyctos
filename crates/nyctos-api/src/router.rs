@@ -93,6 +93,7 @@ pub fn build_router(state: ServerState) -> Router {
         .route("/api/v1/runs/{id}/signals", get(signals_for_run))
         .route("/api/v1/runs/{id}/route-model", get(route_model_for_run))
         .route("/api/v1/runs/{id}/environment-runs", get(environment_runs_for_run))
+        .route("/api/v1/runs/{id}/verification-attempts", get(verification_attempts_for_run))
         .route("/api/v1/runs/{id}/vulnerabilities", get(run_vulnerabilities))
         .route("/api/v1/runs/{id}/summary", get(run_summary))
         .route("/api/v1/runs/{id}/summary.md", get(run_summary_markdown))
@@ -1531,6 +1532,14 @@ async fn environment_runs_for_run(
 ) -> Result<Json<Vec<nyctos_types::product::EnvironmentRunRecord>>, ApiError> {
     require_run(&s, &id).await?;
     Ok(Json(s.store.environment_runs().list_by_run(&id).await?))
+}
+
+async fn verification_attempts_for_run(
+    State(s): State<ServerState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<nyctos_types::product::VerificationAttemptRecord>>, ApiError> {
+    require_run(&s, &id).await?;
+    Ok(Json(s.store.verification_attempts().list_by_run(&id).await?))
 }
 
 #[derive(Debug, Deserialize)]

@@ -10,6 +10,8 @@ pub use nyctos_types::product::{
 
 use crate::store::StoreError;
 
+use super::attack_graph::AttackGraphStore;
+
 pub struct LaunchProfileStore<'a> {
     pool: &'a SqlitePool,
 }
@@ -259,6 +261,7 @@ impl<'a> NyxSignalStore<'a> {
         .bind(rec.created_at)
         .execute(self.pool)
         .await?;
+        AttackGraphStore::new(self.pool).record_nyx_signal(rec).await?;
         Ok(())
     }
 
@@ -342,6 +345,7 @@ impl<'a> PentestCandidateStore<'a> {
         .bind(rec.updated_at)
         .execute(self.pool)
         .await?;
+        AttackGraphStore::new(self.pool).record_pentest_candidate(rec).await?;
         Ok(())
     }
 
@@ -452,6 +456,7 @@ impl<'a> VerificationAttemptStore<'a> {
         .bind(rec.replay_stable.map(|v| if v { 1_i64 } else { 0_i64 }))
         .execute(self.pool)
         .await?;
+        AttackGraphStore::new(self.pool).record_verification_attempt(rec).await?;
         Ok(())
     }
 
@@ -521,6 +526,7 @@ impl<'a> VerifiedVulnerabilityStore<'a> {
         .bind(rec.last_seen)
         .execute(self.pool)
         .await?;
+        AttackGraphStore::new(self.pool).record_verified_vulnerability(rec).await?;
         Ok(())
     }
 
@@ -618,6 +624,7 @@ impl<'a> RouteModelStore<'a> {
         .bind(rec.created_at)
         .execute(self.pool)
         .await?;
+        AttackGraphStore::new(self.pool).record_route_model(rec).await?;
         Ok(())
     }
 

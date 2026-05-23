@@ -4,6 +4,7 @@
 
 pub mod agent;
 pub mod api;
+pub mod attack_graph;
 pub mod budget;
 pub mod chain;
 pub mod event;

@@ -53,6 +53,8 @@ pub struct ReportVulnerability {
     pub source_candidate_ids: Vec<String>,
     pub source_signal_ids: Vec<String>,
     pub verification_attempt_ids: Vec<String>,
+    #[serde(default)]
+    pub verification_artifacts: Vec<String>,
     pub chain_id: Option<String>,
     pub evidence_summary: String,
 }
@@ -96,12 +98,12 @@ pub struct ReportChain {
     pub rationale: Option<String>,
 }
 
-pub const REPORT_SCHEMA_VERSION: u32 = 2;
+pub const REPORT_SCHEMA_VERSION: u32 = 3;
 
 /// Schema versions this binary knows how to read. A future minor /
 /// compatible bump can append here so older readers refuse loudly
 /// rather than silently dropping fields they cannot parse.
-pub const SUPPORTED_REPORT_SCHEMA_VERSIONS: &[u32] = &[1, 2];
+pub const SUPPORTED_REPORT_SCHEMA_VERSIONS: &[u32] = &[1, 2, 3];
 
 #[derive(Debug, thiserror::Error)]
 pub enum ScanReportError {
@@ -187,14 +189,17 @@ pub async fn build_report(
     let raw_chains = store.chains().list_by_run(run_id).await?;
     let raw_vulnerabilities = store.verified_vulnerabilities().list_by_run(run_id).await?;
     let raw_signals = store.nyx_signals().list_by_run(run_id, false).await?;
+    let raw_attempts = store.verification_attempts().list_by_run(run_id).await?;
 
     let findings: Vec<ReportFinding> = raw_findings
         .into_iter()
         .filter(|f| keep_finding(f, changed_files))
         .map(map_finding)
         .collect();
+    let attempt_artifacts: HashMap<String, Vec<String>> =
+        raw_attempts.into_iter().map(|attempt| (attempt.id, attempt.artifact_paths)).collect();
     let verified_vulnerabilities: Vec<ReportVulnerability> =
-        raw_vulnerabilities.into_iter().map(map_vulnerability).collect();
+        raw_vulnerabilities.into_iter().map(|v| map_vulnerability(v, &attempt_artifacts)).collect();
     let verified_chains: Vec<ReportVerifiedChain> = raw_chains
         .iter()
         .filter(|c| c.status == "Verified" || c.verification_attempt_id.is_some())
@@ -261,7 +266,19 @@ fn map_finding(f: FindingRecord) -> ReportFinding {
     }
 }
 
-fn map_vulnerability(v: VerifiedVulnerabilityRecord) -> ReportVulnerability {
+fn map_vulnerability(
+    v: VerifiedVulnerabilityRecord,
+    attempt_artifacts: &HashMap<String, Vec<String>>,
+) -> ReportVulnerability {
+    let mut verification_artifacts = v
+        .verification_attempt_ids
+        .iter()
+        .filter_map(|id| attempt_artifacts.get(id))
+        .flatten()
+        .cloned()
+        .collect::<Vec<_>>();
+    verification_artifacts.sort();
+    verification_artifacts.dedup();
     ReportVulnerability {
         id: v.id,
         title: v.title,
@@ -273,6 +290,7 @@ fn map_vulnerability(v: VerifiedVulnerabilityRecord) -> ReportVulnerability {
         source_candidate_ids: v.source_candidate_ids,
         source_signal_ids: v.source_signal_ids,
         verification_attempt_ids: v.verification_attempt_ids,
+        verification_artifacts,
         chain_id: v.chain_id,
         evidence_summary: v.evidence_summary,
     }
@@ -387,6 +405,7 @@ mod tests {
             source_candidate_ids: vec![format!("pc-{id}")],
             source_signal_ids: vec![format!("sig-{id}")],
             verification_attempt_ids: vec![format!("va-{id}")],
+            verification_artifacts: Vec::new(),
             chain_id: None,
             evidence_summary: "confirmed by live verification".to_string(),
         }
@@ -405,7 +424,13 @@ mod tests {
             triggered_by: "ci".into(),
             repos: vec!["alpha".into(), "beta".into()],
             since_ref: Some("origin/main".into()),
-            verified_vulnerabilities: vec![sample_vulnerability("v-a", "alpha", "src/a.py")],
+            verified_vulnerabilities: vec![ReportVulnerability {
+                verification_artifacts: vec![
+                    "/state/traces/run-1/browser_verification/va-v-a/browser-final.png".into(),
+                    "/state/traces/run-1/browser_verification/va-v-a/browser-replay.json".into(),
+                ],
+                ..sample_vulnerability("v-a", "alpha", "src/a.py")
+            }],
             verified_chains: vec![ReportVerifiedChain {
                 id: "vc1".into(),
                 member_ids: vec!["v-a".into(), "v-b".into()],
@@ -481,6 +506,50 @@ mod tests {
         let mapped = map_chain(raw);
         assert_eq!(mapped.member_ids, vec!["a", "b", "c"]);
         assert_eq!(mapped.rationale.as_deref(), Some("controller reaches sink"));
+    }
+
+    #[test]
+    fn map_vulnerability_attaches_attempt_artifacts() {
+        let raw = VerifiedVulnerabilityRecord {
+            id: "vuln-a".into(),
+            run_id: "run-1".into(),
+            project_id: "proj-1".into(),
+            title: "Browser XSS".into(),
+            severity: "High".into(),
+            confidence: 0.95,
+            vuln_class: "XSS".into(),
+            affected_components: vec![serde_json::json!({"repo":"web","path":"src/app.tsx"})],
+            business_impact: "Script execution".into(),
+            evidence_summary: "Browser oracle confirmed execution".into(),
+            repro_steps: "Open replay".into(),
+            remediation: "Escape HTML".into(),
+            source_candidate_ids: vec!["pc-1".into()],
+            source_signal_ids: vec!["sig-1".into()],
+            verification_attempt_ids: vec!["va-1".into()],
+            chain_id: None,
+            status: "Open".into(),
+            first_seen: 1,
+            last_seen: 2,
+        };
+        let artifacts = HashMap::from([(
+            "va-1".to_string(),
+            vec![
+                "/state/traces/run-1/browser_verification/va-1/browser-final.png".to_string(),
+                "/state/traces/run-1/browser_verification/va-1/browser-replay.json".to_string(),
+            ],
+        )]);
+
+        let mapped = map_vulnerability(raw, &artifacts);
+
+        assert_eq!(mapped.verification_artifacts.len(), 2);
+        assert!(mapped
+            .verification_artifacts
+            .iter()
+            .any(|path| path.ends_with("browser-final.png")));
+        assert!(mapped
+            .verification_artifacts
+            .iter()
+            .any(|path| path.ends_with("browser-replay.json")));
     }
 
     #[test]

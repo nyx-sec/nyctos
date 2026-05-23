@@ -139,7 +139,7 @@ See `docs/triggers/webhook.md` for the full handler contract.
 |------------------------------------|------|---------|----------------------------------------------------------------------------------------------------------|
 | `replay_stable_check`              | bool | `false` | When `true`, the deterministic payload runner re-executes each `(vuln, benign)` pair a second time and stamps `replay_stable` on the resulting `VerifyResult`. Adds roughly 2x cost per verify. |
 | `allow_state_changing_live_probes` | bool | `false` | Allow live verification plans to use HTTP methods likely to mutate target state (`POST`, `PUT`, `PATCH`, `DELETE`). |
-| `browser_checks_enabled`           | bool | `false` | Allow browser-driven verification and auth-session acquisition when the local runtime is available. |
+| `browser_checks_enabled`           | bool | `false` | Allow browser-driven verification and auth-session acquisition when the local runtime is available. Confirmed browser attempts save redacted replay evidence under the run trace directory. |
 | `enable_zap_baseline`              | bool | `true`  | Run `zap-baseline.py` against live target URLs when the binary is present on PATH. Missing binaries are skipped. |
 | `enable_nuclei`                    | bool | `true`  | Run `nuclei` against live target URLs when the binary is present on PATH. Missing binaries are skipped. |
 | `enable_trivy`                     | bool | `true`  | Run `trivy fs` against repo workspaces when present on PATH. Dependency, IaC, and secret findings become AI exploration context. |

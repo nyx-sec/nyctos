@@ -117,7 +117,7 @@ Sample output:
 state dir OK at /home/op/.local/share/nyctos
 logs -> /home/op/.local/share/nyctos/logs/agent.jsonl
 config not found at ./nyctos.toml (using defaults)
-db OK at /home/op/.local/share/nyctos/state.db (schema v1)
+db OK at /home/op/.local/share/nyctos/state.db (schema v2)
 nyx OK at /usr/local/bin/nyx (version 0.7.0, minimum 0.7.0)
 claude-code: available v1.0.0 at /usr/local/bin/claude
 sandbox chain lane -> birdcage (selected by host probe) [2 simultaneous, default]

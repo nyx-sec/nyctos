@@ -201,6 +201,16 @@ Add `verification_attempts`:
 | `error` | Error details when status is `Errored` or `Inconclusive`. |
 | `replay_stable` | Optional second-run stability result. |
 
+Before a `Confirmed` live attempt creates a verified vulnerability, run
+an evidence-review step separate from planning. The reviewer receives
+the candidate, the proposed plan, the captured request/response
+evidence, and the oracle result. Deterministic verifier checks remain
+authoritative and block obvious weak evidence first: status-only
+checks, static source or bundle hits, unauthenticated error pages, and
+missing reflection. When configured, the AI reviewer can then accept,
+downgrade to inconclusive, or block the confirmation with structured
+rationale stored alongside the attempt oracle.
+
 ### Verified vulnerabilities
 
 Add `verified_vulnerabilities` as the primary user-facing output.
@@ -687,4 +697,3 @@ The reset is complete when a user can:
 6. Receive a default result set of only verified vulnerabilities.
 7. Open advanced/debug views for raw signals, rejected candidates, and
    traces when needed.
-

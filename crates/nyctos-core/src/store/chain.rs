@@ -4,6 +4,7 @@ use sqlx::{Row, SqlitePool};
 
 pub use nyctos_types::chain::ChainRecord;
 
+use super::attack_graph::AttackGraphStore;
 use crate::store::StoreError;
 
 pub struct ChainStore<'a> {
@@ -39,6 +40,7 @@ impl<'a> ChainStore<'a> {
         .bind(&c.severity)
         .execute(self.pool)
         .await?;
+        AttackGraphStore::new(self.pool).record_chain(c).await?;
         Ok(())
     }
 

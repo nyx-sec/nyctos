@@ -8,6 +8,7 @@
 
 pub mod chain_reasoning;
 pub mod exploration;
+pub mod live_evidence_review;
 pub mod novel_findings;
 pub mod payload_synthesis;
 pub mod spec_derivation;
@@ -19,6 +20,10 @@ pub use exploration::{
     ExplorationKnownLead, ExplorationOutcome, ExplorationScope,
     DEFAULT_EXPLORATION_RUN_CAP_USD_MICROS, DEFAULT_EXPLORATION_SOFT_CAP_USD_MICROS,
     DEFAULT_EXPLORATION_WALL_CLOCK, EXPLORATION_PROMPT_VERSION,
+};
+pub use live_evidence_review::{
+    run as run_live_evidence_review, LiveEvidenceReviewDecision, LiveEvidenceReviewInput,
+    LiveEvidenceReviewOutcome, LiveEvidenceReviewOutput, LIVE_EVIDENCE_REVIEW_PROMPT_VERSION,
 };
 pub use novel_findings::{run as run_novel_findings, NovelFindingDiscoveryOutcome};
 pub use payload_synthesis::{run as run_payload_synthesis, PayloadSynthesisOutcome};

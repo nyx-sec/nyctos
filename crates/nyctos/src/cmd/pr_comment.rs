@@ -662,6 +662,7 @@ mod tests {
             source_candidate_ids: vec![format!("pc-{id}")],
             source_signal_ids: vec![format!("sig-{id}")],
             verification_attempt_ids: vec![format!("va-{id}")],
+            verification_artifacts: Vec::new(),
             chain_id: None,
             evidence_summary: "confirmed".into(),
         }

@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 
+use super::attack_graph::AttackGraphStore;
 use crate::store::StoreError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,6 +76,7 @@ impl<'a> CandidateFindingStore<'a> {
         )
         .execute(self.pool)
         .await?;
+        AttackGraphStore::new(self.pool).record_candidate_finding(c).await?;
         Ok(())
     }
 

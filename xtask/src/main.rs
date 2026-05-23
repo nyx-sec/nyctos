@@ -28,6 +28,7 @@ use nyctos_types::{
         FindingDiffStatus, FindingWithDiff, HealthResponse, QuarantineItem, QuarantineKind,
         ReplayEvent, ReplayEventKind, RunFindingsResponse, SetupRequest, SetupStatusResponse,
     },
+    attack_graph::{AttackGraphEdgeRecord, AttackGraphEvidenceTrail, AttackGraphNodeRecord},
     chain::ChainRecord,
     event::{
         AgentEvent, AiEvent, BudgetEvent, FindingEvent, QuarantineEvent, RepoOutcomeTag,
@@ -144,6 +145,9 @@ fn render() -> String {
         decl_of::<RunRecord>(),
         decl_of::<ChainRecord>(),
         decl_of::<FindingRecord>(),
+        decl_of::<AttackGraphNodeRecord>(),
+        decl_of::<AttackGraphEdgeRecord>(),
+        decl_of::<AttackGraphEvidenceTrail>(),
         decl_of::<ProjectRuntimeCommand>(),
         decl_of::<ProjectRuntimeEnvVar>(),
         decl_of::<ProjectAuthHeaderRef>(),

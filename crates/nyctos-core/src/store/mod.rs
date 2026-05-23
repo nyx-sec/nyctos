@@ -17,6 +17,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, S
 use sqlx::{ConnectOptions, SqlitePool};
 use thiserror::Error;
 
+pub mod attack_graph;
 pub mod budget;
 pub mod candidate;
 pub mod chain;
@@ -38,6 +39,7 @@ pub mod webhook;
 #[cfg(test)]
 pub(crate) mod testutil;
 
+pub use attack_graph::{attack_graph_edge_id, attack_graph_node_id, AttackGraphStore};
 pub use budget::{BudgetKind, BudgetRecord, BudgetStore};
 pub use candidate::{CandidateFindingRecord, CandidateFindingStore, CandidateStatus};
 pub use chain::{ChainRecord, ChainStore};
@@ -229,6 +231,9 @@ impl Store {
     }
     pub fn runs(&self) -> RunStore<'_> {
         RunStore::new(&self.pool)
+    }
+    pub fn attack_graph(&self) -> AttackGraphStore<'_> {
+        AttackGraphStore::new(&self.pool)
     }
     pub fn run_repo_outcomes(&self) -> RunRepoOutcomeStore<'_> {
         RunRepoOutcomeStore::new(&self.pool)

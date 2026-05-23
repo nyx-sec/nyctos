@@ -50,6 +50,7 @@ import type {
   TestLaunchTargetResponse,
   TestRepoRequest,
   TestRepoResponse,
+  VerificationAttemptRecord,
   VerifiedVulnerabilityRecord,
 } from "./types.gen";
 
@@ -95,6 +96,7 @@ export type {
   TestLaunchTargetResponse,
   TestRepoRequest,
   TestRepoResponse,
+  VerificationAttemptRecord,
   VerifiedVulnerabilityRecord,
 };
 
@@ -218,6 +220,7 @@ export const qk = {
   runs: (status?: string) => ["runs", status ?? "Running"] as const,
   run: (id: string) => ["runs", id] as const,
   runEnvironment: (id: string) => ["runs", id, "environment-runs"] as const,
+  runVerificationAttempts: (id: string) => ["runs", id, "verification-attempts"] as const,
   runVulnerabilities: (id: string) => ["runs", id, "vulnerabilities"] as const,
   runRouteModel: (id: string) => ["runs", id, "route-model"] as const,
   vulnerabilities: () => ["vulnerabilities"] as const,
@@ -523,6 +526,17 @@ export function useRunEnvironmentRuns(id: string | undefined) {
     queryKey: id ? qk.runEnvironment(id) : ["runs", "_disabled", "environment-runs"],
     queryFn: () =>
       request<EnvironmentRunRecord[]>(`/runs/${encodeURIComponent(id!)}/environment-runs`),
+    enabled: Boolean(id),
+  });
+}
+
+export function useRunVerificationAttempts(id: string | undefined) {
+  return useQuery({
+    queryKey: id ? qk.runVerificationAttempts(id) : ["runs", "_disabled", "verification-attempts"],
+    queryFn: () =>
+      request<VerificationAttemptRecord[]>(
+        `/runs/${encodeURIComponent(id!)}/verification-attempts`,
+      ),
     enabled: Boolean(id),
   });
 }

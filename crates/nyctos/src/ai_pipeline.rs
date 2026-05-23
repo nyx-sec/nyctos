@@ -24,11 +24,12 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use nyctos_ai::{
-    read_spec_excerpt, run_chain_reasoning, run_exploration, run_novel_findings,
-    run_payload_synthesis, run_spec_derivation, AiRuntime, AnthropicSdkAdapter, BudgetTracker,
-    ChainReasoningOutcome, ClaudeCodeAdapter, CodexCliAdapter, EscapeSuiteGate, EscapeSuiteVerdict,
-    ExplorationAuditEntry, ExplorationEndpoint, ExplorationFinding, ExplorationHaltReason,
-    ExplorationKnownLead, ExplorationOutcome, ExplorationScope, NovelFindingDiscoveryOutcome,
+    read_spec_excerpt, run_chain_reasoning, run_exploration, run_live_evidence_review,
+    run_novel_findings, run_payload_synthesis, run_spec_derivation, AiRuntime, AnthropicSdkAdapter,
+    BudgetTracker, ChainReasoningOutcome, ClaudeCodeAdapter, CodexCliAdapter, EscapeSuiteGate,
+    EscapeSuiteVerdict, ExplorationAuditEntry, ExplorationEndpoint, ExplorationFinding,
+    ExplorationHaltReason, ExplorationKnownLead, ExplorationOutcome, ExplorationScope,
+    LiveEvidenceReviewInput, LiveEvidenceReviewOutput, NovelFindingDiscoveryOutcome,
     PayloadSynthesisOutcome, Pricing, SharedBudgetTracker, SpecDerivationOutcome,
     DEFAULT_EXPLORATION_RUN_CAP_USD_MICROS, DEFAULT_EXPLORATION_SOFT_CAP_USD_MICROS,
 };
@@ -1169,6 +1170,76 @@ fn normalise_live_test_plan(
 
 fn short_candidate_id(id: &str) -> String {
     id.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').take(48).collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn run_live_evidence_review_pass(
+    config: &AiConfig,
+    store: &Store,
+    secrets: &SecretStore,
+    run_id: &str,
+    candidate: &PentestCandidateRecord,
+    proposed_plan: serde_json::Value,
+    live_evidence: serde_json::Value,
+    oracle_result: serde_json::Value,
+    deterministic_review: LiveEvidenceReviewOutput,
+    events: EventSink,
+) -> anyhow::Result<Option<LiveEvidenceReviewOutput>> {
+    let adapter = match selected_one_shot_runtime(
+        config,
+        store,
+        secrets,
+        config.default_run_budget_usd_micros_resolved(),
+        "live evidence review",
+    )
+    .await?
+    {
+        Some(adapter) => adapter,
+        None => return Ok(None),
+    };
+    let runtime_name = adapter.name();
+    let runtime_model = adapter.default_model().to_string();
+    let started_at = now_epoch_ms();
+    let input = LiveEvidenceReviewInput {
+        run_id: run_id.to_string(),
+        candidate: candidate.clone(),
+        proposed_plan,
+        live_evidence,
+        oracle_result,
+        deterministic_review,
+    };
+    let outcome = run_live_evidence_review(
+        adapter.as_ref(),
+        &input,
+        events,
+        config.default_run_budget_usd_micros_resolved(),
+    )
+    .await?;
+    let finished_at = now_epoch_ms();
+    let review = outcome.output.clone();
+    let mut trace = build_trace_row(
+        TaskKind::LiveEvidenceReview,
+        None,
+        runtime_name,
+        &runtime_model,
+        &outcome.prompt_version,
+        outcome.spent_usd_micros,
+        started_at,
+        finished_at,
+        Some(&outcome.metrics),
+    );
+    trace.verifier_blob = Some(
+        serde_json::json!({
+            "kind": "LiveEvidenceReview",
+            "run_id": run_id,
+            "candidate_id": &candidate.id,
+            "decision": review.decision.as_str(),
+            "review": &review,
+        })
+        .to_string(),
+    );
+    persist_trace_row(store, trace).await;
+    Ok(Some(review))
 }
 
 /// Counts surfaced by [`run_spec_derivation_pass`].

@@ -157,6 +157,9 @@ Two tables touch each run:
 |----------------|---------------------------------------------|
 | `runs`         | `finalise_run` (`status`, `finished_at`, `wall_clock_ms`) |
 | `findings`     | `persist_run_results` (one row per static-pass diag) |
+| `verification_attempts` | Live HTTP/browser verifier rows. Browser attempts attach replay artifact paths. |
+| `verified_vulnerabilities` | User-facing confirmed vulnerabilities promoted from successful live attempts. |
+| `attack_graph_nodes`, `attack_graph_edges` | Store dual-writes for route models, signals, candidates, verification attempts, verified vulnerabilities, and chains. |
 
 The `runs` row schema (see
 `crates/nyctos-core/src/store/run.rs:50`):
@@ -178,6 +181,19 @@ The `runs` row schema (see
 string is `Running`. The full record shape is what
 `GET /api/v1/runs/:id` returns. See
 [`docs/api.md`](api.md#runs).
+
+Graph rows are derivative and run-scoped. They let later consumers
+walk from a verified vulnerability back to the evidence that produced
+it, or from a route/object/role to the verified vulnerabilities that
+touch it, without changing the existing finding and report shapes. See
+[`attack-graph.md`](attack-graph.md).
+
+Browser verification attempts persist replay evidence under
+`<state>/traces/<run-id>/browser_verification/<attempt-id>/` and attach
+those paths to the attempt row. Reports and the SPA surface those paths
+through the vulnerability's `verification_attempt_ids`, so a human can
+inspect screenshots, redacted DOM/console/timeline captures, and the
+deterministic replay JSON/script for the proof.
 
 ## Stability across runs
 

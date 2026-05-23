@@ -35,8 +35,8 @@ What ships today:
 - Embedded SPA: first-launch wizard, project + repo manager,
   findings browser, live scan view, quarantine, AI trace viewer.
 - Two AI runtime adapters, Anthropic SDK and Claude Code, wired to
-  four tasks: payload synthesis, spec derivation, chain reasoning,
-  novel finding discovery.
+  six tasks: payload synthesis, spec derivation, chain reasoning,
+  novel finding discovery, attack planning, and live evidence review.
 - Two sandbox lanes: birdcage (in-process seccomp on Linux) and a
   chain lane that auto-selects libkrun, Firecracker, or Docker.
 - Env-builder docker-compose spinup, cross-repo chain runner, and
@@ -54,7 +54,7 @@ timestamp, and per-row "Scan now" + "Remove" actions:
 `nyctos doctor` prints the runtime probes the daemon uses at
 startup:
 
-![nyctos doctor output showing state dir, config, SQLite schema v1, resolved nyx scanner version, claude-code adapter, sandbox chain lane on docker, sandbox fast lane on birdcage, scheduler and webhook status](assets/screenshots/cli-doctor.png)
+![nyctos doctor output showing state dir, config, SQLite schema v2, resolved nyx scanner version, claude-code adapter, sandbox chain lane on docker, sandbox fast lane on birdcage, scheduler and webhook status](assets/screenshots/cli-doctor.png)
 
 ## Documentation
 

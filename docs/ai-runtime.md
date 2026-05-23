@@ -3,7 +3,7 @@
 `nyctos-ai` is the crate that turns a `Prompt` or `AgentTask` into
 model output. It owns one trait (`AiRuntime`), two shipped adapters
 (Anthropic Messages, Claude Code CLI), one host port
-(`BudgetTracker`), and the five task implementations that build
+(`BudgetTracker`), and the six task implementations that build
 typed structured prompts on top of the trait. Everything else in
 the agent (the run dispatcher, the AI pipeline binary glue, the
 trace viewer) sees only the trait, not the vendor SDK.
@@ -52,6 +52,14 @@ is a defence-in-depth, not the primary gate.
 The trait is intentionally minimal. Anything richer (per-attempt
 retry, prompt-version tracking, structured-output validation) lives
 in `tasks/`, not in adapter implementations.
+
+The live candidate verification path intentionally uses a
+planner/reviewer split. `AttackPlanning` and `LiveTestPlan` propose
+safe executable probes, while `LiveEvidenceReview` receives the
+candidate, proposed plan, collected live evidence, and oracle result
+after deterministic verification. The deterministic oracle remains the
+hard gate; the reviewer can only downgrade or block weak confirmations
+before `verified_vulnerabilities` rows are created.
 
 ## Wire envelope: `Prompt`, `Response`, `AgentTask`, `AgentResult`
 
