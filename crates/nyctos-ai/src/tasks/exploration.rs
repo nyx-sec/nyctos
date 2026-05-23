@@ -48,7 +48,7 @@ use crate::runtime::AiRuntime;
 /// `phase23` substring is a historical version slug, not a roadmap
 /// marker; rev it only when the prompt body changes in a way
 /// downstream consumers must distinguish.
-pub const EXPLORATION_PROMPT_VERSION: &str = "phase23.exploration.v1";
+pub const EXPLORATION_PROMPT_VERSION: &str = "phase23.exploration.v2";
 
 /// Default per-run hard cap. $10 in USD micros, tuned for Claude Opus
 /// pricing.
@@ -85,6 +85,11 @@ pub struct ExplorationScope {
     /// free-form description per endpoint so the prompt can hand the
     /// agent a structured starting point.
     pub target_endpoints: Vec<ExplorationEndpoint>,
+    /// Compact scanner/candidate leads already known for this run.
+    /// These are breadcrumbs, not proof: the agent should use them to
+    /// pivot, de-duplicate, and look for stronger evidence or related
+    /// higher-impact flaws.
+    pub known_leads: Vec<ExplorationKnownLead>,
     /// Repository workspace root for CLI-native file/search/shell
     /// tools. The adapter also uses this as the subprocess cwd.
     pub workspace_root: Option<String>,
@@ -119,6 +124,7 @@ impl ExplorationScope {
             task_id: task_id.into(),
             allowed_hosts: Vec::new(),
             target_endpoints: Vec::new(),
+            known_leads: Vec::new(),
             workspace_root: None,
             max_actions: 24,
             max_wall_clock: DEFAULT_EXPLORATION_WALL_CLOCK,
@@ -127,6 +133,30 @@ impl ExplorationScope {
             soft_cap_usd_micros: DEFAULT_EXPLORATION_SOFT_CAP_USD_MICROS,
         }
     }
+}
+
+/// One normalized prior lead from Nyx, ZAP, Nuclei, or another
+/// candidate-producing scanner. The binary constructs these from the
+/// `pentest_candidates` table so raw scanner JSON never lands in the
+/// agent prompt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExplorationKnownLead {
+    /// Stable candidate id the verifier/planner can use later.
+    pub id: String,
+    /// Source label such as `NyxSignal`, `ZAPBaseline`, or `Nuclei`.
+    pub source: String,
+    /// Scanner/plugin title or static diagnostic message.
+    pub title: String,
+    /// Capability/vulnerability class.
+    pub vuln_class: String,
+    /// Severity guess as stored on the candidate.
+    pub severity: String,
+    /// Candidate lifecycle status.
+    pub status: String,
+    /// Best compact location: URL, matched endpoint, or repo:path:line.
+    pub location: Option<String>,
+    /// Current hypothesis. The prompt renderer truncates this heavily.
+    pub hypothesis: String,
 }
 
 /// One endpoint the env-builder surfaced. The prompt renders these as
@@ -356,21 +386,23 @@ fn build_agent_task(scope: &ExplorationScope) -> AgentTask {
     let workspace_root =
         scope.workspace_root.as_deref().unwrap_or("(adapter cwd; no explicit workspace root)");
     let max_secs = scope.max_wall_clock.as_secs();
+    let known_leads = render_known_leads(&scope.known_leads);
 
     // Prompt bodies live at
-    // `crates/nyctos-ai/src/prompts/exploration.v1.{system,objective}.md`
+    // `crates/nyctos-ai/src/prompts/exploration.v2.{system,objective}.md`
     // so the trace viewer can resolve the literal template that drove a
     // given run.
     let system = format!(
-        include_str!("../prompts/exploration.v1.system.md"),
+        include_str!("../prompts/exploration.v2.system.md"),
         max_actions = scope.max_actions,
         max_secs = max_secs,
     );
 
     let objective = format!(
-        include_str!("../prompts/exploration.v1.objective.md"),
+        include_str!("../prompts/exploration.v2.objective.md"),
         allowed = allowed,
         targets = targets,
+        known_leads = known_leads,
         workspace_root = workspace_root,
         max_actions = scope.max_actions,
         max_secs = max_secs,
@@ -386,6 +418,47 @@ fn build_agent_task(scope: &ExplorationScope) -> AgentTask {
         working_directory: scope.workspace_root.clone(),
         max_turns: scope.max_actions,
     }
+}
+
+fn render_known_leads(leads: &[ExplorationKnownLead]) -> String {
+    if leads.is_empty() {
+        return "(none; prioritize route/source survey and live behavior)".to_string();
+    }
+    leads
+        .iter()
+        .map(|lead| {
+            let location = lead
+                .location
+                .as_deref()
+                .map(|s| compact_prompt_field(s, 140))
+                .unwrap_or_else(|| "unknown".to_string());
+            let line = serde_json::json!({
+                "id": compact_prompt_field(&lead.id, 80),
+                "source": compact_prompt_field(&lead.source, 40),
+                "severity": compact_prompt_field(&lead.severity, 24),
+                "status": compact_prompt_field(&lead.status, 24),
+                "class": compact_prompt_field(&lead.vuln_class, 48),
+                "location": location,
+                "title": compact_prompt_field(&lead.title, 140),
+                "hypothesis": compact_prompt_field(&lead.hypothesis, 220),
+            });
+            format!("- {}", serde_json::to_string(&line).unwrap_or_else(|_| "{}".to_string()))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn compact_prompt_field(raw: &str, max_chars: usize) -> String {
+    let compact = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut out = String::new();
+    for (idx, ch) in compact.chars().enumerate() {
+        if idx >= max_chars {
+            out.push_str("...");
+            return out;
+        }
+        out.push(ch);
+    }
+    out
 }
 
 fn lift_extracted(result: &AgentResult) -> (Vec<ExplorationFinding>, Vec<AuditEntry>) {
@@ -766,13 +839,28 @@ mod tests {
 
     #[tokio::test]
     async fn agent_task_envelope_carries_scope_in_objective() {
-        let scope = sample_scope();
+        let mut scope = sample_scope();
+        scope.known_leads.push(ExplorationKnownLead {
+            id: "pc-zap-10021".into(),
+            source: "ZAPBaseline".into(),
+            title: "X-Content-Type-Options Header Missing".into(),
+            vuln_class: "X-Content-Type-Options Header Missing".into(),
+            severity: "Medium".into(),
+            status: "NeedsLiveTest".into(),
+            location: Some("GET http://127.0.0.1:3000/login".into()),
+            hypothesis: "ZAP baseline reported a header alert; seek stronger live evidence or a related issue.".into(),
+        });
         let task = build_agent_task(&scope);
         assert_eq!(task.prompt_version, EXPLORATION_PROMPT_VERSION);
         assert!(task.system.contains("AI Exploration worker"));
         assert!(task.system.contains("record_exploration_finding"));
+        assert!(task.system.contains("KNOWN SCANNER LEADS"));
         assert!(task.objective.contains("http://127.0.0.1:3000"));
         assert!(task.objective.contains("juice-shop REST list"));
+        assert!(task.objective.contains("KNOWN SCANNER LEADS"));
+        assert!(task.objective.contains("pc-zap-10021"));
+        assert!(task.objective.contains("ZAPBaseline"));
+        assert!(task.objective.contains("GET http://127.0.0.1:3000/login"));
         assert!(task.objective.contains("/tmp/nyctos-target"));
         assert!(task.objective.contains("max_actions:  4"));
         assert!(task.objective.contains("nyx_exploration.sentinel"));

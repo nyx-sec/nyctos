@@ -888,6 +888,7 @@ async fn drive_scan(
         &run.id,
         project.id.as_str(),
         &live_target_urls,
+        &workspaces_for_ai,
         &config.run,
     )
     .await
@@ -1181,6 +1182,7 @@ async fn drive_scan(
         &live_target_urls,
         Some(&route_model),
         &auth_profiles,
+        config.run.browser_checks_enabled,
         attack_plan_context.as_deref(),
         events.clone(),
     )
@@ -1262,6 +1264,7 @@ async fn drive_scan(
         }
     }
 
+    let mut browser_attempts_executed = 0_u32;
     if let Some(env) = environment.as_ref() {
         let auth_workspace_paths = workspaces_for_ai
             .values()
@@ -1283,9 +1286,15 @@ async fn drive_scan(
         {
             Ok(report) => {
                 verification_notes.push(format!(
-                    "candidate verifier: {} confirmed, {} rejected, {} inconclusive, {} errored",
-                    report.confirmed, report.rejected, report.inconclusive, report.errored
+                    "candidate verifier: {} confirmed, {} rejected, {} inconclusive, {} errored ({} HTTP, {} browser)",
+                    report.confirmed,
+                    report.rejected,
+                    report.inconclusive,
+                    report.errored,
+                    report.http_attempts,
+                    report.browser_attempts
                 ));
+                browser_attempts_executed = report.browser_attempts;
                 if verbose
                     && (report.confirmed > 0
                         || report.rejected > 0
@@ -1308,8 +1317,10 @@ async fn drive_scan(
             .push("candidate verifier skipped: no running app environment".to_string());
     }
     emit_phase(&events, &run.id, project.id.as_str(), "BrowserVerificationStarted", true, None);
-    let browser_msg = if config.run.browser_checks_enabled {
-        "browser verification skipped unless a candidate contains a browser plan and Playwright is available"
+    let browser_msg = if browser_attempts_executed > 0 {
+        format!("browser verification executed {browser_attempts_executed} browser plan(s)")
+    } else if config.run.browser_checks_enabled {
+        "browser verification: no executable browser plans were available or Playwright was unavailable"
             .to_string()
     } else {
         "browser verification skipped: disabled by run config".to_string()
@@ -1374,10 +1385,11 @@ async fn drive_scan(
         report.write(path)?;
         if verbose {
             println!(
-                "scan: wrote report to {} ({} finding(s), {} chain(s){})",
+                "scan: wrote report to {} ({} verified vulnerabilit{}, {} verified chain(s){})",
                 path.display(),
-                report.findings.len(),
-                report.chains.len(),
+                report.verified_vulnerabilities.len(),
+                if report.verified_vulnerabilities.len() == 1 { "y" } else { "ies" },
+                report.verified_chains.len(),
                 if output_only_pr_worthy { ", pr-worthy filter" } else { "" },
             );
         }
@@ -1979,6 +1991,8 @@ struct CandidateVerificationReport {
     rejected: u32,
     inconclusive: u32,
     errored: u32,
+    http_attempts: u32,
+    browser_attempts: u32,
 }
 
 async fn verify_pentest_candidates(
@@ -2051,6 +2065,12 @@ async fn verify_pentest_candidates(
             }
         };
         let attempt_id = format!("va-{}-{}", candidate.id, finished);
+        let method = verification_attempt_method(request.as_ref());
+        if method == "browser" {
+            report.browser_attempts += 1;
+        } else {
+            report.http_attempts += 1;
+        }
         let attempt = VerificationAttemptRecord {
             id: attempt_id.clone(),
             run_id: run_id.to_string(),
@@ -2058,7 +2078,7 @@ async fn verify_pentest_candidates(
             environment_run_id: environment_run_id.to_string(),
             candidate_id: Some(candidate.id.clone()),
             chain_id: None,
-            method: "http".to_string(),
+            method,
             status: status.to_string(),
             started_at: started,
             finished_at: Some(finished),
@@ -2182,6 +2202,17 @@ async fn execute_candidate_test_plan(
             VerificationOutcome::Inconclusive { reason, trace }
         }
     })
+}
+
+fn verification_attempt_method(request: Option<&serde_json::Value>) -> String {
+    match request.and_then(|v| v.get("kind")).and_then(|v| v.as_str()) {
+        Some("browser") | Some("browser_workflow") => "browser".to_string(),
+        Some("http_workflow") | Some("multi_step_http") => "http_workflow".to_string(),
+        Some("differential_http") => "differential_http".to_string(),
+        Some("single_http") | Some("http") => "http".to_string(),
+        Some(other) => other.to_string(),
+        None => "http".to_string(),
+    }
 }
 
 fn vulnerability_from_candidate(

@@ -10,10 +10,12 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use nyctos_core::store::{ChainRecord, FindingRecord, Store, StoreError};
+use nyctos_core::store::{
+    ChainRecord, FindingRecord, NyxSignalRecord, Store, StoreError, VerifiedVulnerabilityRecord,
+};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScanReport {
     pub schema_version: u32,
     pub run_id: String,
@@ -27,8 +29,49 @@ pub struct ScanReport {
     /// the operator which base the diff was computed against. `None`
     /// when scan ran without the flag.
     pub since_ref: Option<String>,
+    #[serde(default)]
+    pub verified_vulnerabilities: Vec<ReportVulnerability>,
+    #[serde(default)]
+    pub verified_chains: Vec<ReportVerifiedChain>,
+    #[serde(default)]
+    pub signal_counts: ReportSignalCounts,
+    #[serde(default)]
     pub findings: Vec<ReportFinding>,
+    #[serde(default)]
     pub chains: Vec<ReportChain>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReportVulnerability {
+    pub id: String,
+    pub title: String,
+    pub severity: String,
+    pub confidence: f64,
+    pub vuln_class: String,
+    pub status: String,
+    pub affected_components: Vec<serde_json::Value>,
+    pub source_candidate_ids: Vec<String>,
+    pub source_signal_ids: Vec<String>,
+    pub verification_attempt_ids: Vec<String>,
+    pub chain_id: Option<String>,
+    pub evidence_summary: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReportVerifiedChain {
+    pub id: String,
+    pub member_ids: Vec<String>,
+    pub status: String,
+    pub verification_attempt_id: Option<String>,
+    pub severity: Option<String>,
+    pub rationale: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReportSignalCounts {
+    pub total: u32,
+    pub meaningful: u32,
+    pub suppressed: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,12 +96,12 @@ pub struct ReportChain {
     pub rationale: Option<String>,
 }
 
-pub const REPORT_SCHEMA_VERSION: u32 = 1;
+pub const REPORT_SCHEMA_VERSION: u32 = 2;
 
 /// Schema versions this binary knows how to read. A future minor /
 /// compatible bump can append here so older readers refuse loudly
 /// rather than silently dropping fields they cannot parse.
-pub const SUPPORTED_REPORT_SCHEMA_VERSIONS: &[u32] = &[1];
+pub const SUPPORTED_REPORT_SCHEMA_VERSIONS: &[u32] = &[1, 2];
 
 #[derive(Debug, thiserror::Error)]
 pub enum ScanReportError {
@@ -93,30 +136,19 @@ impl ScanReport {
     }
 
     /// Drop every row the PR-comment surface would not render. Mirrors
-    /// [`crate::cmd::pr_comment::filter_for_pr`]: keeps findings whose
-    /// `status == "Verified"` or that belong to a `cross_repo` chain;
-    /// keeps only `cross_repo` chains. Used by `scan --output
-    /// --output-only-pr-worthy` so the on-disk report stays small on
-    /// runs whose static-pass output dwarfs the verified set.
+    /// [`crate::cmd::pr_comment::filter_for_pr`]: keeps only verified
+    /// vulnerabilities and live-verified chains. Used by `scan
+    /// --output --output-only-pr-worthy` so the on-disk report stays
+    /// small on runs whose static-pass output dwarfs the verified set.
     pub fn retain_pr_worthy(&mut self) {
-        let cross_repo_chains: HashSet<String> =
-            self.chains.iter().filter(|c| c.cross_repo).map(|c| c.id.clone()).collect();
-        let cross_repo_members: HashSet<String> = self
-            .chains
-            .iter()
-            .filter(|c| c.cross_repo)
-            .flat_map(|c| c.member_ids.iter().cloned())
-            .collect();
-        self.findings.retain(|f| {
-            let confirmed = f.status == "Verified";
-            let in_chain =
-                f.chain_id.as_deref().map(|cid| cross_repo_chains.contains(cid)).unwrap_or(false)
-                    || cross_repo_members.contains(&f.id);
-            confirmed || in_chain
-        });
-        self.chains.retain(|c| c.cross_repo);
+        self.findings.clear();
+        self.chains.clear();
+        self.verified_vulnerabilities.retain(|v| v.status != "FalsePositive");
+        self.verified_chains
+            .retain(|c| c.status == "Verified" || c.verification_attempt_id.is_some());
 
-        let mut repos: Vec<String> = self.findings.iter().map(|f| f.repo.clone()).collect();
+        let mut repos: Vec<String> =
+            self.verified_vulnerabilities.iter().flat_map(vulnerability_repos).collect();
         repos.sort();
         repos.dedup();
         self.repos = repos;
@@ -153,14 +185,29 @@ pub async fn build_report(
 ) -> Result<ScanReport, ScanReportError> {
     let raw_findings = store.findings().list_by_run(run_id).await?;
     let raw_chains = store.chains().list_by_run(run_id).await?;
+    let raw_vulnerabilities = store.verified_vulnerabilities().list_by_run(run_id).await?;
+    let raw_signals = store.nyx_signals().list_by_run(run_id, false).await?;
 
     let findings: Vec<ReportFinding> = raw_findings
         .into_iter()
         .filter(|f| keep_finding(f, changed_files))
         .map(map_finding)
         .collect();
+    let verified_vulnerabilities: Vec<ReportVulnerability> =
+        raw_vulnerabilities.into_iter().map(map_vulnerability).collect();
+    let verified_chains: Vec<ReportVerifiedChain> = raw_chains
+        .iter()
+        .filter(|c| c.status == "Verified" || c.verification_attempt_id.is_some())
+        .cloned()
+        .map(map_verified_chain)
+        .collect();
+    let signal_counts = signal_counts(&raw_signals);
 
-    let mut repos: Vec<String> = findings.iter().map(|f| f.repo.clone()).collect();
+    let mut repos: Vec<String> = verified_vulnerabilities
+        .iter()
+        .flat_map(vulnerability_repos)
+        .chain(findings.iter().map(|f| f.repo.clone()))
+        .collect();
     repos.sort();
     repos.dedup();
 
@@ -173,6 +220,9 @@ pub async fn build_report(
         triggered_by: run_meta.triggered_by.to_string(),
         repos,
         since_ref: since_ref.map(|s| s.to_string()),
+        verified_vulnerabilities,
+        verified_chains,
+        signal_counts,
         findings,
         chains: raw_chains.into_iter().map(map_chain).collect(),
     })
@@ -211,6 +261,23 @@ fn map_finding(f: FindingRecord) -> ReportFinding {
     }
 }
 
+fn map_vulnerability(v: VerifiedVulnerabilityRecord) -> ReportVulnerability {
+    ReportVulnerability {
+        id: v.id,
+        title: v.title,
+        severity: v.severity,
+        confidence: v.confidence,
+        vuln_class: v.vuln_class,
+        status: v.status,
+        affected_components: v.affected_components,
+        source_candidate_ids: v.source_candidate_ids,
+        source_signal_ids: v.source_signal_ids,
+        verification_attempt_ids: v.verification_attempt_ids,
+        chain_id: v.chain_id,
+        evidence_summary: v.evidence_summary,
+    }
+}
+
 fn map_chain(c: ChainRecord) -> ReportChain {
     // `chains.member_ids` is persisted as a JSON-serialised
     // `Vec<String>` by the chain reasoner; the testutil sometimes
@@ -221,6 +288,56 @@ fn map_chain(c: ChainRecord) -> ReportChain {
     });
     let rationale = c.rationale_blob.and_then(extract_rationale);
     ReportChain { id: c.id, cross_repo: c.cross_repo, member_ids, rationale }
+}
+
+fn map_verified_chain(c: ChainRecord) -> ReportVerifiedChain {
+    let member_ids: Vec<String> = serde_json::from_str(&c.member_ids).unwrap_or_else(|_| {
+        c.member_ids.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+    });
+    let rationale = c.rationale_blob.and_then(extract_rationale);
+    ReportVerifiedChain {
+        id: c.id,
+        member_ids,
+        status: c.status,
+        verification_attempt_id: c.verification_attempt_id,
+        severity: c.severity,
+        rationale,
+    }
+}
+
+fn signal_counts(signals: &[NyxSignalRecord]) -> ReportSignalCounts {
+    let total = signals.len() as u32;
+    let meaningful = signals.iter().filter(|s| s.meaningful).count() as u32;
+    ReportSignalCounts { total, meaningful, suppressed: total.saturating_sub(meaningful) }
+}
+
+pub fn vulnerability_repos(v: &ReportVulnerability) -> Vec<String> {
+    let mut repos = Vec::new();
+    for component in &v.affected_components {
+        if let Some(repo) = component.get("repo").and_then(|v| v.as_str()) {
+            repos.push(repo.to_string());
+        }
+    }
+    if repos.is_empty() {
+        repos.push("<project>".to_string());
+    }
+    repos
+}
+
+pub fn vulnerability_primary_location(v: &ReportVulnerability) -> (String, String, Option<i64>) {
+    for component in &v.affected_components {
+        let repo =
+            component.get("repo").and_then(|v| v.as_str()).unwrap_or("<project>").to_string();
+        let path = component
+            .get("path")
+            .or_else(|| component.get("url"))
+            .and_then(|v| v.as_str())
+            .unwrap_or(&v.title)
+            .to_string();
+        let line = component.get("line").and_then(|v| v.as_i64());
+        return (repo, path, line);
+    }
+    ("<project>".to_string(), v.title.clone(), None)
 }
 
 /// Pull the human-facing string out of the rationale blob the chain
@@ -256,6 +373,25 @@ mod tests {
         }
     }
 
+    fn sample_vulnerability(id: &str, repo: &str, path: &str) -> ReportVulnerability {
+        ReportVulnerability {
+            id: id.to_string(),
+            title: format!("Verified issue {id}"),
+            severity: "High".to_string(),
+            confidence: 0.95,
+            vuln_class: "SQLi".to_string(),
+            status: "Open".to_string(),
+            affected_components: vec![
+                serde_json::json!({ "repo": repo, "path": path, "line": 42 }),
+            ],
+            source_candidate_ids: vec![format!("pc-{id}")],
+            source_signal_ids: vec![format!("sig-{id}")],
+            verification_attempt_ids: vec![format!("va-{id}")],
+            chain_id: None,
+            evidence_summary: "confirmed by live verification".to_string(),
+        }
+    }
+
     #[test]
     fn round_trip_through_disk() {
         let dir = tempdir().unwrap();
@@ -269,6 +405,16 @@ mod tests {
             triggered_by: "ci".into(),
             repos: vec!["alpha".into(), "beta".into()],
             since_ref: Some("origin/main".into()),
+            verified_vulnerabilities: vec![sample_vulnerability("v-a", "alpha", "src/a.py")],
+            verified_chains: vec![ReportVerifiedChain {
+                id: "vc1".into(),
+                member_ids: vec!["v-a".into(), "v-b".into()],
+                status: "Verified".into(),
+                verification_attempt_id: Some("va-chain".into()),
+                severity: Some("High".into()),
+                rationale: Some("live chain verified".into()),
+            }],
+            signal_counts: ReportSignalCounts { total: 4, meaningful: 2, suppressed: 2 },
             findings: vec![sample_finding("f-a", "alpha", "src/a.py")],
             chains: vec![ReportChain {
                 id: "c1".into(),
@@ -338,7 +484,7 @@ mod tests {
     }
 
     #[test]
-    fn retain_pr_worthy_keeps_confirmed_and_cross_repo_chain_rows() {
+    fn retain_pr_worthy_keeps_verified_vulnerabilities_and_verified_chains() {
         let mut report = ScanReport {
             schema_version: REPORT_SCHEMA_VERSION,
             run_id: "run-1".into(),
@@ -348,6 +494,32 @@ mod tests {
             triggered_by: "ci".into(),
             repos: vec!["alpha".into(), "beta".into(), "gamma".into()],
             since_ref: None,
+            verified_vulnerabilities: vec![
+                sample_vulnerability("v-confirmed", "alpha", "src/a.py"),
+                ReportVulnerability {
+                    status: "FalsePositive".into(),
+                    ..sample_vulnerability("v-fp", "beta", "src/b.py")
+                },
+            ],
+            verified_chains: vec![
+                ReportVerifiedChain {
+                    id: "c-verified".into(),
+                    member_ids: vec!["v-confirmed".into()],
+                    status: "Verified".into(),
+                    verification_attempt_id: Some("va-chain".into()),
+                    severity: Some("High".into()),
+                    rationale: None,
+                },
+                ReportVerifiedChain {
+                    id: "c-proposed".into(),
+                    member_ids: vec!["f-chain".into()],
+                    status: "Proposed".into(),
+                    verification_attempt_id: None,
+                    severity: None,
+                    rationale: None,
+                },
+            ],
+            signal_counts: ReportSignalCounts::default(),
             findings: vec![
                 ReportFinding {
                     status: "Verified".into(),
@@ -383,11 +555,14 @@ mod tests {
             ],
         };
         report.retain_pr_worthy();
-        let ids: Vec<&str> = report.findings.iter().map(|f| f.id.as_str()).collect();
-        assert_eq!(ids, vec!["f-confirmed", "f-chain"]);
-        assert_eq!(report.chains.len(), 1);
-        assert_eq!(report.chains[0].id, "c-cross");
-        assert_eq!(report.repos, vec!["alpha", "beta"]);
+        let ids: Vec<&str> =
+            report.verified_vulnerabilities.iter().map(|f| f.id.as_str()).collect();
+        assert_eq!(ids, vec!["v-confirmed"]);
+        assert!(report.findings.is_empty());
+        assert!(report.chains.is_empty());
+        assert_eq!(report.verified_chains.len(), 1);
+        assert_eq!(report.verified_chains[0].id, "c-verified");
+        assert_eq!(report.repos, vec!["alpha"]);
     }
 
     #[test]
@@ -403,6 +578,9 @@ mod tests {
             triggered_by: "ci".into(),
             repos: vec![],
             since_ref: None,
+            verified_vulnerabilities: vec![],
+            verified_chains: vec![],
+            signal_counts: ReportSignalCounts::default(),
             findings: vec![],
             chains: vec![],
         };

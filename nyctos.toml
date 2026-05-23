@@ -31,6 +31,11 @@ on_pr = false
 replay_stable_check = false
 enable_zap_baseline = true
 enable_nuclei = true
+enable_trivy = true
+enable_osv_scanner = true
+enable_secret_scanning = true
+enable_katana = true
+enable_httpx = true
 enable_aggressive_sqlmap = false
 
 # Declare projects below. Each project groups one or more repos.

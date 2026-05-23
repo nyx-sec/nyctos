@@ -15,7 +15,10 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use super::scan_report::{ReportChain, ReportFinding, ScanReport};
+use super::scan_report::{
+    vulnerability_primary_location, ReportFinding, ReportVerifiedChain, ReportVulnerability,
+    ScanReport,
+};
 
 /// Hidden HTML marker placed at the top of the comment body. The
 /// version suffix lets future schema bumps reuse the same approach
@@ -89,7 +92,7 @@ pub async fn run(
     let (owner, repo_name) = split_repo(&cfg.repo)?;
 
     let filtered = filter_for_pr(&report);
-    if filtered.findings.is_empty() {
+    if filtered.rows.is_empty() {
         return Ok(PrCommentOutcome {
             posted_findings: 0,
             posted_chains: 0,
@@ -111,7 +114,7 @@ pub async fn run(
     };
 
     Ok(PrCommentOutcome {
-        posted_findings: filtered.findings.len(),
+        posted_findings: filtered.rows.len(),
         posted_chains: filtered.chains.len(),
         updated_existing: updated,
         skipped_empty: false,
@@ -123,38 +126,46 @@ pub async fn run(
 /// HTTP client.
 #[derive(Debug, Clone, Default)]
 pub struct FilteredFindings<'a> {
-    pub findings: Vec<&'a ReportFinding>,
-    pub chains: Vec<&'a ReportChain>,
+    rows: Vec<CommentRow>,
+    pub chains: Vec<&'a ReportVerifiedChain>,
 }
 
-/// Keep findings that are either:
-///   * `status = Verified` (Confirmed by the dynamic verifier), or
-///   * members of a chain with `cross_repo = true`.
-///
-/// Everything else stays in the operator's local UI so the PR comment
-/// does not spam noise.
+#[derive(Debug, Clone, PartialEq)]
+struct CommentRow {
+    id: String,
+    title: String,
+    repo: String,
+    path: String,
+    line: Option<i64>,
+    severity: String,
+    vuln_class: String,
+    chain_id: Option<String>,
+}
+
+/// Keep only live-verified vulnerabilities and live-verified chains.
+/// Legacy v1 reports fall back to `status = Verified` findings, but
+/// cross-repo chain membership alone is no longer PR-worthy.
 pub fn filter_for_pr(report: &ScanReport) -> FilteredFindings<'_> {
-    let cross_repo_chains: std::collections::HashSet<&str> =
-        report.chains.iter().filter(|c| c.cross_repo).map(|c| c.id.as_str()).collect();
-    let cross_repo_members: std::collections::HashSet<&str> = report
-        .chains
+    let mut rows: Vec<CommentRow> = report
+        .verified_vulnerabilities
         .iter()
-        .filter(|c| c.cross_repo)
-        .flat_map(|c| c.member_ids.iter().map(|s| s.as_str()))
+        .filter(|v| v.status != "FalsePositive")
+        .map(comment_row_from_vulnerability)
         .collect();
-    let findings: Vec<&ReportFinding> = report
-        .findings
+    if rows.is_empty() && report.schema_version == 1 {
+        rows = report
+            .findings
+            .iter()
+            .filter(|f| f.status == "Verified")
+            .map(comment_row_from_legacy_finding)
+            .collect();
+    }
+    let chains: Vec<&ReportVerifiedChain> = report
+        .verified_chains
         .iter()
-        .filter(|f| {
-            let confirmed = f.status == "Verified";
-            let in_cross_repo_chain =
-                f.chain_id.as_deref().map(|cid| cross_repo_chains.contains(cid)).unwrap_or(false)
-                    || cross_repo_members.contains(f.id.as_str());
-            confirmed || in_cross_repo_chain
-        })
+        .filter(|c| c.status == "Verified" || c.verification_attempt_id.is_some())
         .collect();
-    let visible_chains: Vec<&ReportChain> = report.chains.iter().filter(|c| c.cross_repo).collect();
-    FilteredFindings { findings, chains: visible_chains }
+    FilteredFindings { rows, chains }
 }
 
 /// Render the grouped PR comment body. Groups by `(repo, path)` first
@@ -169,14 +180,13 @@ pub fn build_comment_body(
     let mut out = String::new();
     out.push_str(COMMENT_MARKER);
     out.push('\n');
-    out.push_str("## nyctos: confirmed findings on this PR\n\n");
+    out.push_str("## nyctos: verified vulnerabilities on this PR\n\n");
 
-    let confirmed_count = filtered.findings.iter().filter(|f| f.status == "Verified").count();
     let chain_count = filtered.chains.len();
-    let total_count = filtered.findings.len();
+    let total_count = filtered.rows.len();
     out.push_str(&format!(
-        "**{total_count}** finding{} ({confirmed_count} Confirmed, {chain_count} cross-repo chain{}).\n\n",
-        if total_count == 1 { "" } else { "s" },
+        "**{total_count}** verified vulnerabilit{} ({chain_count} verified chain{}).\n\n",
+        if total_count == 1 { "y" } else { "ies" },
         if chain_count == 1 { "" } else { "s" },
     ));
     if let Some(since) = &report.since_ref {
@@ -192,7 +202,7 @@ pub fn build_comment_body(
     ));
 
     out.push_str("### By file\n\n");
-    let groups = group_by_file(&filtered.findings);
+    let groups = group_by_file(&filtered.rows);
     for ((repo, path), rows) in groups {
         out.push_str(&format!(
             "- **{repo} / {path}**\n",
@@ -202,11 +212,11 @@ pub fn build_comment_body(
         for row in rows {
             let line = row.line.map(|l| format!(":{l}")).unwrap_or_default();
             let severity_badge = severity_badge(&row.severity);
-            let origin_badge = origin_badge(&row.finding_origin);
+            let class_badge = code_safe(&row.vuln_class);
             let id_text = code_safe(&short_id(&row.id));
             let id = match ui_url {
                 Some(url) => format!(
-                    "[{id_text}]({base}/findings?run_id={run}&focus={id})",
+                    "[{id_text}]({base}/vulnerabilities?run_id={run}&focus={id})",
                     base = trim_url(url),
                     run = url_encode_query(&report.run_id),
                     id = url_encode_query(&row.id),
@@ -218,8 +228,8 @@ pub fn build_comment_body(
                 None => String::new(),
             };
             out.push_str(&format!(
-                "  - {severity_badge} {origin_badge} {rule}{line}{chain} - id {id}\n",
-                rule = code_safe(&row.rule),
+                "  - {severity_badge} {class_badge} {title}{line}{chain} - id {id}\n",
+                title = code_safe(&row.title),
             ));
         }
     }
@@ -243,17 +253,15 @@ pub fn build_comment_body(
     }
 
     out.push_str(
-        "\n<sub>Only Confirmed findings + cross-repo chains are posted here. Everything else (Open, Quarantine, Inconclusive) stays in the operator's UI.</sub>\n",
+        "\n<sub>Only live-verified vulnerabilities and live-verified chains are posted here. Signals, candidates, rejected checks, and unverified chains stay in the operator's UI.</sub>\n",
     );
     out
 }
 
-fn group_by_file<'a>(
-    findings: &'a [&ReportFinding],
-) -> BTreeMap<(String, String), Vec<&'a ReportFinding>> {
-    let mut map: BTreeMap<(String, String), Vec<&ReportFinding>> = BTreeMap::new();
-    for f in findings {
-        map.entry((f.repo.clone(), f.path.clone())).or_default().push(*f);
+fn group_by_file<'a>(rows: &'a [CommentRow]) -> BTreeMap<(String, String), Vec<&'a CommentRow>> {
+    let mut map: BTreeMap<(String, String), Vec<&CommentRow>> = BTreeMap::new();
+    for f in rows {
+        map.entry((f.repo.clone(), f.path.clone())).or_default().push(f);
     }
     for rows in map.values_mut() {
         rows.sort_by(|a, b| {
@@ -263,6 +271,33 @@ fn group_by_file<'a>(
         });
     }
     map
+}
+
+fn comment_row_from_vulnerability(v: &ReportVulnerability) -> CommentRow {
+    let (repo, path, line) = vulnerability_primary_location(v);
+    CommentRow {
+        id: v.id.clone(),
+        title: v.title.clone(),
+        repo,
+        path,
+        line,
+        severity: v.severity.clone(),
+        vuln_class: v.vuln_class.clone(),
+        chain_id: v.chain_id.clone(),
+    }
+}
+
+fn comment_row_from_legacy_finding(f: &ReportFinding) -> CommentRow {
+    CommentRow {
+        id: f.id.clone(),
+        title: f.rule.clone(),
+        repo: f.repo.clone(),
+        path: f.path.clone(),
+        line: f.line,
+        severity: f.severity.clone(),
+        vuln_class: f.cap.clone(),
+        chain_id: f.chain_id.clone(),
+    }
 }
 
 fn severity_rank(sev: &str) -> u8 {
@@ -285,16 +320,6 @@ fn severity_badge(sev: &str) -> String {
         _ => "INFO",
     };
     format!("**{label}**")
-}
-
-fn origin_badge(origin: &str) -> &'static str {
-    match origin {
-        "Static" => "[static]",
-        "AI" => "[ai]",
-        "AiExploration" => "[ai-exploration]",
-        "Manual" => "[manual]",
-        _ => "[?]",
-    }
 }
 
 fn short_id(id: &str) -> String {
@@ -578,7 +603,10 @@ async fn update_comment(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cmd::scan_report::{ReportChain, ReportFinding, ScanReport, REPORT_SCHEMA_VERSION};
+    use crate::cmd::scan_report::{
+        ReportFinding, ReportSignalCounts, ReportVerifiedChain, ReportVulnerability, ScanReport,
+        REPORT_SCHEMA_VERSION,
+    };
 
     fn finding(
         id: &str,
@@ -612,58 +640,81 @@ mod tests {
             triggered_by: "ci".into(),
             repos: Vec::new(),
             since_ref: Some("origin/main".into()),
+            verified_vulnerabilities: Vec::new(),
+            verified_chains: Vec::new(),
+            signal_counts: ReportSignalCounts::default(),
             findings: Vec::new(),
             chains: Vec::new(),
         }
     }
 
+    fn vulnerability(id: &str, repo: &str, path: &str, sev: &str) -> ReportVulnerability {
+        ReportVulnerability {
+            id: id.into(),
+            title: format!("Verified {id}"),
+            severity: sev.into(),
+            confidence: 0.95,
+            vuln_class: "SQLi".into(),
+            status: "Open".into(),
+            affected_components: vec![
+                serde_json::json!({ "repo": repo, "path": path, "line": 10 }),
+            ],
+            source_candidate_ids: vec![format!("pc-{id}")],
+            source_signal_ids: vec![format!("sig-{id}")],
+            verification_attempt_ids: vec![format!("va-{id}")],
+            chain_id: None,
+            evidence_summary: "confirmed".into(),
+        }
+    }
+
     #[test]
-    fn filter_keeps_confirmed_and_cross_repo_chain_members_only() {
+    fn filter_keeps_verified_vulnerabilities_and_verified_chains_only() {
         let mut report = empty_report();
-        report.findings = vec![
-            finding("a", "alpha", "src/a.py", "High", "Verified", None),
-            finding("b", "alpha", "src/b.py", "Low", "Open", None),
-            finding("c", "alpha", "src/c.py", "High", "Open", Some("chain-cross")),
-            finding("d", "alpha", "src/d.py", "Medium", "Open", Some("chain-local")),
-            finding("e", "beta", "src/e.py", "High", "Quarantine", None),
+        report.verified_vulnerabilities = vec![
+            vulnerability("a", "alpha", "src/a.py", "High"),
+            ReportVulnerability {
+                status: "FalsePositive".into(),
+                ..vulnerability("b", "alpha", "src/b.py", "Low")
+            },
         ];
-        report.chains = vec![
-            ReportChain {
-                id: "chain-cross".into(),
-                cross_repo: true,
+        report.verified_chains = vec![
+            ReportVerifiedChain {
+                id: "chain-verified".into(),
                 member_ids: vec!["c".into(), "z".into()],
+                status: "Verified".into(),
+                verification_attempt_id: Some("va-chain".into()),
+                severity: Some("High".into()),
                 rationale: None,
             },
-            ReportChain {
-                id: "chain-local".into(),
-                cross_repo: false,
+            ReportVerifiedChain {
+                id: "chain-proposed".into(),
                 member_ids: vec!["d".into()],
+                status: "Proposed".into(),
+                verification_attempt_id: None,
+                severity: None,
                 rationale: None,
             },
         ];
+        report.findings = vec![finding("legacy", "alpha", "src/c.py", "High", "Verified", None)];
         let filtered = filter_for_pr(&report);
-        let ids: Vec<&str> = filtered.findings.iter().map(|f| f.id.as_str()).collect();
-        assert!(ids.contains(&"a"), "Confirmed should land: {ids:?}");
-        assert!(ids.contains(&"c"), "cross-repo member should land: {ids:?}");
-        assert!(!ids.contains(&"b"), "Open w/o chain should drop: {ids:?}");
-        assert!(!ids.contains(&"d"), "intra-repo chain should drop: {ids:?}");
-        assert!(!ids.contains(&"e"), "Quarantine should drop: {ids:?}");
+        let ids: Vec<&str> = filtered.rows.iter().map(|f| f.id.as_str()).collect();
+        assert_eq!(ids, vec!["a"]);
         assert_eq!(filtered.chains.len(), 1);
-        assert_eq!(filtered.chains[0].id, "chain-cross");
+        assert_eq!(filtered.chains[0].id, "chain-verified");
     }
 
     #[test]
     fn comment_body_carries_marker_and_groups() {
         let mut report = empty_report();
-        report.findings = vec![
-            finding("aaaaaaaaaaaa1", "alpha", "src/a.py", "High", "Verified", None),
-            finding("aaaaaaaaaaaa2", "alpha", "src/a.py", "Critical", "Verified", None),
-            finding("bbbbbbbbbbbb1", "alpha", "src/b.py", "Medium", "Verified", None),
+        report.verified_vulnerabilities = vec![
+            vulnerability("aaaaaaaaaaaa1", "alpha", "src/a.py", "High"),
+            vulnerability("aaaaaaaaaaaa2", "alpha", "src/a.py", "Critical"),
+            vulnerability("bbbbbbbbbbbb1", "alpha", "src/b.py", "Medium"),
         ];
         let filtered = filter_for_pr(&report);
         let body = build_comment_body(&filtered, &report, Some("https://ops.example.com/"));
         assert!(body.starts_with(COMMENT_MARKER), "marker missing: {body}");
-        assert!(body.contains("**3** finding"));
+        assert!(body.contains("**3** verified vulnerabilities"));
         // src/a.py before src/b.py and Critical row sorts above High
         let a_idx = body.find("`alpha` / `src/a.py`").expect("a.py group");
         let b_idx = body.find("`alpha` / `src/b.py`").expect("b.py group");
@@ -678,7 +729,7 @@ mod tests {
     #[test]
     fn comment_body_omits_run_link_when_ui_url_missing() {
         let mut report = empty_report();
-        report.findings = vec![finding("a", "alpha", "src/a.py", "High", "Verified", None)];
+        report.verified_vulnerabilities = vec![vulnerability("a", "alpha", "src/a.py", "High")];
         let filtered = filter_for_pr(&report);
         let body = build_comment_body(&filtered, &report, None);
         assert!(!body.contains("open run"));
@@ -691,14 +742,14 @@ mod tests {
     fn comment_body_deep_links_each_finding_id_when_ui_url_set() {
         let mut report = empty_report();
         report.run_id = "run-2026-01".to_string();
-        report.findings =
-            vec![finding("finding-aaaa1", "alpha", "src/a.py", "High", "Verified", None)];
+        report.verified_vulnerabilities =
+            vec![vulnerability("vuln-aaaa1", "alpha", "src/a.py", "High")];
         let filtered = filter_for_pr(&report);
         let body = build_comment_body(&filtered, &report, Some("https://ops.example.com/"));
-        let expected = "[`finding-aaaa`](https://ops.example.com/findings?run_id=run-2026-01&focus=finding-aaaa1)";
+        let expected = "[`vuln-aaaa1`](https://ops.example.com/vulnerabilities?run_id=run-2026-01&focus=vuln-aaaa1)";
         assert!(body.contains(expected), "expected deep link `{expected}` in body:\n{body}");
         // The bare-token form must no longer appear.
-        assert!(!body.contains("id `finding-aaaa`\n"), "bare id leaked: {body}");
+        assert!(!body.contains("id `vuln-aaaa1`\n"), "bare id leaked: {body}");
     }
 
     #[test]
@@ -867,8 +918,8 @@ mod tests {
     #[test]
     fn comment_body_neutralises_attacker_backticks_in_path() {
         let mut report = empty_report();
-        report.findings =
-            vec![finding("abcd", "alpha", "src/evil`<img src=x>`.py", "High", "Verified", None)];
+        report.verified_vulnerabilities =
+            vec![vulnerability("abcd", "alpha", "src/evil`<img src=x>`.py", "High")];
         let filtered = filter_for_pr(&report);
         let body = build_comment_body(&filtered, &report, None);
         // Attacker payload must not leak as raw HTML/markdown. Every

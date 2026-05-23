@@ -6,6 +6,9 @@ ALLOWED HOSTS
 TARGETS
 {targets}
 
+KNOWN SCANNER LEADS
+{known_leads}
+
 WORKSPACE ROOT
 {workspace_root}
 

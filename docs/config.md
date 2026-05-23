@@ -142,17 +142,29 @@ See `docs/triggers/webhook.md` for the full handler contract.
 | `browser_checks_enabled`           | bool | `false` | Allow browser-driven verification and auth-session acquisition when the local runtime is available. |
 | `enable_zap_baseline`              | bool | `true`  | Run `zap-baseline.py` against live target URLs when the binary is present on PATH. Missing binaries are skipped. |
 | `enable_nuclei`                    | bool | `true`  | Run `nuclei` against live target URLs when the binary is present on PATH. Missing binaries are skipped. |
+| `enable_trivy`                     | bool | `true`  | Run `trivy fs` against repo workspaces when present on PATH. Dependency, IaC, and secret findings become AI exploration context. |
+| `enable_osv_scanner`               | bool | `true`  | Run `osv-scanner` against repo workspaces when present on PATH. Dependency findings become AI exploration context. |
+| `enable_secret_scanning`           | bool | `true`  | Run `gitleaks` against repo workspaces when present on PATH; if absent, fall back to `detect-secrets`. Secret findings become AI exploration context. |
+| `enable_katana`                    | bool | `true`  | Run `katana` against live target URLs when present on PATH. Sensitive crawled routes become live-test candidates. |
+| `enable_httpx`                     | bool | `true`  | Run ProjectDiscovery `httpx` against live target URLs when present on PATH. Interesting HTTP metadata becomes live-test candidates. |
 | `enable_aggressive_sqlmap`         | bool | `false` | Reserved for explicit sqlmap use. sqlmap is not auto-enabled because it is aggressive and has GPL/proprietary-integration constraints. |
 
-Optional scanner findings are persisted as pentest candidates and must
-still pass live verification before surfacing as verified vulnerabilities.
-Nyctos does not bundle these scanners; it invokes local executables on
-PATH when available.
+Optional scanner findings are persisted as pentest candidates. Live web
+findings still pass live verification before surfacing as verified
+vulnerabilities; source/package findings are recorded as bounded context
+for AI exploration and triage. Nyctos does not bundle these scanners; it
+invokes local executables on PATH when available.
 
 | Tool | Upstream license | Commercial use note |
 |------|------------------|---------------------|
 | OWASP ZAP / `zap-baseline.py` | Apache-2.0 | Generally compatible with commercial products when notices and other Apache-2.0 conditions are preserved. |
 | Nuclei | MIT | Generally compatible with commercial products when the MIT copyright and permission notice are preserved. |
+| Trivy | Apache-2.0 | Generally compatible with commercial products when notices and other Apache-2.0 conditions are preserved. |
+| OSV-Scanner | Apache-2.0 | Generally compatible with commercial products when notices and other Apache-2.0 conditions are preserved. |
+| Gitleaks | MIT | Generally compatible with commercial products when the MIT copyright and permission notice are preserved. |
+| detect-secrets | Apache-2.0 | Generally compatible with commercial products when notices and other Apache-2.0 conditions are preserved. |
+| Katana | MIT | Generally compatible with commercial products when the MIT copyright and permission notice is preserved. |
+| ProjectDiscovery httpx | MIT | Generally compatible with commercial products when the MIT copyright and permission notice is preserved. |
 | sqlmap | GPL-2.0-or-later with project clarifications / optional commercial license | Internal use is usually different from redistribution, but embedding or parsing sqlmap results in proprietary software is treated by sqlmap upstream as requiring GPL compliance or a separate sqlmap commercial license. Get legal review before shipping this path. |
 
 ## `[[project]]`

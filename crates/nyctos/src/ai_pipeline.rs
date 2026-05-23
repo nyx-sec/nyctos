@@ -28,9 +28,9 @@ use nyctos_ai::{
     run_payload_synthesis, run_spec_derivation, AiRuntime, AnthropicSdkAdapter, BudgetTracker,
     ChainReasoningOutcome, ClaudeCodeAdapter, CodexCliAdapter, EscapeSuiteGate, EscapeSuiteVerdict,
     ExplorationAuditEntry, ExplorationEndpoint, ExplorationFinding, ExplorationHaltReason,
-    ExplorationOutcome, ExplorationScope, NovelFindingDiscoveryOutcome, PayloadSynthesisOutcome,
-    Pricing, SharedBudgetTracker, SpecDerivationOutcome, DEFAULT_EXPLORATION_RUN_CAP_USD_MICROS,
-    DEFAULT_EXPLORATION_SOFT_CAP_USD_MICROS,
+    ExplorationKnownLead, ExplorationOutcome, ExplorationScope, NovelFindingDiscoveryOutcome,
+    PayloadSynthesisOutcome, Pricing, SharedBudgetTracker, SpecDerivationOutcome,
+    DEFAULT_EXPLORATION_RUN_CAP_USD_MICROS, DEFAULT_EXPLORATION_SOFT_CAP_USD_MICROS,
 };
 use nyctos_core::store::{
     AgentTraceRecord, CandidateFindingRecord, CandidateStatus, ChainRecord, FindingOrigin,
@@ -87,6 +87,7 @@ const SPEC_DERIVATION_MAX_EXCERPTS: usize = 3;
 
 const LIVE_TEST_PLAN_PROMPT_VERSION: &str = "phase24.live_test_plan.v1";
 const LIVE_TEST_PLAN_EXCERPT_RADIUS: u32 = 18;
+const EXPLORATION_KNOWN_LEADS_MAX: usize = 24;
 
 /// `BudgetTracker` impl backed by the SQLite `budgets` table.
 ///
@@ -865,6 +866,7 @@ pub async fn run_live_test_plan_synthesis_pass(
     target_urls: &[String],
     route_model: Option<&RouteModel>,
     auth_profiles: &[ProjectAuthProfile],
+    browser_checks_enabled: bool,
     attack_plan_context: Option<&str>,
     events: EventSink,
 ) -> anyhow::Result<LiveTestPlanSynthesisPassReport> {
@@ -877,7 +879,7 @@ pub async fn run_live_test_plan_synthesis_pass(
     let candidates: Vec<_> = candidates
         .into_iter()
         .filter(|c| matches!(c.status.as_str(), "Proposed" | "NeedsLiveTest"))
-        .filter(|c| !candidate_has_executable_live_plan(c, target_urls))
+        .filter(|c| !candidate_has_executable_live_plan(c, target_urls, browser_checks_enabled))
         .collect();
     if candidates.is_empty() {
         return Ok(report);
@@ -907,6 +909,7 @@ pub async fn run_live_test_plan_synthesis_pass(
             target_urls,
             route_model,
             auth_profiles,
+            browser_checks_enabled,
             attack_plan_context,
         );
         let budget = Budget {
@@ -985,6 +988,7 @@ fn build_live_test_plan_prompt(
     target_urls: &[String],
     route_model: Option<&RouteModel>,
     auth_profiles: &[ProjectAuthProfile],
+    browser_checks_enabled: bool,
     attack_plan_context: Option<&str>,
 ) -> Prompt {
     let excerpt = candidate_source_excerpt(candidate, workspaces)
@@ -1008,6 +1012,11 @@ fn build_live_test_plan_prompt(
         .map(|m| route_model::compact_route_model_for_prompt(m, 40))
         .unwrap_or_else(|| "route model unavailable".to_string());
     let auth = pentest_tools::auth_profiles_summary(auth_profiles);
+    let browser = if browser_checks_enabled {
+        "enabled"
+    } else {
+        "disabled; return no_plan_reason for browser-only/client-side-only candidates"
+    };
     let attack_plan =
         attack_plan_context.unwrap_or("no prior attack-planning trace available for this run");
     let system = r#"You are Nyctos's live-test-plan synthesizer. Work like a senior application security tester converting a static signal into one safe, executable HTTP verification plan for a local development app.
@@ -1016,7 +1025,11 @@ Return exactly one JSON object and no Markdown. Prefer harmless probes that demo
 
 Nyctos can execute these deterministic tools in the verifier: http.request and auth.login_as(role) through configured header/cookie/token injection. Browser plans are allowed only when the operator enables browser verification and Playwright is installed, so prefer HTTP unless the source is clearly client-side.
 
-If you cannot derive a meaningful live test from the source context, return {"no_plan_reason":"..."}.
+The oracle you return must be a confirming oracle: if all predicates pass, the candidate should be vulnerable. Do not encode rejecting/safety evidence as success. A 401/403/404 response, escaped output, no reflection, or absence of sensitive data is rejecting evidence; return {"no_plan_reason":"..."} when that is the only safe probe.
+
+Do not fetch static source assets such as .js/.css/.map files to prove a sink string exists. A served bundle or source snippet is not live exploit evidence. For client-side-only DOM issues, return a browser plan only when a real browser workflow can exercise attacker-controlled input; otherwise return {"no_plan_reason":"..."}.
+
+If you cannot derive a meaningful exploit-confirming live test from the source context, return {"no_plan_reason":"..."}.
 
 Executable plan schema:
 {
@@ -1029,10 +1042,10 @@ Executable plan schema:
   "json": {"optional": "JSON request body"},
   "expect_status": 200,
   "status_range": "2xx|3xx|4xx|5xx",
-  "body_contains": "string or array of strings that must appear",
-  "body_not_contains": "string or array of strings that must not appear",
+  "body_contains": "positive exploit marker or sensitive marker that must appear",
+  "body_not_contains": "optional guard string or array; never the primary confirming evidence",
   "header_contains": {"Header": "substring"},
-  "rationale": "brief reason this would confirm or reject the candidate"
+  "rationale": "brief reason this would confirm the candidate"
 }
 
 For authorization boundaries, prefer a differential plan when matching auth roles exist:
@@ -1052,10 +1065,28 @@ For authorization boundaries, prefer a differential plan when matching auth role
   }
 }
 
-At least one oracle is required: expect_status, status_range, body_contains, body_not_contains, or header_contains. Do not return generic homepage checks."#
+For multi-step stateful bugs, use an HTTP workflow. Captures can extract response values and later steps can reference them as {{name}}:
+{
+  "kind": "http_workflow",
+  "steps": [
+    {"as": "user_a", "method": "POST", "path": "/api/projects", "json": {"name": "nyctos-probe"}, "captures": {"project_id": {"from": "json", "path": "id"}}},
+    {"as": "user_b", "method": "GET", "path": "/api/projects/{{project_id}}"}
+  ],
+  "oracle": {"step": 1, "status_range": "2xx", "body_contains": "nyctos-probe"}
+}
+
+For client-side-only bugs, use a browser plan only when browser verification is enabled:
+{
+  "kind": "browser",
+  "url": "/app/search?q=%3Cimg%20src%3Dx%20onerror%3Dalert(1)%3E",
+  "steps": [{"action": "wait_for_selector", "selector": "body"}],
+  "oracle": {"alert_contains": "nyctos-probe"}
+}
+
+At least one positive live evidence oracle is required: body_contains/header_contains for HTTP, or text_contains/html_contains/selector_exists/selector_text_contains/url_contains/title_contains/console_contains/alert_contains for browser. expect_status/status_range/body_not_contains may be included only as guards around that positive evidence. Do not return generic homepage checks, blocked-request checks, no-reflection checks, or static bundle/source checks."#
         .to_string();
     let user = format!(
-        "TARGET BASE URLS\n{targets}\n\nAUTH PROFILES\n{auth}\n\nROUTE MODEL\n{routes}\n\nSENIOR ATTACK PLAN CONTEXT\n{attack_plan}\n\nCANDIDATE\nid: {id}\ntitle: {title}\nclass: {vuln_class}\nseverity: {severity}\nstatus: {status}\nhypothesis: {hypothesis}\nsource_ids: {source_ids}\naffected_components:\n{components}\n\nSOURCE EXCERPT\n{excerpt}\n",
+        "TARGET BASE URLS\n{targets}\n\nAUTH PROFILES\n{auth}\n\nBROWSER VERIFICATION\n{browser}\n\nROUTE MODEL\n{routes}\n\nSENIOR ATTACK PLAN CONTEXT\n{attack_plan}\n\nCANDIDATE\nid: {id}\ntitle: {title}\nclass: {vuln_class}\nseverity: {severity}\nstatus: {status}\nhypothesis: {hypothesis}\nsource_ids: {source_ids}\naffected_components:\n{components}\n\nSOURCE EXCERPT\n{excerpt}\n",
         id = candidate.id,
         title = candidate.title,
         vuln_class = candidate.vuln_class,
@@ -1119,8 +1150,14 @@ fn candidate_source_excerpt(
 fn candidate_has_executable_live_plan(
     candidate: &PentestCandidateRecord,
     target_urls: &[String],
+    browser_checks_enabled: bool,
 ) -> bool {
-    normalise_live_test_plan(&candidate.test_plan, target_urls).ok().flatten().is_some()
+    let Some(plan) = normalise_live_test_plan(&candidate.test_plan, target_urls).ok().flatten()
+    else {
+        return false;
+    };
+    let kind = plan.get("kind").and_then(|v| v.as_str()).unwrap_or("http");
+    browser_checks_enabled || !matches!(kind, "browser" | "browser_workflow")
 }
 
 fn normalise_live_test_plan(
@@ -3152,6 +3189,17 @@ pub(crate) async fn drive_ai_exploration_pass<R: AiRuntime + ?Sized>(
     let mut report = AiExplorationPassReport::default();
     let runtime_name = runtime.name();
     let runtime_model = runtime.default_model().to_string();
+    let candidate_leads = match store.pentest_candidates().list_by_run(&bundle.run_id).await {
+        Ok(candidates) => candidates,
+        Err(err) => {
+            tracing::warn!(
+                run_id = %bundle.run_id,
+                error = %err,
+                "ai exploration: failed to load known scanner leads; continuing without them"
+            );
+            Vec::new()
+        }
+    };
     for repo_bundle in &bundle.per_repo {
         let RepoOutcome::Success(_) = &repo_bundle.outcome else {
             continue;
@@ -3159,11 +3207,17 @@ pub(crate) async fn drive_ai_exploration_pass<R: AiRuntime + ?Sized>(
         let Some(workspace) = workspaces.get(&repo_bundle.repo) else {
             continue;
         };
+        let known_leads = exploration_known_leads_for_repo(
+            &candidate_leads,
+            &repo_bundle.repo,
+            EXPLORATION_KNOWN_LEADS_MAX,
+        );
         let scope = build_exploration_scope(
             &bundle.run_id,
             &repo_bundle.repo,
             workspace.workspace(),
             target_urls,
+            known_leads,
             soft_cap_usd_micros,
             run_cap_usd_micros,
         );
@@ -3203,6 +3257,7 @@ fn build_exploration_scope(
     repo: &str,
     workspace_root: &std::path::Path,
     target_urls: &[String],
+    known_leads: Vec<ExplorationKnownLead>,
     soft_cap_usd_micros: i64,
     run_cap_usd_micros: i64,
 ) -> ExplorationScope {
@@ -3217,9 +3272,98 @@ fn build_exploration_scope(
             description: Some("launch profile target".to_string()),
         })
         .collect();
+    scope.known_leads = known_leads;
     scope.soft_cap_usd_micros = soft_cap_usd_micros;
     scope.run_cap_usd_micros = run_cap_usd_micros;
     scope
+}
+
+fn exploration_known_leads_for_repo(
+    candidates: &[PentestCandidateRecord],
+    repo: &str,
+    limit: usize,
+) -> Vec<ExplorationKnownLead> {
+    let mut candidates = candidates
+        .iter()
+        .filter(|c| matches!(c.status.as_str(), "Proposed" | "NeedsLiveTest" | "Observed"))
+        .filter(|c| candidate_applies_to_repo(c, repo))
+        .collect::<Vec<_>>();
+    candidates.sort_by(|a, b| {
+        severity_rank(&b.severity_guess)
+            .cmp(&severity_rank(&a.severity_guess))
+            .then_with(|| {
+                b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| a.source.cmp(&b.source))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    candidates.into_iter().take(limit).map(candidate_to_exploration_known_lead).collect()
+}
+
+fn candidate_applies_to_repo(candidate: &PentestCandidateRecord, repo: &str) -> bool {
+    let repos = candidate
+        .affected_components
+        .iter()
+        .filter_map(|component| {
+            component.as_object().and_then(|obj| obj.get("repo")).and_then(|value| value.as_str())
+        })
+        .collect::<Vec<_>>();
+    repos.is_empty() || repos.iter().any(|r| *r == repo)
+}
+
+fn candidate_to_exploration_known_lead(candidate: &PentestCandidateRecord) -> ExplorationKnownLead {
+    ExplorationKnownLead {
+        id: candidate.id.clone(),
+        source: candidate.source.clone(),
+        title: candidate.title.clone(),
+        vuln_class: candidate.vuln_class.clone(),
+        severity: candidate.severity_guess.clone(),
+        status: candidate.status.clone(),
+        location: candidate_location(candidate),
+        hypothesis: candidate.hypothesis.clone(),
+    }
+}
+
+fn candidate_location(candidate: &PentestCandidateRecord) -> Option<String> {
+    for component in &candidate.affected_components {
+        let Some(obj) = component.as_object() else {
+            continue;
+        };
+        if let Some(url) = obj
+            .get("url")
+            .or_else(|| obj.get("matched_at"))
+            .or_else(|| obj.get("target"))
+            .and_then(|value| value.as_str())
+        {
+            let method = obj.get("method").and_then(|value| value.as_str());
+            return Some(match method {
+                Some(method) => format!("{} {}", method.to_ascii_uppercase(), url),
+                None => url.to_string(),
+            });
+        }
+        if let Some(path) = obj.get("path").and_then(|value| value.as_str()) {
+            let repo = obj.get("repo").and_then(|value| value.as_str());
+            let line = obj.get("line").and_then(|value| value.as_i64());
+            return Some(match (repo, line) {
+                (Some(repo), Some(line)) => format!("{repo}:{path}:{line}"),
+                (Some(repo), None) => format!("{repo}:{path}"),
+                (None, Some(line)) => format!("{path}:{line}"),
+                (None, None) => path.to_string(),
+            });
+        }
+    }
+    None
+}
+
+fn severity_rank(severity: &str) -> u8 {
+    match severity.to_ascii_lowercase().as_str() {
+        "critical" => 5,
+        "high" => 4,
+        "medium" => 3,
+        "low" => 2,
+        "info" | "informational" => 1,
+        _ => 0,
+    }
 }
 
 fn host_from_url(url: &str) -> Option<String> {
@@ -3470,8 +3614,7 @@ mod tests {
     #[test]
     fn live_test_plan_normalises_relative_url_and_requires_oracle() {
         let targets = vec!["http://localhost:8787".to_string()];
-        let raw =
-            r#"{"method":"post","path":"/api/search","json":{"q":"test"},"status_range":"2xx"}"#;
+        let raw = r#"{"method":"post","path":"/api/search","json":{"q":"nyctos-probe"},"status_range":"2xx","body_contains":"nyctos-probe"}"#;
         let plan = normalise_live_test_plan(raw, &targets).expect("valid").expect("plan");
         assert_eq!(plan["method"], "POST");
         assert_eq!(plan["url"], "http://localhost:8787/api/search");
@@ -5773,6 +5916,7 @@ mod tests {
         outcomes: StdMutex<Vec<Result<AgentResult, AiError>>>,
         cost_per_call: i64,
         tracker: Arc<dyn BudgetTracker>,
+        tasks_seen: StdMutex<Vec<AgentTask>>,
     }
 
     impl ScriptedExplorationRuntime {
@@ -5781,7 +5925,16 @@ mod tests {
             cost_per_call: i64,
             tracker: Arc<dyn BudgetTracker>,
         ) -> Self {
-            Self { outcomes: StdMutex::new(outcomes), cost_per_call, tracker }
+            Self {
+                outcomes: StdMutex::new(outcomes),
+                cost_per_call,
+                tracker,
+                tasks_seen: StdMutex::new(Vec::new()),
+            }
+        }
+
+        fn tasks_seen(&self) -> Vec<AgentTask> {
+            self.tasks_seen.lock().unwrap().clone()
         }
     }
 
@@ -5818,6 +5971,7 @@ mod tests {
             budget: Budget,
             _sink: nyctos_types::event::EventSink,
         ) -> Result<AgentResult, AiError> {
+            self.tasks_seen.lock().unwrap().push(task.clone());
             let mut next = self
                 .outcomes
                 .lock()
@@ -5852,6 +6006,107 @@ mod tests {
         }
     }
 
+    fn pentest_candidate(
+        id: &str,
+        source: &str,
+        severity: &str,
+        status: &str,
+        component: serde_json::Value,
+    ) -> PentestCandidateRecord {
+        PentestCandidateRecord {
+            id: id.to_string(),
+            run_id: "run-expl-leads".to_string(),
+            project_id: "default-project".to_string(),
+            source: source.to_string(),
+            source_ids: vec![format!("{source}:{id}")],
+            title: format!("{source} lead {id}"),
+            vuln_class: "AUTH_BYPASS".to_string(),
+            severity_guess: severity.to_string(),
+            affected_components: vec![component],
+            hypothesis: format!("{source} reported {id}; verify with live evidence."),
+            test_plan: "Derive a safe live HTTP/browser confirmation.".to_string(),
+            status: status.to_string(),
+            rejection_reason: None,
+            confidence: 0.75,
+            trace_id: None,
+            created_at: 1_000,
+            updated_at: 1_000,
+        }
+    }
+
+    #[test]
+    fn exploration_known_leads_are_repo_scoped_and_prioritised() {
+        let candidates = vec![
+            pentest_candidate(
+                "pc-zap",
+                "ZAPBaseline",
+                "Medium",
+                "NeedsLiveTest",
+                serde_json::json!({
+                    "scanner": "zap-baseline",
+                    "url": "http://localhost:3000/login",
+                    "method": "GET"
+                }),
+            ),
+            pentest_candidate(
+                "pc-nyx-a",
+                "NyxSignal",
+                "High",
+                "NeedsLiveTest",
+                serde_json::json!({
+                    "repo": "repo-a",
+                    "path": "src/admin.ts",
+                    "line": 42
+                }),
+            ),
+            pentest_candidate(
+                "pc-nyx-b",
+                "NyxSignal",
+                "Critical",
+                "NeedsLiveTest",
+                serde_json::json!({
+                    "repo": "repo-b",
+                    "path": "src/payments.ts",
+                    "line": 7
+                }),
+            ),
+            pentest_candidate(
+                "pc-rejected",
+                "Nuclei",
+                "Critical",
+                "Rejected",
+                serde_json::json!({
+                    "matched_at": "http://localhost:3000/admin"
+                }),
+            ),
+            pentest_candidate(
+                "pc-trivy",
+                "Trivy",
+                "High",
+                "Observed",
+                serde_json::json!({
+                    "repo": "repo-a",
+                    "path": "package-lock.json"
+                }),
+            ),
+        ];
+
+        let leads = exploration_known_leads_for_repo(&candidates, "repo-a", 8);
+        assert_eq!(
+            leads.len(),
+            3,
+            "repo-a should see its Nyx lead, Trivy context, plus global ZAP lead"
+        );
+        assert_eq!(leads[0].id, "pc-nyx-a", "higher severity repo lead should rank first");
+        assert_eq!(leads[0].location.as_deref(), Some("repo-a:src/admin.ts:42"));
+        assert_eq!(leads[1].source, "Trivy");
+        assert_eq!(leads[1].status, "Observed");
+        assert_eq!(leads[2].source, "ZAPBaseline");
+        assert_eq!(leads[2].location.as_deref(), Some("GET http://localhost:3000/login"));
+        assert!(leads.iter().all(|lead| lead.id != "pc-nyx-b"));
+        assert!(leads.iter().all(|lead| lead.id != "pc-rejected"));
+    }
+
     #[tokio::test]
     async fn drive_ai_exploration_persists_quarantined_finding() {
         // Exploration acceptance: an AI-discovered finding flows
@@ -5863,6 +6118,19 @@ mod tests {
         let mut run_row = seed_run("run-expl-1");
         run_row.id = "run-expl-1".into();
         store.runs().insert(&run_row).await.unwrap();
+        let mut scanner_lead = pentest_candidate(
+            "pc-zap-expl",
+            "ZAPBaseline",
+            "Medium",
+            "NeedsLiveTest",
+            serde_json::json!({
+                "scanner": "zap-baseline",
+                "url": "http://127.0.0.1:3000/login",
+                "method": "GET"
+            }),
+        );
+        scanner_lead.run_id = "run-expl-1".to_string();
+        store.pentest_candidates().insert(&scanner_lead).await.unwrap();
 
         let workspace = tempfile::tempdir().unwrap();
         let mut workspaces = HashMap::new();
@@ -5911,6 +6179,12 @@ mod tests {
         assert_eq!(report.halted_budget_exhausted, 0);
         assert_eq!(report.failed, 0);
         assert_eq!(report.spend_usd_micros, 250_000);
+        let tasks_seen = runtime.tasks_seen();
+        assert_eq!(tasks_seen.len(), 1);
+        assert!(tasks_seen[0].objective.contains("KNOWN SCANNER LEADS"));
+        assert!(tasks_seen[0].objective.contains("pc-zap-expl"));
+        assert!(tasks_seen[0].objective.contains("ZAPBaseline"));
+        assert!(tasks_seen[0].objective.contains("GET http://127.0.0.1:3000/login"));
 
         // The finding landed in the `findings` table with the right
         // origin + status. We do not call list_by_run because the

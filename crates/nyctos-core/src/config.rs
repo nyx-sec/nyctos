@@ -521,6 +521,30 @@ pub struct RunConfig {
     /// is only used when present on PATH; findings become candidates.
     #[serde(default = "default_optional_scanner_enabled")]
     pub enable_nuclei: bool,
+    /// Optional Trivy repository/filesystem scan. Enabled by default,
+    /// but the binary is only used when present on PATH; findings become
+    /// source-context candidates for AI exploration.
+    #[serde(default = "default_optional_scanner_enabled")]
+    pub enable_trivy: bool,
+    /// Optional OSV-Scanner dependency scan. Enabled by default, but the
+    /// binary is only used when present on PATH; findings become
+    /// source-context candidates for AI exploration.
+    #[serde(default = "default_optional_scanner_enabled")]
+    pub enable_osv_scanner: bool,
+    /// Optional secret scanning. Enabled by default; Nyctos prefers
+    /// `gitleaks` when present and falls back to `detect-secrets`.
+    #[serde(default = "default_optional_scanner_enabled")]
+    pub enable_secret_scanning: bool,
+    /// Optional Katana crawler orchestration. Enabled by default, but
+    /// the binary is only used when present on PATH; sensitive routes
+    /// become live-test candidates.
+    #[serde(default = "default_optional_scanner_enabled")]
+    pub enable_katana: bool,
+    /// Optional ProjectDiscovery httpx probe orchestration. Enabled by
+    /// default, but the binary is only used when present on PATH;
+    /// interesting live metadata becomes candidates.
+    #[serde(default = "default_optional_scanner_enabled")]
+    pub enable_httpx: bool,
     /// Aggressive external tooling is off unless this explicit gate is
     /// true. Nyctos does not run sqlmap by default.
     #[serde(default)]
@@ -535,6 +559,11 @@ impl Default for RunConfig {
             browser_checks_enabled: false,
             enable_zap_baseline: true,
             enable_nuclei: true,
+            enable_trivy: true,
+            enable_osv_scanner: true,
+            enable_secret_scanning: true,
+            enable_katana: true,
+            enable_httpx: true,
             enable_aggressive_sqlmap: false,
         }
     }
@@ -728,10 +757,15 @@ mod tests {
     }
 
     #[test]
-    fn run_defaults_enable_passive_optional_scanners_only() {
+    fn run_defaults_enable_recommended_optional_scanners() {
         let cfg = Config::parse("[run]\n", &PathBuf::from("<test>")).expect("parse run defaults");
         assert!(cfg.run.enable_zap_baseline);
         assert!(cfg.run.enable_nuclei);
+        assert!(cfg.run.enable_trivy);
+        assert!(cfg.run.enable_osv_scanner);
+        assert!(cfg.run.enable_secret_scanning);
+        assert!(cfg.run.enable_katana);
+        assert!(cfg.run.enable_httpx);
         assert!(!cfg.run.enable_aggressive_sqlmap);
     }
 
