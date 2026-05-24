@@ -16,7 +16,7 @@ export function TopBar() {
   const title =
     TITLE_BY_PATH[pathname] ??
     (pathname.startsWith("/projects/")
-      ? "Project"
+      ? projectScopedTitle(pathname)
       : pathname.startsWith("/runs/")
         ? "Pentest Run"
         : pathname.startsWith("/chains/")
@@ -32,4 +32,13 @@ export function TopBar() {
       </nav>
     </header>
   );
+}
+
+function projectScopedTitle(pathname: string): string {
+  if (/^\/projects\/[^/]+\/runs\/[^/]+/.test(pathname)) return "Pentest Run";
+  if (/^\/projects\/[^/]+\/runs/.test(pathname)) return "Pentest Runs";
+  if (/^\/projects\/[^/]+\/vulnerabilities/.test(pathname)) return "Vulnerabilities";
+  if (/^\/projects\/[^/]+\/repos/.test(pathname)) return "Repositories";
+  if (/^\/projects\/[^/]+\/environments/.test(pathname)) return "Environments";
+  return "Project";
 }

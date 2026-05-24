@@ -42,6 +42,38 @@ export function ReposIcon({ className, size = 18 }: IconProps) {
   );
 }
 
+export function EnvironmentsIcon({ className, size = 18 }: IconProps) {
+  return (
+    <svg {...svgProps({ className, size })} viewBox="0 0 18 18">
+      <path d="M4 3.5h10c.8 0 1.4.6 1.4 1.4v2c0 .8-.6 1.4-1.4 1.4H4c-.8 0-1.4-.6-1.4-1.4v-2c0-.8.6-1.4 1.4-1.4z" />
+      <path d="M4 9.7h10c.8 0 1.4.6 1.4 1.4v2c0 .8-.6 1.4-1.4 1.4H4c-.8 0-1.4-.6-1.4-1.4v-2c0-.8.6-1.4 1.4-1.4z" />
+      <path d="M5.5 5.9h.1" />
+      <path d="M5.5 12.1h.1" />
+      <path d="M8 5.9h4.5" />
+      <path d="M8 12.1h4.5" />
+    </svg>
+  );
+}
+
+export function OverviewIcon({ className, size = 18 }: IconProps) {
+  return (
+    <svg {...svgProps({ className, size })} viewBox="0 0 18 18">
+      <path d="M3 8.2 9 3l6 5.2" />
+      <path d="M5 7.6v6.1c0 .7.5 1.2 1.2 1.2h5.6c.7 0 1.2-.5 1.2-1.2V7.6" />
+      <path d="M7.4 14.9v-4.2h3.2v4.2" />
+    </svg>
+  );
+}
+
+export function PlusIcon({ className, size = 18 }: IconProps) {
+  return (
+    <svg {...svgProps({ className, size })} viewBox="0 0 18 18">
+      <path d="M9 3.5v11" />
+      <path d="M3.5 9h11" />
+    </svg>
+  );
+}
+
 export function RunsIcon({ className, size = 18 }: IconProps) {
   return (
     <svg {...svgProps({ className, size })} viewBox="0 0 18 18">

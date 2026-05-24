@@ -1,8 +1,13 @@
-import { useMemo, useState } from "react";
+import { Children, type ReactNode, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   type AgentEventLike,
+  type LaunchEnvRef,
+  type LaunchHealthCheck,
+  type LaunchStep,
+  type LaunchWorkingDir,
   type ProjectLaunchProfile,
+  type ProjectRecord,
   type RepoRecord,
   useAgentEvents,
   useDeleteProject,
@@ -24,6 +29,11 @@ import { applyEvent, type RepoLiveState, type RepoLiveStatus } from "../Repos/re
 import { ProjectProfileModal } from "./ProjectProfileModal";
 
 type LiveMap = Record<string, RepoLiveState>;
+type ProjectDetailView = "overview" | "repos" | "environments";
+
+interface ProjectDetailProps {
+  view?: ProjectDetailView;
+}
 
 const STATUS_TONE: Record<RepoLiveStatus, BadgeTone> = {
   Idle: "neutral",
@@ -32,7 +42,7 @@ const STATUS_TONE: Record<RepoLiveStatus, BadgeTone> = {
   Failed: "danger",
 };
 
-export function ProjectDetail() {
+export function ProjectDetail({ view = "overview" }: ProjectDetailProps = {}) {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
   const project = useProject(projectId);
@@ -67,7 +77,11 @@ export function ProjectDetail() {
       });
       setBanner(`Pentest started (run ${run_id}).`);
       setShowPentestOptions(false);
-      navigate(`/runs/${encodeURIComponent(run_id)}`);
+      navigate(
+        projectId
+          ? `/projects/${encodeURIComponent(projectId)}/runs/${encodeURIComponent(run_id)}`
+          : `/runs/${encodeURIComponent(run_id)}`,
+      );
     } catch (err) {
       setBanner(`Could not start pentest: ${String(err)}`);
     }
@@ -150,6 +164,7 @@ export function ProjectDetail() {
   const startHint = canStartPentest
     ? null
     : formatStartHint(runtimeTarget, rows.length, launchProfile);
+  const encodedProjectId = encodeURIComponent(projectId);
 
   return (
     <>
@@ -220,67 +235,100 @@ export function ProjectDetail() {
           </div>
         )}
 
-        <Card
-          title="Repositories"
-          subtitle={repoCountLabel}
-          actions={
-            <div className="repo-list__actions">
-              <Button variant="primary" onClick={() => setShowAdd(true)}>
-                Add repo
+        {view === "overview" && (
+          <ProjectOverview
+            project={p}
+            projectPath={`/projects/${encodedProjectId}`}
+            repoCountLabel={repoCountLabel}
+            verifiedCount={verifiedCount}
+            launchProfile={launchProfile}
+          />
+        )}
+
+        {view === "repos" && (
+          <Card
+            title="Repositories"
+            subtitle={repoCountLabel}
+            actions={
+              <div className="repo-list__actions">
+                <Button variant="primary" onClick={() => setShowAdd(true)}>
+                  Add repo
+                </Button>
+              </div>
+            }
+          >
+            {repos.isPending && (
+              <div className="repo-list__pending">
+                <Spinner /> Loading repositories...
+              </div>
+            )}
+
+            {repos.error && (
+              <p className="repo-list__error" role="alert">
+                Failed to load repositories: {String(repos.error)}
+              </p>
+            )}
+
+            {noneConfigured && (
+              <EmptyState
+                title="No repositories yet"
+                body="Add a repo when this project is ready to scan."
+              />
+            )}
+
+            {rows.length > 0 && (
+              <div className="table-scroll">
+                <table className="repo-list__table" aria-label="Configured repositories">
+                  <thead>
+                    <tr>
+                      <th scope="col">Repo</th>
+                      <th scope="col">Kind</th>
+                      <th scope="col">Source</th>
+                      <th scope="col">Status</th>
+                      <th scope="col">Last pentest</th>
+                      <th scope="col" className="repo-list__col--actions">
+                        Actions
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((repo) => (
+                      <RepoRow
+                        key={repo.name}
+                        repo={repo}
+                        live={live[repo.name] ?? { status: "Idle", runId: null }}
+                        onEdit={() => setEditTarget(repo)}
+                        onDelete={() => setRemoveTarget(repo)}
+                        busy={startPentest.isPending || deleteRepo.isPending}
+                      />
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Card>
+        )}
+
+        {view === "environments" && (
+          <Card
+            title="Environments"
+            subtitle="Target URLs, startup commands, health checks, and runtime scope"
+            actions={
+              <Button variant="primary" onClick={() => setShowProfileEdit(true)}>
+                Edit launch profile
               </Button>
-            </div>
-          }
-        >
-          {repos.isPending && (
-            <div className="repo-list__pending">
-              <Spinner /> Loading repositories...
-            </div>
-          )}
-
-          {repos.error && (
-            <p className="repo-list__error" role="alert">
-              Failed to load repositories: {String(repos.error)}
-            </p>
-          )}
-
-          {noneConfigured && (
-            <EmptyState
-              title="No repositories yet"
-              body="Add a repo when this project is ready to scan."
-            />
-          )}
-
-          {rows.length > 0 && (
-            <div className="table-scroll">
-              <table className="repo-list__table" aria-label="Configured repositories">
-                <thead>
-                  <tr>
-                    <th scope="col">Repo</th>
-                    <th scope="col">Kind</th>
-                    <th scope="col">Source</th>
-                    <th scope="col">Status</th>
-                    <th scope="col">Last pentest</th>
-                    <th scope="col" className="repo-list__col--actions">
-                      Actions
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((repo) => (
-                    <RepoRow
-                      key={repo.name}
-                      repo={repo}
-                      live={live[repo.name] ?? { status: "Idle", runId: null }}
-                      onEdit={() => setEditTarget(repo)}
-                      onDelete={() => setRemoveTarget(repo)}
-                      busy={startPentest.isPending || deleteRepo.isPending}
-                    />
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </Card>
+            }
+          >
+            {launchProfile ? (
+              <EnvironmentProfile profile={launchProfile} fallbackTarget={p.target_base_url} />
+            ) : (
+              <EmptyState
+                title="No environment profile"
+                body="Add a launch profile before starting project pentests."
+              />
+            )}
+          </Card>
+        )}
       </div>
 
       {showAdd && (
@@ -350,6 +398,151 @@ export function ProjectDetail() {
   );
 }
 
+function ProjectOverview({
+  project,
+  projectPath,
+  repoCountLabel,
+  verifiedCount,
+  launchProfile,
+}: {
+  project: ProjectRecord;
+  projectPath: string;
+  repoCountLabel: string;
+  verifiedCount: number;
+  launchProfile: ProjectLaunchProfile | null;
+}) {
+  const environmentStatus = launchProfileStatus(launchProfile);
+  return (
+    <Card title="Overview" subtitle="Project-scoped pentest status and setup shortcuts">
+      <div className="project-overview-list">
+        <Link className="project-overview-row" to={`${projectPath}/repos`}>
+          <span>
+            <strong>Repositories</strong>
+            <small>Manage source scope for static context and run attribution.</small>
+          </span>
+          <span>{repoCountLabel}</span>
+        </Link>
+        <Link className="project-overview-row" to={`${projectPath}/environments`}>
+          <span>
+            <strong>Environments</strong>
+            <small>Adjust target URLs, startup commands, health checks, and runtime refs.</small>
+          </span>
+          <Badge tone={environmentStatus.tone}>{environmentStatus.label}</Badge>
+        </Link>
+        <Link className="project-overview-row" to={`${projectPath}/vulnerabilities`}>
+          <span>
+            <strong>Vulnerabilities</strong>
+            <small>Review confirmed and needs-review results for this project only.</small>
+          </span>
+          <span>{verifiedCount}</span>
+        </Link>
+        <Link className="project-overview-row" to={`${projectPath}/runs`}>
+          <span>
+            <strong>Pentest runs</strong>
+            <small>Inspect scan progress, live verification, and run evidence.</small>
+          </span>
+          <span>Open</span>
+        </Link>
+      </div>
+      <p className="project-overview-footnote">
+        Updated {new Date(project.updated_at).toLocaleString()}
+      </p>
+    </Card>
+  );
+}
+
+function EnvironmentProfile({
+  profile,
+  fallbackTarget,
+}: {
+  profile: ProjectLaunchProfile;
+  fallbackTarget: string | null;
+}) {
+  const targetUrls = profile.target_urls.length
+    ? profile.target_urls
+    : fallbackTarget
+      ? [fallbackTarget]
+      : [];
+
+  return (
+    <div className="environment-profile">
+      <dl className="environment-profile__summary">
+        <div>
+          <dt>Readiness</dt>
+          <dd>
+            <Badge tone={launchProfileStatus(profile).tone}>
+              {launchProfileStatus(profile).label}
+            </Badge>
+          </dd>
+        </div>
+        <div>
+          <dt>Mode</dt>
+          <dd>{formatLaunchMode(profile)}</dd>
+        </div>
+        <div>
+          <dt>Profile</dt>
+          <dd>{profile.name || "Default"}</dd>
+        </div>
+        <div>
+          <dt>Updated</dt>
+          <dd>{new Date(profile.updated_at).toLocaleString()}</dd>
+        </div>
+      </dl>
+
+      <EnvironmentSection title="Target URLs" empty="No target URLs configured.">
+        {targetUrls.map((url) => (
+          <code key={url}>{url}</code>
+        ))}
+      </EnvironmentSection>
+
+      <EnvironmentSection title="Startup" empty="No startup commands configured.">
+        {profile.start_steps.map((step, idx) => (
+          <code key={`${step.command}-${idx}`}>{formatLaunchStep(step)}</code>
+        ))}
+      </EnvironmentSection>
+
+      <EnvironmentSection title="Health checks" empty="No health checks configured.">
+        {profile.health_checks.map((check, idx) => (
+          <code key={`${formatHealthCheck(check)}-${idx}`}>{formatHealthCheck(check)}</code>
+        ))}
+      </EnvironmentSection>
+
+      <EnvironmentSection title="Working directories" empty="No working directories configured.">
+        {profile.working_dirs.map((dir, idx) => (
+          <code key={`${dir.path}-${idx}`}>{formatWorkingDir(dir)}</code>
+        ))}
+      </EnvironmentSection>
+
+      <EnvironmentSection title="Environment refs" empty="No environment refs configured.">
+        {profile.env_refs.map((ref, idx) => (
+          <span key={`${ref.kind}-${ref.value}-${idx}`} className="environment-profile__ref">
+            <code>{formatEnvRef(ref)}</code>
+            {ref.secret && <Badge tone="warning">secret</Badge>}
+          </span>
+        ))}
+      </EnvironmentSection>
+    </div>
+  );
+}
+
+function EnvironmentSection({
+  title,
+  empty,
+  children,
+}: {
+  title: string;
+  empty: string;
+  children: ReactNode;
+}) {
+  const hasChildren = Children.count(children) > 0;
+  return (
+    <section className="environment-profile__section">
+      <h3>{title}</h3>
+      {hasChildren ? <div className="environment-profile__items">{children}</div> : <p>{empty}</p>}
+    </section>
+  );
+}
+
 interface StartPentestOptions {
   exploitMode: boolean;
   allowStateChanging: boolean;
@@ -416,7 +609,9 @@ function StartPentestModal({ busy, onConfirm, onCancel }: StartPentestModalProps
             />
             <span>
               <strong>State-changing probes</strong>
-              <small>Permit POST, PUT, PATCH, DELETE, and browser workflows that may mutate data.</small>
+              <small>
+                Permit POST, PUT, PATCH, DELETE, and browser workflows that may mutate data.
+              </small>
             </span>
           </label>
         </div>
@@ -469,6 +664,27 @@ function formatStartHint(
   if (repoCount === 0) return "Add at least one repository to give Nyctos source context.";
   if (profile?.readiness !== "Ready") return "Resolve launch readiness before starting.";
   return "Complete project setup before starting.";
+}
+
+function formatLaunchStep(step: LaunchStep): string {
+  const scope = step.repo_name ? `${step.repo_name}: ` : "";
+  const cwd = step.working_directory ? ` (${step.working_directory})` : "";
+  return `${scope}${step.command}${cwd}`;
+}
+
+function formatHealthCheck(check: LaunchHealthCheck): string {
+  if (check.url) return `${check.kind}: ${check.url}`;
+  if (check.host && check.port) return `${check.kind}: ${check.host}:${check.port}`;
+  if (check.command) return `${check.kind}: ${formatLaunchStep(check.command)}`;
+  return check.kind;
+}
+
+function formatWorkingDir(dir: LaunchWorkingDir): string {
+  return dir.repo_name ? `${dir.repo_name}: ${dir.path}` : dir.path;
+}
+
+function formatEnvRef(ref: LaunchEnvRef): string {
+  return `${ref.kind}: ${ref.value}`;
 }
 
 interface RepoRowProps {

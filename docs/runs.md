@@ -179,7 +179,8 @@ The `runs` row schema (see
 
 `RunStore::list_by_status("Running")` is what
 `GET /api/v1/runs?status=Running` reads; default with no query
-string is `Running`. The full record shape is what
+string is `Running`. The endpoint also accepts `project_id` to keep
+run lists scoped to one project. The full record shape is what
 `GET /api/v1/runs/:id` returns. See
 [`docs/api.md`](api.md#runs).
 

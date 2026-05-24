@@ -2,7 +2,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useEffect, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
-import { type CreateProjectRequest, useCreateProject } from "@/api/client";
+import { type CreateProjectRequest, type ProjectRecord, useCreateProject } from "@/api/client";
 import { Button } from "@/components/Button";
 import { Spinner } from "@/components/Spinner";
 import {
@@ -31,7 +31,7 @@ const schema = z.object({
 
 interface Props {
   onClose: () => void;
-  onAdded: (name: string) => void;
+  onAdded: (project: ProjectRecord) => void;
 }
 
 export function ProjectAddModal({ onClose, onAdded }: Props) {
@@ -72,7 +72,7 @@ export function ProjectAddModal({ onClose, onAdded }: Props) {
       const row = await create.mutateAsync(body);
       reset();
       setProfileDraft(emptyRuntimeProfileDraft());
-      onAdded(row.name);
+      onAdded(row);
     } catch (err) {
       setError("root", { type: "server", message: String(err) });
     }

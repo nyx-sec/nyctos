@@ -25,6 +25,7 @@ use nyctos_core::{
 use nyctos_nyx::{Diag, NyxError, NyxRunner, NyxScanLane, MINIMUM_NYX_VERSION};
 use nyctos_sandbox::{select_backend, BackendChoice, BackendKind, Lane};
 use nyctos_types::event::{AgentEvent, AiEvent, EventSink, RunEvent, SandboxEvent};
+use regex::Regex;
 use semver::Version;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -2148,43 +2149,707 @@ fn classify_nyx_signal(diag: &Diag) -> (String, bool, Option<String>) {
     (signal_kind.to_string(), meaningful, suppressed_reason)
 }
 
+#[derive(Debug, Clone)]
+struct NyxExploitClassification {
+    vuln_class: String,
+    reason: String,
+    route: Option<String>,
+    method: Option<String>,
+    param: Option<String>,
+    sink: Option<String>,
+    sink_path: Option<String>,
+    sink_line: Option<i64>,
+    source: Option<String>,
+    source_path: Option<String>,
+    source_line: Option<i64>,
+    confidence: f64,
+}
+
+impl NyxExploitClassification {
+    fn is_reclassified_from(&self, cap: &str) -> bool {
+        self.vuln_class != cap
+    }
+}
+
 fn candidate_from_signal(
     signal: &NyxSignalRecord,
     diag: &Diag,
     now_ms: i64,
 ) -> PentestCandidateRecord {
     let id = format!("pc-{}", signal.id.trim_start_matches("sig-"));
+    let classification = classify_nyx_candidate(diag);
+    let mut component = serde_json::json!({
+        "kind": "nyx_signal",
+        "repo_id": signal.repo_id,
+        "repo": signal.repo,
+        "path": signal.path,
+        "line": signal.line,
+        "rule": signal.rule,
+        "cap": signal.cap,
+        "original_cap": signal.cap,
+        "nyx_signal_id": signal.id,
+        "nyx_signal": {
+            "id": signal.id,
+            "cap": signal.cap,
+            "rule": signal.rule,
+            "severity": signal.severity,
+            "message": signal.message,
+        },
+    });
+    if let Some(obj) = component.as_object_mut() {
+        insert_json_string(obj, "exploit_class", Some(classification.vuln_class.clone()));
+        insert_json_string(obj, "classification_reason", Some(classification.reason.clone()));
+        insert_json_string(obj, "route", classification.route.clone());
+        insert_json_string(obj, "url_path", classification.route.clone());
+        insert_json_string(obj, "method", classification.method.clone());
+        insert_json_string(obj, "param", classification.param.clone());
+        if let Some(param) = &classification.param {
+            obj.insert(
+                "params".to_string(),
+                serde_json::Value::Array(vec![serde_json::Value::String(param.clone())]),
+            );
+        }
+        insert_json_string(obj, "sink", classification.sink.clone());
+        insert_json_string(obj, "sink_path", classification.sink_path.clone());
+        insert_json_i64(obj, "sink_line", classification.sink_line);
+        insert_json_string(obj, "source", classification.source.clone());
+        insert_json_string(obj, "source_path", classification.source_path.clone());
+        insert_json_i64(obj, "source_line", classification.source_line);
+    }
     PentestCandidateRecord {
         id,
         run_id: signal.run_id.clone(),
         project_id: signal.project_id.clone(),
         source: "NyxSignal".to_string(),
         source_ids: vec![signal.id.clone()],
-        title: diag.message.clone().unwrap_or_else(|| format!("{} in {}", signal.cap, signal.path)),
-        vuln_class: signal.cap.clone(),
+        title: nyx_candidate_title(signal, &classification),
+        vuln_class: classification.vuln_class.clone(),
         severity_guess: signal.severity.clone(),
-        affected_components: vec![serde_json::json!({
-            "repo_id": signal.repo_id,
-            "repo": signal.repo,
-            "path": signal.path,
-            "line": signal.line,
-            "rule": signal.rule,
-        })],
-        hypothesis: format!(
-            "Static analysis reported a {} signal at {}:{}; live verification is required before surfacing it.",
-            signal.severity,
-            signal.path,
-            signal.line.map(|l: i64| l.to_string()).unwrap_or_else(|| "?".to_string())
+        affected_components: vec![component],
+        hypothesis: nyx_candidate_hypothesis(signal, &classification),
+        test_plan: format!(
+            "Use the deterministic {} live planner when possible; otherwise retain a structured no-plan reason. Do not report without exploit-specific live evidence.",
+            classification.vuln_class
         ),
-        test_plan: "Derive a live HTTP/browser test from the affected route before confirmation."
-            .to_string(),
         status: "NeedsLiveTest".to_string(),
         rejection_reason: None,
-        confidence: 0.55,
+        confidence: classification.confidence,
         trace_id: None,
         created_at: now_ms,
         updated_at: now_ms,
     }
+}
+
+fn classify_nyx_candidate(diag: &Diag) -> NyxExploitClassification {
+    let text = nyx_diag_text(diag);
+    let route = extract_route_from_diag(diag, &text);
+    let method = extract_method_from_diag(diag);
+    let param = extract_param_from_diag(diag, &text);
+    let sink = extract_sink_from_diag(diag);
+    let (sink_path, sink_line) = extract_evidence_location(diag, "sink");
+    let source = extract_source_from_diag(diag);
+    let (source_path, source_line) = extract_evidence_location(diag, "source");
+    let (vuln_class, reason) = classify_nyx_exploit_class(
+        diag,
+        &text,
+        route.as_deref(),
+        param.as_deref(),
+        sink.as_deref(),
+    )
+    .unwrap_or_else(|| {
+        (
+            diag.cap.clone(),
+            "Nyx did not expose enough exploit-shaping evidence to reclassify the signal"
+                .to_string(),
+        )
+    });
+    let mut confidence: f64 = if vuln_class == diag.cap { 0.55 } else { 0.62 };
+    if route.is_some() {
+        confidence += 0.04;
+    }
+    if param.is_some() {
+        confidence += 0.03;
+    }
+    if sink.is_some() {
+        confidence += 0.03;
+    }
+    if diag.confidence.as_deref().is_some_and(|c| c.eq_ignore_ascii_case("high")) {
+        confidence += 0.03;
+    }
+    NyxExploitClassification {
+        vuln_class,
+        reason,
+        route,
+        method,
+        param,
+        sink,
+        sink_path,
+        sink_line,
+        source,
+        source_path,
+        source_line,
+        confidence: confidence.min(0.78),
+    }
+}
+
+fn classify_nyx_exploit_class(
+    diag: &Diag,
+    text: &str,
+    route: Option<&str>,
+    param: Option<&str>,
+    sink: Option<&str>,
+) -> Option<(String, String)> {
+    if let Some(class) =
+        canonical_nyx_exploit_class(&diag.cap).or_else(|| canonical_nyx_exploit_class(&diag.rule))
+    {
+        return Some((class.to_string(), format!("Nyx cap/rule maps directly to {class}")));
+    }
+
+    let sink_l = sink.unwrap_or_default().to_ascii_lowercase();
+    let route_l = route.unwrap_or_default().to_ascii_lowercase();
+    let param_l = param.unwrap_or_default().to_ascii_lowercase();
+
+    if text_contains_any(
+        text,
+        &[
+            "dom xss",
+            "cross-site scripting",
+            "client-side xss",
+            "innerhtml",
+            "insertadjacenthtml",
+            "dangerouslysetinnerhtml",
+            "document.write",
+            "location.hash",
+            "postmessage",
+        ],
+    ) {
+        return Some((
+            "DOM_XSS".to_string(),
+            "Nyx evidence references a browser-controlled source or DOM HTML/script sink"
+                .to_string(),
+        ));
+    }
+    if text_contains_any(
+        text,
+        &[
+            "open redirect",
+            "unsafe redirect",
+            "redirect_uri",
+            "return_url",
+            "returnurl",
+            "next=",
+            "next parameter",
+            "location header",
+            "res.redirect",
+            "response.redirect",
+        ],
+    ) || (text_contains_any(text, &["redirect", "location"])
+        && text_contains_any(&param_l, &["url", "next", "redirect", "return", "callback"]))
+    {
+        return Some((
+            "OPEN_REDIRECT".to_string(),
+            "Nyx evidence ties attacker-controlled navigation input to a redirect sink".to_string(),
+        ));
+    }
+    if text_contains_any(
+        text,
+        &[
+            "ssrf",
+            "server-side request",
+            "server side request",
+            "url fetch",
+            "fetch user supplied url",
+            "http client",
+            "requests.get",
+            "axios.get",
+            "urlopen",
+            "curl",
+        ],
+    ) || (text_contains_any(&sink_l, &["fetch", "request", "axios", "urlopen", "curl"])
+        && text_contains_any(
+            &param_l,
+            &["url", "uri", "endpoint", "target", "callback", "webhook"],
+        ))
+    {
+        return Some((
+            "SSRF".to_string(),
+            "Nyx evidence shows attacker-controlled URL input reaching a server-side fetch sink"
+                .to_string(),
+        ));
+    }
+    if text_contains_any(
+        text,
+        &[
+            ".env",
+            "config exposure",
+            "configuration exposure",
+            "exposed config",
+            "secret key",
+            "credential",
+            "api key",
+            "settings leak",
+        ],
+    ) || route_l.contains("config")
+    {
+        return Some((
+            "CONFIG_EXPOSURE".to_string(),
+            "Nyx evidence points at configuration or secret-bearing material exposed through a reachable component"
+                .to_string(),
+        ));
+    }
+    if text_contains_any(
+        text,
+        &[
+            "debug exposure",
+            "debug route",
+            "debug endpoint",
+            "diagnostic",
+            "stack trace",
+            "traceback",
+            "actuator",
+            "dev mail",
+            "dev_mail",
+            "metrics endpoint",
+        ],
+    ) || text_contains_any(&route_l, &["debug", "actuator", "metrics", "/dev/"])
+    {
+        return Some((
+            "DEBUG_EXPOSURE".to_string(),
+            "Nyx evidence points at a diagnostic/debug surface with potentially sensitive output"
+                .to_string(),
+        ));
+    }
+    if text_contains_any(
+        text,
+        &[
+            "auth bypass",
+            "authentication bypass",
+            "missing authentication",
+            "without authentication",
+            "unauthenticated",
+            "unprotected route",
+            "trusted header",
+            "x-forwarded-user",
+            "x-original-user",
+        ],
+    ) {
+        return Some((
+            "AUTH_BYPASS".to_string(),
+            "Nyx evidence indicates a route may be reachable without the expected authentication boundary"
+                .to_string(),
+        ));
+    }
+    if text_contains_any(
+        text,
+        &[
+            "idor",
+            "insecure direct object",
+            "object isolation",
+            "tenant isolation",
+            "ownership check",
+            "missing authorization",
+            "access control",
+            "authorization check",
+            "account id",
+            "user id",
+            "tenant id",
+        ],
+    ) {
+        let idor = param_l.ends_with("id")
+            || param_l == "id"
+            || text_contains_any(&param_l, &["account", "user", "tenant", "org", "project"])
+            || text_contains_any(&route_l, &[":id", "{id}", "/users/", "/accounts/", "/tenants/"])
+            || text_contains_any(text, &["idor", "insecure direct object", "object isolation"]);
+        let class = if idor { "IDOR" } else { "ACCESS_CONTROL" };
+        return Some((
+            class.to_string(),
+            "Nyx evidence suggests an authorization boundary around object or tenant data"
+                .to_string(),
+        ));
+    }
+    None
+}
+
+fn canonical_nyx_exploit_class(raw: &str) -> Option<&'static str> {
+    let normalized =
+        raw.trim().to_ascii_uppercase().replace('-', "_").replace(' ', "_").replace('.', "_");
+    match normalized.as_str() {
+        "DOM_XSS" | "CLIENT_SIDE_XSS" => Some("DOM_XSS"),
+        "XSS" | "CROSS_SITE_SCRIPTING" if !normalized.contains("STORED") => Some("DOM_XSS"),
+        "IDOR" | "INSECURE_DIRECT_OBJECT_REFERENCE" => Some("IDOR"),
+        "ACCESS_CONTROL" | "BROKEN_ACCESS_CONTROL" | "AUTHZ_BYPASS" => Some("ACCESS_CONTROL"),
+        "OPEN_REDIRECT" | "UNVALIDATED_REDIRECT" | "UNSAFE_REDIRECT" => Some("OPEN_REDIRECT"),
+        "SSRF" | "SERVER_SIDE_REQUEST_FORGERY" => Some("SSRF"),
+        "DEBUG_EXPOSURE" | "DIAGNOSTIC_EXPOSURE" => Some("DEBUG_EXPOSURE"),
+        "CONFIG_EXPOSURE" | "CONFIGURATION_EXPOSURE" => Some("CONFIG_EXPOSURE"),
+        "AUTH_BYPASS" | "AUTHENTICATION_BYPASS" => Some("AUTH_BYPASS"),
+        "SECURITY" | "SECURITY_WARNING" | "TAINT_UNSANITISED_FLOW" => None,
+        _ => None,
+    }
+}
+
+fn nyx_candidate_title(
+    signal: &NyxSignalRecord,
+    classification: &NyxExploitClassification,
+) -> String {
+    let target = classification.route.as_deref().unwrap_or(signal.path.as_str());
+    let mut detail = String::new();
+    if let Some(param) = &classification.param {
+        detail.push_str(&format!(" via `{param}`"));
+    } else if let Some(sink) = &classification.sink {
+        detail.push_str(&format!(" into `{sink}`"));
+    }
+    let class_title = match classification.vuln_class.as_str() {
+        "DOM_XSS" => "Potential DOM XSS",
+        "IDOR" => "Potential IDOR",
+        "ACCESS_CONTROL" => "Potential access-control bypass",
+        "OPEN_REDIRECT" => "Potential open redirect",
+        "SSRF" => "Potential SSRF",
+        "DEBUG_EXPOSURE" => "Potential debug exposure",
+        "CONFIG_EXPOSURE" => "Potential configuration exposure",
+        "AUTH_BYPASS" => "Potential authentication bypass",
+        other => other,
+    };
+    format!("{class_title}: {target}{detail}")
+}
+
+fn nyx_candidate_hypothesis(
+    signal: &NyxSignalRecord,
+    classification: &NyxExploitClassification,
+) -> String {
+    let line = signal.line.map(|l| l.to_string()).unwrap_or_else(|| "?".to_string());
+    let mut parts = vec![format!(
+        "Nyx reported {} `{}`/`{}` at {}:{}.",
+        signal.severity, signal.cap, signal.rule, signal.path, line
+    )];
+    if classification.is_reclassified_from(&signal.cap) {
+        parts.push(format!(
+            "Nyctos reclassified the generic/static signal as {} because {}.",
+            classification.vuln_class, classification.reason
+        ));
+    } else {
+        parts.push(format!("Nyctos kept the Nyx class because {}.", classification.reason));
+    }
+    let route = classification.route.as_deref().unwrap_or("the inferred affected route");
+    match classification.vuln_class.as_str() {
+        "DOM_XSS" => parts.push(format!(
+            "Attacker hypothesis: input{} reaches DOM sink{} on {route} and can execute script in a victim browser.",
+            classification.param.as_deref().map(|p| format!(" `{p}`")).unwrap_or_default(),
+            classification.sink.as_deref().map(|s| format!(" `{s}`")).unwrap_or_default(),
+        )),
+        "OPEN_REDIRECT" => parts.push(format!(
+            "Attacker hypothesis: redirect parameter{} on {route} can send users to an attacker-controlled origin.",
+            classification.param.as_deref().map(|p| format!(" `{p}`")).unwrap_or_default(),
+        )),
+        "SSRF" => parts.push(format!(
+            "Attacker hypothesis: URL parameter{} reaches server-side fetch sink{} and could make the server request attacker-selected resources.",
+            classification.param.as_deref().map(|p| format!(" `{p}`")).unwrap_or_default(),
+            classification.sink.as_deref().map(|s| format!(" `{s}`")).unwrap_or_default(),
+        )),
+        "IDOR" | "ACCESS_CONTROL" => parts.push(format!(
+            "Attacker hypothesis: object or tenant selector{} on {route} may expose another user's data without proper authorization.",
+            classification.param.as_deref().map(|p| format!(" `{p}`")).unwrap_or_default(),
+        )),
+        "AUTH_BYPASS" => parts.push(format!(
+            "Attacker hypothesis: {route} may return protected functionality or data to an unauthenticated or lower-privileged request."
+        )),
+        "DEBUG_EXPOSURE" | "CONFIG_EXPOSURE" => parts.push(format!(
+            "Attacker hypothesis: {route} may expose debug, configuration, secret, or operational markers to an unintended requester."
+        )),
+        _ => parts.push(
+            "Static analysis found a security-relevant flow; live verification must derive an exploit-specific oracle before reporting."
+                .to_string(),
+        ),
+    }
+    parts.push(
+        "This is still only a pentest lead; Nyctos must collect exploit evidence or keep it as review-only."
+            .to_string(),
+    );
+    parts.join(" ")
+}
+
+fn nyx_diag_text(diag: &Diag) -> String {
+    let evidence = serde_json::to_string(&diag.evidence).unwrap_or_default();
+    let flow = diag
+        .flow_steps
+        .iter()
+        .map(|step| {
+            format!(
+                "{} {} {} {}",
+                step.path,
+                step.kind.as_deref().unwrap_or_default(),
+                step.snippet.as_deref().unwrap_or_default(),
+                step.note.as_deref().unwrap_or_default()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!(
+        "{} {} {} {} {} {}",
+        diag.cap,
+        diag.rule,
+        diag.message.as_deref().unwrap_or_default(),
+        diag.path,
+        evidence,
+        flow
+    )
+    .to_ascii_lowercase()
+}
+
+fn extract_route_from_diag(diag: &Diag, text: &str) -> Option<String> {
+    for path in [
+        &["route"][..],
+        &["route", "path"],
+        &["request", "path"],
+        &["request", "url"],
+        &["http", "path"],
+        &["http", "url"],
+        &["endpoint"],
+        &["url_path"],
+        &["url"],
+        &["uri"],
+        &["action"],
+        &["matched_at"],
+    ] {
+        if let Some(route) =
+            json_string_at(&diag.evidence, path).and_then(|raw| normalise_route_candidate(&raw))
+        {
+            return Some(route);
+        }
+    }
+    json_string_for_key(
+        &diag.evidence,
+        &["route", "url_path", "endpoint", "url", "uri", "action", "matched_at"],
+    )
+    .and_then(|raw| normalise_route_candidate(&raw))
+    .or_else(|| extract_route_like_path(text))
+}
+
+fn extract_method_from_diag(diag: &Diag) -> Option<String> {
+    json_string_at(&diag.evidence, &["method"])
+        .or_else(|| json_string_at(&diag.evidence, &["request", "method"]))
+        .or_else(|| json_string_for_key(&diag.evidence, &["method", "http_method"]))
+        .map(|method| method.trim().to_ascii_uppercase())
+        .filter(|method| {
+            matches!(
+                method.as_str(),
+                "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS"
+            )
+        })
+}
+
+fn extract_param_from_diag(diag: &Diag, text: &str) -> Option<String> {
+    for path in [
+        &["param"][..],
+        &["parameter"],
+        &["query_param"],
+        &["query", "param"],
+        &["request", "param"],
+        &["request", "parameter"],
+        &["source", "param"],
+        &["source", "parameter"],
+        &["source", "name"],
+        &["source", "variable"],
+    ] {
+        if let Some(param) =
+            json_string_at(&diag.evidence, path).and_then(|raw| normalise_param_candidate(&raw))
+        {
+            return Some(param);
+        }
+    }
+    json_string_for_key(
+        &diag.evidence,
+        &["param", "parameter", "query_param", "request_param", "field"],
+    )
+    .and_then(|raw| normalise_param_candidate(&raw))
+    .or_else(|| extract_param_from_text(text))
+}
+
+fn extract_sink_from_diag(diag: &Diag) -> Option<String> {
+    for path in [
+        &["sink", "callee"][..],
+        &["sink", "name"],
+        &["sink", "function"],
+        &["sink", "method"],
+        &["sink", "snippet"],
+        &["sink"],
+    ] {
+        if let Some(sink) = json_string_at(&diag.evidence, path).filter(|s| !s.trim().is_empty()) {
+            return Some(sink);
+        }
+    }
+    diag.flow_steps
+        .iter()
+        .find(|step| step.kind.as_deref().is_some_and(|kind| kind.eq_ignore_ascii_case("sink")))
+        .and_then(|step| step.snippet.clone().or_else(|| step.note.clone()))
+}
+
+fn extract_source_from_diag(diag: &Diag) -> Option<String> {
+    for path in [
+        &["source", "name"][..],
+        &["source", "param"],
+        &["source", "parameter"],
+        &["source", "variable"],
+        &["source", "snippet"],
+        &["source"],
+    ] {
+        if let Some(source) = json_string_at(&diag.evidence, path).filter(|s| !s.trim().is_empty())
+        {
+            return Some(source);
+        }
+    }
+    diag.flow_steps
+        .iter()
+        .find(|step| step.kind.as_deref().is_some_and(|kind| kind.eq_ignore_ascii_case("source")))
+        .and_then(|step| step.snippet.clone().or_else(|| step.note.clone()))
+}
+
+fn extract_evidence_location(diag: &Diag, key: &str) -> (Option<String>, Option<i64>) {
+    let path = json_string_at(&diag.evidence, &[key, "path"])
+        .or_else(|| json_string_at(&diag.evidence, &[key, "file"]));
+    let line = json_i64_at(&diag.evidence, &[key, "line"]);
+    if path.is_some() || line.is_some() {
+        return (path, line);
+    }
+    let matching = diag
+        .flow_steps
+        .iter()
+        .find(|step| step.kind.as_deref().is_some_and(|kind| kind.eq_ignore_ascii_case(key)));
+    (matching.map(|step| step.path.clone()), matching.map(|step| i64::from(step.line)))
+}
+
+fn extract_route_like_path(text: &str) -> Option<String> {
+    let re = Regex::new(
+        r#"(?P<path>https?://[^\s"'<>]+|/(?:api|admin|debug|dev|config|settings|auth|login|logout|oauth|redirect|callback|proxy|fetch|webhook|user|users|account|accounts|tenant|tenants|search|profile|internal|actuator|metrics)[A-Za-z0-9_./:{}?=&%+-]*)"#,
+    )
+    .expect("route inference regex");
+    let route = re
+        .captures_iter(text)
+        .filter_map(|captures| captures.name("path").map(|m| m.as_str()))
+        .filter_map(normalise_route_candidate)
+        .next();
+    route
+}
+
+fn extract_param_from_text(text: &str) -> Option<String> {
+    for pattern in [
+        r#"(?i)(?:param(?:eter)?|query|field|key)\s*[:=]?\s*[`'"]?([a-z_][a-z0-9_.-]{0,63})"#,
+        r#"(?i)req\.query\.([a-z_][a-z0-9_]{0,63})"#,
+        r#"(?i)searchparams\.get\([`'"]([a-z_][a-z0-9_.-]{0,63})[`'"]\)"#,
+        r#"(?i)request\.args\[[`'"]([a-z_][a-z0-9_.-]{0,63})[`'"]\]"#,
+        r#"(?i)params\[[`'"]([a-z_][a-z0-9_.-]{0,63})[`'"]\]"#,
+    ] {
+        let re = Regex::new(pattern).expect("param inference regex");
+        if let Some(param) = re
+            .captures(text)
+            .and_then(|captures| captures.get(1))
+            .and_then(|m| normalise_param_candidate(m.as_str()))
+        {
+            return Some(param);
+        }
+    }
+    None
+}
+
+fn normalise_route_candidate(raw: &str) -> Option<String> {
+    let route = raw
+        .trim()
+        .trim_matches(|c: char| matches!(c, '"' | '\'' | '`' | ',' | ';' | ')' | ']' | '}'));
+    if route.starts_with("http://") || route.starts_with("https://") {
+        return Some(route.to_string());
+    }
+    if route.starts_with('/') && route.len() > 1 && !route.contains(char::is_whitespace) {
+        return Some(route.to_string());
+    }
+    None
+}
+
+fn normalise_param_candidate(raw: &str) -> Option<String> {
+    let param = raw
+        .trim()
+        .trim_matches(|c: char| matches!(c, '"' | '\'' | '`' | ',' | ';' | ')' | ']' | '}'));
+    if param.is_empty()
+        || param.len() > 64
+        || param.contains('/')
+        || param.contains('\\')
+        || param.chars().any(char::is_whitespace)
+    {
+        return None;
+    }
+    let lower = param.to_ascii_lowercase();
+    if matches!(
+        lower.as_str(),
+        "request" | "response" | "params" | "query" | "body" | "headers" | "sink" | "source"
+    ) {
+        return None;
+    }
+    Some(param.to_string())
+}
+
+fn json_string_at(value: &serde_json::Value, path: &[&str]) -> Option<String> {
+    let mut cursor = value;
+    for key in path {
+        cursor = cursor.get(*key)?;
+    }
+    json_scalar_to_string(cursor)
+}
+
+fn json_i64_at(value: &serde_json::Value, path: &[&str]) -> Option<i64> {
+    let mut cursor = value;
+    for key in path {
+        cursor = cursor.get(*key)?;
+    }
+    cursor.as_i64().or_else(|| cursor.as_u64().and_then(|v| i64::try_from(v).ok()))
+}
+
+fn json_string_for_key(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    match value {
+        serde_json::Value::Object(map) => {
+            for key in keys {
+                if let Some(found) = map.get(*key).and_then(json_scalar_to_string) {
+                    return Some(found);
+                }
+            }
+            map.values().find_map(|child| json_string_for_key(child, keys))
+        }
+        serde_json::Value::Array(items) => {
+            items.iter().find_map(|child| json_string_for_key(child, keys))
+        }
+        _ => None,
+    }
+}
+
+fn json_scalar_to_string(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(s) if !s.trim().is_empty() => Some(s.trim().to_string()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        serde_json::Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
+fn insert_json_string(
+    obj: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    value: Option<String>,
+) {
+    if let Some(value) = value.filter(|v| !v.trim().is_empty()) {
+        obj.insert(key.to_string(), serde_json::Value::String(value));
+    }
+}
+
+fn insert_json_i64(
+    obj: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    value: Option<i64>,
+) {
+    if let Some(value) = value {
+        obj.insert(key.to_string(), serde_json::Value::Number(value.into()));
+    }
+}
+
+fn text_contains_any(haystack: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| haystack.contains(needle))
 }
 
 #[derive(Debug, Default)]
@@ -4570,6 +5235,80 @@ mod tests {
         // Existing evidence.message wins over Diag.message so the upstream
         // payload remains authoritative.
         assert_eq!(parsed.get("message").and_then(|v| v.as_str()), Some("inner"));
+    }
+
+    #[test]
+    fn generic_nyx_security_signal_becomes_attacker_shaped_dom_xss_candidate() {
+        let mut diag = Diag {
+            path: "src/app/search.tsx".to_string(),
+            line: 24,
+            col: Some(13),
+            severity: "High".to_string(),
+            rule: "taint-unsanitised-flow".to_string(),
+            cap: "Security".to_string(),
+            message: Some(
+                "location.search parameter q flows into element.innerHTML on /search".to_string(),
+            ),
+            confidence: Some("high".to_string()),
+            evidence: serde_json::json!({
+                "route": "/search",
+                "method": "GET",
+                "source": {
+                    "name": "q",
+                    "path": "src/app/search.tsx",
+                    "line": 18
+                },
+                "sink": {
+                    "callee": "element.innerHTML",
+                    "path": "src/app/search.tsx",
+                    "line": 24
+                },
+                "flow_steps": [
+                    {"kind": "source", "file": "src/app/search.tsx", "line": 18, "snippet": "new URLSearchParams(location.search).get('q')"},
+                    {"kind": "sink", "file": "src/app/search.tsx", "line": 24, "snippet": "element.innerHTML = q"}
+                ]
+            }),
+            flow_steps: Vec::new(),
+        };
+        diag.lift_flow_steps();
+        let signal = NyxSignalRecord {
+            id: "sig-dom-xss".to_string(),
+            run_id: "run-dom-xss".to_string(),
+            project_id: "project-dom-xss".to_string(),
+            repo_id: "repo-web".to_string(),
+            repo: "web".to_string(),
+            path: diag.path.clone(),
+            line: Some(i64::from(diag.line)),
+            cap: diag.cap.clone(),
+            rule: diag.rule.clone(),
+            severity: diag.severity.clone(),
+            message: diag.message.clone(),
+            evidence: Some(render_static_evidence_value(&diag)),
+            signal_kind: "security".to_string(),
+            meaningful: true,
+            suppressed_reason: None,
+            agent_candidate_id: None,
+            created_at: 1_000,
+        };
+
+        let candidate = candidate_from_signal(&signal, &diag, 2_000);
+
+        assert_eq!(candidate.source, "NyxSignal");
+        assert_eq!(candidate.source_ids, vec!["sig-dom-xss".to_string()]);
+        assert_eq!(candidate.vuln_class, "DOM_XSS");
+        assert!(candidate.title.contains("Potential DOM XSS"));
+        assert!(!candidate.title.starts_with("Security"));
+        assert!(candidate.hypothesis.contains("reclassified"));
+        assert!(candidate.hypothesis.contains("exploit evidence"));
+        let component = candidate.affected_components[0].as_object().expect("component object");
+        assert_eq!(component["cap"], "Security");
+        assert_eq!(component["rule"], "taint-unsanitised-flow");
+        assert_eq!(component["nyx_signal_id"], "sig-dom-xss");
+        assert_eq!(component["route"], "/search");
+        assert_eq!(component["url_path"], "/search");
+        assert_eq!(component["param"], "q");
+        assert_eq!(component["sink"], "element.innerHTML");
+        assert_eq!(component["sink_line"], 24);
     }
 
     #[tokio::test]

@@ -35,6 +35,7 @@ struct EndpointCandidate {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LivePlanStrategy {
     TrustedHeaderAuthBypass,
+    AuthBypassProtectedEndpoint,
     IdorObjectIsolation,
     Csrf,
     DomXss,
@@ -71,6 +72,7 @@ impl<'a> LiveTestPlanSynthesizer<'a> {
             LivePlanStrategy::TrustedHeaderAuthBypass => {
                 self.trusted_header_auth_bypass(candidate, &endpoints)
             }
+            LivePlanStrategy::AuthBypassProtectedEndpoint => self.auth_bypass(candidate, &endpoints),
             LivePlanStrategy::IdorObjectIsolation => self.idor(candidate, &endpoints),
             LivePlanStrategy::Csrf => self.csrf(candidate, &endpoints),
             LivePlanStrategy::DomXss => self.dom_xss(candidate, &endpoints),
@@ -235,6 +237,46 @@ impl<'a> LiveTestPlanSynthesizer<'a> {
         })
     }
 
+    fn auth_bypass(
+        &self,
+        candidate: &PentestCandidateRecord,
+        endpoints: &[EndpointCandidate],
+    ) -> LiveTestPlan {
+        let Some(endpoint) = endpoint_preferring_admin(endpoints) else {
+            return self.no_plan(
+                candidate,
+                NoPlanReasonCode::RouteNotInferred,
+                "auth bypass verification needs an inferred protected endpoint",
+            );
+        };
+        let Some(privileged_role) =
+            role_matching(self.ctx.auth_profiles, &["admin", "owner", "staff", "manager"])
+        else {
+            return self.no_plan(
+                candidate,
+                NoPlanReasonCode::AuthMissing,
+                "auth bypass verification needs an allowed privileged auth profile for calibration",
+            );
+        };
+        let allowed = request_for_endpoint(endpoint, &privileged_role);
+        let anonymous = request_for_endpoint(endpoint, "anonymous");
+        LiveTestPlan::DifferentialHttp(DifferentialHttpPlan {
+            hypothesis: Some(candidate.hypothesis.clone()),
+            steps: vec![allowed.clone(), anonymous],
+            benign_steps: vec![allowed],
+            oracle: DifferentialOracle {
+                oracle_type: "forbidden_equivalence_break".to_string(),
+                expected_allowed_step: 0,
+                expected_forbidden_step: 1,
+                forbidden_status: vec![401, 403, 404],
+                sensitive_body_markers: sensitive_markers(candidate, endpoint),
+            },
+            why_this_confirms: Some(
+                "Privileged role receives protected markers, while an anonymous request unexpectedly receives the same protected content.".to_string(),
+            ),
+        })
+    }
+
     fn csrf(
         &self,
         candidate: &PentestCandidateRecord,
@@ -281,7 +323,8 @@ impl<'a> LiveTestPlanSynthesizer<'a> {
             .map(|e| e.url.clone())
             .unwrap_or_else(|| self.ctx.target_urls[0].clone());
         let payload = "<img src=x onerror=alert('nyctos-dom-xss')>";
-        let url = append_query(&base, "nyctos_probe", payload);
+        let param = candidate_param(candidate).unwrap_or_else(|| "nyctos_probe".to_string());
+        let url = append_query(&base, &param, payload);
         LiveTestPlan::BrowserWorkflow(BrowserWorkflowPlan {
             url,
             role: "anonymous".to_string(),
@@ -339,7 +382,7 @@ impl<'a> LiveTestPlanSynthesizer<'a> {
             payload: Some(contextual_payload(
                 "dom-xss",
                 PayloadTransport::Dom,
-                "nyctos_probe",
+                &param,
                 payload,
                 "browser dialog contains nyctos-dom-xss",
                 "baseline page does not raise the dialog",
@@ -405,12 +448,13 @@ impl<'a> LiveTestPlanSynthesizer<'a> {
             );
         };
         let redirect_target = "https://nyctos.invalid/redirect-probe";
+        let param = redirect_param(candidate);
         let mut request = request_for_endpoint(endpoint, "anonymous");
-        request.url = append_query(&endpoint.url, redirect_param(candidate), redirect_target);
+        request.url = append_query(&endpoint.url, &param, redirect_target);
         request.payload = Some(contextual_payload(
             "open-redirect",
             PayloadTransport::Query,
-            redirect_param(candidate),
+            &param,
             redirect_target,
             "Location header points to nyctos.invalid",
             "same endpoint without redirect parameter does not point off-site",
@@ -502,6 +546,30 @@ impl<'a> LiveTestPlanSynthesizer<'a> {
 
 fn classify_strategy(candidate: &PentestCandidateRecord) -> LivePlanStrategy {
     let text = candidate_text(candidate);
+    let class = candidate.vuln_class.trim().to_ascii_uppercase().replace('-', "_");
+    match class.as_str() {
+        "AUTH_BYPASS" | "AUTHENTICATION_BYPASS" => {
+            if contains_any(
+                &text,
+                &["trusted header", "x-forwarded-user", "x-original-user", "header auth"],
+            ) {
+                return LivePlanStrategy::TrustedHeaderAuthBypass;
+            }
+            return LivePlanStrategy::AuthBypassProtectedEndpoint;
+        }
+        "IDOR" | "IDOR_CANDIDATE" | "ACCESS_CONTROL" | "BROKEN_ACCESS_CONTROL" => {
+            return LivePlanStrategy::IdorObjectIsolation;
+        }
+        "DOM_XSS" | "XSS" | "CLIENT_SIDE_XSS" => return LivePlanStrategy::DomXss,
+        "OPEN_REDIRECT" | "UNSAFE_REDIRECT" | "UNVALIDATED_REDIRECT" => {
+            return LivePlanStrategy::OpenRedirect;
+        }
+        "SSRF" | "SERVER_SIDE_REQUEST_FORGERY" => return LivePlanStrategy::SsrfUrlFetch,
+        "DEBUG_EXPOSURE" | "DIAGNOSTIC_EXPOSURE" | "CONFIG_EXPOSURE" => {
+            return LivePlanStrategy::DebugExposure;
+        }
+        _ => {}
+    }
     if contains_any(&text, &["dependency", "cve-", "ghsa-", "osv", "trivy", "package", "iac"]) {
         return LivePlanStrategy::DependencyReviewOnly;
     }
@@ -585,11 +653,24 @@ fn endpoints_from_components(
         };
         let method =
             obj.get("method").and_then(|v| v.as_str()).unwrap_or("GET").to_ascii_uppercase();
-        for key in ["url", "matched_at", "uri", "endpoint", "url_path", "action"] {
+        let params = component_params(obj);
+        let body_fields = component_string_array(obj, "body_fields");
+        let state_changing = obj
+            .get("state_changing")
+            .or_else(|| obj.get("destructive"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        for key in ["url", "matched_at", "uri", "endpoint", "url_path", "route", "action"] {
             if let Some(raw) = obj.get(key).and_then(|v| v.as_str()) {
-                if let Some(endpoint) =
-                    endpoint_from_raw(&method, raw, false, Vec::new(), Vec::new(), key, target_urls)
-                {
+                if let Some(endpoint) = endpoint_from_raw(
+                    &method,
+                    raw,
+                    state_changing,
+                    params.clone(),
+                    body_fields.clone(),
+                    key,
+                    target_urls,
+                ) {
                     out.push(endpoint);
                 }
             }
@@ -641,7 +722,7 @@ fn endpoints_from_text(
     candidate: &PentestCandidateRecord,
     target_urls: &[String],
 ) -> Vec<EndpointCandidate> {
-    let re = Regex::new(r#"(?P<path>/(?:api|admin|debug|dev|mail|account|user|trip|search|redirect|login)[A-Za-z0-9_./:{}-]*)"#)
+    let re = Regex::new(r#"(?P<path>/(?:api|admin|debug|dev|mail|account|accounts|user|users|tenant|tenants|config|settings|auth|oauth|callback|proxy|fetch|webhook|trip|search|redirect|login)[A-Za-z0-9_./:{}-]*)"#)
         .expect("path inference regex");
     let mut out = Vec::new();
     for captures in re.captures_iter(&format!("{} {}", candidate.title, candidate.hypothesis)) {
@@ -805,6 +886,8 @@ fn sensitive_markers(
         ("swagger", "swagger"),
         ("openapi", "openapi"),
         ("admin", "admin"),
+        ("config", "config"),
+        ("settings", "settings"),
         ("token", "token"),
         ("secret", "secret"),
         ("account", "account"),
@@ -861,7 +944,10 @@ fn append_query(url: &str, key: &str, value: &str) -> String {
     parsed.to_string()
 }
 
-fn redirect_param(candidate: &PentestCandidateRecord) -> &'static str {
+fn redirect_param(candidate: &PentestCandidateRecord) -> String {
+    if let Some(param) = candidate_param(candidate).filter(|param| param_looks_redirectish(param)) {
+        return param;
+    }
     let text = candidate_text(candidate);
     for (needle, param) in [
         ("next", "next"),
@@ -871,10 +957,56 @@ fn redirect_param(candidate: &PentestCandidateRecord) -> &'static str {
         ("redirect", "redirect"),
     ] {
         if text.contains(needle) {
-            return param;
+            return param.to_string();
         }
     }
-    "next"
+    "next".to_string()
+}
+
+fn candidate_param(candidate: &PentestCandidateRecord) -> Option<String> {
+    candidate.affected_components.iter().find_map(|component| {
+        let obj = component.as_object()?;
+        obj.get("param")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .or_else(|| component_string_array(obj, "params").into_iter().next())
+            .or_else(|| component_string_array(obj, "query_params").into_iter().next())
+            .or_else(|| component_string_array(obj, "body_fields").into_iter().next())
+    })
+}
+
+fn component_params(obj: &serde_json::Map<String, serde_json::Value>) -> Vec<String> {
+    let mut params = component_string_array(obj, "params");
+    if let Some(param) = obj.get("param").and_then(|v| v.as_str()) {
+        params.push(param.to_string());
+    }
+    params.extend(component_string_array(obj, "query_params"));
+    params.sort();
+    params.dedup();
+    params
+}
+
+fn component_string_array(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Vec<String> {
+    match obj.get(key) {
+        Some(serde_json::Value::Array(values)) => values
+            .iter()
+            .filter_map(|value| value.as_str())
+            .map(str::to_string)
+            .filter(|value| !value.trim().is_empty())
+            .collect(),
+        Some(serde_json::Value::String(value)) if !value.trim().is_empty() => {
+            vec![value.to_string()]
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn param_looks_redirectish(raw: &str) -> bool {
+    let lower = raw.to_ascii_lowercase();
+    contains_any(&lower, &["next", "redirect", "return", "callback", "url", "continue"])
 }
 
 fn endpoint_preferring_admin(endpoints: &[EndpointCandidate]) -> Option<&EndpointCandidate> {
@@ -1101,6 +1233,113 @@ mod tests {
             }
             other => panic!("expected single http plan, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn nyx_open_redirect_component_becomes_executable_plan() {
+        let targets = vec!["http://localhost:3000".to_string()];
+        let auth = Vec::new();
+        let synth = LiveTestPlanSynthesizer::new(LiveTestPlanSynthesisContext {
+            route_model: None,
+            target_urls: &targets,
+            auth_profiles: &auth,
+            browser_checks_enabled: false,
+            allow_state_changing: false,
+        });
+        let mut candidate =
+            candidate("OPEN_REDIRECT", "src/auth/callback.ts", "Potential open redirect from Nyx");
+        candidate.affected_components = vec![serde_json::json!({
+            "kind": "nyx_signal",
+            "path": "src/auth/callback.ts",
+            "route": "/login/callback",
+            "url_path": "/login/callback",
+            "method": "GET",
+            "param": "next",
+            "sink": "redirect",
+        })];
+
+        let plan = synth.synthesize(&candidate);
+
+        match plan {
+            LiveTestPlan::SingleHttp(plan) => {
+                assert_eq!(plan.request.path.as_deref(), Some("/login/callback"));
+                assert!(plan.request.url.starts_with("http://localhost:3000/login/callback?"));
+                assert!(plan.request.url.contains("next="));
+                assert_eq!(
+                    plan.request.payload.as_ref().and_then(|p| p.injection_point.as_deref()),
+                    Some("next")
+                );
+                assert_eq!(
+                    plan.oracle.header_contains.get("location").map(String::as_str),
+                    Some("nyctos.invalid")
+                );
+            }
+            other => panic!("expected open redirect HTTP plan, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn nyx_config_exposure_component_becomes_safe_http_plan() {
+        let targets = vec!["http://localhost:3000".to_string()];
+        let auth = Vec::new();
+        let synth = LiveTestPlanSynthesizer::new(LiveTestPlanSynthesisContext {
+            route_model: None,
+            target_urls: &targets,
+            auth_profiles: &auth,
+            browser_checks_enabled: false,
+            allow_state_changing: false,
+        });
+        let mut candidate = candidate(
+            "CONFIG_EXPOSURE",
+            "src/routes/config.ts",
+            "Potential configuration exposure",
+        );
+        candidate.affected_components = vec![serde_json::json!({
+            "kind": "nyx_signal",
+            "path": "src/routes/config.ts",
+            "route": "/api/config",
+            "url_path": "/api/config",
+            "method": "GET",
+            "sink": "json(config)",
+        })];
+        candidate.hypothesis =
+            "Configuration route may expose config and secret markers.".to_string();
+
+        let plan = synth.synthesize(&candidate);
+
+        match plan {
+            LiveTestPlan::SingleHttp(plan) => {
+                assert_eq!(plan.request.url, "http://localhost:3000/api/config");
+                assert!(plan.oracle.body_contains.iter().any(|m| m == "config"));
+            }
+            other => panic!("expected config exposure HTTP plan, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn nyx_auth_bypass_without_auth_profiles_is_no_plan_aware() {
+        let targets = vec!["http://localhost:3000".to_string()];
+        let auth = Vec::new();
+        let synth = LiveTestPlanSynthesizer::new(LiveTestPlanSynthesisContext {
+            route_model: None,
+            target_urls: &targets,
+            auth_profiles: &auth,
+            browser_checks_enabled: false,
+            allow_state_changing: false,
+        });
+        let mut candidate =
+            candidate("AUTH_BYPASS", "src/routes/admin.ts", "Potential auth bypass");
+        candidate.affected_components = vec![serde_json::json!({
+            "kind": "nyx_signal",
+            "path": "src/routes/admin.ts",
+            "route": "/admin",
+            "url_path": "/admin",
+            "method": "GET",
+        })];
+
+        let plan = synth.synthesize(&candidate);
+
+        assert_eq!(plan.no_plan_reason().unwrap().code, NoPlanReasonCode::AuthMissing);
     }
 
     #[test]

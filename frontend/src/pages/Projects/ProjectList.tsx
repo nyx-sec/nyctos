@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { type ProjectRecord, useProjects } from "@/api/client";
 import { Button } from "@/components/Button";
 import { Card } from "@/components/Card";
@@ -8,9 +8,13 @@ import { Spinner } from "@/components/Spinner";
 import { ProjectAddModal } from "./ProjectAddModal";
 
 export function ProjectList() {
+  const navigate = useNavigate();
+  const [params, setParams] = useSearchParams();
   const projects = useProjects();
   const [showAdd, setShowAdd] = useState(false);
   const [banner, setBanner] = useState<string | null>(null);
+  const addRequested = params.get("new") === "1";
+  const showAddModal = showAdd || addRequested;
 
   const rows = useMemo(() => projects.data ?? [], [projects.data]);
   const noneConfigured = !projects.isPending && rows.length === 0;
@@ -71,17 +75,29 @@ export function ProjectList() {
         </Card>
       </div>
 
-      {showAdd && (
+      {showAddModal && (
         <ProjectAddModal
-          onClose={() => setShowAdd(false)}
-          onAdded={(name) => {
+          onClose={() => {
             setShowAdd(false);
-            setBanner(`Created ${name}. Open it to add repos.`);
+            clearAddParam(params, setParams);
+          }}
+          onAdded={(project) => {
+            setShowAdd(false);
+            clearAddParam(params, setParams);
+            setBanner(`Created ${project.name}.`);
+            navigate(`/projects/${encodeURIComponent(project.id)}`);
           }}
         />
       )}
     </>
   );
+}
+
+function clearAddParam(params: URLSearchParams, setParams: ReturnType<typeof useSearchParams>[1]) {
+  if (params.get("new") !== "1") return;
+  const next = new URLSearchParams(params);
+  next.delete("new");
+  setParams(next, { replace: true });
 }
 
 function ProjectRow({ project }: { project: ProjectRecord }) {

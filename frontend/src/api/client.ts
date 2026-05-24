@@ -25,6 +25,7 @@ import type {
   LaunchEnvRef,
   LaunchHealthCheck,
   LaunchStep,
+  LaunchWorkingDir,
   NyxSignalRecord,
   PatchProjectRequest,
   PatchRepoRequest,
@@ -73,6 +74,7 @@ export type {
   LaunchEnvRef,
   LaunchHealthCheck,
   LaunchStep,
+  LaunchWorkingDir,
   NyxSignalRecord,
   PatchProjectRequest,
   PatchRepoRequest,
@@ -221,7 +223,8 @@ export const qk = {
   project: (id: string) => ["projects", id] as const,
   projectRepos: (projectId: string) => ["projects", projectId, "repos"] as const,
   allRepos: () => ["projects", "_all", "repos"] as const,
-  runs: (status?: string) => ["runs", status ?? "Running"] as const,
+  runs: (status?: string, projectId?: string) =>
+    ["runs", status ?? "Running", projectId ?? null] as const,
   run: (id: string) => ["runs", id] as const,
   runEnvironment: (id: string) => ["runs", id, "environment-runs"] as const,
   runVerificationAttempts: (id: string) => ["runs", id, "verification-attempts"] as const,
@@ -318,10 +321,11 @@ export function testLaunchTarget(body: TestLaunchTargetRequest): Promise<TestLau
 
 // ---- projects --------------------------------------------------------------
 
-export function useProjects() {
+export function useProjects(enabled = true) {
   return useQuery({
     queryKey: qk.projects(),
     queryFn: () => request<ProjectRecord[]>("/projects"),
+    enabled,
   });
 }
 
@@ -509,12 +513,15 @@ export function useStartPentest(projectId: string) {
   });
 }
 
-export function useRuns(status?: string) {
+export function useRuns(status?: string, projectId?: string) {
   return useQuery({
-    queryKey: qk.runs(status),
+    queryKey: qk.runs(status, projectId),
     queryFn: () => {
-      const query = status ? `?status=${encodeURIComponent(status)}` : "";
-      return request<RunRecord[]>(`/runs${query}`);
+      const params = new URLSearchParams();
+      if (status) params.set("status", status);
+      if (projectId) params.set("project_id", projectId);
+      const query = params.toString();
+      return request<RunRecord[]>(`/runs${query ? `?${query}` : ""}`);
     },
   });
 }
@@ -572,10 +579,11 @@ export function useRunCandidates(id: string | undefined) {
   });
 }
 
-export function useVulnerabilities() {
+export function useVulnerabilities(enabled = true) {
   return useQuery({
     queryKey: qk.vulnerabilities(),
     queryFn: () => request<VerifiedVulnerabilityRecord[]>("/vulnerabilities"),
+    enabled,
   });
 }
 

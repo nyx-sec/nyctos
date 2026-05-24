@@ -1,6 +1,6 @@
 import { useMemo } from "react";
-import { Link } from "react-router-dom";
-import { type RunRecord, useRuns } from "@/api/client";
+import { Link, useParams } from "react-router-dom";
+import { type RunRecord, useProject, useRuns } from "@/api/client";
 import { Badge, type BadgeTone } from "@/components/Badge";
 import { Card } from "@/components/Card";
 import { EmptyState } from "@/components/EmptyState";
@@ -13,9 +13,11 @@ const STATUS_TONE: Record<string, BadgeTone> = {
 };
 
 export function RunList() {
-  const running = useRuns("Running");
-  const succeeded = useRuns("Succeeded");
-  const failed = useRuns("Failed");
+  const { projectId } = useParams<{ projectId?: string }>();
+  const project = useProject(projectId);
+  const running = useRuns("Running", projectId);
+  const succeeded = useRuns("Succeeded", projectId);
+  const failed = useRuns("Failed", projectId);
   const rows = useMemo(() => {
     const seen = new Set<string>();
     return [...(running.data ?? []), ...(succeeded.data ?? []), ...(failed.data ?? [])]
@@ -32,7 +34,11 @@ export function RunList() {
   return (
     <Card
       title="Pentest runs"
-      subtitle="Project-scoped pentests with live environment and verification status"
+      subtitle={
+        projectId
+          ? `Pentests for ${project.data?.name ?? "this project"}`
+          : "Project-scoped pentests with live environment and verification status"
+      }
     >
       {pending && (
         <div className="repo-list__pending">
@@ -64,7 +70,7 @@ export function RunList() {
             </thead>
             <tbody>
               {rows.map((run) => (
-                <RunRow key={run.id} run={run} />
+                <RunRow key={run.id} run={run} activeProjectId={projectId} />
               ))}
             </tbody>
           </table>
@@ -74,11 +80,16 @@ export function RunList() {
   );
 }
 
-function RunRow({ run }: { run: RunRecord }) {
+function RunRow({ run, activeProjectId }: { run: RunRecord; activeProjectId?: string }) {
+  const projectId = activeProjectId ?? run.project_id ?? undefined;
+  const runHref = projectId
+    ? `/projects/${encodeURIComponent(projectId)}/runs/${encodeURIComponent(run.id)}`
+    : `/runs/${encodeURIComponent(run.id)}`;
+
   return (
     <tr>
       <td>
-        <Link className="repo-list__name" to={`/runs/${encodeURIComponent(run.id)}`}>
+        <Link className="repo-list__name" to={runHref}>
           {run.id}
         </Link>
         <span className="repo-list__meta"> {run.kind}</span>

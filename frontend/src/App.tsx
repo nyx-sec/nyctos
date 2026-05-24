@@ -51,6 +51,14 @@ export function App() {
         <Route path="/setup" element={<SetupWizard />} />
         <Route path="/projects" element={<ProjectList />} />
         <Route path="/projects/:projectId" element={<ProjectDetail />} />
+        <Route path="/projects/:projectId/repos" element={<ProjectDetail view="repos" />} />
+        <Route
+          path="/projects/:projectId/environments"
+          element={<ProjectDetail view="environments" />}
+        />
+        <Route path="/projects/:projectId/runs" element={<RunList />} />
+        <Route path="/projects/:projectId/runs/:runId" element={<LiveScanView />} />
+        <Route path="/projects/:projectId/vulnerabilities" element={<VulnerabilityList />} />
         <Route path="/runs" element={<RunList />} />
         <Route path="/runs/:runId" element={<LiveScanView />} />
         <Route path="/vulnerabilities" element={<VulnerabilityList />} />

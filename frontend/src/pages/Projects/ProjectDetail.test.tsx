@@ -38,6 +38,7 @@ function wrap(children: ReactNode, initial = "/projects/proj-1") {
       <MemoryRouter initialEntries={[initial]}>
         <Routes>
           <Route path="/projects/:projectId" element={children} />
+          <Route path="/projects/:projectId/runs/:runId" element={<div>run detail</div>} />
           <Route path="/runs/:runId" element={<div>run detail</div>} />
         </Routes>
       </MemoryRouter>

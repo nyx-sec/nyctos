@@ -205,7 +205,11 @@ describe("ProjectRuntimeProfileForm", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Create project" }));
 
-    await waitFor(() => expect(onAdded).toHaveBeenCalledWith("acme"));
+    await waitFor(() =>
+      expect(onAdded).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "proj-acme", name: "acme" }),
+      ),
+    );
     expect(requests.find((body) => (body as { name?: string }).name === "acme")).toMatchObject({
       name: "acme",
       target_base_url: "http://localhost:3000",

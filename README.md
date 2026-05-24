@@ -44,12 +44,11 @@ What ships today:
 - Scan triggers: CLI, cron, webhook, plus a GitHub Actions
   composite for PR gating.
 
-The daemon UI is a loopback-bound SPA. The project detail page is
-the operator's main work surface: project metadata, target base
-URL, and the attached repos with their scan status, last scan
-timestamp, and per-row "Scan now" + "Remove" actions:
+The daemon UI is a loopback-bound SPA. The project switcher scopes
+overview, runs, vulnerabilities, repositories, and environment
+settings to the selected app:
 
-![Nyctos project detail page for a project named acme-app, showing the project header with description and target base URL http://localhost:3000, and a Repositories card listing two LOCAL-PATH repos (acme-backend, acme-frontend) with IDLE status pills, Scan all and Add repo buttons, and a green "Daemon ready" indicator in the page header](assets/screenshots/ui-project-detail.png)
+![Nyctos project workspace for acme-app, showing the project switcher in the sidebar, project-scoped Overview, Pentest Runs, Vulnerabilities, Repositories, and Environments navigation, plus an overview card with repository, environment, vulnerability, and run shortcuts](assets/screenshots/ui-project-workspace.png)
 
 `nyctos doctor` prints the runtime probes the daemon uses at
 startup:

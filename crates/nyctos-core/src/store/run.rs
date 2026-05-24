@@ -119,6 +119,31 @@ impl<'a> RunStore<'a> {
         rows.into_iter().map(row_to_run_record).collect()
     }
 
+    pub async fn list_by_status_for_project(
+        &self,
+        status: &str,
+        project_id: &str,
+    ) -> Result<Vec<RunRecord>, StoreError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, project_id, kind,
+                   started_at,
+                   finished_at, status,
+                   triggered_by,
+                   git_ref, parent_run_id, wall_clock_ms,
+                   total_ai_spend_usd_micros
+            FROM runs
+            WHERE status = ? AND project_id = ?
+            ORDER BY started_at DESC
+            "#,
+        )
+        .bind(status)
+        .bind(project_id)
+        .fetch_all(self.pool)
+        .await?;
+        rows.into_iter().map(row_to_run_record).collect()
+    }
+
     pub async fn finish(
         &self,
         id: &str,
@@ -223,6 +248,30 @@ mod tests {
         let running = s.runs().list_by_status("Running").await.expect("list");
         assert_eq!(running.len(), 1);
         assert_eq!(running[0].id, "b");
+    }
+
+    #[tokio::test]
+    async fn list_by_status_for_project_filters() {
+        let (_tmp, s) = fresh_store().await;
+        s.projects()
+            .create("project-two", "project-two", None, None, None, 1)
+            .await
+            .expect("project");
+        let mut a = sample_run("a");
+        a.project_id = Some(crate::store::DEFAULT_PROJECT_ID.to_string());
+        let mut b = sample_run("b");
+        b.project_id = Some("project-two".to_string());
+        s.runs().insert(&a).await.expect("a");
+        s.runs().insert(&b).await.expect("b");
+
+        let rows = s
+            .runs()
+            .list_by_status_for_project("Running", crate::store::DEFAULT_PROJECT_ID)
+            .await
+            .expect("list");
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "a");
     }
 
     #[tokio::test]

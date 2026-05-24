@@ -379,10 +379,11 @@ input; 429 (`scan_backpressure`) when the dispatcher queue is full;
 
 ## Runs
 
-`GET /api/v1/runs?status=<status>`
+`GET /api/v1/runs?status=<status>&project_id=<project_id>`
 
 Defaults to `status=Running`. Use `Finished`, `Failed`, etc., to
-filter. Returns `Vec<RunRecord>`.
+filter. `project_id` is optional; when present, the project must exist
+and only that project's runs are returned. Returns `Vec<RunRecord>`.
 
 `GET /api/v1/runs/:id`
 

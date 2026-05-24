@@ -5,6 +5,7 @@ import {
   type PentestCandidateRecord,
   runEventLogDownloadUrl,
   useAgentEvents,
+  useRun,
   useRunCandidates,
   useRunEnvironmentRuns,
   useRunVerificationAttempts,
@@ -127,13 +128,14 @@ const RUN_PROGRESS_PHASES = [
 const PHASE_ORDER = RUN_PROGRESS_PHASES.map((phase) => phase.phase);
 
 export function LiveScanView() {
-  const { runId = "" } = useParams<{ runId: string }>();
+  const { projectId, runId = "" } = useParams<{ projectId?: string; runId: string }>();
   const navigate = useNavigate();
   const [repos, setRepos] = useState<Record<string, RepoProgress>>({});
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [phases, setPhases] = useState<Record<string, PhaseProgress>>({});
   const [authSessions, setAuthSessions] = useState<Record<string, AuthSessionProgress>>({});
   const [summary, setSummary] = useState<RunSummary>({ done: false });
+  const run = useRun(runId);
   const environmentRuns = useRunEnvironmentRuns(runId);
   const vulnerabilities = useRunVulnerabilities(runId);
   const candidates = useRunCandidates(runId);
@@ -177,6 +179,12 @@ export function LiveScanView() {
   const needsReviewCount =
     vulnerabilities.data?.filter((vulnerability) => vulnerability.status === "NeedsReview")
       .length ?? 0;
+  const runProjectId = projectId ?? run.data?.project_id ?? undefined;
+  const vulnerabilityHref = runProjectId
+    ? `/projects/${encodeURIComponent(runProjectId)}/vulnerabilities?run_id=${encodeURIComponent(
+        runId,
+      )}`
+    : `/vulnerabilities?run_id=${encodeURIComponent(runId)}`;
 
   return (
     <div className="live-scan">
@@ -193,10 +201,7 @@ export function LiveScanView() {
         }
         actions={
           <div className="live-scan__actions">
-            <Button
-              variant="ghost"
-              onClick={() => navigate(`/vulnerabilities?run_id=${encodeURIComponent(runId)}`)}
-            >
+            <Button variant="ghost" onClick={() => navigate(vulnerabilityHref)}>
               View vulnerabilities
             </Button>
             <a className="btn btn--ghost" href={runEventLogDownloadUrl(runId)} download>

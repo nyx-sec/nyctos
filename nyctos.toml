@@ -13,9 +13,11 @@ allow_network = false
 backend = "auto"
 
 [ai]
-provider = "claude-code"
-runtime = "claude-code"
+provider = "codex"
+runtime = "codex"
 max_concurrent_one_shot = 4
+
+[ai.pricing]
 
 [ui]
 listen_addr = "127.0.0.1:8765"
@@ -29,6 +31,13 @@ on_pr = false
 
 [run]
 replay_stable_check = false
+allow_state_changing_live_probes = false
+browser_checks_enabled = false
+exploit_mode_enabled = false
+exploit_dry_run = false
+business_logic_templates_enabled = true
+business_logic_template_ids = []
+exploit_reset_after_state_changing = true
 enable_zap_baseline = true
 enable_nuclei = true
 enable_trivy = true
@@ -38,27 +47,27 @@ enable_katana = true
 enable_httpx = true
 enable_aggressive_sqlmap = false
 
-# Declare projects below. Each project groups one or more repos.
-# Scan, run dispatcher, sandbox env-builder, and chain runner all
-# operate per project — repos cannot live outside a project.
-#
-# Replace the local-path values with absolute paths to your own
-# checkouts, or delete this block and run `nyctos project create`
-# / `nyctos project add-repo` to drive it from the CLI.
+[env]
 
 [[project]]
 name = "example-app"
 description = "Example multi-repo product"
 target_base_url = "http://localhost:3000"
 
-  [[project.repo]]
-  name = "example-backend"
-  i_own_this = true
-  enabled = true
-  source = { kind = "local-path", path = "/path/to/backend" }
+[[project.repo]]
+name = "example-backend"
+i_own_this = true
+enabled = true
 
-  [[project.repo]]
-  name = "example-frontend"
-  i_own_this = true
-  enabled = true
-  source = { kind = "local-path", path = "/path/to/frontend" }
+[project.repo.source]
+kind = "local-path"
+path = "/path/to/backend"
+
+[[project.repo]]
+name = "example-frontend"
+i_own_this = true
+enabled = true
+
+[project.repo.source]
+kind = "local-path"
+path = "/path/to/frontend"

@@ -304,7 +304,17 @@ async fn post_repos_refuses_without_ownership_attestation() {
 #[tokio::test]
 async fn runs_endpoint_lists_and_gets_by_id() {
     let srv = TestServer::start().await;
-    srv.store.runs().insert(&sample_run("run-A")).await.expect("insert");
+    let mut default_project_run = sample_run("run-A");
+    default_project_run.project_id = Some(DEFAULT_PROJECT_ID.to_string());
+    srv.store.runs().insert(&default_project_run).await.expect("insert");
+    srv.store
+        .projects()
+        .create("project-other", "project-other", None, None, None, 1_000)
+        .await
+        .expect("other project");
+    let mut other_project_run = sample_run("run-B");
+    other_project_run.project_id = Some("project-other".to_string());
+    srv.store.runs().insert(&other_project_run).await.expect("insert other");
 
     let one: RunRecord = reqwest::get(format!("{}/api/v1/runs/run-A", srv.base()))
         .await
@@ -321,6 +331,18 @@ async fn runs_endpoint_lists_and_gets_by_id() {
         .await
         .expect("json");
     assert!(listed.iter().any(|r| r.id == "run-A"));
+
+    let filtered: Vec<RunRecord> = reqwest::get(format!(
+        "{}/api/v1/runs?status=Running&project_id={}",
+        srv.base(),
+        DEFAULT_PROJECT_ID
+    ))
+    .await
+    .expect("get")
+    .json()
+    .await
+    .expect("json");
+    assert_eq!(filtered.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), vec!["run-A"]);
 
     let missing =
         reqwest::get(format!("{}/api/v1/runs/does-not-exist", srv.base())).await.expect("get");

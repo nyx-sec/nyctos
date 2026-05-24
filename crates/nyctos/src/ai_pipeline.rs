@@ -4110,6 +4110,108 @@ mod tests {
         assert_eq!(report, PayloadSynthesisPassReport::default());
     }
 
+    #[tokio::test]
+    async fn deterministic_live_plan_synthesis_plans_reclassified_nyx_candidate_without_ai() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).await.unwrap();
+        store.projects().create("project-live", "Live", None, None, None, 1).await.unwrap();
+        store
+            .runs()
+            .insert(&nyctos_core::store::RunRecord {
+                id: "run-live".to_string(),
+                project_id: Some("project-live".to_string()),
+                kind: "Scan".to_string(),
+                started_at: 1,
+                finished_at: None,
+                status: "Running".to_string(),
+                triggered_by: "Manual".to_string(),
+                git_ref: None,
+                parent_run_id: None,
+                wall_clock_ms: None,
+                total_ai_spend_usd_micros: 0,
+            })
+            .await
+            .unwrap();
+        store
+            .pentest_candidates()
+            .insert(&PentestCandidateRecord {
+                id: "pc-nyx-open-redirect".to_string(),
+                run_id: "run-live".to_string(),
+                project_id: "project-live".to_string(),
+                source: "NyxSignal".to_string(),
+                source_ids: vec!["sig-nyx-open-redirect".to_string()],
+                title: "Potential open redirect: /login/callback via `next`".to_string(),
+                vuln_class: "OPEN_REDIRECT".to_string(),
+                severity_guess: "Medium".to_string(),
+                affected_components: vec![serde_json::json!({
+                    "kind": "nyx_signal",
+                    "path": "src/auth/callback.ts",
+                    "route": "/login/callback",
+                    "url_path": "/login/callback",
+                    "method": "GET",
+                    "param": "next",
+                    "sink": "redirect",
+                    "nyx_signal_id": "sig-nyx-open-redirect",
+                    "cap": "Security",
+                    "rule": "taint-unsanitised-flow",
+                })],
+                hypothesis: "Nyctos reclassified the generic Nyx signal as OPEN_REDIRECT."
+                    .to_string(),
+                test_plan:
+                    "Derive a live HTTP/browser test from the affected route before confirmation."
+                        .to_string(),
+                status: "NeedsLiveTest".to_string(),
+                rejection_reason: None,
+                confidence: 0.7,
+                trace_id: None,
+                created_at: 2,
+                updated_at: 2,
+            })
+            .await
+            .unwrap();
+        let bundle = RunBundle::<Diag> {
+            run_id: "run-live".to_string(),
+            project_id: "project-live".to_string(),
+            started_at_ms: 1,
+            finished_at_ms: 2,
+            wall_clock_ms: 1,
+            per_repo: Vec::new(),
+            callgraph: CrossRepoCallgraphStub::default(),
+        };
+        let workspaces: HashMap<String, WorkspaceHandle> = HashMap::new();
+        let secrets = SecretStore::memory();
+        let targets = vec!["http://localhost:3000".to_string()];
+        let auth = Vec::new();
+        let (tx, _rx) = tokio::sync::broadcast::channel(4);
+
+        let report = run_live_test_plan_synthesis_pass(
+            &AiConfig::default(),
+            &store,
+            &secrets,
+            &bundle,
+            &workspaces,
+            &targets,
+            None,
+            &auth,
+            false,
+            false,
+            None,
+            tx,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(report.candidates_seen, 1);
+        assert_eq!(report.planned, 1);
+        assert_eq!(report.no_plan, 0);
+        assert_eq!(report.attempts, 0, "deterministic plan should avoid AI");
+        let updated = store.pentest_candidates().list_by_run("run-live").await.unwrap();
+        assert_eq!(updated[0].status, "Proposed");
+        let plan = normalise_live_test_plan(&updated[0].test_plan, &targets).unwrap().unwrap();
+        assert_eq!(plan["kind"], "single_http");
+        assert!(plan["url"].as_str().unwrap().contains("next="));
+    }
+
     // -------- spec-derivation pass coverage --------
 
     fn diag_spec_failed(

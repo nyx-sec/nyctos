@@ -1549,6 +1549,8 @@ async fn start_pentest_project(
 pub struct RunsQuery {
     #[serde(default)]
     pub status: Option<String>,
+    #[serde(default)]
+    pub project_id: Option<String>,
 }
 
 async fn list_runs(
@@ -1556,7 +1558,12 @@ async fn list_runs(
     Query(q): Query<RunsQuery>,
 ) -> Result<Json<Vec<RunRecord>>, ApiError> {
     let status = q.status.as_deref().unwrap_or("Running");
-    let rows = s.store.runs().list_by_status(status).await?;
+    let rows = if let Some(project_id) = q.project_id.as_deref() {
+        require_project(&s, project_id).await?;
+        s.store.runs().list_by_status_for_project(status, project_id).await?
+    } else {
+        s.store.runs().list_by_status(status).await?
+    };
     Ok(Json(rows))
 }
 
