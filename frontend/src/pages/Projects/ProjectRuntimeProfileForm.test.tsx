@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { ReactNode, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { AuthSetupJobsProvider } from "@/components/AuthSetupJobs";
 import { ToastProvider } from "@/components/Toast";
 import { ProjectAddModal } from "./ProjectAddModal";
 import {
@@ -23,7 +24,9 @@ function wrap(children: ReactNode) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return (
     <QueryClientProvider client={qc}>
-      <ToastProvider>{children}</ToastProvider>
+      <ToastProvider>
+        <AuthSetupJobsProvider>{children}</AuthSetupJobsProvider>
+      </ToastProvider>
     </QueryClientProvider>
   );
 }
@@ -193,74 +196,101 @@ describe("ProjectRuntimeProfileForm", () => {
 
   it("runs auth setup from the roles panel and applies returned profiles", async () => {
     const requests: unknown[] = [];
+    const completedResult = {
+      project: {
+        id: "proj-auth",
+        name: "auth-app",
+        description: null,
+        target_base_url: "http://localhost:3000",
+        env_config_json: null,
+        default_launch_profile: null,
+        runtime_profile: {
+          build_commands: [],
+          start_commands: [],
+          target_base_url: "http://localhost:3000",
+          allowed_hosts: [],
+          env_vars: [],
+          auth_profiles: [
+            {
+              role: "user_a",
+              mode: "ai_auto",
+              login_url: "/api/auth/login",
+              username_env: "NYCTOS_USER_A_USERNAME",
+              password_env: "NYCTOS_USER_A_PASSWORD",
+              headers: [],
+              post_login_assertions: [],
+              owned_objects: [
+                {
+                  name: "project",
+                  id: "proj-user-a-1",
+                  route: "/api/projects/{id}",
+                  marker: "owned-by-a",
+                },
+              ],
+            },
+          ],
+        },
+        created_at: 1,
+        updated_at: 2,
+      },
+      roles: ["user_a"],
+      login_paths: ["/api/auth/login"],
+      object_routes: ["/api/projects/:id"],
+      agent_used: true,
+      verification: {
+        status: "verified",
+        checks: ["/api/auth/login route found"],
+        warnings: [],
+      },
+      profiles_added: 1,
+      profiles_updated: 0,
+      message: "Auth setup saved 1 role profile from 1 inspected source file.",
+    };
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = String(input);
       const body = init?.body ? JSON.parse(String(init.body)) : {};
       if (url.includes("/launch-target/test")) {
         return jsonResponse({ ok: true, url: body.url, message: "Reachable", status: 200 });
       }
+      if (url.includes("/auth/auto-setup/job-1")) {
+        return jsonResponse({
+          id: "job-1",
+          project_id: "proj-auth",
+          status: "succeeded",
+          phase: "complete",
+          message: completedResult.message,
+          started_at: 1,
+          finished_at: 2,
+          events: [
+            { at: 1, phase: "queued", message: "Auth setup queued." },
+            { at: 2, phase: "complete", message: completedResult.message },
+          ],
+          result: completedResult,
+        });
+      }
       requests.push(body);
       return jsonResponse({
-        project: {
-          id: "proj-auth",
-          name: "auth-app",
-          description: null,
-          target_base_url: "http://localhost:3000",
-          env_config_json: null,
-          default_launch_profile: null,
-          runtime_profile: {
-            build_commands: [],
-            start_commands: [],
-            target_base_url: "http://localhost:3000",
-            allowed_hosts: [],
-            env_vars: [],
-            auth_profiles: [
-              {
-                role: "user_a",
-                mode: "ai_auto",
-                login_url: "/api/auth/login",
-                username_env: "NYCTOS_USER_A_USERNAME",
-                password_env: "NYCTOS_USER_A_PASSWORD",
-                headers: [],
-                post_login_assertions: [],
-                owned_objects: [
-                  {
-                    name: "project",
-                    id: "proj-user-a-1",
-                    route: "/api/projects/{id}",
-                    marker: "owned-by-a",
-                  },
-                ],
-              },
-            ],
-          },
-          created_at: 1,
-          updated_at: 2,
+        job: {
+          id: "job-1",
+          project_id: "proj-auth",
+          status: "queued",
+          phase: "queued",
+          message: "Auth setup queued.",
+          started_at: 1,
+          events: [{ at: 1, phase: "queued", message: "Auth setup queued." }],
         },
-        roles: ["user_a"],
-        login_paths: ["/api/auth/login"],
-        object_routes: ["/api/projects/:id"],
-        agent_used: true,
-        verification: {
-          status: "verified",
-          checks: ["/api/auth/login route found"],
-          warnings: [],
-        },
-        profiles_added: 1,
-        profiles_updated: 0,
-        message: "Auth setup saved 1 role profile from 1 inspected source file.",
       });
     });
 
     render(<AuthSetupHarness />);
 
     fireEvent.click(screen.getByText("Auth profiles"));
-    fireEvent.click(screen.getByRole("button", { name: "AI setup" }));
+    fireEvent.click(screen.getByRole("button", { name: "Explore repo" }));
 
     expect(await screen.findByDisplayValue("user_a")).toBeInTheDocument();
     expect(screen.getByDisplayValue("/api/auth/login")).toBeInTheDocument();
     expect(screen.getByDisplayValue("proj-user-a-1")).toBeInTheDocument();
-    expect(screen.getByText(/Auth setup saved 1 role profile/)).toBeInTheDocument();
+    expect(screen.getAllByText(/Auth setup saved 1 role profile/).length).toBeGreaterThan(0);
     expect(requests[0]).toMatchObject({ target_base_url: "http://localhost:3000" });
   });
 

@@ -197,9 +197,13 @@ describe("ProjectDetail", () => {
     fireEvent.click(screen.getByText("Lifecycle hooks"));
     fireEvent.click(screen.getByRole("button", { name: "Add seed command" }));
     fireEvent.click(screen.getByText("Lifecycle hooks"));
-    fireEvent.change(screen.getByLabelText("Seed command 1"), {
+    const seedCommand = screen.getByLabelText("Seed command 1");
+    fireEvent.focus(seedCommand);
+    fireEvent.change(seedCommand, {
       target: { value: "npm run seed:test" },
     });
+    expect(patchRequests).toHaveLength(0);
+    fireEvent.blur(seedCommand, { relatedTarget: document.body });
 
     await waitFor(() => expect(patchRequests).toHaveLength(2), { timeout: 2_000 });
     expect(patchRequests.map((request) => request.url)).toEqual([
@@ -213,5 +217,60 @@ describe("ProjectDetail", () => {
       seed_steps: [{ command: "npm run seed:test" }],
     });
     expect(await screen.findByText("Autosaved")).toBeInTheDocument();
+  });
+
+  it("keeps open environment sections while typing before autosave", async () => {
+    const patchRequests: Array<{ url: string; body: Record<string, unknown> }> = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      const method = init?.method ?? "GET";
+      if (url === "/api/v1/projects/proj-1" && method === "GET") {
+        return jsonResponse(readyProject());
+      }
+      if (url === "/api/v1/projects/proj-1/repos") return jsonResponse(repos());
+      if (url === "/api/v1/projects/proj-1/vulnerabilities") return jsonResponse([]);
+      if (url === "/api/v1/projects/proj-1/integrations") return jsonResponse([]);
+      if (url.startsWith("/api/v1/runs?")) return jsonResponse([]);
+      if (url === "/api/v1/launch-target/test") {
+        return jsonResponse({ ok: true, url: "http://localhost:3000", message: "Reachable" });
+      }
+      if (url === "/api/v1/projects/proj-1" && method === "PATCH") {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        patchRequests.push({ url, body });
+        return jsonResponse({ ...readyProject(), runtime_profile: body.runtime_profile ?? null });
+      }
+      if (url === "/api/v1/projects/proj-1/launch-profile/default" && method === "PATCH") {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        patchRequests.push({ url, body });
+        return jsonResponse({
+          ...readyProject().default_launch_profile,
+          ...body,
+          updated_at: 2,
+        });
+      }
+      throw new Error(`unexpected url ${url}`);
+    });
+
+    render(wrap(<ProjectDetail view="environments" />));
+
+    expect(await screen.findByText("Launch Profile")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Environment"));
+    const environmentDetails = screen.getByText("Environment").closest("details");
+    const envFile = screen.getByLabelText("Env file path");
+    fireEvent.focus(envFile);
+    fireEvent.change(envFile, { target: { value: "." } });
+
+    expect(environmentDetails).toHaveAttribute("open");
+    expect(patchRequests).toHaveLength(0);
+
+    fireEvent.change(envFile, { target: { value: ".env.dev" } });
+    expect(environmentDetails).toHaveAttribute("open");
+    fireEvent.blur(envFile, { relatedTarget: document.body });
+
+    await waitFor(() => expect(patchRequests).toHaveLength(2), { timeout: 2_000 });
+    expect(patchRequests[1].body).toMatchObject({
+      env_refs: [{ kind: "env-file", value: ".env.dev", secret: true }],
+    });
+    expect(environmentDetails).toHaveAttribute("open");
   });
 });

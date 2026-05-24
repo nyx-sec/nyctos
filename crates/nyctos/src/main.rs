@@ -32,6 +32,7 @@ use semver::Version;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 mod ai_pipeline;
+mod attacker_playbooks;
 mod auth_sessions;
 mod auth_setup_ai;
 mod banner;
@@ -1243,13 +1244,30 @@ async fn drive_scan(
                 format!("business-logic template synthesis failed: {err}")
             }
         };
+    let attacker_playbook_summary =
+        match attacker_playbooks::synthesize_attacker_playbook_candidates(
+            store,
+            &run.id,
+            project.id.as_str(),
+            &route_model,
+        )
+        .await
+        {
+            Ok(report) => report.summary(),
+            Err(err) => {
+                tracing::warn!(error = %err, "attacker playbook synthesis failed");
+                format!("attacker playbook synthesis failed: {err}")
+            }
+        };
     emit_phase(
         &events,
         &run.id,
         project.id.as_str(),
         "CandidateSynthesisStarted",
         false,
-        Some(format!("{synthesis_summary}; business templates: {business_logic_summary}")),
+        Some(format!(
+            "{synthesis_summary}; attacker playbooks: {attacker_playbook_summary}; business templates: {business_logic_summary}"
+        )),
     );
 
     emit_phase(&events, &run.id, project.id.as_str(), "AgentReviewStarted", true, None);

@@ -63,15 +63,16 @@ use nyctos_types::product::{
     TestLaunchTargetResponse,
 };
 use nyctos_types::project::{
-    AuthSetupRequest, AuthSetupResponse, AuthSetupVerification, AuthSetupVerificationStatus,
+    AuthSetupError, AuthSetupJobRecord, AuthSetupPhase, AuthSetupRequest, AuthSetupResponse,
+    AuthSetupStartResponse, AuthSetupVerification, AuthSetupVerificationStatus,
     CreateProjectRequest, PatchProjectRequest, ProjectAuthMode, ProjectAuthOwnedObject,
     ProjectAuthProfile, ProjectRuntimeProfile, TriStateJson, TriStateProjectRuntimeProfile,
 };
 use nyctos_types::repo::{CreateRepoRequest, PatchRepoRequest, TestRepoRequest, TestRepoResponse};
 
 use crate::state::{
-    ApiError, AuthSetupAgentOutput, AuthSetupAgentRequest, ScanRunOverrides, ScanTriggerSource,
-    ServerState,
+    ApiError, AuthSetupAgentError, AuthSetupAgentOutput, AuthSetupAgentRequest, ScanRunOverrides,
+    ScanTriggerSource, ServerState,
 };
 
 /// Build the production router with every `/api/v1/...` route attached.
@@ -88,7 +89,11 @@ pub fn build_router(state: ServerState) -> Router {
             "/api/v1/projects/{project_id}",
             get(get_project).patch(patch_project).delete(delete_project),
         )
-        .route("/api/v1/projects/{project_id}/auth/auto-setup", post(auth_auto_setup_project))
+        .route("/api/v1/projects/{project_id}/auth/auto-setup", post(start_auth_auto_setup_project))
+        .route(
+            "/api/v1/projects/{project_id}/auth/auto-setup/{job_id}",
+            get(get_auth_auto_setup_job),
+        )
         .route(
             "/api/v1/projects/{project_id}/repos",
             get(list_project_repos).post(create_project_repo),
@@ -906,11 +911,11 @@ async fn patch_project(
     Ok(Json(row))
 }
 
-async fn auth_auto_setup_project(
+async fn start_auth_auto_setup_project(
     State(s): State<ServerState>,
     Path(id): Path<String>,
     Json(req): Json<AuthSetupRequest>,
-) -> Result<Json<AuthSetupResponse>, ApiError> {
+) -> Result<Json<AuthSetupStartResponse>, ApiError> {
     let project = s
         .store
         .projects()
@@ -924,13 +929,90 @@ async fn auth_auto_setup_project(
         }
     }
 
-    let repos = s.store.repos().list_by_project(&id).await?;
+    let job = s.auth_setup_jobs.create(&id, now_epoch_ms()).await;
+    let job_id = job.id.clone();
+    let state = s.clone();
+    tokio::spawn(async move {
+        run_auth_auto_setup_job(state, id, req, job_id).await;
+    });
+
+    Ok(Json(AuthSetupStartResponse { job }))
+}
+
+async fn get_auth_auto_setup_job(
+    State(s): State<ServerState>,
+    Path((project_id, job_id)): Path<(String, String)>,
+) -> Result<Json<AuthSetupJobRecord>, ApiError> {
+    let job = s
+        .auth_setup_jobs
+        .get(&job_id)
+        .await
+        .ok_or_else(|| ApiError::NotFound(format!("auth setup job `{job_id}` not found")))?;
+    if job.project_id != project_id {
+        return Err(ApiError::NotFound(format!("auth setup job `{job_id}` not found")));
+    }
+    Ok(Json(job))
+}
+
+async fn run_auth_auto_setup_job(
+    s: ServerState,
+    id: String,
+    req: AuthSetupRequest,
+    job_id: String,
+) {
+    let result = run_auth_auto_setup_once(s.clone(), &id, req, &job_id).await;
+    match result {
+        Ok(response) => s.auth_setup_jobs.complete(&job_id, response).await,
+        Err(error) => s.auth_setup_jobs.fail(&job_id, error).await,
+    }
+}
+
+async fn run_auth_auto_setup_once(
+    s: ServerState,
+    id: &str,
+    req: AuthSetupRequest,
+    job_id: &str,
+) -> Result<AuthSetupResponse, AuthSetupError> {
+    s.auth_setup_jobs
+        .push_phase(job_id, AuthSetupPhase::CollectingRepos, "Collecting project repositories.")
+        .await;
+    let project = s
+        .store
+        .projects()
+        .get(id)
+        .await
+        .map_err(auth_setup_store_error)?
+        .ok_or_else(|| auth_setup_not_found_error(format!("project `{id}` not found")))?;
+    let target_base_url = auth_setup_target_base_url(&project, req.target_base_url.as_deref());
+    if let Some(url) = target_base_url.as_deref() {
+        if !is_local_http_url(url) {
+            return Err(AuthSetupError {
+                code: "target_not_local".to_string(),
+                title: "Auth setup target is not local".to_string(),
+                detail: format!("target URL `{url}` must be local"),
+                hint: Some("Use a localhost or loopback app URL for auth setup.".to_string()),
+                retryable: false,
+            });
+        }
+    }
+
+    let repos = s.store.repos().list_by_project(id).await.map_err(auth_setup_store_error)?;
     let workspace_roots = auth_setup_workspace_roots(&repos, s.state_repos_dir.as_deref());
     let discovery = discover_auth_setup(&workspace_roots);
-    let mut agent_fallback_warning = None;
+    s.auth_setup_jobs
+        .push_phase(
+            job_id,
+            AuthSetupPhase::StartingAgent,
+            if s.auth_setup_agent.is_some() {
+                "Starting repository exploration agent."
+            } else {
+                "No exploration agent is configured; using static repository scan."
+            },
+        )
+        .await;
     let agent_output = if let Some(agent) = s.auth_setup_agent.as_ref() {
         let agent_req = AuthSetupAgentRequest {
-            project_id: id.clone(),
+            project_id: id.to_string(),
             project_name: project.name.clone(),
             target_base_url: target_base_url.clone(),
             workspace_roots: workspace_roots.clone(),
@@ -945,19 +1027,17 @@ async fn auth_auto_setup_project(
             static_object_routes: discovery.object_routes.clone(),
             files_inspected: discovery.files_inspected,
         };
+        s.auth_setup_jobs
+            .push_phase(
+                job_id,
+                AuthSetupPhase::InspectingAuthRoutes,
+                "Agent is inspecting auth routes, sessions, roles, and ownership hints.",
+            )
+            .await;
         match agent.explore(agent_req).await {
-            Ok(output) if output.profiles.is_empty() => {
-                agent_fallback_warning = Some(
-                    "Auth exploration agent completed without profiles; static repo scan fallback used."
-                        .to_string(),
-                );
-                None
-            }
+            Ok(output) if output.profiles.is_empty() => return Err(auth_setup_no_profiles_error()),
             Ok(output) => Some(output),
-            Err(err) => {
-                agent_fallback_warning = Some(format!("{err}; static repo scan fallback used."));
-                None
-            }
+            Err(err) => return Err(auth_setup_agent_error(err)),
         }
     } else {
         None
@@ -985,6 +1065,13 @@ async fn auth_auto_setup_project(
         profiles_added,
         profiles_updated,
     ) = if let Some(output) = agent_output {
+        s.auth_setup_jobs
+            .push_phase(
+                job_id,
+                AuthSetupPhase::DraftingProfiles,
+                "Normalizing agent-generated auth profiles.",
+            )
+            .await;
         apply_agent_auth_setup_output(
             &mut runtime_profile.auth_profiles,
             output,
@@ -992,6 +1079,13 @@ async fn auth_auto_setup_project(
             &req.seeded_objects,
         )
     } else {
+        s.auth_setup_jobs
+            .push_phase(
+                job_id,
+                AuthSetupPhase::DraftingProfiles,
+                "Drafting auth profiles from static repository hints.",
+            )
+            .await;
         let roles = auth_setup_roles(&req.roles, &discovery);
         let (profiles_added, profiles_updated) = merge_auth_setup_profiles(
             &mut runtime_profile.auth_profiles,
@@ -999,8 +1093,7 @@ async fn auth_auto_setup_project(
             discovery.login_paths.first().cloned(),
             &req.seeded_objects,
         );
-        let verification =
-            static_auth_setup_verification(&discovery, agent_fallback_warning.clone());
+        let verification = static_auth_setup_verification(&discovery, None);
         (
             roles,
             discovery.login_paths.clone(),
@@ -1011,9 +1104,19 @@ async fn auth_auto_setup_project(
             profiles_updated,
         )
     };
+    s.auth_setup_jobs
+        .push_phase(
+            job_id,
+            AuthSetupPhase::VerifyingProfiles,
+            "Reviewing generated profiles against discovered auth evidence.",
+        )
+        .await;
     let runtime_profile_json = serde_json::to_string(&runtime_profile).map_err(|e| {
-        ApiError::BadRequest(format!("runtime_profile must serialize to JSON: {e}"))
+        auth_setup_internal_error(format!("runtime_profile must serialize to JSON: {e}"))
     })?;
+    s.auth_setup_jobs
+        .push_phase(job_id, AuthSetupPhase::SavingProfiles, "Saving auth profiles.")
+        .await;
     let now = now_epoch_ms();
     let patch = ProjectPatch {
         description: ProjectPatchOption::Unset,
@@ -1025,15 +1128,13 @@ async fn auth_auto_setup_project(
         runtime_profile_json: ProjectPatchOption::Set(Some(runtime_profile_json)),
         updated_at: now,
     };
-    if !s.store.projects().update(&id, &patch).await? {
-        return Err(ApiError::NotFound(format!("project `{id}` not found")));
+    if !s.store.projects().update(id, &patch).await.map_err(auth_setup_store_error)? {
+        return Err(auth_setup_not_found_error(format!("project `{id}` not found")));
     }
-    let project = s
-        .store
-        .projects()
-        .get(&id)
-        .await?
-        .ok_or_else(|| ApiError::Internal("project vanished after auth setup".to_string()))?;
+    let project =
+        s.store.projects().get(id).await.map_err(auth_setup_store_error)?.ok_or_else(|| {
+            auth_setup_internal_error("project vanished after auth setup".to_string())
+        })?;
     let message = auth_setup_response_message(
         agent_used,
         profiles_added,
@@ -1041,9 +1142,9 @@ async fn auth_auto_setup_project(
         discovery.files_inspected,
         &verification,
         agent_message,
-        agent_fallback_warning,
+        None,
     );
-    Ok(Json(AuthSetupResponse {
+    Ok(AuthSetupResponse {
         project,
         roles,
         login_paths,
@@ -1053,7 +1154,93 @@ async fn auth_auto_setup_project(
         profiles_added,
         profiles_updated,
         message,
-    }))
+    })
+}
+
+fn auth_setup_store_error(err: nyctos_core::store::StoreError) -> AuthSetupError {
+    AuthSetupError {
+        code: "store_error".to_string(),
+        title: "Auth setup could not read or save project data".to_string(),
+        detail: err.to_string(),
+        hint: Some("Retry the setup. If this repeats, restart the Nyctos daemon.".to_string()),
+        retryable: true,
+    }
+}
+
+fn auth_setup_not_found_error(detail: String) -> AuthSetupError {
+    AuthSetupError {
+        code: "project_not_found".to_string(),
+        title: "Project was not found".to_string(),
+        detail,
+        hint: Some("Refresh the project list and try again.".to_string()),
+        retryable: false,
+    }
+}
+
+fn auth_setup_internal_error(detail: String) -> AuthSetupError {
+    AuthSetupError {
+        code: "internal_error".to_string(),
+        title: "Auth setup hit an internal error".to_string(),
+        detail,
+        hint: Some("Retry the setup. If this repeats, check the daemon logs.".to_string()),
+        retryable: true,
+    }
+}
+
+fn auth_setup_no_profiles_error() -> AuthSetupError {
+    AuthSetupError {
+        code: "agent_returned_no_profiles".to_string(),
+        title: "The auth setup agent did not return any profiles".to_string(),
+        detail: "The exploration agent completed but did not record a usable auth profile."
+            .to_string(),
+        hint: Some(
+            "Check that the repository contains login/session code or add a role manually."
+                .to_string(),
+        ),
+        retryable: true,
+    }
+}
+
+fn auth_setup_agent_error(err: AuthSetupAgentError) -> AuthSetupError {
+    let raw = err.to_string();
+    let lower = raw.to_ascii_lowercase();
+    let network_like = lower.contains("network")
+        || lower.contains("dns")
+        || lower.contains("could not resolve")
+        || lower.contains("connection")
+        || lower.contains("timeout")
+        || lower.contains("timed out")
+        || lower.contains("transport");
+    let unavailable = matches!(err, AuthSetupAgentError::Unavailable(_));
+    let (code, title, hint, retryable) = if network_like {
+        (
+            "agent_upstream_network",
+            "The auth setup agent could not reach its AI runtime",
+            "Check your network connection and the configured AI CLI login, then retry.",
+            true,
+        )
+    } else if unavailable {
+        (
+            "agent_runtime_unavailable",
+            "The configured auth setup agent is unavailable",
+            "Choose Codex or Claude Code in AI setup and make sure the CLI is installed and logged in.",
+            true,
+        )
+    } else {
+        (
+            "agent_failed",
+            "The auth setup agent failed",
+            "Retry the job. If this repeats, inspect the daemon logs for the underlying CLI error.",
+            true,
+        )
+    };
+    AuthSetupError {
+        code: code.to_string(),
+        title: title.to_string(),
+        detail: raw,
+        hint: Some(hint.to_string()),
+        retryable,
+    }
 }
 
 fn project_patch_for(opt: &Option<Option<String>>) -> ProjectPatchOption<Option<String>> {

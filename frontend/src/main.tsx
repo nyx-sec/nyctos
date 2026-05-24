@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 
 import { App } from "./App";
+import { AuthSetupJobsProvider } from "./components/AuthSetupJobs";
 import { ToastProvider } from "./components/Toast";
 import "./styles/globals.css";
 import "./styles/layout.css";
@@ -29,7 +30,9 @@ createRoot(rootElement).render(
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
         <ToastProvider>
-          <App />
+          <AuthSetupJobsProvider>
+            <App />
+          </AuthSetupJobsProvider>
         </ToastProvider>
       </BrowserRouter>
     </QueryClientProvider>

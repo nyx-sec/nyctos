@@ -33,6 +33,12 @@ struct EndpointCandidate {
     source: String,
 }
 
+impl EndpointCandidate {
+    fn is_read_only(&self) -> bool {
+        !self.state_changing && matches!(self.method.as_str(), "GET" | "HEAD" | "OPTIONS")
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LivePlanStrategy {
     TrustedHeaderAuthBypass,
@@ -42,8 +48,12 @@ enum LivePlanStrategy {
     DomXss,
     DebugExposure,
     OpenRedirect,
+    CorsMisconfiguration,
     PathTraversal,
     SsrfUrlFetch,
+    WebhookTrustReviewOnly,
+    FileUploadReviewOnly,
+    BusinessLogicReviewOnly,
     CommandInjection,
     SqlInjection,
     DependencyReviewOnly,
@@ -79,11 +89,27 @@ impl<'a> LiveTestPlanSynthesizer<'a> {
             LivePlanStrategy::DomXss => self.dom_xss(candidate, &endpoints),
             LivePlanStrategy::DebugExposure => self.debug_exposure(candidate, &endpoints),
             LivePlanStrategy::OpenRedirect => self.open_redirect(candidate, &endpoints),
+            LivePlanStrategy::CorsMisconfiguration => self.cors_misconfiguration(candidate, &endpoints),
             LivePlanStrategy::PathTraversal => self.path_traversal(candidate, &endpoints),
             LivePlanStrategy::SsrfUrlFetch => self.no_plan(
                 candidate,
                 NoPlanReasonCode::UnsafeProbe,
                 "SSRF-style URL fetch needs an in-scope callback or seeded local target before Nyctos can safely verify it",
+            ),
+            LivePlanStrategy::WebhookTrustReviewOnly => self.no_plan(
+                candidate,
+                NoPlanReasonCode::UnsafeProbe,
+                "webhook trust-boundary probes need a seeded harmless event fixture; Nyctos will not send synthetic state-changing callbacks by default",
+            ),
+            LivePlanStrategy::FileUploadReviewOnly => self.no_plan(
+                candidate,
+                NoPlanReasonCode::StateChangingBlocked,
+                "file upload/import probes are state-changing and need an explicit seeded upload harness before live verification",
+            ),
+            LivePlanStrategy::BusinessLogicReviewOnly => self.no_plan(
+                candidate,
+                NoPlanReasonCode::UnsafeProbe,
+                "credits/payment/business-logic probes are review-only until disposable seeded state is configured; Nyctos will not mutate customer or payment data",
             ),
             LivePlanStrategy::CommandInjection => self.no_plan(
                 candidate,
@@ -186,17 +212,25 @@ impl<'a> LiveTestPlanSynthesizer<'a> {
     ) -> LiveTestPlan {
         let Some(endpoint) = endpoints
             .iter()
+            .filter(|endpoint| endpoint.is_read_only())
             .find(|endpoint| {
                 endpoint.path.contains(':')
                     || endpoint.path.contains('{')
                     || object_id_from_endpoint(endpoint).is_some()
             })
-            .or_else(|| endpoints.first())
+            .or_else(|| endpoints.iter().find(|endpoint| endpoint.is_read_only()))
         else {
+            if endpoints.iter().any(|endpoint| endpoint.state_changing) {
+                return self.no_plan(
+                    candidate,
+                    NoPlanReasonCode::StateChangingBlocked,
+                    "IDOR/tenant-isolation verification only runs read-only owner-versus-peer checks; inferred endpoints are state-changing",
+                );
+            }
             return self.no_plan(
                 candidate,
                 NoPlanReasonCode::RouteNotInferred,
-                "IDOR verification needs an inferred object endpoint",
+                "IDOR verification needs an inferred read-only object endpoint",
             );
         };
         let Some(user_a) =
@@ -413,11 +447,18 @@ impl<'a> LiveTestPlanSynthesizer<'a> {
         candidate: &PentestCandidateRecord,
         endpoints: &[EndpointCandidate],
     ) -> LiveTestPlan {
-        let Some(endpoint) = endpoints.first() else {
+        let Some(endpoint) = endpoints.iter().find(|endpoint| endpoint.is_read_only()) else {
+            if endpoints.iter().any(|endpoint| endpoint.state_changing) {
+                return self.no_plan(
+                    candidate,
+                    NoPlanReasonCode::StateChangingBlocked,
+                    "sensitive exposure verification only runs read-only requests; inferred endpoint is state-changing",
+                );
+            }
             return self.no_plan(
                 candidate,
                 NoPlanReasonCode::RouteNotInferred,
-                "sensitive exposure verification needs an inferred endpoint",
+                "sensitive exposure verification needs an inferred read-only endpoint",
             );
         };
         let mut request = request_for_endpoint(endpoint, "anonymous");
@@ -452,11 +493,21 @@ impl<'a> LiveTestPlanSynthesizer<'a> {
         candidate: &PentestCandidateRecord,
         endpoints: &[EndpointCandidate],
     ) -> LiveTestPlan {
-        let Some(endpoint) = endpoints.first() else {
+        let Some(endpoint) = endpoints
+            .iter()
+            .find(|endpoint| endpoint.is_read_only() && endpoint.method != "OPTIONS")
+        else {
+            if endpoints.iter().any(|endpoint| endpoint.state_changing) {
+                return self.no_plan(
+                    candidate,
+                    NoPlanReasonCode::StateChangingBlocked,
+                    "open redirect verification only uses read-only GET/HEAD requests; inferred endpoint is state-changing",
+                );
+            }
             return self.no_plan(
                 candidate,
                 NoPlanReasonCode::RouteNotInferred,
-                "open redirect verification needs an inferred endpoint",
+                "open redirect verification needs an inferred read-only endpoint",
             );
         };
         let redirect_target = "https://nyctos.invalid/redirect-probe";
@@ -485,6 +536,59 @@ impl<'a> LiveTestPlanSynthesizer<'a> {
             },
             why_this_confirms: Some(
                 "Redirect response sends the browser to attacker-controlled host while the baseline route stays clean.".to_string(),
+            ),
+        })
+    }
+
+    fn cors_misconfiguration(
+        &self,
+        candidate: &PentestCandidateRecord,
+        endpoints: &[EndpointCandidate],
+    ) -> LiveTestPlan {
+        let Some(endpoint) = endpoints.iter().find(|endpoint| endpoint.is_read_only()) else {
+            if endpoints.iter().any(|endpoint| endpoint.state_changing) {
+                return self.no_plan(
+                    candidate,
+                    NoPlanReasonCode::StateChangingBlocked,
+                    "CORS verification only sends read-only Origin-header probes; inferred endpoint is state-changing",
+                );
+            }
+            return self.no_plan(
+                candidate,
+                NoPlanReasonCode::RouteNotInferred,
+                "CORS verification needs an inferred read-only endpoint",
+            );
+        };
+        let origin = "https://nyctos.invalid";
+        let mut request = request_for_endpoint(endpoint, "anonymous");
+        request.headers.insert("Origin".to_string(), origin.to_string());
+        if request.method == "OPTIONS" {
+            request.headers.insert("Access-Control-Request-Method".to_string(), "GET".to_string());
+        }
+        request.payload = Some(contextual_payload(
+            "cors-misconfiguration",
+            PayloadTransport::Header,
+            "Origin",
+            origin,
+            "Access-Control-Allow-Origin reflects or allows nyctos.invalid",
+            "same endpoint without an Origin header lacks attacker-origin CORS allowance",
+            false,
+            "A read-only request that allows an untrusted origin provides deterministic CORS evidence.",
+        ));
+        LiveTestPlan::SingleHttp(SingleHttpPlan {
+            hypothesis: Some(candidate.hypothesis.clone()),
+            request,
+            baseline: Some(request_for_endpoint(endpoint, "anonymous")),
+            benign: None,
+            oracle: HttpOracle {
+                header_contains: BTreeMap::from([(
+                    "access-control-allow-origin".to_string(),
+                    "nyctos.invalid".to_string(),
+                )]),
+                ..HttpOracle::default()
+            },
+            why_this_confirms: Some(
+                "The target grants CORS access to an untrusted external origin while the baseline remains clean.".to_string(),
             ),
         })
     }
@@ -569,16 +673,43 @@ fn classify_strategy(candidate: &PentestCandidateRecord) -> LivePlanStrategy {
             }
             return LivePlanStrategy::AuthBypassProtectedEndpoint;
         }
-        "IDOR" | "IDOR_CANDIDATE" | "ACCESS_CONTROL" | "BROKEN_ACCESS_CONTROL" => {
+        "IDOR"
+        | "IDOR_CANDIDATE"
+        | "ACCESS_CONTROL"
+        | "BROKEN_ACCESS_CONTROL"
+        | "TENANT_ISOLATION"
+        | "TENANT_ACCOUNT_ISOLATION"
+        | "OBJECT_OWNERSHIP" => {
             return LivePlanStrategy::IdorObjectIsolation;
         }
-        "DOM_XSS" | "XSS" | "CLIENT_SIDE_XSS" => return LivePlanStrategy::DomXss,
+        "DOM_XSS" | "XSS" | "CLIENT_SIDE_XSS" | "CLIENT_SIDE_INJECTION" => {
+            return LivePlanStrategy::DomXss;
+        }
         "OPEN_REDIRECT" | "UNSAFE_REDIRECT" | "UNVALIDATED_REDIRECT" => {
             return LivePlanStrategy::OpenRedirect;
         }
         "SSRF" | "SERVER_SIDE_REQUEST_FORGERY" => return LivePlanStrategy::SsrfUrlFetch,
-        "DEBUG_EXPOSURE" | "DIAGNOSTIC_EXPOSURE" | "CONFIG_EXPOSURE" => {
+        "DEBUG_EXPOSURE"
+        | "DIAGNOSTIC_EXPOSURE"
+        | "CONFIG_EXPOSURE"
+        | "ADMIN_DEBUG_EXPOSURE"
+        | "ADMIN_SURFACE" => {
             return LivePlanStrategy::DebugExposure;
+        }
+        "CORS_MISCONFIG" | "CORS_MISCONFIGURATION" => {
+            return LivePlanStrategy::CorsMisconfiguration;
+        }
+        "WEBHOOK_TRUST" | "WEBHOOK_TRUST_BOUNDARY" | "WEBHOOK_CALLBACK_TRUST" => {
+            return LivePlanStrategy::WebhookTrustReviewOnly;
+        }
+        "FILE_UPLOAD_FLOW" | "UNSAFE_FILE_UPLOAD" => {
+            return LivePlanStrategy::FileUploadReviewOnly;
+        }
+        "FILE_DOWNLOAD_FLOW" | "UNSAFE_FILE_DOWNLOAD" => {
+            return LivePlanStrategy::PathTraversal;
+        }
+        "BUSINESS_LOGIC_ABUSE" | "PAYMENT_LOGIC_ABUSE" | "CREDITS_ABUSE" => {
+            return LivePlanStrategy::BusinessLogicReviewOnly;
         }
         _ => {}
     }
@@ -606,11 +737,26 @@ fn classify_strategy(candidate: &PentestCandidateRecord) -> LivePlanStrategy {
     if contains_any(&text, &["open redirect", "unsafe redirect", "url scheme", "javascript:"]) {
         return LivePlanStrategy::OpenRedirect;
     }
+    if contains_any(&text, &["cors", "access-control-allow-origin", "origin header"]) {
+        return LivePlanStrategy::CorsMisconfiguration;
+    }
     if contains_any(&text, &["path traversal", "../", "file read", "directory traversal"]) {
         return LivePlanStrategy::PathTraversal;
     }
+    if contains_any(&text, &["file upload", "upload/import", "state-changing upload"]) {
+        return LivePlanStrategy::FileUploadReviewOnly;
+    }
+    if contains_any(&text, &["file download", "download/export"]) {
+        return LivePlanStrategy::PathTraversal;
+    }
+    if contains_any(&text, &["webhook", "callback trust", "signature bypass", "event replay"]) {
+        return LivePlanStrategy::WebhookTrustReviewOnly;
+    }
     if contains_any(&text, &["ssrf", "url fetch", "server-side request"]) {
         return LivePlanStrategy::SsrfUrlFetch;
+    }
+    if contains_any(&text, &["payment", "credit", "coupon", "price", "billing"]) {
+        return LivePlanStrategy::BusinessLogicReviewOnly;
     }
     if contains_any(&text, &["command injection", "shell injection", "exec("]) {
         return LivePlanStrategy::CommandInjection;

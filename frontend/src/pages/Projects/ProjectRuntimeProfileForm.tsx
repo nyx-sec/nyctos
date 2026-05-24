@@ -1,4 +1,4 @@
-import { type ChangeEvent, useEffect, useRef, useState } from "react";
+import { type ChangeEvent, type SyntheticEvent, useEffect, useRef, useState } from "react";
 import type {
   LaunchEnvRef,
   LaunchHealthCheck,
@@ -11,7 +11,8 @@ import type {
   ProjectRuntimeEnvVar,
   ProjectRuntimeProfile,
 } from "@/api/client";
-import { testLaunchTarget, useAuthAutoSetup } from "@/api/client";
+import { testLaunchTarget } from "@/api/client";
+import { useAuthSetupJobs } from "@/components/AuthSetupJobs";
 import { Button } from "@/components/Button";
 import { Spinner } from "@/components/Spinner";
 import { useToast } from "@/components/Toast";
@@ -433,6 +434,29 @@ export function ProjectRuntimeProfileForm({ value, onChange, projectId }: Props)
     Boolean(trimOrUndefined(value.env_file)) ||
     value.env_vars.some((row) => Boolean(trimOrUndefined(row.name)));
   const hasAuthProfiles = value.auth_profiles.some((row) => Boolean(trimOrUndefined(row.role)));
+  const [openSections, setOpenSections] = useState(() => ({
+    launch: hasLaunchCommands,
+    lifecycle: hasLifecycleHooks,
+    environment: hasEnvironment,
+    auth: hasAuthProfiles,
+  }));
+
+  useEffect(() => {
+    setOpenSections({
+      launch: hasLaunchCommands,
+      lifecycle: hasLifecycleHooks,
+      environment: hasEnvironment,
+      auth: hasAuthProfiles,
+    });
+  }, [projectId]);
+
+  const setSectionOpen =
+    (section: keyof typeof openSections) => (event: SyntheticEvent<HTMLDetailsElement>) => {
+      const open = event.currentTarget.open;
+      setOpenSections((current) =>
+        current[section] === open ? current : { ...current, [section]: open },
+      );
+    };
 
   return (
     <div className="runtime-profile-form">
@@ -506,7 +530,11 @@ export function ProjectRuntimeProfileForm({ value, onChange, projectId }: Props)
       </section>
 
       {value.mode === "custom-commands" && (
-        <details className="runtime-profile-details" open={hasLaunchCommands}>
+        <details
+          className="runtime-profile-details"
+          open={openSections.launch}
+          onToggle={setSectionOpen("launch")}
+        >
           <summary>Launch commands</summary>
           <CommandRows
             title="Setup"
@@ -525,7 +553,11 @@ export function ProjectRuntimeProfileForm({ value, onChange, projectId }: Props)
         </details>
       )}
 
-      <details className="runtime-profile-details" open={hasLifecycleHooks}>
+      <details
+        className="runtime-profile-details"
+        open={openSections.lifecycle}
+        onToggle={setSectionOpen("lifecycle")}
+      >
         <summary>Lifecycle hooks</summary>
         <CommandRows
           title="Seed"
@@ -557,7 +589,11 @@ export function ProjectRuntimeProfileForm({ value, onChange, projectId }: Props)
         />
       </details>
 
-      <details className="runtime-profile-details" open={hasEnvironment}>
+      <details
+        className="runtime-profile-details"
+        open={openSections.environment}
+        onToggle={setSectionOpen("environment")}
+      >
         <summary>Environment</summary>
         <div className="runtime-profile-env">
           <div className="setup-field">
@@ -578,7 +614,11 @@ export function ProjectRuntimeProfileForm({ value, onChange, projectId }: Props)
         </div>
       </details>
 
-      <details className="runtime-profile-details" open={hasAuthProfiles}>
+      <details
+        className="runtime-profile-details"
+        open={openSections.auth}
+        onToggle={setSectionOpen("auth")}
+      >
         <summary>Auth profiles</summary>
         <AuthProfileRows
           rows={value.auth_profiles}
@@ -887,8 +927,24 @@ function AuthProfileRows({
 }) {
   const update = (index: number, patch: Partial<AuthProfileDraft>) =>
     onChange(replaceAt(rows, index, { ...rows[index], ...patch }));
-  const authSetup = useAuthAutoSetup(projectId ?? "");
+  const { jobForProject, startAuthSetup } = useAuthSetupJobs();
   const { showToast } = useToast();
+  const authSetupJob = jobForProject(projectId);
+  const authSetupRunning =
+    authSetupJob?.status === "queued" || authSetupJob?.status === "running";
+  const appliedJobId = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (
+      authSetupJob?.status !== "succeeded" ||
+      !authSetupJob.result ||
+      appliedJobId.current === authSetupJob.id
+    ) {
+      return;
+    }
+    appliedJobId.current = authSetupJob.id;
+    onAuthSetupApplied(authSetupJob.result.project.runtime_profile?.auth_profiles ?? []);
+  }, [authSetupJob, onAuthSetupApplied]);
 
   async function runAuthSetup() {
     if (!projectId) {
@@ -900,17 +956,14 @@ function AuthProfileRows({
         .flatMap((row) => row.owned_objects)
         .map(ownedObjectFromDraft)
         .filter(isDefined);
-      const result = await authSetup.mutateAsync({
+      await startAuthSetup(projectId, {
         target_base_url: trimOrUndefined(targetBaseUrl),
         seeded_objects,
       });
-      onAuthSetupApplied(result.project.runtime_profile?.auth_profiles ?? []);
-      const warningText = result.verification.warnings.join(" ");
-      showToast(warningText ? `${result.message} ${warningText}` : result.message, {
-        tone: result.verification.status === "verified" ? "success" : "warning",
-      });
     } catch (err) {
-      showToast(err instanceof Error ? err.message : String(err), { tone: "danger" });
+      showToast(`Could not start auth setup: ${err instanceof Error ? err.message : String(err)}`, {
+        tone: "danger",
+      });
     }
   }
 
@@ -926,15 +979,22 @@ function AuthProfileRows({
             size="sm"
             variant="ghost"
             onClick={runAuthSetup}
-            disabled={authSetup.isPending || !projectId}
+            disabled={authSetupRunning || !projectId}
           >
-            {authSetup.isPending ? <Spinner /> : "AI setup"}
+            {authSetupRunning ? <Spinner /> : "Explore repo"}
           </Button>
           <Button size="sm" variant="ghost" onClick={() => onChange([...rows, blankAuthProfile()])}>
             Add role
           </Button>
         </div>
       </div>
+      {authSetupJob ? (
+        <p className="runtime-profile-note" role="status">
+          {authSetupJob.status === "failed" && authSetupJob.error
+            ? `${authSetupJob.error.title}: ${authSetupJob.error.detail}`
+            : authSetupJob.message}
+        </p>
+      ) : null}
       {rows.map((row, index) => (
         <div className="runtime-auth-row" key={`runtime-auth-${index}`}>
           <div className="setup-field">

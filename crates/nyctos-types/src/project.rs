@@ -328,6 +328,75 @@ pub struct AuthSetupResponse {
     pub message: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthSetupJobStatus {
+    Queued,
+    Running,
+    Succeeded,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthSetupPhase {
+    Queued,
+    CollectingRepos,
+    StartingAgent,
+    InspectingAuthRoutes,
+    DraftingProfiles,
+    VerifyingProfiles,
+    SavingProfiles,
+    Complete,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct AuthSetupJobEvent {
+    #[ts(type = "number")]
+    pub at: i64,
+    pub phase: AuthSetupPhase,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct AuthSetupError {
+    pub code: String,
+    pub title: String,
+    pub detail: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub hint: Option<String>,
+    pub retryable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct AuthSetupJobRecord {
+    pub id: String,
+    pub project_id: String,
+    pub status: AuthSetupJobStatus,
+    pub phase: AuthSetupPhase,
+    pub message: String,
+    #[ts(type = "number")]
+    pub started_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub finished_at: Option<i64>,
+    #[serde(default)]
+    pub events: Vec<AuthSetupJobEvent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub result: Option<AuthSetupResponse>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub error: Option<AuthSetupError>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct AuthSetupStartResponse {
+    pub job: AuthSetupJobRecord,
+}
+
 /// On-the-wire shape of a `projects` table row. `created_at` and
 /// `updated_at` carry `#[ts(type = "number")]` so the generated TS
 /// declaration uses `number` rather than `bigint` (`serde_json` emits

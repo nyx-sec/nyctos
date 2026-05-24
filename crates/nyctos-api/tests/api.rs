@@ -121,6 +121,18 @@ impl AuthSetupAgent for StubAuthSetupAgent {
     }
 }
 
+struct FailingAuthSetupAgent;
+
+impl AuthSetupAgent for FailingAuthSetupAgent {
+    fn explore<'a>(&'a self, _req: AuthSetupAgentRequest) -> AuthSetupAgentFuture<'a> {
+        Box::pin(async move {
+            Err(nyctos_api::AuthSetupAgentError::Failed(
+                "transport error: DNS lookup failed".to_string(),
+            ))
+        })
+    }
+}
+
 struct TestServer {
     addr: std::net::SocketAddr,
     events: EventSink,
@@ -272,6 +284,29 @@ async fn make_default_project_ready(srv: &TestServer) {
         )
         .await
         .expect("launch profile");
+}
+
+async fn wait_auth_setup_job(
+    client: &reqwest::Client,
+    base: &str,
+    project_id: &str,
+    job_id: &str,
+) -> Value {
+    for _ in 0..50 {
+        let job: Value = client
+            .get(format!("{base}/api/v1/projects/{project_id}/auth/auto-setup/{job_id}"))
+            .send()
+            .await
+            .expect("get auth job")
+            .json()
+            .await
+            .expect("auth job json");
+        if matches!(job["status"].as_str(), Some("succeeded" | "failed")) {
+            return job;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("auth setup job did not finish");
 }
 
 #[tokio::test]
@@ -3267,7 +3302,7 @@ router.get("/api/admin/report", requireAdmin, adminReport);
         .await
         .expect("repo");
 
-    let response: Value = client
+    let started: Value = client
         .post(format!("{}/api/v1/projects/{project_id}/auth/auto-setup", srv.base()))
         .json(&serde_json::json!({ "target_base_url": "http://localhost:3000" }))
         .send()
@@ -3276,6 +3311,10 @@ router.get("/api/admin/report", requireAdmin, adminReport);
         .json()
         .await
         .expect("json");
+    let job_id = started["job"]["id"].as_str().expect("job id");
+    let job = wait_auth_setup_job(&client, &srv.base(), project_id, job_id).await;
+    assert_eq!(job["status"], "succeeded");
+    let response = &job["result"];
 
     assert_eq!(response["profiles_added"], 3);
     assert_eq!(response["agent_used"], false);
@@ -3342,7 +3381,7 @@ router.get("/api/workspaces/{id}", requireManager, showWorkspace);
         .await
         .expect("repo");
 
-    let response: Value = client
+    let started: Value = client
         .post(format!("{}/api/v1/projects/{project_id}/auth/auto-setup", srv.base()))
         .json(&serde_json::json!({ "target_base_url": "http://localhost:3000" }))
         .send()
@@ -3351,6 +3390,10 @@ router.get("/api/workspaces/{id}", requireManager, showWorkspace);
         .json()
         .await
         .expect("json");
+    let job_id = started["job"]["id"].as_str().expect("job id");
+    let job = wait_auth_setup_job(&client, &srv.base(), project_id, job_id).await;
+    assert_eq!(job["status"], "succeeded");
+    let response = &job["result"];
 
     assert_eq!(response["agent_used"], true);
     assert_eq!(response["roles"], serde_json::json!(["manager"]));
@@ -3363,6 +3406,43 @@ router.get("/api/workspaces/{id}", requireManager, showWorkspace);
         response["project"]["runtime_profile"]["auth_profiles"].as_array().unwrap().len(),
         1
     );
+}
+
+#[tokio::test]
+async fn auth_auto_setup_surfaces_agent_transport_failure_as_job_error() {
+    let srv = TestServer::start_with_auth_setup_agent(Arc::new(FailingAuthSetupAgent)).await;
+    let client = reqwest::Client::new();
+    let created: Value = client
+        .post(format!("{}/api/v1/projects", srv.base()))
+        .json(&serde_json::json!({
+            "name": "network-fail-app",
+            "target_base_url": "http://localhost:3000"
+        }))
+        .send()
+        .await
+        .expect("post project")
+        .json()
+        .await
+        .expect("project json");
+    let project_id = created["id"].as_str().expect("project id");
+
+    let started: Value = client
+        .post(format!("{}/api/v1/projects/{project_id}/auth/auto-setup", srv.base()))
+        .json(&serde_json::json!({ "target_base_url": "http://localhost:3000" }))
+        .send()
+        .await
+        .expect("post auth setup")
+        .json()
+        .await
+        .expect("json");
+    let job_id = started["job"]["id"].as_str().expect("job id");
+    let job = wait_auth_setup_job(&client, &srv.base(), project_id, job_id).await;
+
+    assert_eq!(job["status"], "failed");
+    assert_eq!(job["phase"], "failed");
+    assert_eq!(job["error"]["code"], "agent_upstream_network");
+    assert!(job["error"]["detail"].as_str().unwrap().contains("DNS lookup failed"));
+    assert_eq!(job["error"]["retryable"], true);
 }
 
 #[tokio::test]

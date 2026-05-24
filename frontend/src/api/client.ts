@@ -10,8 +10,10 @@ import { useEffect, useRef, useState } from "react";
 import type {
   AgentEvent,
   AgentTraceRow,
+  AuthSetupJobRecord,
   AuthSetupRequest,
   AuthSetupResponse,
+  AuthSetupStartResponse,
   BundleManifest,
   ChainRecord,
   CreateProjectIntegrationRequest,
@@ -68,8 +70,10 @@ import type {
 
 export type {
   AgentTraceRow,
+  AuthSetupJobRecord,
   AuthSetupRequest,
   AuthSetupResponse,
+  AuthSetupStartResponse,
   BundleManifest,
   ChainRecord,
   CreateProjectIntegrationRequest,
@@ -290,6 +294,8 @@ export const qk = {
   findingTraces: (id: string) => ["findings", id, "traces"] as const,
   defaultLaunchProfile: (projectId: string) =>
     ["projects", projectId, "launch-profile", "default"] as const,
+  authSetupJob: (projectId: string, jobId: string) =>
+    ["projects", projectId, "auth-setup", jobId] as const,
 };
 
 // ---- hooks -----------------------------------------------------------------
@@ -418,18 +424,29 @@ export function usePatchDefaultLaunchProfile(projectId: string) {
   });
 }
 
+export function startAuthAutoSetup(
+  projectId: string,
+  body: AuthSetupRequest = {},
+): Promise<AuthSetupStartResponse> {
+  return request<AuthSetupStartResponse>(`/projects/${encodeURIComponent(projectId)}/auth/auto-setup`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function getAuthSetupJob(projectId: string, jobId: string): Promise<AuthSetupJobRecord> {
+  return request<AuthSetupJobRecord>(
+    `/projects/${encodeURIComponent(projectId)}/auth/auto-setup/${encodeURIComponent(jobId)}`,
+  );
+}
+
 export function useAuthAutoSetup(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (body: AuthSetupRequest = {}) =>
-      request<AuthSetupResponse>(`/projects/${encodeURIComponent(projectId)}/auth/auto-setup`, {
-        method: "POST",
-        body: JSON.stringify(body),
-      }),
+      startAuthAutoSetup(projectId, body),
     onSuccess: (data) => {
-      invalidateProjectLists(qc);
-      qc.invalidateQueries({ queryKey: qk.project(projectId) });
-      qc.setQueryData(qk.project(projectId), data.project);
+      qc.setQueryData(qk.authSetupJob(projectId, data.job.id), data.job);
     },
   });
 }

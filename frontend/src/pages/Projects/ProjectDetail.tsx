@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type FocusEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   type AgentEventLike,
@@ -1117,6 +1117,7 @@ function EnvironmentEditor({ project }: { project: ProjectRecord }) {
   const [draft, setDraft] = useState<RuntimeProfileDraft>(initialDraft);
   const [error, setError] = useState<string | null>(null);
   const [saveStatus, setSaveStatus] = useState<EnvironmentSaveStatus>("saved");
+  const [editorFocused, setEditorFocused] = useState(false);
   const savedSnapshotRef = useRef(environmentSaveSnapshot(initialDraft));
   const draftSnapshotRef = useRef(savedSnapshotRef.current);
   const saveSeqRef = useRef(0);
@@ -1175,6 +1176,14 @@ function EnvironmentEditor({ project }: { project: ProjectRecord }) {
     [patchProfile.mutateAsync, patchProject.mutateAsync, project.id],
   );
 
+  const flushDraft = useCallback(() => {
+    const snapshot = environmentSaveSnapshot(draft);
+    draftSnapshotRef.current = snapshot;
+    if (snapshot !== savedSnapshotRef.current) {
+      void persistDraft(draft, snapshot);
+    }
+  }, [draft, persistDraft]);
+
   useEffect(() => {
     const snapshot = environmentSaveSnapshot(draft);
     draftSnapshotRef.current = snapshot;
@@ -1183,14 +1192,24 @@ function EnvironmentEditor({ project }: { project: ProjectRecord }) {
       return;
     }
     setSaveStatus((current) => (current === "saving" ? current : "dirty"));
+    if (editorFocused) return;
     const timer = window.setTimeout(() => {
-      void persistDraft(draft, snapshot);
+      if (snapshot !== savedSnapshotRef.current) {
+        void persistDraft(draft, snapshot);
+      }
     }, ENVIRONMENT_AUTOSAVE_DELAY_MS);
     return () => window.clearTimeout(timer);
-  }, [draft, persistDraft]);
+  }, [draft, editorFocused, persistDraft]);
 
   function onDraftChange(nextDraft: RuntimeProfileDraft) {
     setDraft(nextDraft);
+  }
+
+  function onEditorBlur(event: FocusEvent<HTMLDivElement>) {
+    const nextTarget = event.relatedTarget;
+    if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) return;
+    setEditorFocused(false);
+    flushDraft();
   }
 
   return (
@@ -1198,6 +1217,8 @@ function EnvironmentEditor({ project }: { project: ProjectRecord }) {
       className="environment-editor-card"
       title="Launch Profile"
       actions={<EnvironmentAutosaveStatus status={saveStatus} />}
+      onFocus={() => setEditorFocused(true)}
+      onBlur={onEditorBlur}
     >
       <ProjectRuntimeProfileForm value={draft} onChange={onDraftChange} projectId={project.id} />
       {error && (

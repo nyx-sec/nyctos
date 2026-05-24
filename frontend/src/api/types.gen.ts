@@ -252,6 +252,18 @@ export type AuthSetupVerification = { status: AuthSetupVerificationStatus, check
 
 export type AuthSetupResponse = { project: ProjectRecord, roles: Array<string>, login_paths: Array<string>, object_routes: Array<string>, agent_used: boolean, verification: AuthSetupVerification, profiles_added: number, profiles_updated: number, message: string, };
 
+export type AuthSetupJobStatus = "queued" | "running" | "succeeded" | "failed";
+
+export type AuthSetupPhase = "queued" | "collecting_repos" | "starting_agent" | "inspecting_auth_routes" | "drafting_profiles" | "verifying_profiles" | "saving_profiles" | "complete" | "failed";
+
+export type AuthSetupJobEvent = { at: number, phase: AuthSetupPhase, message: string, };
+
+export type AuthSetupError = { code: string, title: string, detail: string, hint?: string, retryable: boolean, };
+
+export type AuthSetupJobRecord = { id: string, project_id: string, status: AuthSetupJobStatus, phase: AuthSetupPhase, message: string, started_at: number, finished_at?: number, events: Array<AuthSetupJobEvent>, result?: AuthSetupResponse, error?: AuthSetupError, };
+
+export type AuthSetupStartResponse = { job: AuthSetupJobRecord, };
+
 export type LaunchStep = { command: string, repo_id?: string, repo_name?: string, working_directory?: string, timeout_seconds?: number, };
 
 export type LaunchHealthCheck = { kind: string, url?: string, host?: string, port?: number, command?: LaunchStep, timeout_seconds?: number, };

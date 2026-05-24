@@ -2,7 +2,10 @@ use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -14,7 +17,10 @@ use tokio::sync::{Mutex, RwLock};
 use nyctos_core::store::StoreError;
 use nyctos_core::{Config, SecretStore, Store};
 use nyctos_types::event::{AgentEvent, AiEvent, EventSink, RunEvent, SandboxEvent};
-use nyctos_types::project::{AuthSetupVerification, ProjectAuthOwnedObject, ProjectAuthProfile};
+use nyctos_types::project::{
+    AuthSetupError, AuthSetupJobEvent, AuthSetupJobRecord, AuthSetupJobStatus, AuthSetupPhase,
+    AuthSetupResponse, AuthSetupVerification, ProjectAuthOwnedObject, ProjectAuthProfile,
+};
 
 /// Future returned by [`ScanTrigger::trigger`]. Boxed so the trait can be
 /// object-safe.
@@ -125,6 +131,97 @@ pub enum AuthSetupAgentError {
 
 pub trait AuthSetupAgent: Send + Sync + 'static {
     fn explore<'a>(&'a self, req: AuthSetupAgentRequest) -> AuthSetupAgentFuture<'a>;
+}
+
+#[derive(Debug, Default)]
+pub struct AuthSetupJobStore {
+    seq: AtomicU64,
+    jobs: Mutex<HashMap<String, AuthSetupJobRecord>>,
+}
+
+impl AuthSetupJobStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub async fn create(&self, project_id: &str, now: i64) -> AuthSetupJobRecord {
+        let n = self.seq.fetch_add(1, Ordering::Relaxed) + 1;
+        let id = format!("authsetup-{now}-{n}");
+        let event = AuthSetupJobEvent {
+            at: now,
+            phase: AuthSetupPhase::Queued,
+            message: "Auth setup queued.".to_string(),
+        };
+        let record = AuthSetupJobRecord {
+            id: id.clone(),
+            project_id: project_id.to_string(),
+            status: AuthSetupJobStatus::Queued,
+            phase: AuthSetupPhase::Queued,
+            message: event.message.clone(),
+            started_at: now,
+            finished_at: None,
+            events: vec![event],
+            result: None,
+            error: None,
+        };
+        self.jobs.lock().await.insert(id, record.clone());
+        record
+    }
+
+    pub async fn get(&self, id: &str) -> Option<AuthSetupJobRecord> {
+        self.jobs.lock().await.get(id).cloned()
+    }
+
+    pub async fn push_phase(&self, id: &str, phase: AuthSetupPhase, message: impl Into<String>) {
+        let now = nyctos_core::now_epoch_ms();
+        let message = message.into();
+        let mut jobs = self.jobs.lock().await;
+        let Some(job) = jobs.get_mut(id) else {
+            return;
+        };
+        job.status = AuthSetupJobStatus::Running;
+        job.phase = phase;
+        job.message = message.clone();
+        job.events.push(AuthSetupJobEvent { at: now, phase, message });
+    }
+
+    pub async fn complete(&self, id: &str, result: AuthSetupResponse) {
+        let now = nyctos_core::now_epoch_ms();
+        let mut jobs = self.jobs.lock().await;
+        let Some(job) = jobs.get_mut(id) else {
+            return;
+        };
+        job.status = AuthSetupJobStatus::Succeeded;
+        job.phase = AuthSetupPhase::Complete;
+        job.message = result.message.clone();
+        job.finished_at = Some(now);
+        job.result = Some(result);
+        job.error = None;
+        job.events.push(AuthSetupJobEvent {
+            at: now,
+            phase: AuthSetupPhase::Complete,
+            message: job.message.clone(),
+        });
+    }
+
+    pub async fn fail(&self, id: &str, error: AuthSetupError) {
+        let now = nyctos_core::now_epoch_ms();
+        let mut jobs = self.jobs.lock().await;
+        let Some(job) = jobs.get_mut(id) else {
+            return;
+        };
+        job.status = AuthSetupJobStatus::Failed;
+        job.phase = AuthSetupPhase::Failed;
+        job.message = error.title.clone();
+        job.finished_at = Some(now);
+        job.result = None;
+        job.error = Some(error.clone());
+        job.events.push(AuthSetupJobEvent {
+            at: now,
+            phase: AuthSetupPhase::Failed,
+            message: error.detail,
+        });
+    }
 }
 
 #[derive(Debug, Error)]
@@ -326,6 +423,7 @@ pub struct ServerState {
     pub setup: SetupContext,
     pub auth: AuthConfig,
     pub auth_setup_agent: Option<Arc<dyn AuthSetupAgent>>,
+    pub auth_setup_jobs: Arc<AuthSetupJobStore>,
     /// Per-run event replay buffer. Populated by a tap task the daemon
     /// runs alongside the broadcast channel and read by `events_ws` on
     /// upgrade so newly-attached LiveScanView clients catch the
@@ -366,6 +464,7 @@ impl ServerState {
             setup,
             auth,
             auth_setup_agent: None,
+            auth_setup_jobs: Arc::new(AuthSetupJobStore::new()),
             replay: Arc::new(EventReplay::new()),
             state_repos_dir: None,
             state_bundles_dir: None,
