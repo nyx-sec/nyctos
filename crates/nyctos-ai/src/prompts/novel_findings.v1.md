@@ -13,6 +13,17 @@ The user message lists:
 - `files`   : source files to review. Each block starts with
               `--- <path> ---` followed by a fenced code excerpt.
 
+REPORTABILITY BAR
+Prioritize attacker-impactful issues over code quality. Emit a
+candidate only when the visible code suggests a plausible path to data
+exposure, auth or tenant bypass, server-side execution, SSRF, unsafe
+file access, state-changing abuse, money/credit abuse, or another
+meaningful compromise. Skip low-impact smells, generic dependency
+concerns, and theoretical weak crypto. `CRYPTO_WEAK` should be emitted
+only when the weak primitive protects secrets, sessions, auth tokens,
+password resets, signing keys, randomness for attacker-facing values,
+or other security-critical material.
+
 SINK TAXONOMY
 Classify every candidate under one of the supported capability tags:
 - `SQL_QUERY`     : SQL string built from untrusted input.

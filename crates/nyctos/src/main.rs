@@ -1059,6 +1059,8 @@ async fn drive_scan(
 
     emit_phase(&events, &run.id, project.id.as_str(), "AgentReviewStarted", true, None);
     let mut agent_review_notes: Vec<String> = Vec::new();
+    agent_review_notes
+        .push(format!("configured AI runtime: {}", ai_runtime_label(config.ai.runtime)));
     agent_review_notes.push(pentest_tools::auth_profiles_summary(&auth_profiles));
     if matches!(config.ai.runtime, nyctos_core::AiRuntime::None | nyctos_core::AiRuntime::LocalLlm)
     {
@@ -1497,15 +1499,13 @@ async fn drive_scan(
     {
         Ok(report) if report.total() > 0 => {
             verification_notes.push(format!(
-                "review surface: {} needs-review vulnerabilit{} surfaced ({} quarantined finding{}, {} pending AI candidate{}, {} observed pentest candidate{})",
+                "review surface: {} needs-review vulnerabilit{} surfaced ({} quarantined finding{}, {} pending AI candidate{})",
                 report.total(),
                 if report.total() == 1 { "y" } else { "ies" },
                 report.quarantined_findings,
                 if report.quarantined_findings == 1 { "" } else { "s" },
                 report.pending_ai_candidates,
                 if report.pending_ai_candidates == 1 { "" } else { "s" },
-                report.observed_pentest_candidates,
-                if report.observed_pentest_candidates == 1 { "" } else { "s" },
             ));
         }
         Ok(_) => {}
@@ -1617,14 +1617,20 @@ async fn serve(
 
     let (scan_tx, mut scan_rx) = mpsc::channel::<ScanRequest>(16);
     let trigger: Arc<dyn ScanTrigger> = Arc::new(MpscScanTrigger { tx: scan_tx });
+    let setup = SetupContext::new(
+        config_path.clone(),
+        config.clone(),
+        config_present,
+        SecretStore::from_env(),
+    );
 
     let scan_state_dir = state_dir.clone();
-    let scan_config = config.clone();
+    let scan_setup = setup.clone();
     let scan_events = events_tx.clone();
     let scan_worker = tokio::spawn(async move {
         while let Some(req) = scan_rx.recv().await {
             let state_dir = scan_state_dir.clone();
-            let config = scan_config.clone();
+            let config = scan_setup.config.read().await.clone();
             let events = scan_events.clone();
             tokio::spawn(async move {
                 let outcome = run_scan_for_api(
@@ -1642,12 +1648,6 @@ async fn serve(
         }
     });
 
-    let setup = SetupContext::new(
-        config_path.clone(),
-        config.clone(),
-        config_present,
-        SecretStore::from_env(),
-    );
     // Headless mode skips auth entirely (deferred plan #31). When auth
     // is on, mint or load a per-install token and surface it both to
     // the API middleware and the SPA bootstrap.
@@ -2795,12 +2795,11 @@ fn write_exploit_audit_jsonl(
 struct ReviewSurfaceReport {
     quarantined_findings: u32,
     pending_ai_candidates: u32,
-    observed_pentest_candidates: u32,
 }
 
 impl ReviewSurfaceReport {
     fn total(self) -> u32 {
-        self.quarantined_findings + self.pending_ai_candidates + self.observed_pentest_candidates
+        self.quarantined_findings + self.pending_ai_candidates
     }
 }
 
@@ -2826,18 +2825,6 @@ async fn materialize_review_vulnerabilities(
         let vuln = review_vulnerability_from_ai_candidate(&candidate, project_id, now_ms);
         store.verified_vulnerabilities().upsert(&vuln).await?;
         report.pending_ai_candidates += 1;
-    }
-
-    for candidate in store
-        .pentest_candidates()
-        .list_by_run(run_id)
-        .await?
-        .into_iter()
-        .filter(|c| matches!(c.status.as_str(), "Observed" | "NeedsReview"))
-    {
-        let vuln = review_vulnerability_from_observed_candidate(&candidate, project_id, now_ms);
-        store.verified_vulnerabilities().upsert(&vuln).await?;
-        report.observed_pentest_candidates += 1;
     }
 
     Ok(report)
@@ -2927,47 +2914,6 @@ fn review_vulnerability_from_ai_candidate(
             Some(&rationale),
         ),
         remediation: review_remediation(&candidate.cap),
-        source_candidate_ids: vec![candidate.id.clone()],
-        source_signal_ids: Vec::new(),
-        verification_attempt_ids: Vec::new(),
-        chain_id: None,
-        status: "NeedsReview".to_string(),
-        first_seen: now_ms,
-        last_seen: now_ms,
-    }
-}
-
-fn review_vulnerability_from_observed_candidate(
-    candidate: &PentestCandidateRecord,
-    project_id: &str,
-    now_ms: i64,
-) -> VerifiedVulnerabilityRecord {
-    VerifiedVulnerabilityRecord {
-        id: format!("vuln-review-{}-{}", candidate.run_id, candidate.id),
-        run_id: candidate.run_id.clone(),
-        project_id: project_id.to_string(),
-        title: candidate.title.clone(),
-        severity: candidate.severity_guess.clone(),
-        confidence: candidate.confidence,
-        vuln_class: candidate.vuln_class.clone(),
-        affected_components: vec![serde_json::json!({
-            "kind": "observed_pentest_candidate",
-            "candidate_id": &candidate.id,
-            "source": &candidate.source,
-            "source_ids": &candidate.source_ids,
-            "components": &candidate.affected_components,
-        })],
-        business_impact: candidate.hypothesis.clone(),
-        evidence_summary: format!(
-            "Needs review: {} observed this issue, but deterministic live verification has not confirmed it yet. {}",
-            candidate.source, candidate.hypothesis
-        ),
-        repro_steps: review_repro_steps(
-            None,
-            Some(&candidate.test_plan),
-            Some(&candidate.hypothesis),
-        ),
-        remediation: review_remediation(&candidate.vuln_class),
         source_candidate_ids: vec![candidate.id.clone()],
         source_signal_ids: Vec::new(),
         verification_attempt_ids: Vec::new(),
@@ -3180,6 +3126,16 @@ fn vulnerability_from_candidate(
         status: "Open".to_string(),
         first_seen: now_ms,
         last_seen: now_ms,
+    }
+}
+
+fn ai_runtime_label(runtime: nyctos_core::AiRuntime) -> &'static str {
+    match runtime {
+        nyctos_core::AiRuntime::None => "none",
+        nyctos_core::AiRuntime::Anthropic => "anthropic",
+        nyctos_core::AiRuntime::LocalLlm => "local-llm",
+        nyctos_core::AiRuntime::ClaudeCode => "claude-code",
+        nyctos_core::AiRuntime::Codex => "codex",
     }
 }
 
@@ -4381,20 +4337,40 @@ mod tests {
         assert!(vuln.evidence_summary.contains("Needs review"));
     }
 
-    #[test]
-    fn review_surface_marks_observed_candidates_as_needs_review() {
-        let mut candidate = review_candidate("VULNERABLE_DEPENDENCY");
-        candidate.source = "Trivy".to_string();
-        candidate.status = "Observed".to_string();
-        candidate.title = "vulnerable dependency".to_string();
+    #[tokio::test]
+    async fn review_surface_does_not_promote_observed_scanner_candidates() -> anyhow::Result<()> {
+        let state = tempfile::tempdir()?;
+        let store = Store::open(state.path()).await?;
+        let project =
+            store.projects().create("project-review", "Review", None, None, None, 1_000).await?;
+        let run = RunRecord {
+            id: "run-review".to_string(),
+            project_id: Some(project.id.clone()),
+            kind: "Scan".to_string(),
+            started_at: 2_000,
+            finished_at: None,
+            status: "Running".to_string(),
+            triggered_by: "Manual".to_string(),
+            git_ref: None,
+            parent_run_id: None,
+            wall_clock_ms: None,
+            total_ai_spend_usd_micros: 0,
+        };
+        store.runs().insert(&run).await?;
 
-        let vuln =
-            review_vulnerability_from_observed_candidate(&candidate, "project-review", 1_000);
+        let mut scanner_candidate = review_candidate("DEPENDENCY_VULN");
+        scanner_candidate.source = "Trivy".to_string();
+        scanner_candidate.status = "Observed".to_string();
+        store.pentest_candidates().insert(&scanner_candidate).await?;
 
-        assert_eq!(vuln.status, "NeedsReview");
-        assert_eq!(vuln.source_candidate_ids, vec!["pc-review".to_string()]);
-        assert!(vuln.verification_attempt_ids.is_empty());
-        assert!(vuln.evidence_summary.contains("Trivy observed"));
+        let report =
+            materialize_review_vulnerabilities(&store, &run.id, &project.id, 3_000).await?;
+        let vulnerabilities = store.verified_vulnerabilities().list_by_run(&run.id).await?;
+
+        assert_eq!(report.total(), 0);
+        assert!(vulnerabilities.is_empty());
+        store.close().await;
+        Ok(())
     }
 
     fn single_http_request(url: &str) -> serde_json::Value {

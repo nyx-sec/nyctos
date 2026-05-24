@@ -129,6 +129,16 @@ fn store_err(e: nyctos_core::StoreError) -> AiError {
     AiError::BudgetTracker(format!("{e}"))
 }
 
+fn ai_error_should_halt_pass(err: &AiError) -> bool {
+    matches!(
+        err,
+        AiError::BudgetExceeded { .. }
+            | AiError::UpstreamRefused(_)
+            | AiError::Transport(_)
+            | AiError::AdapterUnavailable(_)
+    )
+}
+
 /// Convert `[ai.pricing.<model>]` overrides from `AiConfig` into the
 /// `HashMap<String, Pricing>` shape the Anthropic adapter consumes.
 /// Operator-friendly per-million-token USD rates collapse to
@@ -990,7 +1000,7 @@ pub async fn run_live_test_plan_synthesis_pass(
                     "live test plan synthesis call failed"
                 );
                 report.failed += 1;
-                if matches!(err, AiError::BudgetExceeded { .. }) {
+                if ai_error_should_halt_pass(&err) {
                     break;
                 }
                 continue;
@@ -2157,6 +2167,10 @@ pub(crate) async fn drive_novel_finding_pass<R: AiRuntime + ?Sized>(
                     Err(err) => {
                         tracing::warn!(error = %err, "novel finding discovery call failed");
                         report.failed += 1;
+                        if ai_error_should_halt_pass(&err) {
+                            halted = true;
+                            break;
+                        }
                         continue;
                     }
                 };
@@ -3372,6 +3386,9 @@ pub(crate) async fn drive_ai_exploration_pass<R: AiRuntime + ?Sized>(
                     "ai exploration call failed"
                 );
                 report.failed += 1;
+                if ai_error_should_halt_pass(&err) {
+                    break;
+                }
                 continue;
             }
         };
