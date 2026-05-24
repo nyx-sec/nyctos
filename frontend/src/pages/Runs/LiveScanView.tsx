@@ -2,10 +2,14 @@ import { useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   type AgentEventLike,
+  type PentestCandidateRecord,
   runEventLogDownloadUrl,
   useAgentEvents,
+  useRunCandidates,
   useRunEnvironmentRuns,
+  useRunVerificationAttempts,
   useRunVulnerabilities,
+  type VerificationAttemptRecord,
 } from "@/api/client";
 import type { AiEvent, RunEvent, SandboxEvent } from "@/api/types.gen";
 import { Badge, type BadgeTone } from "@/components/Badge";
@@ -61,6 +65,31 @@ interface RunSummary {
   done: boolean;
 }
 
+interface LivePlanInfo {
+  kind: string;
+  endpoint?: string;
+  noPlanCode?: string;
+  noPlanMessage?: string;
+  whyThisConfirms?: string;
+}
+
+interface LiveAttemptInfo {
+  method: string;
+  status: string;
+  evidence: string;
+  failure?: string;
+  artifactCount: number;
+}
+
+interface LiveVerifierRowInfo {
+  id: string;
+  title: string;
+  candidateStatus?: string;
+  plan: LivePlanInfo;
+  attempt?: LiveAttemptInfo;
+  updatedAt: number;
+}
+
 const PHASE_LABEL: Record<RepoPhase, string> = {
   queued: "Queued",
   static: "Static",
@@ -107,6 +136,8 @@ export function LiveScanView() {
   const [summary, setSummary] = useState<RunSummary>({ done: false });
   const environmentRuns = useRunEnvironmentRuns(runId);
   const vulnerabilities = useRunVulnerabilities(runId);
+  const candidates = useRunCandidates(runId);
+  const verificationAttempts = useRunVerificationAttempts(runId);
 
   useAgentEvents({
     runId,
@@ -136,6 +167,16 @@ export function LiveScanView() {
     [orderedRepos, orderedPhases, summary],
   );
   const showRunProgress = summary.done || totalRepos > 0 || orderedPhases.length > 0;
+  const liveVerifierRows = useMemo(
+    () => buildLiveVerifierRows(candidates.data ?? [], verificationAttempts.data ?? []),
+    [candidates.data, verificationAttempts.data],
+  );
+  const confirmedVulnerabilityCount =
+    vulnerabilities.data?.filter((vulnerability) => vulnerability.status !== "NeedsReview")
+      .length ?? 0;
+  const needsReviewCount =
+    vulnerabilities.data?.filter((vulnerability) => vulnerability.status === "NeedsReview")
+      .length ?? 0;
 
   return (
     <div className="live-scan">
@@ -247,6 +288,17 @@ export function LiveScanView() {
           </section>
         )}
 
+        {liveVerifierRows.length > 0 && (
+          <section className="live-scan__verifier">
+            <h3 className="live-scan__h3">Live verifier</h3>
+            <ol className="live-scan__verifier-list">
+              {liveVerifierRows.map((row) => (
+                <LiveVerifierRow key={row.id} row={row} />
+              ))}
+            </ol>
+          </section>
+        )}
+
         <section className="live-scan__logs">
           <h3 className="live-scan__h3">Stream</h3>
           {logs.length === 0 ? (
@@ -265,7 +317,8 @@ export function LiveScanView() {
 
         {summary.done && (
           <p className="live-scan__cta">
-            Run finished with {vulnerabilities.data?.length ?? 0} verified vulnerabilities.{" "}
+            Run finished with {confirmedVulnerabilityCount} verified vulnerabilities
+            {needsReviewCount > 0 ? ` and ${needsReviewCount} review item(s)` : ""}.{" "}
             <Link to={`/vulnerabilities?run_id=${encodeURIComponent(runId)}`}>
               Open vulnerabilities →
             </Link>
@@ -273,6 +326,43 @@ export function LiveScanView() {
         )}
       </Card>
     </div>
+  );
+}
+
+interface LiveVerifierRowProps {
+  row: LiveVerifierRowInfo;
+}
+
+function LiveVerifierRow({ row }: LiveVerifierRowProps) {
+  return (
+    <li className="live-scan__verifier-row">
+      <div className="live-scan__verifier-main">
+        <span className="live-scan__verifier-title" title={row.title}>
+          {row.title}
+        </span>
+        {row.candidateStatus && (
+          <Badge tone={verificationTone(row.candidateStatus)}>{row.candidateStatus}</Badge>
+        )}
+        <Badge tone={planTone(row.plan.kind)}>{formatPlanKind(row.plan.kind)}</Badge>
+        {row.attempt && (
+          <Badge tone={verificationTone(row.attempt.status)}>{row.attempt.status}</Badge>
+        )}
+      </div>
+      <div className="live-scan__verifier-meta">
+        {row.plan.endpoint && <span>{row.plan.endpoint}</span>}
+        {row.attempt && <span>{row.attempt.method}</span>}
+        {row.attempt?.evidence && <span>{row.attempt.evidence}</span>}
+        {row.attempt && row.attempt.artifactCount > 0 && (
+          <span>{row.attempt.artifactCount} artifact(s)</span>
+        )}
+      </div>
+      {(row.plan.noPlanMessage || row.attempt?.failure || row.plan.whyThisConfirms) && (
+        <p className="live-scan__verifier-reason">
+          {row.attempt?.failure ?? row.plan.noPlanMessage ?? row.plan.whyThisConfirms}
+          {row.plan.noPlanCode ? ` (${row.plan.noPlanCode})` : ""}
+        </p>
+      )}
+    </li>
   );
 }
 
@@ -303,6 +393,215 @@ function RepoProgressRow({ repo }: RepoProgressRowProps) {
       )}
     </li>
   );
+}
+
+function buildLiveVerifierRows(
+  candidates: PentestCandidateRecord[],
+  attempts: VerificationAttemptRecord[],
+): LiveVerifierRowInfo[] {
+  const latestAttemptByCandidate = new Map<string, VerificationAttemptRecord>();
+  for (const attempt of attempts) {
+    if (!attempt.candidate_id) continue;
+    const existing = latestAttemptByCandidate.get(attempt.candidate_id);
+    if (!existing || existing.started_at <= attempt.started_at) {
+      latestAttemptByCandidate.set(attempt.candidate_id, attempt);
+    }
+  }
+
+  const rows: LiveVerifierRowInfo[] = candidates.map((candidate) => {
+    const attempt = latestAttemptByCandidate.get(candidate.id);
+    return {
+      id: candidate.id,
+      title: candidate.title,
+      candidateStatus: candidate.status,
+      plan: planInfo(candidate),
+      attempt: attempt ? attemptInfo(attempt) : undefined,
+      updatedAt: Math.max(candidate.updated_at, attempt?.started_at ?? 0),
+    };
+  });
+
+  for (const attempt of attempts) {
+    if (
+      attempt.candidate_id &&
+      candidates.some((candidate) => candidate.id === attempt.candidate_id)
+    ) {
+      continue;
+    }
+    rows.push({
+      id: attempt.id,
+      title: attempt.candidate_id
+        ? `Candidate ${attempt.candidate_id}`
+        : attempt.chain_id
+          ? `Chain ${attempt.chain_id}`
+          : "Verification attempt",
+      plan: { kind: methodPlanKind(attempt.method) },
+      attempt: attemptInfo(attempt),
+      updatedAt: attempt.started_at,
+    });
+  }
+
+  return rows.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 10);
+}
+
+function planInfo(candidate: PentestCandidateRecord): LivePlanInfo {
+  const parsed = parseJsonRecord(candidate.test_plan);
+  if (!parsed) {
+    return {
+      kind: candidate.status === "NeedsReview" ? "no_plan" : "legacy",
+      noPlanMessage: candidate.rejection_reason,
+    };
+  }
+
+  const reason = noPlanReason(parsed);
+  const kind = stringProp(parsed, "kind") ?? (reason ? "no_plan" : "legacy");
+  return {
+    kind,
+    endpoint: planEndpoint(parsed),
+    noPlanCode: reason?.code,
+    noPlanMessage: reason?.message ?? candidate.rejection_reason,
+    whyThisConfirms: stringProp(parsed, "why_this_confirms"),
+  };
+}
+
+function attemptInfo(attempt: VerificationAttemptRecord): LiveAttemptInfo {
+  const oracle = asRecord(attempt.oracle);
+  return {
+    method: attempt.method,
+    status: attempt.status,
+    evidence: evidenceSummary(oracle, asRecord(attempt.response)),
+    failure:
+      failureReason(oracle) ??
+      failureReason(asRecord(attempt.request)) ??
+      failureReason(asRecord(attempt.response)) ??
+      attempt.error,
+    artifactCount: attempt.artifact_paths.length,
+  };
+}
+
+function evidenceSummary(
+  oracle: Record<string, unknown> | undefined,
+  response: Record<string, unknown> | undefined,
+): string {
+  const bits: string[] = [];
+  const baselineClean = boolProp(oracle, "baseline_clean");
+  const benignClean = boolProp(oracle, "benign_clean");
+  const vulnSuccess = boolProp(oracle, "vuln_success");
+  if (baselineClean !== undefined) bits.push(baselineClean ? "baseline clean" : "baseline hit");
+  if (benignClean !== undefined) bits.push(benignClean ? "benign clean" : "benign hit");
+  if (vulnSuccess !== undefined) bits.push(vulnSuccess ? "vuln signal" : "no vuln signal");
+
+  const oracleStatus = numberProp(oracle, "actual_status");
+  const responseStatus =
+    oracleStatus ??
+    numberProp(asRecord(response?.response), "status") ??
+    numberProp(response, "status");
+  if (responseStatus !== undefined) bits.push(`HTTP ${responseStatus}`);
+
+  return bits.join(" · ");
+}
+
+function noPlanReason(
+  record: Record<string, unknown>,
+): { code?: string; message?: string } | undefined {
+  const reason = asRecord(record.no_plan_reason) ?? asRecord(record.inconclusive_reason);
+  if (!reason) return undefined;
+  return {
+    code: stringProp(reason, "code"),
+    message: stringProp(reason, "message") ?? stringProp(reason, "reason"),
+  };
+}
+
+function failureReason(record: Record<string, unknown> | undefined): string | undefined {
+  const reason = asRecord(record?.failure_reason);
+  if (!reason) return undefined;
+  const code = stringProp(reason, "code");
+  const message = stringProp(reason, "message") ?? stringProp(reason, "reason");
+  if (code && message) return `${message} (${code})`;
+  return message ?? code;
+}
+
+function planEndpoint(record: Record<string, unknown>): string | undefined {
+  const direct = stringProp(record, "url") ?? stringProp(record, "path");
+  if (direct) return direct;
+  const steps = Array.isArray(record.steps) ? record.steps : [];
+  const firstStep = asRecord(steps[0]);
+  return stringProp(firstStep, "url") ?? stringProp(firstStep, "path");
+}
+
+function methodPlanKind(method: string): string {
+  const lower = method.toLowerCase();
+  if (lower.includes("browser")) return "browser_workflow";
+  if (lower.includes("differential")) return "differential_http";
+  if (lower.includes("workflow")) return "http_workflow";
+  if (lower.includes("http")) return "single_http";
+  return method || "verification";
+}
+
+function parseJsonRecord(raw: string): Record<string, unknown> | undefined {
+  try {
+    return asRecord(JSON.parse(raw));
+  } catch {
+    return undefined;
+  }
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  return value as Record<string, unknown>;
+}
+
+function stringProp(record: Record<string, unknown> | undefined, key: string): string | undefined {
+  const value = record?.[key];
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function boolProp(record: Record<string, unknown> | undefined, key: string): boolean | undefined {
+  const value = record?.[key];
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function numberProp(record: Record<string, unknown> | undefined, key: string): number | undefined {
+  const value = record?.[key];
+  return typeof value === "number" ? value : undefined;
+}
+
+function formatPlanKind(kind: string): string {
+  switch (kind) {
+    case "single_http":
+    case "http":
+      return "single HTTP";
+    case "http_workflow":
+    case "multi_step_http":
+      return "HTTP workflow";
+    case "differential_http":
+      return "differential HTTP";
+    case "browser_workflow":
+    case "browser":
+      return "browser workflow";
+    case "no_plan":
+      return "no plan";
+    case "legacy":
+      return "legacy plan";
+    default:
+      return kind;
+  }
+}
+
+function planTone(kind: string): BadgeTone {
+  if (kind === "no_plan") return "warning";
+  if (kind === "browser_workflow" || kind === "browser") return "accent";
+  if (kind === "legacy") return "neutral";
+  return "info";
+}
+
+function verificationTone(status: string): BadgeTone {
+  if (["Confirmed", "Verified", "Open", "Success"].includes(status)) return "success";
+  if (["NeedsReview", "Rejected", "NotConfirmed", "Inconclusive"].includes(status)) {
+    return "warning";
+  }
+  if (["Errored", "Failed", "Blocked"].includes(status)) return "danger";
+  if (["NeedsLiveTest", "Proposed", "Pending"].includes(status)) return "info";
+  return "neutral";
 }
 
 function sourceScanProgress(phase: RepoPhase): number {

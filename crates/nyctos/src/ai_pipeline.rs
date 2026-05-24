@@ -63,7 +63,7 @@ use nyctos_types::spec::{SpecDerivationInput, SPEC_DERIVATION_PROMPT_VERSION};
 use nyctos_types::verify::{Oracle, VerifyResult, VerifyVerdict};
 use tokio::sync::Semaphore;
 
-use crate::{pentest_tools, route_model};
+use crate::{live_planning, pentest_tools, route_model};
 
 // Per-call PayloadSynthesis / SpecDerivation caps now live on
 // `AiConfig` as
@@ -872,6 +872,7 @@ pub async fn run_live_test_plan_synthesis_pass(
     route_model: Option<&RouteModel>,
     auth_profiles: &[ProjectAuthProfile],
     browser_checks_enabled: bool,
+    allow_state_changing: bool,
     attack_plan_context: Option<&str>,
     events: EventSink,
 ) -> anyhow::Result<LiveTestPlanSynthesisPassReport> {
@@ -890,6 +891,63 @@ pub async fn run_live_test_plan_synthesis_pass(
         return Ok(report);
     }
     report.candidates_seen = candidates.len() as u32;
+
+    let synthesizer =
+        live_planning::LiveTestPlanSynthesizer::new(live_planning::LiveTestPlanSynthesisContext {
+            route_model,
+            target_urls,
+            auth_profiles,
+            browser_checks_enabled,
+            allow_state_changing,
+        });
+    let mut ai_candidates = Vec::new();
+    for candidate in candidates {
+        let plan = synthesizer.synthesize(&candidate);
+        let finished_at = now_epoch_ms();
+        match plan {
+            nyctos_types::live_plan::LiveTestPlan::NoPlan(no_plan) => {
+                let reason = no_plan.no_plan_reason.message.clone();
+                let plan_blob =
+                    serde_json::to_string(&nyctos_types::live_plan::LiveTestPlan::NoPlan(no_plan))?;
+                store
+                    .pentest_candidates()
+                    .set_test_plan(&candidate.id, &plan_blob, "NeedsReview", None, finished_at)
+                    .await?;
+                store
+                    .pentest_candidates()
+                    .set_status(&candidate.id, "NeedsReview", Some(&reason), finished_at)
+                    .await?;
+                report.no_plan += 1;
+            }
+            executable => {
+                let plan_blob = serde_json::to_string(&executable)?;
+                match normalise_live_test_plan(&plan_blob, target_urls) {
+                    Ok(Some(_)) => {
+                        store
+                            .pentest_candidates()
+                            .set_test_plan(&candidate.id, &plan_blob, "Proposed", None, finished_at)
+                            .await?;
+                        report.planned += 1;
+                    }
+                    Ok(None) => {
+                        ai_candidates.push(candidate);
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            candidate_id = %candidate.id,
+                            error = %err,
+                            "deterministic live test plan synthesis produced unusable plan"
+                        );
+                        ai_candidates.push(candidate);
+                    }
+                }
+            }
+        }
+    }
+    let candidates = ai_candidates;
+    if candidates.is_empty() {
+        return Ok(report);
+    }
 
     let adapter = match selected_one_shot_runtime(
         config,
@@ -915,6 +973,7 @@ pub async fn run_live_test_plan_synthesis_pass(
             route_model,
             auth_profiles,
             browser_checks_enabled,
+            allow_state_changing,
             attack_plan_context,
         );
         let budget = Budget {
@@ -994,6 +1053,7 @@ fn build_live_test_plan_prompt(
     route_model: Option<&RouteModel>,
     auth_profiles: &[ProjectAuthProfile],
     browser_checks_enabled: bool,
+    allow_state_changing: bool,
     attack_plan_context: Option<&str>,
 ) -> Prompt {
     let excerpt = candidate_source_excerpt(candidate, workspaces)
@@ -1021,6 +1081,11 @@ fn build_live_test_plan_prompt(
         "enabled"
     } else {
         "disabled; return no_plan_reason for browser-only/client-side-only candidates"
+    };
+    let state_changing = if allow_state_changing {
+        "state-changing probes are explicitly allowed by run policy"
+    } else {
+        "state-changing probes are not allowed; return no_plan_reason for mutation-only verification"
     };
     let attack_plan =
         attack_plan_context.unwrap_or("no prior attack-planning trace available for this run");
@@ -1091,7 +1156,7 @@ For client-side-only bugs, use a browser plan only when browser verification is 
 At least one positive live evidence oracle is required: body_contains/header_contains for HTTP, or text_contains/html_contains/selector_exists/selector_text_contains/url_contains/title_contains/console_contains/alert_contains for browser. expect_status/status_range/body_not_contains may be included only as guards around that positive evidence. Do not return generic homepage checks, blocked-request checks, no-reflection checks, or static bundle/source checks."#
         .to_string();
     let user = format!(
-        "TARGET BASE URLS\n{targets}\n\nAUTH PROFILES\n{auth}\n\nBROWSER VERIFICATION\n{browser}\n\nROUTE MODEL\n{routes}\n\nSENIOR ATTACK PLAN CONTEXT\n{attack_plan}\n\nCANDIDATE\nid: {id}\ntitle: {title}\nclass: {vuln_class}\nseverity: {severity}\nstatus: {status}\nhypothesis: {hypothesis}\nsource_ids: {source_ids}\naffected_components:\n{components}\n\nSOURCE EXCERPT\n{excerpt}\n",
+        "TARGET BASE URLS\n{targets}\n\nAUTH PROFILES\n{auth}\n\nBROWSER VERIFICATION\n{browser}\n\nSTATE-CHANGING POLICY\n{state_changing}\n\nROUTE MODEL\n{routes}\n\nSENIOR ATTACK PLAN CONTEXT\n{attack_plan}\n\nCANDIDATE\nid: {id}\ntitle: {title}\nclass: {vuln_class}\nseverity: {severity}\nstatus: {status}\nhypothesis: {hypothesis}\nsource_ids: {source_ids}\naffected_components:\n{components}\n\nSOURCE EXCERPT\n{excerpt}\n",
         id = candidate.id,
         title = candidate.title,
         vuln_class = candidate.vuln_class,

@@ -35,6 +35,7 @@ mod business_logic_templates;
 mod candidate_sources;
 mod cmd;
 mod launch;
+mod live_planning;
 mod pentest_tools;
 mod route_model;
 mod scheduler;
@@ -1330,6 +1331,7 @@ async fn drive_scan(
         Some(&route_model),
         &auth_profiles,
         config.run.browser_checks_enabled,
+        config.run.state_changing_live_probes_allowed(),
         attack_plan_context.as_deref(),
         events.clone(),
     )
@@ -1425,6 +1427,7 @@ async fn drive_scan(
             project.id.as_str(),
             env,
             &live_target_urls,
+            Some(&route_model),
             &config.run,
             &auth_profiles,
             &state_dir.traces_for_run(&run.id).join("auth_sessions"),
@@ -2204,6 +2207,7 @@ async fn verify_pentest_candidates(
     project_id: &str,
     environment: &mut launch::RunningProjectEnvironment,
     target_urls: &[String],
+    route_model: Option<&nyctos_types::product::RouteModel>,
     run_config: &nyctos_core::RunConfig,
     auth_profiles: &[nyctos_types::project::ProjectAuthProfile],
     auth_artifact_dir: &std::path::Path,
@@ -2245,6 +2249,18 @@ async fn verify_pentest_candidates(
             run_config.browser_checks_enabled,
         ) {
             report.skipped_no_plan += 1;
+            let reason =
+                match pentest_tools::normalise_live_test_plan(&candidate.test_plan, target_urls) {
+                    Ok(None) => {
+                        "candidate has structured no-plan reason or no executable plan".to_string()
+                    }
+                    Err(err) => format!("no executable live test plan: {err}"),
+                    Ok(Some(_)) => "candidate has no runnable live test plan".to_string(),
+                };
+            store
+                .pentest_candidates()
+                .set_status(&candidate.id, "NeedsReview", Some(&reason), now_epoch_ms())
+                .await?;
             continue;
         }
         let started = now_epoch_ms();
@@ -2262,7 +2278,41 @@ async fn verify_pentest_candidates(
             policy: pentest_tools::ExploitSafetyPolicy::from_run_config(run_config),
             audit_log: audit_log.clone(),
         };
-        let outcome = execute_candidate_test_plan(&candidate, &options).await;
+        let mut outcome = execute_candidate_test_plan(&candidate, &options).await;
+        let mut replan_meta = None;
+        if let Some(model) = route_model {
+            if let Some(failure_code) = outcome_failure_code(outcome.as_ref().ok()) {
+                let synthesizer = live_planning::LiveTestPlanSynthesizer::new(
+                    live_planning::LiveTestPlanSynthesisContext {
+                        route_model: Some(model),
+                        target_urls,
+                        auth_profiles,
+                        browser_checks_enabled: run_config.browser_checks_enabled,
+                        allow_state_changing: run_config.state_changing_live_probes_allowed(),
+                    },
+                );
+                if let Some(replan) =
+                    synthesizer.replan_after_failure(&candidate, Some(failure_code.as_str()))
+                {
+                    let replan_blob = serde_json::to_string(&replan)?;
+                    if replan_blob != candidate.test_plan {
+                        let retry_candidate = PentestCandidateRecord {
+                            test_plan: replan_blob.clone(),
+                            ..candidate.clone()
+                        };
+                        let retry_outcome =
+                            execute_candidate_test_plan(&retry_candidate, &options).await;
+                        replan_meta = Some(serde_json::json!({
+                            "attempted": true,
+                            "trigger_failure_code": failure_code,
+                            "plan_kind": replan.kind_str(),
+                            "accepted": retry_outcome.as_ref().ok().is_some_and(|o| matches!(o, VerificationOutcome::Confirmed { .. })),
+                        }));
+                        outcome = retry_outcome;
+                    }
+                }
+            }
+        }
         let finished = now_epoch_ms();
         let (mut status, mut request, response, mut oracle, mut error) = match outcome {
             Ok(VerificationOutcome::Confirmed { request, response, oracle }) => {
@@ -2285,6 +2335,9 @@ async fn verify_pentest_candidates(
                 ("Errored", None, None, None, Some(err.to_string()))
             }
         };
+        if let Some(meta) = replan_meta {
+            attach_replan_meta(&mut request, &mut oracle, meta);
+        }
         if let Some(provenance) = business_logic_provenance_from_candidate(&candidate) {
             if let Some(request_value) = request.take() {
                 request = Some(with_business_logic_provenance(request_value, provenance.clone()));
@@ -2571,18 +2624,77 @@ async fn execute_candidate_test_plan(
     })
 }
 
+fn outcome_failure_code(outcome: Option<&VerificationOutcome>) -> Option<String> {
+    match outcome? {
+        VerificationOutcome::Confirmed { .. } => None,
+        VerificationOutcome::Rejected { oracle, .. } => oracle_failure_code(oracle),
+        VerificationOutcome::Inconclusive { reason, trace }
+        | VerificationOutcome::Blocked { reason, trace } => trace
+            .as_ref()
+            .and_then(oracle_failure_code)
+            .or_else(|| classify_failure_reason_text(reason)),
+    }
+}
+
+fn oracle_failure_code(value: &serde_json::Value) -> Option<String> {
+    value
+        .get("failure_reason")
+        .or_else(|| value.get("failure"))
+        .and_then(|v| v.get("code"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .or_else(|| {
+            value
+                .get("failure_reason")
+                .and_then(|v| v.as_array())
+                .and_then(|items| items.first())
+                .and_then(|v| v.get("code"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        })
+}
+
+fn classify_failure_reason_text(reason: &str) -> Option<String> {
+    let lower = reason.to_ascii_lowercase();
+    if lower.contains("outside") && lower.contains("target") {
+        Some("target_out_of_scope".to_string())
+    } else if lower.contains("browser") && lower.contains("disabled") {
+        Some("browser_disabled".to_string())
+    } else if lower.contains("playwright") || lower.contains("runtime unavailable") {
+        Some("runtime_unavailable".to_string())
+    } else if lower.contains("auth") {
+        Some("auth_missing".to_string())
+    } else if lower.contains("no explicit oracle") || lower.contains("weak") {
+        Some("weak_oracle".to_string())
+    } else if lower.contains("404") || lower.contains("bad endpoint") {
+        Some("bad_endpoint".to_string())
+    } else {
+        Some("no_executable_plan".to_string())
+    }
+}
+
+fn attach_replan_meta(
+    request: &mut Option<serde_json::Value>,
+    oracle: &mut Option<serde_json::Value>,
+    meta: serde_json::Value,
+) {
+    if let Some(request) = request.as_mut().and_then(|v| v.as_object_mut()) {
+        request.insert("replan".to_string(), meta.clone());
+    }
+    if let Some(oracle) = oracle.as_mut().and_then(|v| v.as_object_mut()) {
+        oracle.insert("replan".to_string(), meta);
+    }
+}
+
 fn candidate_has_runnable_test_plan(
     candidate: &PentestCandidateRecord,
     target_urls: &[String],
-    browser_checks_enabled: bool,
+    _browser_checks_enabled: bool,
 ) -> bool {
-    let Some(plan) =
-        pentest_tools::normalise_live_test_plan(&candidate.test_plan, target_urls).ok().flatten()
-    else {
-        return false;
-    };
-    let kind = plan.get("kind").and_then(|v| v.as_str()).unwrap_or("http");
-    browser_checks_enabled || !matches!(kind, "browser" | "browser_workflow")
+    pentest_tools::normalise_live_test_plan(&candidate.test_plan, target_urls)
+        .ok()
+        .flatten()
+        .is_some()
 }
 
 fn verification_attempt_method(request: Option<&serde_json::Value>) -> String {
@@ -2721,7 +2833,7 @@ async fn materialize_review_vulnerabilities(
         .list_by_run(run_id)
         .await?
         .into_iter()
-        .filter(|c| c.status == "Observed")
+        .filter(|c| matches!(c.status.as_str(), "Observed" | "NeedsReview"))
     {
         let vuln = review_vulnerability_from_observed_candidate(&candidate, project_id, now_ms);
         store.verified_vulnerabilities().upsert(&vuln).await?;
