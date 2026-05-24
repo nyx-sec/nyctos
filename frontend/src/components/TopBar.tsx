@@ -40,5 +40,6 @@ function projectScopedTitle(pathname: string): string {
   if (/^\/projects\/[^/]+\/vulnerabilities/.test(pathname)) return "Vulnerabilities";
   if (/^\/projects\/[^/]+\/repos/.test(pathname)) return "Repositories";
   if (/^\/projects\/[^/]+\/environments/.test(pathname)) return "Environments";
+  if (/^\/projects\/[^/]+\/integrations/.test(pathname)) return "Integrations";
   return "Project";
 }

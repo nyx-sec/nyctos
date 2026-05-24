@@ -54,6 +54,22 @@ name = "example-app"
 description = "Example multi-repo product"
 target_base_url = "http://localhost:3000"
 
+[project.launch]
+mode = "auto"
+target_urls = ["http://localhost:3000"]
+
+[[project.launch.health]]
+url = "http://localhost:3000/health"
+timeout_secs = 60
+
+[[project.launch.seed]]
+command = "npm run seed:test"
+repo = "example-backend"
+
+[[project.launch.reset]]
+command = "npm run db:reset"
+repo = "example-backend"
+
 [[project.repo]]
 name = "example-backend"
 i_own_this = true

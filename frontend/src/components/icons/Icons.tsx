@@ -107,6 +107,18 @@ export function QuarantineIcon({ className, size = 18 }: IconProps) {
   );
 }
 
+export function IntegrationsIcon({ className, size = 18 }: IconProps) {
+  return (
+    <svg {...svgProps({ className, size })} viewBox="0 0 18 18">
+      <path d="M6.2 2.5v4" />
+      <path d="M11.8 2.5v4" />
+      <path d="M4.8 6.5h8.4v3.2a4.2 4.2 0 0 1-8.4 0V6.5z" />
+      <path d="M9 13.9v1.6" />
+      <path d="M6.8 15.5h4.4" />
+    </svg>
+  );
+}
+
 export function SettingsIcon({ className, size = 18 }: IconProps) {
   return (
     <svg {...svgProps({ className, size })} viewBox="0 0 18 18">

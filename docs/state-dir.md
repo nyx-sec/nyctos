@@ -79,6 +79,9 @@ migrations under `crates/nyctos-core/migrations/`:
 |---------------|------|
 | `0001_v1.sql` | Full baseline schema: product/projects, repos, runs, findings, harness specs, traces, AI budgets, quarantine data, launch profiles, Nyx signals, pentest candidates, verification attempts, vulnerabilities, phase events, and supporting indexes. |
 | `0002_attack_graph.sql` | Run-scoped attack graph nodes and edges for routes, endpoints, forms, parameters, roles, objects, signals, candidates, verification attempts, verified vulnerabilities, and chains. |
+| `0003_business_logic_templates.sql` | Per-run business-logic template synthesis summaries. |
+| `0004_launch_profile_hooks.sql` | Seed, reset, and login hook columns for project launch profiles. |
+| `0005_project_integrations.sql` | Project-scoped outbound integration settings and delivery status. |
 
 The singleton `meta` row carries `schema_version` (mirrors
 `MAX(_sqlx_migrations.version)`), `created_at` (epoch ms of first
@@ -93,7 +96,7 @@ sqlite3 "<state>/state.db" \
 `nyctos doctor` prints the schema version on every run:
 
 ```text
-db OK at <state>/state.db (schema v3)
+db OK at <state>/state.db (schema v5)
 ```
 
 If migrations diverge (e.g. a newer binary then an older binary

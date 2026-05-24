@@ -1,17 +1,14 @@
-import { Children, type ReactNode, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   type AgentEventLike,
-  type LaunchEnvRef,
-  type LaunchHealthCheck,
-  type LaunchStep,
-  type LaunchWorkingDir,
   type ProjectLaunchProfile,
   type ProjectRecord,
   type RepoRecord,
   useAgentEvents,
   useDeleteProject,
   useDeleteProjectRepo,
+  usePatchDefaultLaunchProfile,
   useProject,
   useProjectRepos,
   useProjectVulnerabilities,
@@ -27,6 +24,13 @@ import { RepoAddModal } from "../Repos/RepoAddModal";
 import { RepoEditModal } from "../Repos/RepoEditModal";
 import { applyEvent, type RepoLiveState, type RepoLiveStatus } from "../Repos/repoStatus";
 import { ProjectProfileModal } from "./ProjectProfileModal";
+import {
+  launchProfileDraftError,
+  launchProfileFromDraft,
+  launchProfileToDraft,
+  ProjectRuntimeProfileForm,
+  type RuntimeProfileDraft,
+} from "./ProjectRuntimeProfileForm";
 
 type LiveMap = Record<string, RepoLiveState>;
 type ProjectDetailView = "overview" | "repos" | "environments";
@@ -165,6 +169,7 @@ export function ProjectDetail({ view = "overview" }: ProjectDetailProps = {}) {
     ? null
     : formatStartHint(runtimeTarget, rows.length, launchProfile);
   const encodedProjectId = encodeURIComponent(projectId);
+  const viewMeta = projectViewMeta(view, p, runtimeTarget, rows.length);
 
   return (
     <>
@@ -174,59 +179,72 @@ export function ProjectDetail({ view = "overview" }: ProjectDetailProps = {}) {
             <div className="project-hero__copy">
               <div className="project-hero__eyebrow">
                 <Badge tone={runtimeStatus.tone}>{runtimeStatus.label}</Badge>
-                <span>Autonomous pentest</span>
+                <span>{p.name}</span>
               </div>
-              <h1>{p.name}</h1>
-              <p>{heroDescription}</p>
-              {startHint && <p className="project-hero__hint">{startHint}</p>}
+              <h1>{viewMeta.title}</h1>
+              <p>{view === "overview" ? heroDescription : viewMeta.description}</p>
+              {view === "overview" && startHint && (
+                <p className="project-hero__hint">{startHint}</p>
+              )}
             </div>
 
             <div className="project-hero__actions">
-              <Button
-                variant="primary"
-                onClick={() => setShowPentestOptions(true)}
-                disabled={!canStartPentest || startPentest.isPending}
-              >
-                {startPentest.isPending ? "Starting..." : "Start pentest"}
-              </Button>
-              <Button variant="ghost" onClick={() => setShowProfileEdit(true)}>
-                Launch profile
-              </Button>
-              <Button
-                className="project-hero__delete"
-                variant="ghost"
-                onClick={onDeleteProject}
-                disabled={deleteProject.isPending}
-              >
-                Delete project
-              </Button>
+              {view === "overview" && (
+                <>
+                  <Button
+                    variant="primary"
+                    onClick={() => setShowPentestOptions(true)}
+                    disabled={!canStartPentest || startPentest.isPending}
+                  >
+                    {startPentest.isPending ? "Starting..." : "Start pentest"}
+                  </Button>
+                  <Button variant="ghost" onClick={() => setShowProfileEdit(true)}>
+                    Launch profile
+                  </Button>
+                  <Button
+                    className="project-hero__delete"
+                    variant="ghost"
+                    onClick={onDeleteProject}
+                    disabled={deleteProject.isPending}
+                  >
+                    Delete project
+                  </Button>
+                </>
+              )}
+              {view === "repos" && (
+                <Button variant="primary" onClick={() => setShowAdd(true)}>
+                  Add repo
+                </Button>
+              )}
             </div>
           </div>
 
-          <dl className="project-hero__signals">
-            <div className="project-hero__signal project-hero__signal--target">
-              <dt>Target</dt>
-              <dd>
-                {runtimeTarget ? (
-                  <code title={runtimeTarget}>{runtimeTarget}</code>
-                ) : (
-                  <span className="project-hero__muted">Not set</span>
-                )}
-              </dd>
-            </div>
-            <div className="project-hero__signal">
-              <dt>Scope</dt>
-              <dd>{repoCountLabel}</dd>
-            </div>
-            <div className="project-hero__signal">
-              <dt>Verified</dt>
-              <dd>{verifiedCount}</dd>
-            </div>
-            <div className="project-hero__signal">
-              <dt>Mode</dt>
-              <dd>{formatLaunchMode(launchProfile)}</dd>
-            </div>
-          </dl>
+          {view === "overview" && (
+            <dl className="project-hero__signals">
+              <div className="project-hero__signal project-hero__signal--target">
+                <dt>Target</dt>
+                <dd>
+                  {runtimeTarget ? (
+                    <code title={runtimeTarget}>{runtimeTarget}</code>
+                  ) : (
+                    <span className="project-hero__muted">Not set</span>
+                  )}
+                </dd>
+              </div>
+              <div className="project-hero__signal">
+                <dt>Scope</dt>
+                <dd>{repoCountLabel}</dd>
+              </div>
+              <div className="project-hero__signal">
+                <dt>Verified</dt>
+                <dd>{verifiedCount}</dd>
+              </div>
+              <div className="project-hero__signal">
+                <dt>Mode</dt>
+                <dd>{formatLaunchMode(launchProfile)}</dd>
+              </div>
+            </dl>
+          )}
         </Card>
 
         {banner && (
@@ -246,17 +264,7 @@ export function ProjectDetail({ view = "overview" }: ProjectDetailProps = {}) {
         )}
 
         {view === "repos" && (
-          <Card
-            title="Repositories"
-            subtitle={repoCountLabel}
-            actions={
-              <div className="repo-list__actions">
-                <Button variant="primary" onClick={() => setShowAdd(true)}>
-                  Add repo
-                </Button>
-              </div>
-            }
-          >
+          <Card title="Repository Scope" subtitle={`${repoCountLabel} connected to this project`}>
             {repos.isPending && (
               <div className="repo-list__pending">
                 <Spinner /> Loading repositories...
@@ -310,24 +318,10 @@ export function ProjectDetail({ view = "overview" }: ProjectDetailProps = {}) {
         )}
 
         {view === "environments" && (
-          <Card
-            title="Environments"
-            subtitle="Target URLs, startup commands, health checks, and runtime scope"
-            actions={
-              <Button variant="primary" onClick={() => setShowProfileEdit(true)}>
-                Edit launch profile
-              </Button>
-            }
-          >
-            {launchProfile ? (
-              <EnvironmentProfile profile={launchProfile} fallbackTarget={p.target_base_url} />
-            ) : (
-              <EmptyState
-                title="No environment profile"
-                body="Add a launch profile before starting project pentests."
-              />
-            )}
-          </Card>
+          <EnvironmentEditor
+            project={p}
+            onSaved={() => setBanner(`Saved environment profile for ${p.name}.`)}
+          />
         )}
       </div>
 
@@ -443,6 +437,13 @@ function ProjectOverview({
           </span>
           <span>Open</span>
         </Link>
+        <Link className="project-overview-row" to={`${projectPath}/integrations`}>
+          <span>
+            <strong>Integrations</strong>
+            <small>Send project events to webhooks, Slack, and SMTP relays.</small>
+          </span>
+          <span>External</span>
+        </Link>
       </div>
       <p className="project-overview-footnote">
         Updated {new Date(project.updated_at).toLocaleString()}
@@ -451,95 +452,56 @@ function ProjectOverview({
   );
 }
 
-function EnvironmentProfile({
-  profile,
-  fallbackTarget,
-}: {
-  profile: ProjectLaunchProfile;
-  fallbackTarget: string | null;
-}) {
-  const targetUrls = profile.target_urls.length
-    ? profile.target_urls
-    : fallbackTarget
-      ? [fallbackTarget]
-      : [];
-
-  return (
-    <div className="environment-profile">
-      <dl className="environment-profile__summary">
-        <div>
-          <dt>Readiness</dt>
-          <dd>
-            <Badge tone={launchProfileStatus(profile).tone}>
-              {launchProfileStatus(profile).label}
-            </Badge>
-          </dd>
-        </div>
-        <div>
-          <dt>Mode</dt>
-          <dd>{formatLaunchMode(profile)}</dd>
-        </div>
-        <div>
-          <dt>Profile</dt>
-          <dd>{profile.name || "Default"}</dd>
-        </div>
-        <div>
-          <dt>Updated</dt>
-          <dd>{new Date(profile.updated_at).toLocaleString()}</dd>
-        </div>
-      </dl>
-
-      <EnvironmentSection title="Target URLs" empty="No target URLs configured.">
-        {targetUrls.map((url) => (
-          <code key={url}>{url}</code>
-        ))}
-      </EnvironmentSection>
-
-      <EnvironmentSection title="Startup" empty="No startup commands configured.">
-        {profile.start_steps.map((step, idx) => (
-          <code key={`${step.command}-${idx}`}>{formatLaunchStep(step)}</code>
-        ))}
-      </EnvironmentSection>
-
-      <EnvironmentSection title="Health checks" empty="No health checks configured.">
-        {profile.health_checks.map((check, idx) => (
-          <code key={`${formatHealthCheck(check)}-${idx}`}>{formatHealthCheck(check)}</code>
-        ))}
-      </EnvironmentSection>
-
-      <EnvironmentSection title="Working directories" empty="No working directories configured.">
-        {profile.working_dirs.map((dir, idx) => (
-          <code key={`${dir.path}-${idx}`}>{formatWorkingDir(dir)}</code>
-        ))}
-      </EnvironmentSection>
-
-      <EnvironmentSection title="Environment refs" empty="No environment refs configured.">
-        {profile.env_refs.map((ref, idx) => (
-          <span key={`${ref.kind}-${ref.value}-${idx}`} className="environment-profile__ref">
-            <code>{formatEnvRef(ref)}</code>
-            {ref.secret && <Badge tone="warning">secret</Badge>}
-          </span>
-        ))}
-      </EnvironmentSection>
-    </div>
+function EnvironmentEditor({ project, onSaved }: { project: ProjectRecord; onSaved: () => void }) {
+  const patchProfile = usePatchDefaultLaunchProfile(project.id);
+  const initialDraft = useMemo(
+    () => launchProfileToDraft(project.default_launch_profile, project.target_base_url ?? ""),
+    [project.default_launch_profile, project.target_base_url],
   );
-}
+  const [draft, setDraft] = useState<RuntimeProfileDraft>(initialDraft);
+  const [error, setError] = useState<string | null>(null);
 
-function EnvironmentSection({
-  title,
-  empty,
-  children,
-}: {
-  title: string;
-  empty: string;
-  children: ReactNode;
-}) {
-  const hasChildren = Children.count(children) > 0;
+  async function onSubmit() {
+    setError(null);
+    const profileError = launchProfileDraftError(draft);
+    if (profileError) {
+      setError(profileError);
+      return;
+    }
+    if (!draft.target_base_url.trim()) {
+      setError("Add an app URL before saving the environment profile.");
+      return;
+    }
+    const launchProfile = launchProfileFromDraft(draft);
+    if (!launchProfile) {
+      setError("Add an app URL before saving the environment profile.");
+      return;
+    }
+    try {
+      await patchProfile.mutateAsync(launchProfile);
+      onSaved();
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
   return (
-    <section className="environment-profile__section">
-      <h3>{title}</h3>
-      {hasChildren ? <div className="environment-profile__items">{children}</div> : <p>{empty}</p>}
-    </section>
+    <Card
+      title="Launch Profile"
+      subtitle="Local target lifecycle"
+      actions={
+        <Button variant="primary" onClick={onSubmit} disabled={patchProfile.isPending}>
+          {patchProfile.isPending ? <Spinner /> : "Save environment"}
+        </Button>
+      }
+    >
+      <ProjectRuntimeProfileForm value={draft} onChange={setDraft} />
+      {error && (
+        <p className="repo-add__error" role="alert">
+          {error}
+        </p>
+      )}
+    </Card>
   );
 }
 
@@ -666,25 +628,33 @@ function formatStartHint(
   return "Complete project setup before starting.";
 }
 
-function formatLaunchStep(step: LaunchStep): string {
-  const scope = step.repo_name ? `${step.repo_name}: ` : "";
-  const cwd = step.working_directory ? ` (${step.working_directory})` : "";
-  return `${scope}${step.command}${cwd}`;
-}
-
-function formatHealthCheck(check: LaunchHealthCheck): string {
-  if (check.url) return `${check.kind}: ${check.url}`;
-  if (check.host && check.port) return `${check.kind}: ${check.host}:${check.port}`;
-  if (check.command) return `${check.kind}: ${formatLaunchStep(check.command)}`;
-  return check.kind;
-}
-
-function formatWorkingDir(dir: LaunchWorkingDir): string {
-  return dir.repo_name ? `${dir.repo_name}: ${dir.path}` : dir.path;
-}
-
-function formatEnvRef(ref: LaunchEnvRef): string {
-  return `${ref.kind}: ${ref.value}`;
+function projectViewMeta(
+  view: ProjectDetailView,
+  project: ProjectRecord,
+  target: string | null | undefined,
+  repoCount: number,
+): { title: string; description: string } {
+  if (view === "repos") {
+    return {
+      title: "Repository Scope",
+      description:
+        repoCount > 0
+          ? "Keep the source repos Nyctos should inspect and attribute findings to."
+          : "Add the source repos that make up this app.",
+    };
+  }
+  if (view === "environments") {
+    return {
+      title: "Environment",
+      description: target
+        ? "Edit the local app startup, readiness, seed, reset, and session setup in place."
+        : "Set the local app URL and launch recipe Nyctos should use before scanning.",
+    };
+  }
+  return {
+    title: project.name,
+    description: project.description?.trim() || "Project-scoped pentest status and setup.",
+  };
 }
 
 interface RepoRowProps {

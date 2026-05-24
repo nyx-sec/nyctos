@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
-import { useDoctor, useSetupStatus, useSubmitSetup } from "@/api/client";
+import { type ReactNode, useEffect, useState } from "react";
 import type { AiRuntimeChoice, SandboxBackendChoice, SetupStatusResponse } from "@/api/client";
+import { useDoctor, useSetupStatus, useSubmitSetup } from "@/api/client";
 import { useAdvancedMode } from "@/api/preferences";
 import { Badge } from "@/components/Badge";
 import { Button } from "@/components/Button";
@@ -95,9 +95,7 @@ export function Settings() {
     const budgetMicros = status.data.default_run_budget_usd_micros;
     setBudgetEnabled(typeof budgetMicros === "number" && budgetMicros > 0);
     setBudgetUsd(
-      typeof budgetMicros === "number" && budgetMicros > 0
-        ? formatBudgetInput(budgetMicros)
-        : "25",
+      typeof budgetMicros === "number" && budgetMicros > 0 ? formatBudgetInput(budgetMicros) : "25",
     );
   }, [status.data]);
 
@@ -200,249 +198,264 @@ export function Settings() {
 
   return (
     <div className="settings-page">
-      <Card
-        title="Settings"
-        subtitle={data?.config_path ? data.config_path : "Daemon configuration"}
-        actions={
+      <section className="settings-page__header" aria-labelledby="settings-page-title">
+        <div>
+          <h1 id="settings-page-title">Configuration</h1>
+          <p>
+            {data?.config_path ? <code>{data.config_path}</code> : "Local daemon configuration"}
+          </p>
+        </div>
+        <div className="settings-page__header-status">
           <Badge tone={data?.complete ? "success" : "warning"}>
             {data?.complete ? "Configured" : "Setup pending"}
           </Badge>
-        }
-      >
-        <div className="settings-summary-grid" aria-label="Current settings">
-          <SummaryTile
-            label="AI agent"
-            value={runtimeLabel(data?.ai_runtime)}
-            detail={runtimeDetail(data)}
-          />
-          <SummaryTile
-            label="Backend"
-            value={backendLabel(data?.sandbox_backend)}
-            detail={sandboxDetail(data)}
-          />
-          <SummaryTile
-            label="API"
-            value={data?.ui_listen_addr ?? "127.0.0.1:8765"}
-            detail={data?.ui_open_browser === false ? "Browser launch off" : "Browser launch on"}
-          />
-          <SummaryTile
-            label="AI budget"
-            value={budgetSummary(data)}
-            detail={budgetDetail(data)}
-          />
-          <SummaryTile label="Scan limits" value={scanLimit(data)} detail={stateDetail(data)} />
         </div>
-      </Card>
+      </section>
 
-      <Card
-        title="System Checks"
-        subtitle="Verifies the state directory, selected AI agent, and selected sandbox backend."
-        actions={
-          <Button variant="ghost" onClick={runDoctor} disabled={doctor.isPending}>
-            {doctor.isPending ? <Spinner /> : "Run checks"}
-          </Button>
-        }
-      >
-        {doctor.error && (
-          <p className="settings-page__error" role="alert">
-            {String(doctor.error)}
-          </p>
-        )}
-        {doctor.data?.checks.length ? (
-          <ul className="settings-doctor__list">
-            {doctor.data.checks.map((check) => (
-              <li
-                key={check.name}
-                className={`settings-doctor__row${check.passed ? " ok" : " fail"}`}
-              >
-                <span aria-hidden="true">{check.passed ? "✓" : "✗"}</span>
-                <div>
-                  <strong>{check.name}</strong>
-                  <p>{check.message}</p>
-                </div>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="settings-page__hint">No checks have been run for the current selection.</p>
-        )}
-      </Card>
+      <section className="settings-summary-grid" aria-label="Current settings">
+        <SummaryTile
+          label="AI agent"
+          value={runtimeLabel(data?.ai_runtime)}
+          detail={runtimeDetail(data)}
+        />
+        <SummaryTile
+          label="Backend"
+          value={backendLabel(data?.sandbox_backend)}
+          detail={sandboxDetail(data)}
+        />
+        <SummaryTile
+          label="API"
+          value={data?.ui_listen_addr ?? "127.0.0.1:8765"}
+          detail={data?.ui_open_browser === false ? "Browser launch off" : "Browser launch on"}
+        />
+        <SummaryTile label="AI budget" value={budgetSummary(data)} detail={budgetDetail(data)} />
+        <SummaryTile label="Scan limits" value={scanLimit(data)} detail={stateDetail(data)} />
+      </section>
 
-      <Card title="AI Agent" subtitle="Runtime used for AI triage, generation, and exploration.">
-        <div className="settings-choice-grid">
-          {AI_CHOICES.map((choice) => (
-            <label
-              className={`settings-choice${aiRuntime === choice.value ? " selected" : ""}`}
-              key={choice.value}
-            >
-              <input
-                type="radio"
-                name="settings-ai-runtime"
-                checked={aiRuntime === choice.value}
-                onChange={() => chooseAiRuntime(choice.value)}
-              />
-              <span>
-                <span className="settings-choice__title">{choice.label}</span>
-                <span className="settings-choice__body">{choice.body}</span>
-              </span>
-            </label>
-          ))}
-        </div>
-
-        {aiRuntime === "anthropic" && (
-          <div className="settings-form-grid">
-            <div className="setup-field">
-              <label htmlFor="settings-anthropic-key">Anthropic API key</label>
-              <input
-                id="settings-anthropic-key"
-                type="password"
-                autoComplete="off"
-                placeholder={
-                  currentRuntime === "anthropic" ? "Leave blank to keep current key" : "sk-ant-..."
-                }
-                value={anthropicApiKey}
-                onChange={(e) => setAnthropicApiKey(e.target.value)}
-              />
-            </div>
-            <p className="settings-page__hint">
-              Keys are written to the OS keychain and never stored in <code>nyctos.toml</code>.
+      <div className="settings-panel">
+        <SettingsSection
+          title="System Checks"
+          subtitle="Verifies the state directory, selected AI agent, and selected sandbox backend."
+          actions={
+            <Button variant="ghost" onClick={runDoctor} disabled={doctor.isPending}>
+              {doctor.isPending ? <Spinner /> : "Run checks"}
+            </Button>
+          }
+        >
+          {doctor.error && (
+            <p className="settings-page__error" role="alert">
+              {String(doctor.error)}
             </p>
+          )}
+          {doctor.data?.checks.length ? (
+            <ul className="settings-doctor__list">
+              {doctor.data.checks.map((check) => (
+                <li
+                  key={check.name}
+                  className={`settings-doctor__row${check.passed ? " ok" : " fail"}`}
+                >
+                  <span aria-hidden="true">{check.passed ? "✓" : "✗"}</span>
+                  <div>
+                    <strong>{check.name}</strong>
+                    <p>{check.message}</p>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="settings-page__hint">
+              No checks have been run for the current selection.
+            </p>
+          )}
+        </SettingsSection>
+
+        <SettingsSection
+          title="AI Agent"
+          subtitle="Runtime used for AI triage, generation, and exploration."
+        >
+          <div className="settings-choice-grid">
+            {AI_CHOICES.map((choice) => (
+              <label
+                className={`settings-choice${aiRuntime === choice.value ? " selected" : ""}`}
+                key={choice.value}
+              >
+                <input
+                  type="radio"
+                  name="settings-ai-runtime"
+                  checked={aiRuntime === choice.value}
+                  onChange={() => chooseAiRuntime(choice.value)}
+                />
+                <span>
+                  <span className="settings-choice__title">{choice.label}</span>
+                  <span className="settings-choice__body">{choice.body}</span>
+                </span>
+              </label>
+            ))}
           </div>
-        )}
 
-        {aiRuntime === "local-llm" && (
-          <div className="settings-form-grid settings-form-grid--two">
-            <div className="setup-field">
-              <label htmlFor="settings-local-llm-url">OpenAI-compatible URL</label>
-              <input
-                id="settings-local-llm-url"
-                type="url"
-                placeholder="http://127.0.0.1:1234/v1"
-                value={localLlmUrl}
-                onChange={(e) => setLocalLlmUrl(e.target.value)}
-              />
-            </div>
-            <div className="setup-field">
-              <label htmlFor="settings-local-llm-token">Bearer token</label>
-              <input
-                id="settings-local-llm-token"
-                type="password"
-                autoComplete="off"
-                placeholder="Leave blank to keep current token"
-                value={localLlmToken}
-                onChange={(e) => setLocalLlmToken(e.target.value)}
-              />
-            </div>
-          </div>
-        )}
-      </Card>
-
-      <Card title="Backend" subtitle="Sandbox backend used by dynamic verification and repro runs.">
-        <div className="settings-choice-grid settings-choice-grid--backend">
-          {BACKEND_CHOICES.map((choice) => (
-            <label
-              className={`settings-choice${sandboxBackend === choice.value ? " selected" : ""}`}
-              key={choice.value}
-            >
-              <input
-                type="radio"
-                name="settings-sandbox-backend"
-                checked={sandboxBackend === choice.value}
-                onChange={() => chooseSandboxBackend(choice.value)}
-              />
-              <span>
-                <span className="settings-choice__title">{choice.label}</span>
-                <span className="settings-choice__body">{choice.body}</span>
-              </span>
-            </label>
-          ))}
-        </div>
-      </Card>
-
-      <Card title="AI Budget" subtitle="Optional run-level spend guard for AI work.">
-        <section className="settings-page__section">
-          <header className="settings-page__row">
-            <div>
-              <h3 className="settings-page__row-title">Run budget cap</h3>
-              <p className="settings-page__row-help">
-                Default is unlimited. Enable this only when you want Nyctos to stop AI review after
-                a fixed dollar amount.
+          {aiRuntime === "anthropic" && (
+            <div className="settings-form-grid">
+              <div className="setup-field">
+                <label htmlFor="settings-anthropic-key">Anthropic API key</label>
+                <input
+                  id="settings-anthropic-key"
+                  type="password"
+                  autoComplete="off"
+                  placeholder={
+                    currentRuntime === "anthropic"
+                      ? "Leave blank to keep current key"
+                      : "sk-ant-..."
+                  }
+                  value={anthropicApiKey}
+                  onChange={(e) => setAnthropicApiKey(e.target.value)}
+                />
+              </div>
+              <p className="settings-page__hint">
+                Keys are written to the OS keychain and never stored in <code>nyctos.toml</code>.
               </p>
             </div>
-            <label className="settings-page__toggle">
-              <input
-                type="checkbox"
-                checked={budgetEnabled}
-                onChange={(e) => setBudgetEnabled(e.target.checked)}
-                aria-label="Limit AI budget"
-              />
-              <span className="settings-page__switch" aria-hidden="true">
-                <span />
-              </span>
-              <span>{budgetEnabled ? "Limited" : "Unlimited"}</span>
-            </label>
-          </header>
-          {budgetEnabled && (
-            <div className="settings-budget-row">
+          )}
+
+          {aiRuntime === "local-llm" && (
+            <div className="settings-form-grid settings-form-grid--two">
               <div className="setup-field">
-                <label htmlFor="settings-ai-budget-usd">Budget per run (USD)</label>
+                <label htmlFor="settings-local-llm-url">OpenAI-compatible URL</label>
                 <input
-                  id="settings-ai-budget-usd"
-                  type="number"
-                  min="0.01"
-                  step="0.01"
-                  inputMode="decimal"
-                  value={budgetUsd}
-                  onChange={(e) => setBudgetUsd(e.target.value)}
+                  id="settings-local-llm-url"
+                  type="url"
+                  placeholder="http://127.0.0.1:1234/v1"
+                  value={localLlmUrl}
+                  onChange={(e) => setLocalLlmUrl(e.target.value)}
+                />
+              </div>
+              <div className="setup-field">
+                <label htmlFor="settings-local-llm-token">Bearer token</label>
+                <input
+                  id="settings-local-llm-token"
+                  type="password"
+                  autoComplete="off"
+                  placeholder="Leave blank to keep current token"
+                  value={localLlmToken}
+                  onChange={(e) => setLocalLlmToken(e.target.value)}
                 />
               </div>
             </div>
           )}
-        </section>
-      </Card>
+        </SettingsSection>
 
-      <Card title="Local Settings" subtitle="Preferences and local daemon details for this host.">
-        <section className="settings-page__section">
-          <header className="settings-page__row">
+        <SettingsSection
+          title="Backend"
+          subtitle="Sandbox backend used by dynamic verification and repro runs."
+        >
+          <div className="settings-choice-grid settings-choice-grid--backend">
+            {BACKEND_CHOICES.map((choice) => (
+              <label
+                className={`settings-choice${sandboxBackend === choice.value ? " selected" : ""}`}
+                key={choice.value}
+              >
+                <input
+                  type="radio"
+                  name="settings-sandbox-backend"
+                  checked={sandboxBackend === choice.value}
+                  onChange={() => chooseSandboxBackend(choice.value)}
+                />
+                <span>
+                  <span className="settings-choice__title">{choice.label}</span>
+                  <span className="settings-choice__body">{choice.body}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+        </SettingsSection>
+
+        <SettingsSection title="AI Budget" subtitle="Optional run-level spend guard for AI work.">
+          <section className="settings-page__section">
+            <header className="settings-page__row">
+              <div>
+                <h3 className="settings-page__row-title">Run budget cap</h3>
+                <p className="settings-page__row-help">
+                  Default is unlimited. Enable this only when you want Nyctos to stop AI review
+                  after a fixed dollar amount.
+                </p>
+              </div>
+              <label className="settings-page__toggle">
+                <input
+                  type="checkbox"
+                  checked={budgetEnabled}
+                  onChange={(e) => setBudgetEnabled(e.target.checked)}
+                  aria-label="Limit AI budget"
+                />
+                <span className="settings-page__switch" aria-hidden="true">
+                  <span />
+                </span>
+                <span>{budgetEnabled ? "Limited" : "Unlimited"}</span>
+              </label>
+            </header>
+            {budgetEnabled && (
+              <div className="settings-budget-row">
+                <div className="setup-field">
+                  <label htmlFor="settings-ai-budget-usd">Budget per run (USD)</label>
+                  <input
+                    id="settings-ai-budget-usd"
+                    type="number"
+                    min="0.01"
+                    step="0.01"
+                    inputMode="decimal"
+                    value={budgetUsd}
+                    onChange={(e) => setBudgetUsd(e.target.value)}
+                  />
+                </div>
+              </div>
+            )}
+          </section>
+        </SettingsSection>
+
+        <SettingsSection
+          title="Local Settings"
+          subtitle="Preferences and local daemon details for this host."
+        >
+          <section className="settings-page__section">
+            <header className="settings-page__row">
+              <div>
+                <h3 className="settings-page__row-title">Advanced UI</h3>
+                <p className="settings-page__row-help">
+                  Reveals raw findings, chains, and quarantine views in the sidebar.
+                </p>
+              </div>
+              <label className="settings-page__toggle">
+                <input
+                  type="checkbox"
+                  checked={advanced}
+                  onChange={(e) => setAdvanced(e.target.checked)}
+                  aria-label="Show advanced UI"
+                />
+                <span className="settings-page__switch" aria-hidden="true">
+                  <span />
+                </span>
+                <span>{advanced ? "On" : "Off"}</span>
+              </label>
+            </header>
+          </section>
+          <dl className="settings-kv">
             <div>
-              <h3 className="settings-page__row-title">Advanced UI</h3>
-              <p className="settings-page__row-help">
-                Reveals raw findings, chains, and quarantine views in the sidebar.
-              </p>
+              <dt>Config file</dt>
+              <dd>{data?.config_path ? <code>{data.config_path}</code> : "-"}</dd>
             </div>
-            <label className="settings-page__toggle">
-              <input
-                type="checkbox"
-                checked={advanced}
-                onChange={(e) => setAdvanced(e.target.checked)}
-                aria-label="Show advanced UI"
-              />
-              <span className="settings-page__switch" aria-hidden="true">
-                <span />
-              </span>
-              <span>{advanced ? "On" : "Off"}</span>
-            </label>
-          </header>
-        </section>
-        <dl className="settings-kv">
-          <div>
-            <dt>Config file</dt>
-            <dd>{data?.config_path ? <code>{data.config_path}</code> : "-"}</dd>
-          </div>
-          <div>
-            <dt>State directory</dt>
-            <dd>{data?.state_dir ? <code>{data.state_dir}</code> : "Default"}</dd>
-          </div>
-          <div>
-            <dt>Log level</dt>
-            <dd>{data?.log_level ?? "info"}</dd>
-          </div>
-          <div>
-            <dt>Sandbox network</dt>
-            <dd>{data?.sandbox_allow_network ? "Allowed" : "Blocked"}</dd>
-          </div>
-        </dl>
-      </Card>
+            <div>
+              <dt>State directory</dt>
+              <dd>{data?.state_dir ? <code>{data.state_dir}</code> : "Default"}</dd>
+            </div>
+            <div>
+              <dt>Log level</dt>
+              <dd>{data?.log_level ?? "info"}</dd>
+            </div>
+            <div>
+              <dt>Sandbox network</dt>
+              <dd>{data?.sandbox_allow_network ? "Allowed" : "Blocked"}</dd>
+            </div>
+          </dl>
+        </SettingsSection>
+      </div>
 
       <div className="settings-actions">
         <div className="settings-actions__status">
@@ -469,6 +482,29 @@ function SummaryTile({ label, value, detail }: { label: string; value: string; d
       <strong>{value}</strong>
       <span>{detail}</span>
     </div>
+  );
+}
+
+interface SettingsSectionProps {
+  title: string;
+  subtitle: string;
+  actions?: ReactNode;
+  children: ReactNode;
+}
+
+function SettingsSection({ title, subtitle, actions, children }: SettingsSectionProps) {
+  const titleId = `settings-section-${title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+  return (
+    <section className="settings-section" aria-labelledby={titleId}>
+      <div className="settings-section__header">
+        <div>
+          <h2 id={titleId}>{title}</h2>
+          <p>{subtitle}</p>
+        </div>
+        {actions && <div className="settings-section__actions">{actions}</div>}
+      </div>
+      <div className="settings-section__content">{children}</div>
+    </section>
   );
 }
 

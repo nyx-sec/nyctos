@@ -6,6 +6,8 @@
     "sidebar topbar"
     "sidebar main";
   height: 100vh;
+  height: 100dvh;
+  min-height: 0;
   overflow: hidden;
   background: var(--bg);
 }
@@ -22,14 +24,13 @@
 
 .app-layout__topbar {
   grid-area: topbar;
-  background: var(--header-bg);
+  background: var(--surface);
   border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  min-width: 0;
   padding: 0 42px;
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
   z-index: 5;
 }
 
@@ -38,9 +39,13 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-5);
+  min-height: 0;
+  min-width: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 34px 42px 56px;
   background: var(--bg);
+  scrollbar-gutter: stable;
 }
 
 .sidebar__brand {
@@ -351,8 +356,8 @@
   gap: var(--space-1);
   min-width: 0;
   color: var(--text-tertiary);
-  font-size: var(--text-sm);
-  font-weight: var(--weight-medium);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
   letter-spacing: 0;
 }
 
@@ -368,7 +373,7 @@
 }
 
 .breadcrumb-current {
-  color: var(--text);
+  color: var(--text-secondary);
   font-weight: var(--weight-semibold);
   min-width: 0;
   overflow: hidden;

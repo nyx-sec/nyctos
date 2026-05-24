@@ -10,6 +10,7 @@ pub mod business_logic;
 pub mod chain;
 pub mod event;
 pub mod finding;
+pub mod integration;
 pub mod live_plan;
 pub mod novel;
 pub mod payload;

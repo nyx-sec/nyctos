@@ -29,7 +29,9 @@ sections parsed.
 | `[triggers]`     | Push/PR triggers + webhook secret + branch filter.               |
 | `[nyx]`          | Override the discovered `nyx` binary or its minimum version.     |
 | `[run]`          | Verifier knobs and optional scanner orchestration.                |
+| `[env]`          | Docker compose env-builder pull policy.                          |
 | `[[project]]`    | One block per product; declares repos.                           |
+| `[project.launch]` | Optional local app orchestration for one project.              |
 | `[[schedule]]`   | One cron-driven scan entry; repeated for multiple schedules.     |
 
 Unknown top-level fields and unknown fields inside any section are
@@ -220,7 +222,51 @@ are rejected by the parser.
 | `description`    | string (optional) | unset   | Free-form description surfaced in the UI.                                                    |
 | `target_base_url`| string (optional) | unset   | Base URL the sandbox env-builder dials for dynamic checks against the running stack.         |
 | `env_config`     | TOML value (optional)| unset| Structured env overrides merged into the project's docker-compose / sandbox runtime. Opaque to the agent. |
+| `launch`         | table (optional)  | unset   | Build/start/health/seed/reset/login recipe used before scans. See below.                    |
+| `runtime_profile`| table (optional)  | unset   | Auth/session metadata for live verification. Prefer env refs over raw secrets.              |
 | `repo`           | `[[project.repo]]`| empty   | Repos belonging to this project. See below.                                                  |
+
+When `[project.launch]` is omitted, scans still run. If a project has
+`target_base_url` but no stored launch profile, Nyctos creates a
+conservative already-running profile and health-checks the target URL.
+For local-path repos, `mode = "auto"` can detect root-level Docker
+Compose files or simple `package.json` / `Cargo.toml` start commands.
+
+### `[project.launch]`
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `name` | string (optional) | `local dev` | Operator label for the default launch profile. |
+| `mode` | string (optional) | inferred | `auto`, `already-running`, `custom-commands`, or `docker-compose`. |
+| `target_urls` | array of strings | `[target_base_url]` when set | In-scope local URLs handed to live probes and AI exploration. |
+| `env_files` | array of strings | `[]` | Env files resolved relative to the command working directory. |
+| `env_vars` | array of tables | `[]` | Env var names forwarded from the daemon process. |
+| `build` / `start` / `seed` / `login` / `reset` / `stop` | array of command tables | `[]` | Ordered shell commands for the target lifecycle. |
+| `health` | array of tables | target URL check | Readiness checks. HTTP checks retry until timeout; command checks must exit 0. |
+
+Command table fields:
+
+```toml
+command = "npm run dev"
+repo = "web"                  # alias: repo_name
+working_directory = "apps/web"
+timeout_secs = 120            # alias: timeout_seconds
+```
+
+HTTP health check:
+
+```toml
+[[project.launch.health]]
+url = "http://localhost:3000/health"
+timeout_secs = 60
+```
+
+Seed commands run after the app is healthy and before the static and
+live scan phases. Login commands run after seed hooks and are intended
+for local session setup. Reset commands run after state-changing live
+probes when `[run] exploit_reset_after_state_changing = true`. Start,
+build, seed, login, reset, and stop stdout/stderr are captured under
+`<state>/logs/environment/<run-id>/`.
 
 ### `[[project.repo]]`
 
@@ -296,6 +342,31 @@ business_logic_template_ids = []
 name = "acme-app"
 description = "Acme web product"
 target_base_url = "http://localhost:3000"
+
+  [project.launch]
+  mode = "custom-commands"
+  env_files = [".env.test"]
+
+    [[project.launch.build]]
+    command = "npm ci"
+    repo = "acme-frontend"
+
+    [[project.launch.start]]
+    command = "npm run dev"
+    repo = "acme-frontend"
+    timeout_secs = 120
+
+    [[project.launch.health]]
+    url = "http://localhost:3000/health"
+    timeout_secs = 60
+
+    [[project.launch.seed]]
+    command = "npm run seed:test"
+    repo = "acme-backend"
+
+    [[project.launch.reset]]
+    command = "npm run db:reset"
+    repo = "acme-backend"
 
   [[project.repo]]
   name = "acme-backend"

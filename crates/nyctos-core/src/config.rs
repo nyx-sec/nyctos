@@ -10,6 +10,11 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use nyctos_types::product::{
+    LaunchEnvRef, LaunchHealthCheck, LaunchStep, ProjectLaunchProfileInput,
+};
+use nyctos_types::project::ProjectRuntimeProfile;
+
 #[derive(Debug, Error)]
 pub enum ConfigError {
     #[error("failed to read config at {path}: {source}")]
@@ -742,10 +747,169 @@ pub struct ProjectConfig {
     /// stack can carry whatever keys it needs.
     #[serde(default)]
     pub env_config: Option<toml::Value>,
+    /// Optional first-class launch recipe for local-app orchestration.
+    /// When set, CLI/API scans start this profile before Nyx/static
+    /// analysis and stop it after the pentest run.
+    #[serde(default)]
+    pub launch: Option<ProjectLaunchConfig>,
+    /// Optional auth/session profile. Auth material is referenced via
+    /// env vars or session files; raw secrets should not be stored in
+    /// TOML.
+    #[serde(default)]
+    pub runtime_profile: Option<ProjectRuntimeProfile>,
     /// Repos that belong to this project. Use `[[project.repo]]`
     /// blocks in TOML.
     #[serde(rename = "repo", default)]
     pub repos: Vec<RepoConfig>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ProjectLaunchConfig {
+    pub name: Option<String>,
+    /// `auto`, `already-running`, `custom-commands`, or `docker-compose`.
+    /// `auto` is resolved before the profile is persisted.
+    pub mode: Option<String>,
+    pub target_urls: Vec<String>,
+    #[serde(default)]
+    pub build: Vec<ProjectLaunchCommandConfig>,
+    #[serde(default)]
+    pub start: Vec<ProjectLaunchCommandConfig>,
+    #[serde(default)]
+    pub seed: Vec<ProjectLaunchCommandConfig>,
+    #[serde(default)]
+    pub reset: Vec<ProjectLaunchCommandConfig>,
+    #[serde(default)]
+    pub login: Vec<ProjectLaunchCommandConfig>,
+    #[serde(default)]
+    pub stop: Vec<ProjectLaunchCommandConfig>,
+    #[serde(default)]
+    pub health: Vec<ProjectLaunchHealthConfig>,
+    #[serde(default)]
+    pub env_files: Vec<String>,
+    #[serde(default)]
+    pub env_vars: Vec<ProjectLaunchEnvVarConfig>,
+}
+
+impl ProjectLaunchConfig {
+    pub fn to_profile_input(&self, fallback_target_url: Option<&str>) -> ProjectLaunchProfileInput {
+        let mut target_urls = self.target_urls.clone();
+        if target_urls.is_empty() {
+            if let Some(target) = fallback_target_url.filter(|target| !target.trim().is_empty()) {
+                target_urls.push(target.to_string());
+            }
+        }
+        let env_refs = self
+            .env_files
+            .iter()
+            .filter(|path| !path.trim().is_empty())
+            .map(|path| LaunchEnvRef {
+                kind: "env-file".to_string(),
+                value: path.trim().to_string(),
+                secret: true,
+            })
+            .chain(self.env_vars.iter().filter_map(ProjectLaunchEnvVarConfig::to_env_ref))
+            .collect();
+        ProjectLaunchProfileInput {
+            name: self.name.clone(),
+            mode: self.mode.clone(),
+            build_steps: self.build.iter().map(ProjectLaunchCommandConfig::to_step).collect(),
+            start_steps: self.start.iter().map(ProjectLaunchCommandConfig::to_step).collect(),
+            seed_steps: self.seed.iter().map(ProjectLaunchCommandConfig::to_step).collect(),
+            reset_steps: self.reset.iter().map(ProjectLaunchCommandConfig::to_step).collect(),
+            login_steps: self.login.iter().map(ProjectLaunchCommandConfig::to_step).collect(),
+            stop_steps: self.stop.iter().map(ProjectLaunchCommandConfig::to_step).collect(),
+            health_checks: self.health.iter().map(ProjectLaunchHealthConfig::to_check).collect(),
+            target_urls,
+            env_refs,
+            working_dirs: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectLaunchCommandConfig {
+    pub command: String,
+    #[serde(default, alias = "repo")]
+    pub repo_name: Option<String>,
+    #[serde(default)]
+    pub working_directory: Option<String>,
+    #[serde(default, alias = "timeout_secs")]
+    pub timeout_seconds: Option<u64>,
+}
+
+impl ProjectLaunchCommandConfig {
+    pub fn to_step(&self) -> LaunchStep {
+        LaunchStep {
+            command: self.command.clone(),
+            repo_id: None,
+            repo_name: self.repo_name.clone(),
+            working_directory: self.working_directory.clone(),
+            timeout_seconds: self.timeout_seconds,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ProjectLaunchHealthConfig {
+    pub kind: Option<String>,
+    pub url: Option<String>,
+    pub host: Option<String>,
+    pub port: Option<u16>,
+    pub command: Option<ProjectLaunchCommandConfig>,
+    #[serde(alias = "timeout_secs")]
+    pub timeout_seconds: Option<u64>,
+}
+
+impl Default for ProjectLaunchHealthConfig {
+    fn default() -> Self {
+        Self { kind: None, url: None, host: None, port: None, command: None, timeout_seconds: None }
+    }
+}
+
+impl ProjectLaunchHealthConfig {
+    pub fn to_check(&self) -> LaunchHealthCheck {
+        LaunchHealthCheck {
+            kind: self.kind.clone().unwrap_or_else(|| {
+                if self.command.is_some() {
+                    "command".to_string()
+                } else {
+                    "http".to_string()
+                }
+            }),
+            url: self.url.clone(),
+            host: self.host.clone(),
+            port: self.port,
+            command: self.command.as_ref().map(ProjectLaunchCommandConfig::to_step),
+            timeout_seconds: self.timeout_seconds,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ProjectLaunchEnvVarConfig {
+    pub name: String,
+    pub secret: bool,
+}
+
+impl Default for ProjectLaunchEnvVarConfig {
+    fn default() -> Self {
+        Self { name: String::new(), secret: true }
+    }
+}
+
+impl ProjectLaunchEnvVarConfig {
+    fn to_env_ref(&self) -> Option<LaunchEnvRef> {
+        let name = self.name.trim();
+        (!name.is_empty()).then(|| LaunchEnvRef {
+            kind: "env-var".to_string(),
+            value: name.to_string(),
+            secret: self.secret,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -957,6 +1121,8 @@ exploit_reset_after_state_changing = false
                 description: Some("Acme web product".to_string()),
                 target_base_url: Some("http://localhost:3000".to_string()),
                 env_config: None,
+                launch: None,
+                runtime_profile: None,
                 repos: vec![
                     RepoConfig {
                         name: "acme-backend".to_string(),
@@ -1094,6 +1260,62 @@ exploit_reset_after_state_changing = false
         assert_eq!(p.repos.len(), 2);
         assert_eq!(p.repos[0].name, "acme-backend");
         assert_eq!(p.repos[1].name, "acme-frontend");
+    }
+
+    #[test]
+    fn project_launch_profile_parses_lifecycle_hooks() {
+        let raw = r#"
+            [[project]]
+            name = "acme"
+            target_base_url = "http://localhost:3000"
+
+            [project.launch]
+            mode = "custom-commands"
+            env_files = [".env.test"]
+
+            [[project.launch.build]]
+            command = "npm ci"
+            repo = "web"
+            timeout_secs = 120
+
+            [[project.launch.start]]
+            command = "npm run dev"
+            repo_name = "web"
+
+            [[project.launch.seed]]
+            command = "npm run seed:test"
+
+            [[project.launch.reset]]
+            command = "npm run db:reset"
+
+            [[project.launch.login]]
+            command = "npm run session:nyctos"
+
+            [[project.launch.stop]]
+            command = "npm run stop"
+
+            [[project.launch.health]]
+            url = "http://localhost:3000/health"
+            timeout_seconds = 15
+
+            [[project.launch.env_vars]]
+            name = "NYCTOS_TEST_TOKEN"
+            secret = true
+        "#;
+        let cfg = Config::parse(raw, &PathBuf::from("<test>")).expect("parse");
+        let launch = cfg.projects[0].launch.as_ref().expect("launch config");
+        let input = launch.to_profile_input(cfg.projects[0].target_base_url.as_deref());
+
+        assert_eq!(input.mode.as_deref(), Some("custom-commands"));
+        assert_eq!(input.target_urls, vec!["http://localhost:3000"]);
+        assert_eq!(input.build_steps[0].repo_name.as_deref(), Some("web"));
+        assert_eq!(input.build_steps[0].timeout_seconds, Some(120));
+        assert_eq!(input.seed_steps[0].command, "npm run seed:test");
+        assert_eq!(input.reset_steps[0].command, "npm run db:reset");
+        assert_eq!(input.login_steps[0].command, "npm run session:nyctos");
+        assert_eq!(input.stop_steps[0].command, "npm run stop");
+        assert_eq!(input.health_checks[0].url.as_deref(), Some("http://localhost:3000/health"));
+        assert_eq!(input.env_refs.len(), 2);
     }
 
     #[test]

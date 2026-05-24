@@ -98,6 +98,16 @@ nyctos scan --project acme-app --exploit-mode --allow-state-changing-live-probes
 | `--exploit-dry-run` | Evaluate guarded live plans and write audit records without sending HTTP/browser traffic. |
 | `--no-business-logic-templates` | Disable business-logic template candidate synthesis for this scan. |
 | `--business-template ID` | Restrict business-logic template synthesis to the given id. Repeat for multiple ids. |
+| `--no-orchestration` | Run the scan without starting or health-checking the project's launch profile. Static scanning and source-only analysis still run. |
+| `--app-url URL` | One-shot local app URL for this scan. Requires exactly one selected project. |
+| `--health-url URL` | One-shot readiness URL. Defaults to `--app-url` when omitted. |
+| `--health-timeout-secs N` | Readiness timeout for the one-shot URL check. |
+| `--build-command CMD` | One-shot setup command. Repeat for multiple commands. |
+| `--start-command CMD` | One-shot app start command. Repeat for multiple commands. |
+| `--seed-command CMD` | One-shot seed command run after readiness. Repeat for multiple commands. |
+| `--login-command CMD` | One-shot login/session setup command run after seed. Repeat for multiple commands. |
+| `--reset-command CMD` | One-shot reset command used after state-changing probes. Repeat for multiple commands. |
+| `--stop-command CMD` | One-shot teardown command. Repeat for multiple commands. |
 
 Each invocation drives the full pipeline per project: ingest, static
 lane via the upstream `nyx` scanner, AI payload synthesis, spec
@@ -106,6 +116,12 @@ and the deterministic payload verifier. Each AI pass is a no-op
 when `[ai] runtime = "none"` or no API key is available; the static
 lane always runs. When multiple projects are selected, the
 dispatcher walks them sequentially and emits one run per project.
+
+When a project has a default launch profile, `scan` starts the local
+target app, waits for health checks, runs seed/login hooks, captures
+target stdout/stderr under the state directory, and shuts the app down
+after the run. Omit launch configuration, or pass `--no-orchestration`,
+to keep the older static-only behavior.
 
 The stdout summary line, then per-repo outcome lines, are emitted
 in this order (one block per project):

@@ -186,6 +186,22 @@ export type FindingRecord = { id: string, run_id: string, repo: string, path: st
  */
 spec_id: string | null, };
 
+export type ProjectIntegrationKind = "webhook" | "slack" | "smtp";
+
+export type ProjectIntegrationEvent = "run_finished" | "finding_verified";
+
+export type SmtpSecurity = "start_tls" | "none";
+
+export type ProjectIntegrationRecord = { id: string, project_id: string, kind: ProjectIntegrationKind, name: string, enabled: boolean, events: Array<ProjectIntegrationEvent>, min_severity?: string, target: string, created_at: number, updated_at: number, last_delivery_at?: number, last_delivery_status?: string, last_delivery_error?: string, };
+
+export type ProjectIntegrationConfigInput = { "kind": "webhook", url: string, signing_secret?: string, } | { "kind": "slack", webhook_url: string, } | { "kind": "smtp", host: string, port: number, security: SmtpSecurity, username?: string, password?: string, from: string, recipients: Array<string>, };
+
+export type CreateProjectIntegrationRequest = { name: string, enabled: boolean, events: Array<ProjectIntegrationEvent>, min_severity?: string, config: ProjectIntegrationConfigInput, };
+
+export type PatchProjectIntegrationRequest = { name?: string, enabled?: boolean, events?: Array<ProjectIntegrationEvent>, min_severity?: string | null, config?: ProjectIntegrationConfigInput, };
+
+export type TestProjectIntegrationResponse = { ok: boolean, message: string, };
+
 export type AttackGraphNodeRecord = { id: string, run_id: string, project_id: string, kind: string, stable_key: string, label: string, ref_id?: string, properties: unknown, created_at: number, updated_at: number, };
 
 export type AttackGraphEdgeRecord = { id: string, run_id: string, project_id: string, kind: string, from_node_id: string, to_node_id: string, evidence_ref?: string, properties: unknown, created_at: number, };
@@ -221,13 +237,19 @@ export type LaunchStep = { command: string, repo_id?: string, repo_name?: string
 
 export type LaunchHealthCheck = { kind: string, url?: string, host?: string, port?: number, command?: LaunchStep, timeout_seconds?: number, };
 
-export type LaunchEnvRef = { kind: string, value: string, secret: boolean, };
+export type LaunchEnvRef = {
+/**
+ * `env-file` values are paths resolved relative to the launch
+ * step's working directory. `env-var` values are process env var
+ * names forwarded from the daemon environment.
+ */
+kind: string, value: string, secret: boolean, };
 
 export type LaunchWorkingDir = { repo_id?: string, repo_name?: string, path: string, };
 
-export type ProjectLaunchProfile = { id: string, project_id: string, name: string, mode: string, build_steps: Array<LaunchStep>, start_steps: Array<LaunchStep>, stop_steps: Array<LaunchStep>, health_checks: Array<LaunchHealthCheck>, target_urls: Array<string>, env_refs: Array<LaunchEnvRef>, working_dirs: Array<LaunchWorkingDir>, readiness: string, created_at: number, updated_at: number, is_default: boolean, };
+export type ProjectLaunchProfile = { id: string, project_id: string, name: string, mode: string, build_steps: Array<LaunchStep>, start_steps: Array<LaunchStep>, seed_steps: Array<LaunchStep>, reset_steps: Array<LaunchStep>, login_steps: Array<LaunchStep>, stop_steps: Array<LaunchStep>, health_checks: Array<LaunchHealthCheck>, target_urls: Array<string>, env_refs: Array<LaunchEnvRef>, working_dirs: Array<LaunchWorkingDir>, readiness: string, created_at: number, updated_at: number, is_default: boolean, };
 
-export type ProjectLaunchProfileInput = { name: string | null, mode: string | null, build_steps: Array<LaunchStep>, start_steps: Array<LaunchStep>, stop_steps: Array<LaunchStep>, health_checks: Array<LaunchHealthCheck>, target_urls: Array<string>, env_refs: Array<LaunchEnvRef>, working_dirs: Array<LaunchWorkingDir>, };
+export type ProjectLaunchProfileInput = { name: string | null, mode: string | null, build_steps: Array<LaunchStep>, start_steps: Array<LaunchStep>, seed_steps: Array<LaunchStep>, reset_steps: Array<LaunchStep>, login_steps: Array<LaunchStep>, stop_steps: Array<LaunchStep>, health_checks: Array<LaunchHealthCheck>, target_urls: Array<string>, env_refs: Array<LaunchEnvRef>, working_dirs: Array<LaunchWorkingDir>, };
 
 export type EnvironmentRunRecord = { id: string, run_id: string, project_id: string, profile_id: string, status: string, started_at: number | null, ready_at: number | null, stopped_at: number | null, target_urls: Array<string>, health?: unknown, logs_dir?: string, teardown?: unknown, };
 

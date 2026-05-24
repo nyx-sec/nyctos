@@ -29,6 +29,7 @@ pub struct RunningProjectEnvironment {
     pub target_urls: Vec<String>,
     mode: RunningMode,
     stop_steps: Vec<LaunchStep>,
+    reset_steps: Vec<LaunchStep>,
     env_refs: Vec<LaunchEnvRef>,
     logs_dir: PathBuf,
     store: Store,
@@ -121,6 +122,7 @@ async fn start_launch_profile(ctx: LaunchContext<'_>) -> anyhow::Result<RunningP
                 target_urls,
                 mode,
                 stop_steps: ctx.profile.stop_steps.clone(),
+                reset_steps: ctx.profile.reset_steps.clone(),
                 env_refs: ctx.profile.env_refs.clone(),
                 logs_dir,
                 store: ctx.store.clone(),
@@ -218,6 +220,11 @@ async fn start_custom(
             &ctx.profile.target_urls,
         );
     }
+    let _ = wait_for_profile_health(ctx.profile, ctx.workspaces, logs_dir).await?;
+    run_profile_hooks(ctx.profile, ctx.workspaces, logs_dir, "seed", &ctx.profile.seed_steps)
+        .await?;
+    run_profile_hooks(ctx.profile, ctx.workspaces, logs_dir, "login", &ctx.profile.login_steps)
+        .await?;
     let health = wait_for_profile_health(ctx.profile, ctx.workspaces, logs_dir).await?;
     Ok((RunningMode::Custom { children }, health))
 }
@@ -240,6 +247,11 @@ async fn use_existing_app(
         Some("checking app URL"),
         &ctx.profile.target_urls,
     );
+    let _ = wait_for_profile_health(ctx.profile, ctx.workspaces, logs_dir).await?;
+    run_profile_hooks(ctx.profile, ctx.workspaces, logs_dir, "seed", &ctx.profile.seed_steps)
+        .await?;
+    run_profile_hooks(ctx.profile, ctx.workspaces, logs_dir, "login", &ctx.profile.login_steps)
+        .await?;
     let health = wait_for_profile_health(ctx.profile, ctx.workspaces, logs_dir).await?;
     Ok((RunningMode::None, health))
 }
@@ -262,6 +274,11 @@ async fn start_compose(
     )?;
     let env = builder.up().await?;
     let services = env.services_health().await.unwrap_or_default();
+    let _ = wait_for_profile_health(ctx.profile, ctx.workspaces, logs_dir).await?;
+    run_profile_hooks(ctx.profile, ctx.workspaces, logs_dir, "seed", &ctx.profile.seed_steps)
+        .await?;
+    run_profile_hooks(ctx.profile, ctx.workspaces, logs_dir, "login", &ctx.profile.login_steps)
+        .await?;
     let readiness = wait_for_profile_health(ctx.profile, ctx.workspaces, logs_dir).await?;
     let health = serde_json::json!({
         "ok": true,
@@ -292,6 +309,17 @@ impl RunningProjectEnvironment {
         match &mut self.mode {
             RunningMode::Compose { env } => {
                 env.reset().await?;
+                for (index, step) in self.reset_steps.iter().enumerate() {
+                    run_step_to_completion(
+                        step,
+                        &self.env_refs,
+                        &self.workspaces,
+                        &self.logs_dir,
+                        "reset",
+                        index,
+                    )
+                    .await?;
+                }
                 let health = env.services_health().await.unwrap_or_default();
                 let reset = serde_json::json!({
                     "ok": true,
@@ -326,6 +354,33 @@ impl RunningProjectEnvironment {
                 Ok(true)
             }
             RunningMode::Custom { .. } | RunningMode::None => {
+                if !self.reset_steps.is_empty() {
+                    for (index, step) in self.reset_steps.iter().enumerate() {
+                        run_step_to_completion(
+                            step,
+                            &self.env_refs,
+                            &self.workspaces,
+                            &self.logs_dir,
+                            "reset",
+                            index,
+                        )
+                        .await?;
+                    }
+                    self.store
+                        .environment_runs()
+                        .update_lifecycle(&self.environment_run_id, "Ready", None, None, None, None)
+                        .await?;
+                    emit_env(
+                        &self.events,
+                        &self.run_id,
+                        &self.project_id,
+                        &self.environment_run_id,
+                        "Ready",
+                        Some("environment reset hook complete"),
+                        &self.target_urls,
+                    );
+                    return Ok(true);
+                }
                 emit_env(
                     &self.events,
                     &self.run_id,
@@ -426,7 +481,19 @@ async fn run_step_to_completion(
         .stdin(Stdio::null())
         .spawn()?;
     let timeout = Duration::from_secs(step.timeout_seconds.unwrap_or(300));
-    let status = tokio::time::timeout(timeout, child.wait()).await??;
+    let status = match tokio::time::timeout(timeout, child.wait()).await {
+        Ok(status) => status?,
+        Err(_) => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            anyhow::bail!(
+                "{} timed out after {}s: `{}`",
+                step_label(phase),
+                timeout.as_secs(),
+                step.command
+            );
+        }
+    };
     if !status.success() {
         anyhow::bail!(
             "{} failed: `{}` exited with status {status}",
@@ -437,10 +504,26 @@ async fn run_step_to_completion(
     Ok(())
 }
 
+async fn run_profile_hooks(
+    profile: &ProjectLaunchProfile,
+    workspaces: &HashMap<String, WorkspaceHandle>,
+    logs_dir: &Path,
+    phase: &str,
+    steps: &[LaunchStep],
+) -> anyhow::Result<()> {
+    for (index, step) in steps.iter().enumerate() {
+        run_step_to_completion(step, &profile.env_refs, workspaces, logs_dir, phase, index).await?;
+    }
+    Ok(())
+}
+
 fn step_label(phase: &str) -> &'static str {
     match phase {
         "build" => "setup command",
         "health" => "readiness command",
+        "seed" => "seed command",
+        "login" => "login command",
+        "reset" => "reset command",
         "stop" => "stop command",
         _ => "command",
     }
@@ -726,7 +809,8 @@ fn strip_unquoted_env_comment(value: &str) -> &str {
 
 async fn wait_for_http(url: Option<&str>, timeout: Duration) -> anyhow::Result<serde_json::Value> {
     let url = url.ok_or_else(|| anyhow::anyhow!("http health check is missing URL"))?;
-    let client = reqwest::Client::builder().timeout(Duration::from_secs(5)).build()?;
+    let request_timeout = timeout.min(Duration::from_secs(5)).max(Duration::from_millis(100));
+    let client = reqwest::Client::builder().timeout(request_timeout).build()?;
     let deadline = Instant::now() + timeout;
     let mut last_error = None;
     while Instant::now() < deadline {
@@ -780,6 +864,9 @@ fn emit_env(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nyctos_core::project::ProjectId;
+    use nyctos_core::store::{ProjectLaunchProfileInput, RunRecord};
+    use tokio::sync::broadcast;
 
     fn launch_step(repo_name: Option<&str>) -> LaunchStep {
         LaunchStep {
@@ -793,6 +880,38 @@ mod tests {
 
     fn env_file_ref(path: &str) -> LaunchEnvRef {
         LaunchEnvRef { kind: "env-file".to_string(), value: path.to_string(), secret: true }
+    }
+
+    async fn fresh_store() -> (tempfile::TempDir, Store) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = Store::open(tmp.path()).await.expect("open store");
+        (tmp, store)
+    }
+
+    fn sample_run(id: &str) -> RunRecord {
+        RunRecord {
+            id: id.to_string(),
+            project_id: None,
+            kind: "Pentest".to_string(),
+            started_at: 1,
+            finished_at: None,
+            status: "Running".to_string(),
+            triggered_by: "Manual".to_string(),
+            git_ref: None,
+            parent_run_id: None,
+            wall_clock_ms: None,
+            total_ai_spend_usd_micros: 0,
+        }
+    }
+
+    fn command(command: &str) -> LaunchStep {
+        LaunchStep {
+            command: command.to_string(),
+            repo_id: None,
+            repo_name: None,
+            working_directory: None,
+            timeout_seconds: Some(1),
+        }
     }
 
     #[test]
@@ -849,5 +968,180 @@ mod tests {
             .expect_err("relative env file needs context");
 
         assert!(err.to_string().contains("no code source"));
+    }
+
+    #[tokio::test]
+    async fn launch_profile_runs_hooks_captures_logs_and_stops() {
+        let (tmp, store) = fresh_store().await;
+        let state_dir = StateDir::at(tmp.path());
+        state_dir.ensure().expect("state dir");
+        let project_rec = store
+            .projects()
+            .create("p-1", "acme", None, Some("http://localhost:3000"), None, 1)
+            .await
+            .expect("project");
+        let mut run = sample_run("run-launch-hooks");
+        run.project_id = Some("p-1".to_string());
+        store.runs().insert(&run).await.expect("run");
+        let workspace = tempfile::tempdir().expect("workspace");
+        let profile = store
+            .launch_profiles()
+            .upsert_default(
+                "p-1",
+                &ProjectLaunchProfileInput {
+                    name: Some("test".to_string()),
+                    mode: Some("custom-commands".to_string()),
+                    build_steps: vec![command("echo build; printf ready > ready")],
+                    start_steps: vec![command("while true; do sleep 1; done")],
+                    seed_steps: vec![command("echo seed; printf seed > seeded")],
+                    reset_steps: vec![command("echo reset; printf reset > reset")],
+                    login_steps: vec![command("echo login; printf login > login")],
+                    stop_steps: vec![command("echo stop; printf stop > stopped")],
+                    health_checks: vec![LaunchHealthCheck {
+                        kind: "command".to_string(),
+                        url: None,
+                        host: None,
+                        port: None,
+                        command: Some(command("test -f ready")),
+                        timeout_seconds: Some(1),
+                    }],
+                    target_urls: vec!["http://localhost:3000".to_string()],
+                    env_refs: Vec::new(),
+                    working_dirs: Vec::new(),
+                },
+                2,
+            )
+            .await
+            .expect("profile");
+        let project = Project {
+            id: ProjectId::new(project_rec.id),
+            name: project_rec.name,
+            description: None,
+            target_base_url: project_rec.target_base_url,
+            env_config: None,
+            runtime_profile: None,
+            default_launch_profile: None,
+        };
+        let mut workspaces = HashMap::new();
+        workspaces.insert(
+            "web".to_string(),
+            WorkspaceHandle::for_local_path_test("web", workspace.path()),
+        );
+        let (events, _rx) = broadcast::channel(16);
+        let mut env = start_launch_profile(LaunchContext {
+            store: &store,
+            state_dir: &state_dir,
+            project: &project,
+            run_id: "run-launch-hooks",
+            profile: &profile,
+            workspaces: &workspaces,
+            events,
+        })
+        .await
+        .expect("start launch profile");
+
+        assert_eq!(std::fs::read_to_string(workspace.path().join("seeded")).unwrap(), "seed");
+        assert_eq!(std::fs::read_to_string(workspace.path().join("login")).unwrap(), "login");
+        assert!(std::fs::read_to_string(
+            state_dir.logs().join("environment/run-launch-hooks/build-0-stdout.log")
+        )
+        .unwrap()
+        .contains("build"));
+
+        assert!(env.reset_after_state_change().await.expect("reset hook"));
+        assert_eq!(std::fs::read_to_string(workspace.path().join("reset")).unwrap(), "reset");
+        env.stop().await.expect("stop");
+        assert_eq!(std::fs::read_to_string(workspace.path().join("stopped")).unwrap(), "stop");
+        let rows = store.environment_runs().list_by_run("run-launch-hooks").await.unwrap();
+        assert_eq!(rows[0].status, "Stopped");
+    }
+
+    #[tokio::test]
+    async fn launch_profile_timeout_marks_environment_failed() {
+        let (tmp, store) = fresh_store().await;
+        let state_dir = StateDir::at(tmp.path());
+        state_dir.ensure().expect("state dir");
+        store
+            .projects()
+            .create("p-1", "acme", None, Some("http://localhost:3000"), None, 1)
+            .await
+            .unwrap();
+        let mut run = sample_run("run-launch-timeout");
+        run.project_id = Some("p-1".to_string());
+        store.runs().insert(&run).await.unwrap();
+        let workspace = tempfile::tempdir().expect("workspace");
+        let profile = store
+            .launch_profiles()
+            .upsert_default(
+                "p-1",
+                &ProjectLaunchProfileInput {
+                    mode: Some("already-running".to_string()),
+                    health_checks: vec![LaunchHealthCheck {
+                        kind: "command".to_string(),
+                        url: None,
+                        host: None,
+                        port: None,
+                        command: Some(LaunchStep {
+                            command: "sleep 5".to_string(),
+                            timeout_seconds: Some(1),
+                            ..command("sleep 5")
+                        }),
+                        timeout_seconds: Some(1),
+                    }],
+                    target_urls: vec!["http://localhost:3000".to_string()],
+                    ..empty_profile_input()
+                },
+                2,
+            )
+            .await
+            .unwrap();
+        let project = Project {
+            id: ProjectId::new("p-1"),
+            name: "acme".to_string(),
+            description: None,
+            target_base_url: Some("http://localhost:3000".to_string()),
+            env_config: None,
+            runtime_profile: None,
+            default_launch_profile: None,
+        };
+        let mut workspaces = HashMap::new();
+        workspaces.insert(
+            "web".to_string(),
+            WorkspaceHandle::for_local_path_test("web", workspace.path()),
+        );
+        let (events, _rx) = broadcast::channel(16);
+        let err = start_launch_profile(LaunchContext {
+            store: &store,
+            state_dir: &state_dir,
+            project: &project,
+            run_id: "run-launch-timeout",
+            profile: &profile,
+            workspaces: &workspaces,
+            events,
+        })
+        .await
+        .expect_err("health timeout should fail launch");
+
+        assert!(err.to_string().contains("timed out"));
+        let rows = store.environment_runs().list_by_run("run-launch-timeout").await.unwrap();
+        assert_eq!(rows[0].status, "Failed");
+        assert!(rows[0].health.as_ref().unwrap()["error"].as_str().unwrap().contains("timed out"));
+    }
+
+    fn empty_profile_input() -> ProjectLaunchProfileInput {
+        ProjectLaunchProfileInput {
+            name: None,
+            mode: None,
+            build_steps: Vec::new(),
+            start_steps: Vec::new(),
+            seed_steps: Vec::new(),
+            reset_steps: Vec::new(),
+            login_steps: Vec::new(),
+            stop_steps: Vec::new(),
+            health_checks: Vec::new(),
+            target_urls: Vec::new(),
+            env_refs: Vec::new(),
+            working_dirs: Vec::new(),
+        }
     }
 }

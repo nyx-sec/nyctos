@@ -75,6 +75,12 @@ pub struct ProjectLaunchProfile {
     #[serde(default)]
     pub start_steps: Vec<LaunchStep>,
     #[serde(default)]
+    pub seed_steps: Vec<LaunchStep>,
+    #[serde(default)]
+    pub reset_steps: Vec<LaunchStep>,
+    #[serde(default)]
+    pub login_steps: Vec<LaunchStep>,
+    #[serde(default)]
     pub stop_steps: Vec<LaunchStep>,
     #[serde(default)]
     pub health_checks: Vec<LaunchHealthCheck>,
@@ -102,6 +108,12 @@ pub struct ProjectLaunchProfileInput {
     pub build_steps: Vec<LaunchStep>,
     #[serde(default)]
     pub start_steps: Vec<LaunchStep>,
+    #[serde(default)]
+    pub seed_steps: Vec<LaunchStep>,
+    #[serde(default)]
+    pub reset_steps: Vec<LaunchStep>,
+    #[serde(default)]
+    pub login_steps: Vec<LaunchStep>,
     #[serde(default)]
     pub stop_steps: Vec<LaunchStep>,
     #[serde(default)]

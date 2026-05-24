@@ -3,9 +3,11 @@ import { useSetupStatus } from "@/api/client";
 import { useAdvancedMode } from "@/api/preferences";
 import { AppLayout } from "@/components/AppLayout";
 import { Card } from "@/components/Card";
+import { CommunityEditionNotice } from "@/components/CommunityEditionNotice";
 import { Spinner } from "@/components/Spinner";
 import { ChainDetail, ChainList } from "@/pages/Chains";
 import { FindingList } from "@/pages/Findings";
+import { ProjectIntegrations } from "@/pages/Integrations";
 import { ProjectDetail, ProjectList } from "@/pages/Projects";
 import { QuarantineList } from "@/pages/Quarantine";
 import { LiveScanView, RunList } from "@/pages/Runs";
@@ -46,6 +48,7 @@ export function App() {
 
   return (
     <AppLayout setupComplete={complete}>
+      <CommunityEditionNotice />
       <Routes>
         <Route path="/" element={<Navigate to="/projects" replace />} />
         <Route path="/setup" element={<SetupWizard />} />
@@ -56,6 +59,7 @@ export function App() {
           path="/projects/:projectId/environments"
           element={<ProjectDetail view="environments" />}
         />
+        <Route path="/projects/:projectId/integrations" element={<ProjectIntegrations />} />
         <Route path="/projects/:projectId/runs" element={<RunList />} />
         <Route path="/projects/:projectId/runs/:runId" element={<LiveScanView />} />
         <Route path="/projects/:projectId/vulnerabilities" element={<VulnerabilityList />} />

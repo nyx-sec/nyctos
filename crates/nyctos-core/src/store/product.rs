@@ -29,8 +29,9 @@ impl<'a> LaunchProfileStore<'a> {
         let row = sqlx::query(
             r#"
             SELECT id, project_id, name, mode, build_steps_json, start_steps_json,
-                   stop_steps_json, health_checks_json, target_urls_json, env_refs_json,
-                   working_dirs_json, readiness, created_at, updated_at, is_default
+                   seed_steps_json, reset_steps_json, login_steps_json, stop_steps_json,
+                   health_checks_json, target_urls_json, env_refs_json, working_dirs_json,
+                   readiness, created_at, updated_at, is_default
             FROM project_launch_profiles
             WHERE project_id = ? AND is_default = 1
             ORDER BY updated_at DESC
@@ -50,8 +51,9 @@ impl<'a> LaunchProfileStore<'a> {
         let rows = sqlx::query(
             r#"
             SELECT id, project_id, name, mode, build_steps_json, start_steps_json,
-                   stop_steps_json, health_checks_json, target_urls_json, env_refs_json,
-                   working_dirs_json, readiness, created_at, updated_at, is_default
+                   seed_steps_json, reset_steps_json, login_steps_json, stop_steps_json,
+                   health_checks_json, target_urls_json, env_refs_json, working_dirs_json,
+                   readiness, created_at, updated_at, is_default
             FROM project_launch_profiles
             WHERE project_id = ?
             ORDER BY is_default DESC, name
@@ -75,6 +77,9 @@ impl<'a> LaunchProfileStore<'a> {
         let readiness = launch_profile_readiness(input);
         let build = serde_json::to_string(&input.build_steps)?;
         let start = serde_json::to_string(&input.start_steps)?;
+        let seed = serde_json::to_string(&input.seed_steps)?;
+        let reset = serde_json::to_string(&input.reset_steps)?;
+        let login = serde_json::to_string(&input.login_steps)?;
         let stop = serde_json::to_string(&input.stop_steps)?;
         let health = serde_json::to_string(&input.health_checks)?;
         let targets = serde_json::to_string(&input.target_urls)?;
@@ -85,14 +90,18 @@ impl<'a> LaunchProfileStore<'a> {
             r#"
             INSERT INTO project_launch_profiles (
                 id, project_id, name, mode, build_steps_json, start_steps_json,
-                stop_steps_json, health_checks_json, target_urls_json, env_refs_json,
-                working_dirs_json, readiness, created_at, updated_at, is_default
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                seed_steps_json, reset_steps_json, login_steps_json, stop_steps_json,
+                health_checks_json, target_urls_json, env_refs_json, working_dirs_json,
+                readiness, created_at, updated_at, is_default
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
             ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 mode = excluded.mode,
                 build_steps_json = excluded.build_steps_json,
                 start_steps_json = excluded.start_steps_json,
+                seed_steps_json = excluded.seed_steps_json,
+                reset_steps_json = excluded.reset_steps_json,
+                login_steps_json = excluded.login_steps_json,
                 stop_steps_json = excluded.stop_steps_json,
                 health_checks_json = excluded.health_checks_json,
                 target_urls_json = excluded.target_urls_json,
@@ -109,6 +118,9 @@ impl<'a> LaunchProfileStore<'a> {
         .bind(mode)
         .bind(&build)
         .bind(&start)
+        .bind(&seed)
+        .bind(&reset)
+        .bind(&login)
         .bind(&stop)
         .bind(&health)
         .bind(&targets)
@@ -121,6 +133,77 @@ impl<'a> LaunchProfileStore<'a> {
         .await?;
 
         self.get_default(project_id).await?.ok_or(StoreError::Sqlx(sqlx::Error::RowNotFound))
+    }
+
+    pub async fn insert_run_profile(
+        &self,
+        id: &str,
+        project_id: &str,
+        input: &ProjectLaunchProfileInput,
+        now_ms: i64,
+    ) -> Result<ProjectLaunchProfile, StoreError> {
+        let name = input.name.as_deref().unwrap_or("scan override");
+        let mode = input.mode.as_deref().unwrap_or("custom-commands");
+        let readiness = launch_profile_readiness(input);
+        let build = serde_json::to_string(&input.build_steps)?;
+        let start = serde_json::to_string(&input.start_steps)?;
+        let seed = serde_json::to_string(&input.seed_steps)?;
+        let reset = serde_json::to_string(&input.reset_steps)?;
+        let login = serde_json::to_string(&input.login_steps)?;
+        let stop = serde_json::to_string(&input.stop_steps)?;
+        let health = serde_json::to_string(&input.health_checks)?;
+        let targets = serde_json::to_string(&input.target_urls)?;
+        let env_refs = serde_json::to_string(&input.env_refs)?;
+        let working_dirs = serde_json::to_string(&input.working_dirs)?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO project_launch_profiles (
+                id, project_id, name, mode, build_steps_json, start_steps_json,
+                seed_steps_json, reset_steps_json, login_steps_json, stop_steps_json,
+                health_checks_json, target_urls_json, env_refs_json, working_dirs_json,
+                readiness, created_at, updated_at, is_default
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+            "#,
+        )
+        .bind(id)
+        .bind(project_id)
+        .bind(name)
+        .bind(mode)
+        .bind(&build)
+        .bind(&start)
+        .bind(&seed)
+        .bind(&reset)
+        .bind(&login)
+        .bind(&stop)
+        .bind(&health)
+        .bind(&targets)
+        .bind(&env_refs)
+        .bind(&working_dirs)
+        .bind(readiness)
+        .bind(now_ms)
+        .bind(now_ms)
+        .execute(self.pool)
+        .await?;
+
+        self.get_by_id(id).await?.ok_or(StoreError::Sqlx(sqlx::Error::RowNotFound))
+    }
+
+    async fn get_by_id(&self, id: &str) -> Result<Option<ProjectLaunchProfile>, StoreError> {
+        let row = sqlx::query(
+            r#"
+            SELECT id, project_id, name, mode, build_steps_json, start_steps_json,
+                   seed_steps_json, reset_steps_json, login_steps_json, stop_steps_json,
+                   health_checks_json, target_urls_json, env_refs_json, working_dirs_json,
+                   readiness, created_at, updated_at, is_default
+            FROM project_launch_profiles
+            WHERE id = ?
+            "#,
+        )
+        .bind(id)
+        .fetch_optional(self.pool)
+        .await?;
+        row.map(row_to_launch_profile).transpose()
     }
 }
 
@@ -738,6 +821,9 @@ fn row_to_launch_profile(row: sqlx::sqlite::SqliteRow) -> Result<ProjectLaunchPr
         mode: row.try_get("mode")?,
         build_steps: parse_json(row.try_get::<String, _>("build_steps_json")?)?,
         start_steps: parse_json(row.try_get::<String, _>("start_steps_json")?)?,
+        seed_steps: parse_json(row.try_get::<String, _>("seed_steps_json")?)?,
+        reset_steps: parse_json(row.try_get::<String, _>("reset_steps_json")?)?,
+        login_steps: parse_json(row.try_get::<String, _>("login_steps_json")?)?,
         stop_steps: parse_json(row.try_get::<String, _>("stop_steps_json")?)?,
         health_checks: parse_json(row.try_get::<String, _>("health_checks_json")?)?,
         target_urls: parse_json(row.try_get::<String, _>("target_urls_json")?)?,
@@ -1230,6 +1316,9 @@ mod tests {
             mode: None,
             build_steps: Vec::new(),
             start_steps: Vec::new(),
+            seed_steps: Vec::new(),
+            reset_steps: Vec::new(),
+            login_steps: Vec::new(),
             stop_steps: Vec::new(),
             health_checks: Vec::new(),
             target_urls: Vec::new(),

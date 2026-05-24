@@ -7,6 +7,7 @@ import {
   EnvironmentsIcon,
   FindingsIcon,
   type IconProps,
+  IntegrationsIcon,
   OverviewIcon,
   QuarantineIcon,
   ReposIcon,
@@ -286,6 +287,13 @@ function scopedProjectNav(projectId: string): NavItem[] {
       group: "primary",
       section: "Sources",
     },
+    {
+      to: `/projects/${encoded}/integrations`,
+      label: "Integrations",
+      Icon: IntegrationsIcon,
+      group: "primary",
+      section: "External",
+    },
   ];
 }
 
@@ -309,6 +317,9 @@ function pathForProjectSwitch(pathname: string, projectId: string): string {
   }
   if (/^\/projects\/[^/]+\/environments(\/|$)/.test(pathname)) {
     return `/projects/${encoded}/environments`;
+  }
+  if (/^\/projects\/[^/]+\/integrations(\/|$)/.test(pathname)) {
+    return `/projects/${encoded}/integrations`;
   }
   if (
     /^\/projects\/[^/]+\/vulnerabilities(\/|$)/.test(pathname) ||

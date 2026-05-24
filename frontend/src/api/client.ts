@@ -12,6 +12,7 @@ import type {
   AgentTraceRow,
   BundleManifest,
   ChainRecord,
+  CreateProjectIntegrationRequest,
   CreateProjectRequest,
   CreateRepoRequest,
   DoctorCheck,
@@ -27,11 +28,15 @@ import type {
   LaunchStep,
   LaunchWorkingDir,
   NyxSignalRecord,
+  PatchProjectIntegrationRequest,
   PatchProjectRequest,
   PatchRepoRequest,
   PentestCandidateRecord,
   ProjectAuthHeaderRef,
   ProjectAuthProfile,
+  ProjectIntegrationEvent,
+  ProjectIntegrationKind,
+  ProjectIntegrationRecord,
   ProjectLaunchProfile,
   ProjectLaunchProfileInput,
   ProjectRecord,
@@ -51,6 +56,7 @@ import type {
   StartPentestRequest,
   TestLaunchTargetRequest,
   TestLaunchTargetResponse,
+  TestProjectIntegrationResponse,
   TestRepoRequest,
   TestRepoResponse,
   VerificationAttemptRecord,
@@ -61,6 +67,7 @@ export type {
   AgentTraceRow,
   BundleManifest,
   ChainRecord,
+  CreateProjectIntegrationRequest,
   CreateProjectRequest,
   CreateRepoRequest,
   DoctorCheck,
@@ -76,11 +83,15 @@ export type {
   LaunchStep,
   LaunchWorkingDir,
   NyxSignalRecord,
+  PatchProjectIntegrationRequest,
   PatchProjectRequest,
   PatchRepoRequest,
   PentestCandidateRecord,
   ProjectAuthHeaderRef,
   ProjectAuthProfile,
+  ProjectIntegrationEvent,
+  ProjectIntegrationKind,
+  ProjectIntegrationRecord,
   ProjectLaunchProfile,
   ProjectLaunchProfileInput,
   ProjectRecord,
@@ -100,6 +111,7 @@ export type {
   StartPentestRequest,
   TestLaunchTargetRequest,
   TestLaunchTargetResponse,
+  TestProjectIntegrationResponse,
   TestRepoRequest,
   TestRepoResponse,
   VerificationAttemptRecord,
@@ -222,6 +234,7 @@ export const qk = {
   projects: () => ["projects"] as const,
   project: (id: string) => ["projects", id] as const,
   projectRepos: (projectId: string) => ["projects", projectId, "repos"] as const,
+  projectIntegrations: (projectId: string) => ["projects", projectId, "integrations"] as const,
   allRepos: () => ["projects", "_all", "repos"] as const,
   runs: (status?: string, projectId?: string) =>
     ["runs", status ?? "Running", projectId ?? null] as const,
@@ -479,6 +492,70 @@ export function useTestProjectRepo(projectId: string) {
         method: "POST",
         body: JSON.stringify(body),
       }),
+  });
+}
+
+export function useProjectIntegrations(projectId: string | undefined) {
+  return useQuery({
+    queryKey: projectId
+      ? qk.projectIntegrations(projectId)
+      : ["projects", "_disabled", "integrations"],
+    queryFn: () =>
+      request<ProjectIntegrationRecord[]>(
+        `/projects/${encodeURIComponent(projectId!)}/integrations`,
+      ),
+    enabled: Boolean(projectId),
+  });
+}
+
+export function useCreateProjectIntegration(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: CreateProjectIntegrationRequest) =>
+      request<ProjectIntegrationRecord>(`/projects/${encodeURIComponent(projectId)}/integrations`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.projectIntegrations(projectId) }),
+  });
+}
+
+export function usePatchProjectIntegration(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, patch }: { id: string; patch: PatchProjectIntegrationRequest }) =>
+      request<ProjectIntegrationRecord>(
+        `/projects/${encodeURIComponent(projectId)}/integrations/${encodeURIComponent(id)}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify(patch),
+        },
+      ),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.projectIntegrations(projectId) }),
+  });
+}
+
+export function useDeleteProjectIntegration(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      request<{ ok: boolean; message: string }>(
+        `/projects/${encodeURIComponent(projectId)}/integrations/${encodeURIComponent(id)}`,
+        { method: "DELETE" },
+      ),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.projectIntegrations(projectId) }),
+  });
+}
+
+export function useTestProjectIntegration(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      request<TestProjectIntegrationResponse>(
+        `/projects/${encodeURIComponent(projectId)}/integrations/${encodeURIComponent(id)}/test`,
+        { method: "POST" },
+      ),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.projectIntegrations(projectId) }),
   });
 }
 

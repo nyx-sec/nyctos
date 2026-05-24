@@ -18,13 +18,15 @@ use nyctos_core::store::{
 };
 use nyctos_core::{
     ingest, now_epoch_ms, repo_from_config, AiConfig, Config, InconclusiveReason, IngestError,
-    IngestedRepo, LogConfig, Project, ProjectId, Repo, RepoOutcome, RepoSource, Run, RunBundle,
-    RunCounts, RunDispatcher, RunEventLogWriter, SandboxBackend, SecretStore, StateDir, Store,
-    WorkspaceHandle,
+    IngestedRepo, LogConfig, Project, ProjectConfig, ProjectId, Repo, RepoOutcome, RepoSource,
+    RepoSourceConfig, Run, RunBundle, RunCounts, RunDispatcher, RunEventLogWriter, SandboxBackend,
+    SecretStore, StateDir, Store, WorkspaceHandle,
 };
 use nyctos_nyx::{Diag, NyxError, NyxRunner, NyxScanLane, MINIMUM_NYX_VERSION};
 use nyctos_sandbox::{select_backend, BackendChoice, BackendKind, Lane};
 use nyctos_types::event::{AgentEvent, AiEvent, EventSink, RunEvent, SandboxEvent};
+use nyctos_types::product::{LaunchHealthCheck, LaunchStep, ProjectLaunchProfileInput};
+use nyctos_types::project::{ProjectRuntimeCommand, ProjectRuntimeProfile};
 use regex::Regex;
 use semver::Version;
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -189,6 +191,44 @@ enum Command {
         /// template ids. Repeat for multiple templates.
         #[arg(long = "business-template", value_name = "ID")]
         business_logic_template_ids: Vec<String>,
+        /// Skip launch-profile orchestration for this scan, even when
+        /// the project has a default launch profile.
+        #[arg(long)]
+        no_orchestration: bool,
+        /// One-shot local app URL for this scan. Requires a single
+        /// project target and creates a run-scoped launch profile.
+        #[arg(long, value_name = "URL")]
+        app_url: Option<String>,
+        /// Override the app readiness URL for a one-shot launch profile.
+        #[arg(long, value_name = "URL")]
+        health_url: Option<String>,
+        /// Timeout in seconds for `--health-url` / default URL readiness.
+        #[arg(long, value_name = "SECONDS")]
+        health_timeout_secs: Option<u64>,
+        /// Build/setup command for a one-shot launch profile. Repeat
+        /// for multiple commands.
+        #[arg(long = "build-command", value_name = "CMD")]
+        build_commands: Vec<String>,
+        /// Start command for a one-shot launch profile. Repeat for
+        /// multiple commands.
+        #[arg(long = "start-command", value_name = "CMD")]
+        start_commands: Vec<String>,
+        /// Seed command for a one-shot launch profile. Repeat for
+        /// multiple commands.
+        #[arg(long = "seed-command", value_name = "CMD")]
+        seed_commands: Vec<String>,
+        /// Reset command used after state-changing probes. Repeat for
+        /// multiple commands.
+        #[arg(long = "reset-command", value_name = "CMD")]
+        reset_commands: Vec<String>,
+        /// Login/session setup command for a one-shot launch profile.
+        /// Repeat for multiple commands.
+        #[arg(long = "login-command", value_name = "CMD")]
+        login_commands: Vec<String>,
+        /// Stop command for a one-shot launch profile. Repeat for
+        /// multiple commands.
+        #[arg(long = "stop-command", value_name = "CMD")]
+        stop_commands: Vec<String>,
     },
     /// Inspect business-logic pentest template metadata.
     BusinessLogic {
@@ -332,6 +372,16 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             browser_checks,
             no_business_logic_templates,
             business_logic_template_ids,
+            no_orchestration,
+            app_url,
+            health_url,
+            health_timeout_secs,
+            build_commands,
+            start_commands,
+            seed_commands,
+            reset_commands,
+            login_commands,
+            stop_commands,
         } => {
             nyctos_core::init_logging(&log_cfg)?;
             let mut run_config = config.clone();
@@ -353,6 +403,18 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             if !business_logic_template_ids.is_empty() {
                 run_config.run.business_logic_template_ids = business_logic_template_ids;
             }
+            let orchestration = ScanOrchestrationOverrides {
+                enabled: !no_orchestration,
+                app_url,
+                health_url,
+                health_timeout_secs,
+                build_commands,
+                start_commands,
+                seed_commands,
+                reset_commands,
+                login_commands,
+                stop_commands,
+            };
             scan(
                 &state_dir,
                 &run_config,
@@ -363,6 +425,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 output_only_pr_worthy,
                 since_ref.as_deref(),
                 headless,
+                orchestration,
             )
             .await
         }
@@ -510,6 +573,7 @@ async fn scan(
     output_only_pr_worthy: bool,
     since_ref: Option<&str>,
     headless: bool,
+    orchestration: ScanOrchestrationOverrides,
 ) -> anyhow::Result<ExitCode> {
     if !requested_repos.is_empty() && requested_projects.is_empty() {
         eprintln!(
@@ -539,6 +603,11 @@ async fn scan(
     // every send a no-op short of a clone.
     let (events_tx, _events_rx) = broadcast::channel::<AgentEvent>(16);
 
+    if orchestration.has_profile_override() && targets.len() != 1 {
+        store.close().await;
+        anyhow::bail!("scan orchestration overrides require exactly one selected project");
+    }
+
     let mut overall_success = true;
     let mut reports: Vec<ScanReport> = Vec::with_capacity(targets.len());
     for (project, repos) in targets {
@@ -558,6 +627,7 @@ async fn scan(
             output_path,
             output_only_pr_worthy,
             since_ref,
+            orchestration.clone(),
         )
         .await;
 
@@ -616,6 +686,116 @@ struct ScanReport {
     failed: u32,
     success: bool,
     per_repo: Vec<RepoReport>,
+}
+
+#[derive(Debug, Clone)]
+struct ScanOrchestrationOverrides {
+    enabled: bool,
+    app_url: Option<String>,
+    health_url: Option<String>,
+    health_timeout_secs: Option<u64>,
+    build_commands: Vec<String>,
+    start_commands: Vec<String>,
+    seed_commands: Vec<String>,
+    reset_commands: Vec<String>,
+    login_commands: Vec<String>,
+    stop_commands: Vec<String>,
+}
+
+impl Default for ScanOrchestrationOverrides {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            app_url: None,
+            health_url: None,
+            health_timeout_secs: None,
+            build_commands: Vec::new(),
+            start_commands: Vec::new(),
+            seed_commands: Vec::new(),
+            reset_commands: Vec::new(),
+            login_commands: Vec::new(),
+            stop_commands: Vec::new(),
+        }
+    }
+}
+
+impl ScanOrchestrationOverrides {
+    fn has_profile_override(&self) -> bool {
+        self.app_url.as_ref().is_some_and(|s| !s.trim().is_empty())
+            || self.health_url.as_ref().is_some_and(|s| !s.trim().is_empty())
+            || !self.build_commands.is_empty()
+            || !self.start_commands.is_empty()
+            || !self.seed_commands.is_empty()
+            || !self.reset_commands.is_empty()
+            || !self.login_commands.is_empty()
+            || !self.stop_commands.is_empty()
+    }
+}
+
+async fn insert_scan_override_profile(
+    store: &Store,
+    project: &Project,
+    run_id: &str,
+    overrides: &ScanOrchestrationOverrides,
+) -> anyhow::Result<nyctos_core::store::ProjectLaunchProfile> {
+    let target = overrides
+        .app_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .or(project.target_base_url.as_deref());
+    let target_urls = target.map(|s| vec![s.to_string()]).unwrap_or_default();
+    let health_url =
+        overrides.health_url.as_deref().map(str::trim).filter(|s| !s.is_empty()).or(target);
+    let health_checks = health_url
+        .map(|url| LaunchHealthCheck {
+            kind: "http".to_string(),
+            url: Some(url.to_string()),
+            host: None,
+            port: None,
+            command: None,
+            timeout_seconds: overrides.health_timeout_secs,
+        })
+        .into_iter()
+        .collect();
+    let input = ProjectLaunchProfileInput {
+        name: Some("scan override".to_string()),
+        mode: Some(if overrides.start_commands.is_empty() {
+            "already-running".to_string()
+        } else {
+            "custom-commands".to_string()
+        }),
+        build_steps: command_strings_to_steps(&overrides.build_commands),
+        start_steps: command_strings_to_steps(&overrides.start_commands),
+        seed_steps: command_strings_to_steps(&overrides.seed_commands),
+        reset_steps: command_strings_to_steps(&overrides.reset_commands),
+        login_steps: command_strings_to_steps(&overrides.login_commands),
+        stop_steps: command_strings_to_steps(&overrides.stop_commands),
+        health_checks,
+        target_urls,
+        env_refs: Vec::new(),
+        working_dirs: Vec::new(),
+    };
+    let profile_id = format!("lp-{run_id}-cli");
+    Ok(store
+        .launch_profiles()
+        .insert_run_profile(&profile_id, project.id.as_str(), &input, now_epoch_ms())
+        .await?)
+}
+
+fn command_strings_to_steps(commands: &[String]) -> Vec<LaunchStep> {
+    commands
+        .iter()
+        .map(|command| command.trim())
+        .filter(|command| !command.is_empty())
+        .map(|command| LaunchStep {
+            command: command.to_string(),
+            repo_id: None,
+            repo_name: None,
+            working_directory: None,
+            timeout_seconds: None,
+        })
+        .collect()
 }
 
 struct RepoReport {
@@ -678,6 +858,7 @@ async fn drive_scan(
     output_path: Option<&std::path::Path>,
     output_only_pr_worthy: bool,
     since_ref: Option<&str>,
+    orchestration: ScanOrchestrationOverrides,
 ) -> anyhow::Result<ScanReport> {
     let now_ms = now_epoch_ms();
     // Every selected repo belongs to `project`; the orchestrator emits
@@ -795,7 +976,19 @@ async fn drive_scan(
 
     emit_phase(&events, &run.id, project.id.as_str(), "EnvironmentBuildStarted", true, None);
     let launcher = ConservativeLaunchProfileRunner;
-    let mut environment = match store.launch_profiles().get_default(project.id.as_str()).await? {
+    let profile_override = if orchestration.has_profile_override() {
+        Some(insert_scan_override_profile(store, project, &run.id, &orchestration).await?)
+    } else {
+        None
+    };
+    let selected_profile = if !orchestration.enabled {
+        None
+    } else if let Some(profile) = profile_override {
+        Some(profile)
+    } else {
+        store.launch_profiles().get_default(project.id.as_str()).await?
+    };
+    let mut environment = match selected_profile {
         Some(profile) => match launcher
             .start(LaunchContext {
                 store,
@@ -1709,6 +1902,8 @@ async fn serve(
         }
     });
     let _event_log_task = spawn_run_event_log_task(events_tx.clone(), state_dir.logs());
+    let _integration_delivery_task =
+        nyctos_api::spawn_integration_delivery_task(store.clone(), events_tx.clone());
     let ui_fallback = {
         let bootstrap = Arc::clone(&ui_bootstrap);
         move |uri: axum::http::Uri| {
@@ -1926,6 +2121,7 @@ async fn run_scan_for_api(
                 None,
                 false,
                 None,
+                ScanOrchestrationOverrides::default(),
             )
             .await;
             if let Err(err) = res {
@@ -4260,7 +4456,7 @@ async fn select_scan_targets(
     for project_cfg in config.projects.iter().filter(|p| wants_project(&p.name)) {
         toml_project_names.insert(project_cfg.name.clone());
         matched_projects.insert(project_cfg.name.clone());
-        let rec = ensure_project_row(store, &project_cfg.name).await?;
+        let rec = sync_project_row_from_config(store, project_cfg).await?;
         let project = project_from_record(rec);
         let project_id = project.id.clone();
         let mut repos: Vec<Repo> = Vec::new();
@@ -4347,16 +4543,265 @@ fn repo_from_record(rec: &RepoRecord) -> anyhow::Result<Repo> {
     })
 }
 
-/// Lookup-or-create a project row keyed by `name`. Mirrors the API's
-/// stable-id derivation so the CLI and the daemon converge on the same
-/// row when the operator reaches the daemon either way first.
-async fn ensure_project_row(store: &Store, name: &str) -> anyhow::Result<ProjectRecord> {
-    if let Some(row) = store.projects().get_by_name(name).await? {
-        return Ok(row);
-    }
+/// Lookup-or-create a project row keyed by `name`, then sync the
+/// config-authored launch/runtime profile into SQLite so the shared
+/// scan path can use the same orchestration model as API-created
+/// projects.
+async fn sync_project_row_from_config(
+    store: &Store,
+    cfg: &ProjectConfig,
+) -> anyhow::Result<ProjectRecord> {
     let now = now_epoch_ms();
-    let id = format!("proj-{}", project_id_slug(name, now));
-    Ok(store.projects().create(&id, name, None, None, None, now).await?)
+    let env_config_json = cfg.env_config.as_ref().map(serde_json::to_string).transpose()?;
+    let runtime_profile_json =
+        cfg.runtime_profile.as_ref().map(serde_json::to_string).transpose()?;
+    let rec = if let Some(existing) = store.projects().get_by_name(&cfg.name).await? {
+        let patch = nyctos_core::store::ProjectPatch {
+            description: match &cfg.description {
+                Some(value) => nyctos_core::store::ProjectPatchOption::Set(Some(value.clone())),
+                None => nyctos_core::store::ProjectPatchOption::Unset,
+            },
+            target_base_url: match &cfg.target_base_url {
+                Some(value) => nyctos_core::store::ProjectPatchOption::Set(Some(value.clone())),
+                None => nyctos_core::store::ProjectPatchOption::Unset,
+            },
+            env_config_json: match env_config_json {
+                Some(value) => nyctos_core::store::ProjectPatchOption::Set(Some(value)),
+                None => nyctos_core::store::ProjectPatchOption::Unset,
+            },
+            runtime_profile_json: match runtime_profile_json {
+                Some(value) => nyctos_core::store::ProjectPatchOption::Set(Some(value)),
+                None => nyctos_core::store::ProjectPatchOption::Unset,
+            },
+            updated_at: now,
+        };
+        store.projects().update(&existing.id, &patch).await?;
+        store
+            .projects()
+            .get(&existing.id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("project `{}` vanished after update", cfg.name))?
+    } else {
+        let id = format!("proj-{}", project_id_slug(&cfg.name, now));
+        store
+            .projects()
+            .create_with_runtime_profile(
+                &id,
+                &cfg.name,
+                cfg.description.as_deref(),
+                cfg.target_base_url.as_deref(),
+                env_config_json.as_deref(),
+                runtime_profile_json.as_deref(),
+                now,
+            )
+            .await?
+    };
+
+    let default_profile = store.launch_profiles().get_default(&rec.id).await?;
+    if let Some(input) = launch_profile_input_from_config(cfg, default_profile.is_some()) {
+        store.launch_profiles().upsert_default(&rec.id, &input, now_epoch_ms()).await?;
+    }
+    store
+        .projects()
+        .get(&rec.id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("project `{}` vanished after launch sync", cfg.name))
+}
+
+fn launch_profile_input_from_config(
+    cfg: &ProjectConfig,
+    default_profile_exists: bool,
+) -> Option<ProjectLaunchProfileInput> {
+    if let Some(launch) = &cfg.launch {
+        let mut input = launch.to_profile_input(cfg.target_base_url.as_deref());
+        if launch.mode.as_deref() == Some("auto") {
+            apply_auto_launch_detection(cfg, &mut input);
+        }
+        return Some(input);
+    }
+    if let Some(profile) = &cfg.runtime_profile {
+        return Some(launch_profile_input_from_runtime_profile(
+            profile,
+            cfg.target_base_url.as_deref(),
+        ));
+    }
+    if default_profile_exists || cfg.target_base_url.is_none() {
+        return None;
+    }
+    let mut input = ProjectLaunchProfileInput {
+        name: Some("local dev".to_string()),
+        mode: Some("already-running".to_string()),
+        build_steps: Vec::new(),
+        start_steps: Vec::new(),
+        seed_steps: Vec::new(),
+        reset_steps: Vec::new(),
+        login_steps: Vec::new(),
+        stop_steps: Vec::new(),
+        health_checks: cfg
+            .target_base_url
+            .iter()
+            .map(|url| LaunchHealthCheck {
+                kind: "http".to_string(),
+                url: Some(url.clone()),
+                host: None,
+                port: None,
+                command: None,
+                timeout_seconds: Some(60),
+            })
+            .collect(),
+        target_urls: cfg.target_base_url.iter().cloned().collect(),
+        env_refs: Vec::new(),
+        working_dirs: Vec::new(),
+    };
+    apply_auto_launch_detection(cfg, &mut input);
+    Some(input)
+}
+
+fn apply_auto_launch_detection(cfg: &ProjectConfig, input: &mut ProjectLaunchProfileInput) {
+    if input.mode.as_deref() == Some("auto") && !input.start_steps.is_empty() {
+        input.mode = Some("custom-commands".to_string());
+        return;
+    }
+    if input.mode.as_deref() == Some("docker-compose") || !input.start_steps.is_empty() {
+        return;
+    }
+    if project_has_compose_file(cfg) {
+        input.mode = Some("docker-compose".to_string());
+        return;
+    }
+    if let Some(step) = detect_start_step(cfg) {
+        input.mode = Some("custom-commands".to_string());
+        input.start_steps.push(step);
+    } else if input.mode.as_deref() == Some("auto") || input.mode.is_none() {
+        input.mode = Some("already-running".to_string());
+    }
+}
+
+fn project_has_compose_file(cfg: &ProjectConfig) -> bool {
+    cfg.repos.iter().any(|repo| match &repo.source {
+        RepoSourceConfig::LocalPath { path } => {
+            ["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"]
+                .iter()
+                .any(|name| path.join(name).is_file())
+        }
+        RepoSourceConfig::Git { .. } => false,
+    })
+}
+
+fn detect_start_step(cfg: &ProjectConfig) -> Option<LaunchStep> {
+    cfg.repos.iter().find_map(|repo| {
+        let RepoSourceConfig::LocalPath { path } = &repo.source else {
+            return None;
+        };
+        detect_package_start_command(path).or_else(|| detect_cargo_start_command(path)).map(
+            |command| LaunchStep {
+                command,
+                repo_id: None,
+                repo_name: Some(repo.name.clone()),
+                working_directory: None,
+                timeout_seconds: None,
+            },
+        )
+    })
+}
+
+fn detect_cargo_start_command(path: &std::path::Path) -> Option<String> {
+    path.join("Cargo.toml").is_file().then(|| "cargo run".to_string())
+}
+
+fn detect_package_start_command(path: &std::path::Path) -> Option<String> {
+    let raw = std::fs::read_to_string(path.join("package.json")).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let scripts = json.get("scripts")?.as_object()?;
+    let script = if scripts.contains_key("dev") {
+        "dev"
+    } else if scripts.contains_key("start") {
+        "start"
+    } else {
+        return None;
+    };
+    let runner = if path.join("pnpm-lock.yaml").is_file() {
+        "pnpm"
+    } else if path.join("yarn.lock").is_file() {
+        "yarn"
+    } else if path.join("bun.lockb").is_file() || path.join("bun.lock").is_file() {
+        "bun"
+    } else {
+        "npm"
+    };
+    let command = match (runner, script) {
+        ("npm", "start") => "npm start".to_string(),
+        ("npm", other) => format!("npm run {other}"),
+        ("yarn", "start") => "yarn start".to_string(),
+        ("yarn", other) => format!("yarn {other}"),
+        ("pnpm", "start") => "pnpm start".to_string(),
+        ("pnpm", other) => format!("pnpm {other}"),
+        ("bun", "start") => "bun start".to_string(),
+        ("bun", other) => format!("bun run {other}"),
+        _ => return None,
+    };
+    Some(command)
+}
+
+fn launch_profile_input_from_runtime_profile(
+    profile: &ProjectRuntimeProfile,
+    fallback_target: Option<&str>,
+) -> ProjectLaunchProfileInput {
+    let build_steps =
+        profile.build_commands.iter().map(runtime_command_to_launch_step).collect::<Vec<_>>();
+    let start_steps =
+        profile.start_commands.iter().map(runtime_command_to_launch_step).collect::<Vec<_>>();
+    let target = profile.target_base_url.as_deref().or(fallback_target).map(str::to_string);
+    let mut health_checks = Vec::new();
+    if let Some(url) = profile.health_check_url.as_ref().filter(|url| !url.trim().is_empty()) {
+        health_checks.push(LaunchHealthCheck {
+            kind: "http".to_string(),
+            url: Some(url.clone()),
+            host: None,
+            port: None,
+            command: None,
+            timeout_seconds: profile.timeout_seconds,
+        });
+    }
+    if let Some(cmd) = &profile.health_check_command {
+        health_checks.push(LaunchHealthCheck {
+            kind: "command".to_string(),
+            url: None,
+            host: None,
+            port: None,
+            command: Some(runtime_command_to_launch_step(cmd)),
+            timeout_seconds: cmd.timeout_seconds.or(profile.timeout_seconds),
+        });
+    }
+    let mode = if build_steps.is_empty() && start_steps.is_empty() {
+        "already-running"
+    } else {
+        "custom-commands"
+    };
+    ProjectLaunchProfileInput {
+        name: Some("local dev".to_string()),
+        mode: Some(mode.to_string()),
+        build_steps,
+        start_steps,
+        seed_steps: Vec::new(),
+        reset_steps: Vec::new(),
+        login_steps: Vec::new(),
+        stop_steps: Vec::new(),
+        health_checks,
+        target_urls: target.into_iter().collect(),
+        env_refs: Vec::new(),
+        working_dirs: Vec::new(),
+    }
+}
+
+fn runtime_command_to_launch_step(cmd: &ProjectRuntimeCommand) -> LaunchStep {
+    LaunchStep {
+        command: cmd.command.clone(),
+        repo_id: None,
+        repo_name: cmd.repo_name.clone(),
+        working_directory: cmd.working_directory.clone(),
+        timeout_seconds: cmd.timeout_seconds,
+    }
 }
 
 /// Slugify `name` and append a hex `now_ms` so re-running with the same

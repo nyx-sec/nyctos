@@ -23,6 +23,7 @@ pub mod candidate;
 pub mod chain;
 pub mod feedback;
 pub mod finding;
+pub mod integration;
 pub mod payload;
 pub mod product;
 pub mod project;
@@ -47,6 +48,11 @@ pub use feedback::{FeedbackRecord, FeedbackStore, OperatorVerdict};
 pub use finding::{
     finding_id_hash, FindingFilter, FindingOrigin, FindingRecord, FindingStatus, FindingStore,
     TriageState,
+};
+pub use integration::{
+    ProjectIntegrationEvent, ProjectIntegrationInsert, ProjectIntegrationKind,
+    ProjectIntegrationPatch, ProjectIntegrationRecord, ProjectIntegrationStore,
+    ProjectIntegrationStoredRecord,
 };
 pub use payload::{PayloadRecord, PayloadStore};
 pub use product::{
@@ -86,6 +92,10 @@ pub enum StoreError {
     Sqlx(#[from] sqlx::Error),
     #[error("invalid project runtime profile JSON: {0}")]
     ProjectRuntimeProfileJson(#[from] serde_json::Error),
+    #[error("invalid integration JSON: {0}")]
+    IntegrationJson(serde_json::Error),
+    #[error("invalid integration kind: {0}")]
+    InvalidIntegrationKind(String),
 }
 
 /// Connected, migrated SQLite store. Cloning is cheap (pool is `Arc`).
@@ -241,6 +251,9 @@ impl Store {
     }
     pub fn findings(&self) -> FindingStore<'_> {
         FindingStore::new(&self.pool)
+    }
+    pub fn integrations(&self) -> ProjectIntegrationStore<'_> {
+        ProjectIntegrationStore::new(&self.pool)
     }
     pub fn chains(&self) -> ChainStore<'_> {
         ChainStore::new(&self.pool)

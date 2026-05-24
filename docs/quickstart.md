@@ -115,6 +115,30 @@ name = "acme-app"
 description = "Acme web product"
 target_base_url = "http://localhost:3000"
 
+  [project.launch]
+  mode = "custom-commands"
+
+    [[project.launch.build]]
+    command = "npm ci"
+    repo = "acme-frontend"
+
+    [[project.launch.start]]
+    command = "npm run dev"
+    repo = "acme-frontend"
+    timeout_secs = 120
+
+    [[project.launch.health]]
+    url = "http://localhost:3000/health"
+    timeout_secs = 60
+
+    [[project.launch.seed]]
+    command = "npm run seed:test"
+    repo = "acme-backend"
+
+    [[project.launch.reset]]
+    command = "npm run db:reset"
+    repo = "acme-backend"
+
   [[project.repo]]
   name = "acme-backend"
   i_own_this = true
@@ -139,6 +163,11 @@ target_base_url = "http://localhost:3000"
 Save the file and the daemon picks up the change on the next scan.
 There is no SIGHUP reload; the in-flight HTTP / WS / scheduler state
 keeps running, the config struct is re-read per scan.
+
+With `[project.launch]` present, a scan builds and starts the local app,
+waits for the health URL, runs seed hooks, and captures lifecycle logs
+under `<state>/logs/environment/<run-id>/`. Leave the launch table out
+when the app is already running and you only want static source context.
 
 Field reference:
 

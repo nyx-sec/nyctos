@@ -12,10 +12,12 @@
 //! `/api/v1/events?run_id=<id>` WebSocket endpoint without the
 //! dispatcher knowing about them.
 
+pub mod integrations;
 pub mod router;
 pub mod state;
 pub mod webhook;
 
+pub use integrations::spawn_integration_delivery_task;
 pub use router::build_router;
 pub use state::{
     ApiError, AuthConfig, EventReplay, ScanRunOverrides, ScanTrigger, ScanTriggerError,

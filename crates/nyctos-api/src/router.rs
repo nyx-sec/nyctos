@@ -35,7 +35,8 @@ use nyctos_core::report::{
 };
 use nyctos_core::store::{
     CandidateFindingRecord, CandidateStatus, ChainRecord, FindingFilter, FindingRecord,
-    ProjectPatch, ProjectPatchOption, ProjectRecord, RepoRecord, RunRecord,
+    ProjectIntegrationInsert, ProjectIntegrationPatch, ProjectPatch, ProjectPatchOption,
+    ProjectRecord, RepoRecord, RunRecord,
 };
 use nyctos_core::{
     now_epoch_ms, parse_git_auth, run_event_log_path, safe_run_log_segment, AiRuntime, IngestError,
@@ -51,6 +52,10 @@ use nyctos_types::business_logic::{
     BusinessLogicTemplateMetadata,
 };
 use nyctos_types::event::{AgentEvent, AiEvent, ReproEvent, RunEvent, SandboxEvent};
+use nyctos_types::integration::{
+    CreateProjectIntegrationRequest, PatchProjectIntegrationRequest, ProjectIntegrationRecord,
+    TestProjectIntegrationResponse,
+};
 use nyctos_types::product::{
     ProjectLaunchProfileInput, StartPentestRequest, StartPentestResponse, TestLaunchTargetRequest,
     TestLaunchTargetResponse,
@@ -88,6 +93,20 @@ pub fn build_router(state: ServerState) -> Router {
         )
         .route("/api/v1/projects/{project_id}/scan", post(scan_project))
         .route("/api/v1/projects/{project_id}/pentest", post(start_pentest_project))
+        .route(
+            "/api/v1/projects/{project_id}/integrations",
+            get(list_project_integrations).post(create_project_integration),
+        )
+        .route(
+            "/api/v1/projects/{project_id}/integrations/{integration_id}",
+            get(get_project_integration)
+                .patch(patch_project_integration)
+                .delete(delete_project_integration),
+        )
+        .route(
+            "/api/v1/projects/{project_id}/integrations/{integration_id}/test",
+            post(test_project_integration),
+        )
         .route(
             "/api/v1/projects/{project_id}/launch-profile/default",
             get(get_default_launch_profile).patch(patch_default_launch_profile),
@@ -979,6 +998,9 @@ fn launch_profile_input_from_runtime(
         mode: Some(mode.to_string()),
         build_steps,
         start_steps,
+        seed_steps: Vec::new(),
+        reset_steps: Vec::new(),
+        login_steps: Vec::new(),
         stop_steps: Vec::new(),
         health_checks,
         target_urls,
@@ -1035,6 +1057,45 @@ async fn require_project(s: &ServerState, project_id: &str) -> Result<ProjectRec
         .get(project_id)
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("project `{project_id}` not found")))
+}
+
+async fn require_project_integration(
+    s: &ServerState,
+    project_id: &str,
+    integration_id: &str,
+) -> Result<ProjectIntegrationRecord, ApiError> {
+    let row =
+        s.store.integrations().get(integration_id).await?.ok_or_else(|| {
+            ApiError::NotFound(format!("integration `{integration_id}` not found"))
+        })?;
+    if row.project_id != project_id {
+        return Err(ApiError::NotFound(format!(
+            "integration `{integration_id}` not found in project `{project_id}`"
+        )));
+    }
+    Ok(row)
+}
+
+fn validate_integration_name(raw: &str) -> Result<String, ApiError> {
+    let name = raw.trim();
+    if name.is_empty() {
+        return Err(ApiError::BadRequest("integration name is required".to_string()));
+    }
+    if name.len() > 80 {
+        return Err(ApiError::BadRequest(
+            "integration name must be 80 characters or less".to_string(),
+        ));
+    }
+    Ok(name.to_string())
+}
+
+fn validate_integration_events(
+    events: &[nyctos_types::integration::ProjectIntegrationEvent],
+) -> Result<(), ApiError> {
+    if events.is_empty() {
+        return Err(ApiError::BadRequest("select at least one integration event".to_string()));
+    }
+    Ok(())
 }
 
 async fn get_default_launch_profile(
@@ -1541,6 +1602,150 @@ async fn start_pentest_project(
         )
         .await?;
     Ok(Json(StartPentestResponse { run_id }))
+}
+
+// ---- /projects/:project_id/integrations -----------------------------------
+
+async fn list_project_integrations(
+    State(s): State<ServerState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Vec<ProjectIntegrationRecord>>, ApiError> {
+    require_project(&s, &project_id).await?;
+    Ok(Json(s.store.integrations().list_by_project(&project_id).await?))
+}
+
+async fn create_project_integration(
+    State(s): State<ServerState>,
+    Path(project_id): Path<String>,
+    Json(req): Json<CreateProjectIntegrationRequest>,
+) -> Result<Json<ProjectIntegrationRecord>, ApiError> {
+    require_project(&s, &project_id).await?;
+    let name = validate_integration_name(&req.name)?;
+    validate_integration_events(&req.events)?;
+    crate::integrations::validate_min_severity(req.min_severity.as_deref())
+        .map_err(ApiError::BadRequest)?;
+    let prepared =
+        crate::integrations::prepare_config(&req.config).map_err(ApiError::BadRequest)?;
+    let now = now_epoch_ms();
+    let id = format!("int-{}", uuid_like(&format!("{project_id}-{name}"), now));
+    let row = s
+        .store
+        .integrations()
+        .create(ProjectIntegrationInsert {
+            id,
+            project_id,
+            kind: prepared.kind,
+            name,
+            enabled: req.enabled,
+            events: req.events,
+            min_severity: req.min_severity,
+            config_json: prepared.config_json,
+            target: prepared.target,
+            now_ms: now,
+        })
+        .await?;
+    Ok(Json(row))
+}
+
+async fn get_project_integration(
+    State(s): State<ServerState>,
+    Path((project_id, integration_id)): Path<(String, String)>,
+) -> Result<Json<ProjectIntegrationRecord>, ApiError> {
+    require_project(&s, &project_id).await?;
+    let row = require_project_integration(&s, &project_id, &integration_id).await?;
+    Ok(Json(row))
+}
+
+async fn patch_project_integration(
+    State(s): State<ServerState>,
+    Path((project_id, integration_id)): Path<(String, String)>,
+    Json(req): Json<PatchProjectIntegrationRequest>,
+) -> Result<Json<ProjectIntegrationRecord>, ApiError> {
+    require_project(&s, &project_id).await?;
+    require_project_integration(&s, &project_id, &integration_id).await?;
+    if let Some(events) = &req.events {
+        validate_integration_events(events)?;
+    }
+    if let Some(min) = &req.min_severity {
+        crate::integrations::validate_min_severity(min.as_deref()).map_err(ApiError::BadRequest)?;
+    }
+    let (config_json, target) = if let Some(config) = &req.config {
+        let prepared = crate::integrations::prepare_config(config).map_err(ApiError::BadRequest)?;
+        (Some(prepared.config_json), Some(prepared.target))
+    } else {
+        (None, None)
+    };
+    let name = req.name.as_deref().map(validate_integration_name).transpose()?;
+    let row = s
+        .store
+        .integrations()
+        .update(
+            &integration_id,
+            ProjectIntegrationPatch {
+                name,
+                enabled: req.enabled,
+                events: req.events,
+                min_severity: req.min_severity,
+                config_json,
+                target,
+                updated_at: now_epoch_ms(),
+            },
+        )
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("integration `{integration_id}` not found")))?;
+    if row.project_id != project_id {
+        return Err(ApiError::NotFound(format!(
+            "integration `{integration_id}` not found in project `{project_id}`"
+        )));
+    }
+    Ok(Json(row))
+}
+
+async fn delete_project_integration(
+    State(s): State<ServerState>,
+    Path((project_id, integration_id)): Path<(String, String)>,
+) -> Result<StatusBody, ApiError> {
+    require_project(&s, &project_id).await?;
+    require_project_integration(&s, &project_id, &integration_id).await?;
+    let affected = s.store.integrations().delete(&integration_id).await?;
+    Ok(StatusBody::ok(format!("deleted {affected} integration row(s)")))
+}
+
+async fn test_project_integration(
+    State(s): State<ServerState>,
+    Path((project_id, integration_id)): Path<(String, String)>,
+) -> Result<Json<TestProjectIntegrationResponse>, ApiError> {
+    require_project(&s, &project_id).await?;
+    let row =
+        s.store.integrations().get_stored(&integration_id).await?.ok_or_else(|| {
+            ApiError::NotFound(format!("integration `{integration_id}` not found"))
+        })?;
+    if row.public.project_id != project_id {
+        return Err(ApiError::NotFound(format!(
+            "integration `{integration_id}` not found in project `{project_id}`"
+        )));
+    }
+    match crate::integrations::IntegrationDispatcher::new().send_test(&s.store, &row).await {
+        Ok(()) => {
+            let _ = s
+                .store
+                .integrations()
+                .record_delivery(&integration_id, now_epoch_ms(), "ok", None)
+                .await;
+            Ok(Json(TestProjectIntegrationResponse {
+                ok: true,
+                message: "test delivery sent".to_string(),
+            }))
+        }
+        Err(err) => {
+            let _ = s
+                .store
+                .integrations()
+                .record_delivery(&integration_id, now_epoch_ms(), "error", Some(&err))
+                .await;
+            Err(ApiError::BadRequest(format!("test delivery failed: {err}")))
+        }
+    }
 }
 
 // ---- /runs ------------------------------------------------------------------

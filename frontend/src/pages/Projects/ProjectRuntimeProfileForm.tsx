@@ -100,6 +100,10 @@ export interface RuntimeProfileDraft {
   timeout_seconds: string;
   build_commands: RuntimeCommandDraft[];
   start_commands: RuntimeCommandDraft[];
+  seed_commands: RuntimeCommandDraft[];
+  reset_commands: RuntimeCommandDraft[];
+  login_commands: RuntimeCommandDraft[];
+  stop_commands: RuntimeCommandDraft[];
   env_vars: RuntimeEnvDraft[];
   auth_profiles: AuthProfileDraft[];
 }
@@ -189,6 +193,10 @@ export function emptyRuntimeProfileDraft(targetBaseUrl = ""): RuntimeProfileDraf
     timeout_seconds: "",
     build_commands: [],
     start_commands: [],
+    seed_commands: [],
+    reset_commands: [],
+    login_commands: [],
+    stop_commands: [],
     env_vars: [],
     auth_profiles: [],
   };
@@ -213,6 +221,10 @@ export function runtimeProfileToDraft(
     timeout_seconds: profile.timeout_seconds?.toString() ?? "",
     build_commands: commandDrafts(profile.build_commands ?? []),
     start_commands: commandDrafts(profile.start_commands ?? []),
+    seed_commands: [],
+    reset_commands: [],
+    login_commands: [],
+    stop_commands: [],
     env_vars: envDrafts(profile.env_vars ?? []),
     auth_profiles: authDrafts(profile.auth_profiles ?? []),
   };
@@ -320,6 +332,10 @@ export function launchProfileToDraft(
       "",
     build_commands: launchStepDrafts(profile.build_steps),
     start_commands: launchStepDrafts(profile.start_steps),
+    seed_commands: launchStepDrafts(profile.seed_steps),
+    reset_commands: launchStepDrafts(profile.reset_steps),
+    login_commands: launchStepDrafts(profile.login_steps),
+    stop_commands: launchStepDrafts(profile.stop_steps),
     env_vars: envVars,
     auth_profiles: [],
   };
@@ -336,6 +352,10 @@ export function launchProfileFromDraft(
   const start_steps = includeCommands
     ? draft.start_commands.map(launchStepFromDraft).filter(isDefined)
     : [];
+  const seed_steps = draft.seed_commands.map(launchStepFromDraft).filter(isDefined);
+  const reset_steps = draft.reset_commands.map(launchStepFromDraft).filter(isDefined);
+  const login_steps = draft.login_commands.map(launchStepFromDraft).filter(isDefined);
+  const stop_steps = draft.stop_commands.map(launchStepFromDraft).filter(isDefined);
   const target = trimOrUndefined(draft.target_base_url);
   const health_checks = launchHealthChecksFromDraft(draft, target);
   const env_refs: LaunchEnvRef[] = [];
@@ -348,6 +368,10 @@ export function launchProfileFromDraft(
   const hasContent =
     build_steps.length > 0 ||
     start_steps.length > 0 ||
+    seed_steps.length > 0 ||
+    reset_steps.length > 0 ||
+    login_steps.length > 0 ||
+    stop_steps.length > 0 ||
     health_checks.length > 0 ||
     Boolean(target) ||
     env_refs.length > 0;
@@ -357,7 +381,10 @@ export function launchProfileFromDraft(
     mode,
     build_steps,
     start_steps,
-    stop_steps: [],
+    seed_steps,
+    reset_steps,
+    login_steps,
+    stop_steps,
     health_checks,
     target_urls: target ? [target] : [],
     env_refs,
@@ -377,6 +404,11 @@ export function ProjectRuntimeProfileForm({ value, onChange }: Props) {
   const reachability = useTargetReachability(value.target_base_url);
   const hasLaunchCommands =
     value.build_commands.some(hasCommandContent) || value.start_commands.some(hasCommandContent);
+  const hasLifecycleHooks =
+    value.seed_commands.some(hasCommandContent) ||
+    value.reset_commands.some(hasCommandContent) ||
+    value.login_commands.some(hasCommandContent) ||
+    value.stop_commands.some(hasCommandContent);
   const hasEnvironment =
     Boolean(trimOrUndefined(value.env_file)) ||
     value.env_vars.some((row) => Boolean(trimOrUndefined(row.name)));
@@ -472,6 +504,38 @@ export function ProjectRuntimeProfileForm({ value, onChange }: Props) {
           />
         </details>
       )}
+
+      <details className="runtime-profile-details" open={hasLifecycleHooks}>
+        <summary>Lifecycle hooks</summary>
+        <CommandRows
+          title="Seed"
+          prefix="runtime-seed"
+          rows={value.seed_commands}
+          addLabel="Add seed command"
+          onChange={(rows) => onChange({ ...value, seed_commands: rows })}
+        />
+        <CommandRows
+          title="Login"
+          prefix="runtime-login"
+          rows={value.login_commands}
+          addLabel="Add login command"
+          onChange={(rows) => onChange({ ...value, login_commands: rows })}
+        />
+        <CommandRows
+          title="Reset"
+          prefix="runtime-reset"
+          rows={value.reset_commands}
+          addLabel="Add reset command"
+          onChange={(rows) => onChange({ ...value, reset_commands: rows })}
+        />
+        <CommandRows
+          title="Stop"
+          prefix="runtime-stop"
+          rows={value.stop_commands}
+          addLabel="Add stop command"
+          onChange={(rows) => onChange({ ...value, stop_commands: rows })}
+        />
+      </details>
 
       <details className="runtime-profile-details" open={hasEnvironment}>
         <summary>Environment</summary>

@@ -189,6 +189,9 @@ async fn make_default_project_ready(srv: &TestServer) {
                 mode: None,
                 build_steps: Vec::new(),
                 start_steps: Vec::new(),
+                seed_steps: Vec::new(),
+                reset_steps: Vec::new(),
+                login_steps: Vec::new(),
                 stop_steps: Vec::new(),
                 health_checks: Vec::new(),
                 target_urls: vec!["http://localhost:3000".to_string()],
@@ -199,6 +202,81 @@ async fn make_default_project_ready(srv: &TestServer) {
         )
         .await
         .expect("launch profile");
+}
+
+#[tokio::test]
+async fn project_integrations_crud_roundtrips() {
+    let srv = TestServer::start().await;
+    let client = reqwest::Client::new();
+    let create = serde_json::json!({
+        "name": "Security alerts",
+        "enabled": true,
+        "events": ["run_finished", "finding_verified"],
+        "min_severity": "High",
+        "config": {
+            "kind": "webhook",
+            "url": "https://example.com/nyctos",
+            "signing_secret": "secret"
+        }
+    });
+    let created: Value = client
+        .post(format!("{}/api/v1/projects/{}/integrations", srv.base(), DEFAULT_PROJECT_ID))
+        .json(&create)
+        .send()
+        .await
+        .expect("create")
+        .error_for_status()
+        .expect("create status")
+        .json()
+        .await
+        .expect("create json");
+    let id = created["id"].as_str().expect("id");
+    assert_eq!(created["project_id"], DEFAULT_PROJECT_ID);
+    assert_eq!(created["kind"], "webhook");
+    assert_eq!(created["target"], "example.com");
+    assert!(created.get("config").is_none(), "public row must not expose secret config");
+
+    let listed: Value = client
+        .get(format!("{}/api/v1/projects/{}/integrations", srv.base(), DEFAULT_PROJECT_ID))
+        .send()
+        .await
+        .expect("list")
+        .error_for_status()
+        .expect("list status")
+        .json()
+        .await
+        .expect("list json");
+    assert_eq!(listed.as_array().expect("array").len(), 1);
+
+    let patched: Value = client
+        .patch(format!("{}/api/v1/projects/{}/integrations/{}", srv.base(), DEFAULT_PROJECT_ID, id))
+        .json(&serde_json::json!({ "enabled": false }))
+        .send()
+        .await
+        .expect("patch")
+        .error_for_status()
+        .expect("patch status")
+        .json()
+        .await
+        .expect("patch json");
+    assert_eq!(patched["enabled"], false);
+
+    let deleted: Value = client
+        .delete(format!(
+            "{}/api/v1/projects/{}/integrations/{}",
+            srv.base(),
+            DEFAULT_PROJECT_ID,
+            id
+        ))
+        .send()
+        .await
+        .expect("delete")
+        .error_for_status()
+        .expect("delete status")
+        .json()
+        .await
+        .expect("delete json");
+    assert_eq!(deleted["ok"], true);
 }
 
 fn sample_finding(run_id: &str, repo: &str, path: &str, rule: &str) -> FindingRecord {
@@ -520,6 +598,9 @@ async fn verification_attempts_endpoint_returns_artifact_paths() {
                 mode: None,
                 build_steps: Vec::new(),
                 start_steps: Vec::new(),
+                seed_steps: Vec::new(),
+                reset_steps: Vec::new(),
+                login_steps: Vec::new(),
                 stop_steps: Vec::new(),
                 health_checks: Vec::new(),
                 target_urls: vec!["http://localhost:3000".to_string()],

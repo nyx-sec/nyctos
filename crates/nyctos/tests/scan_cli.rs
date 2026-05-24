@@ -52,6 +52,21 @@ fn write_config(state_root: &Path, stub: &Path, repo_src: &Path) -> std::path::P
     config_path
 }
 
+fn write_config_with_unreachable_launch(
+    state_root: &Path,
+    stub: &Path,
+    repo_src: &Path,
+) -> std::path::PathBuf {
+    let config_path = state_root.join("nyctos.toml");
+    let toml = format!(
+        "[general]\nlog_level = \"info\"\n\n[nyx]\nbinary_path = \"{}\"\nmin_version = \"0.1.0\"\n\n[[project]]\nname = \"demo-project\"\ntarget_base_url = \"http://127.0.0.1:9\"\n\n  [project.launch]\n  mode = \"already-running\"\n  target_urls = [\"http://127.0.0.1:9\"]\n\n    [[project.launch.health]]\n    url = \"http://127.0.0.1:9/health\"\n    timeout_secs = 1\n\n  [[project.repo]]\n  name = \"demo\"\n  i_own_this = true\n  enabled = true\n  source = {{ kind = \"local-path\", path = \"{}\" }}\n",
+        stub.display(),
+        repo_src.display(),
+    );
+    fs::write(&config_path, toml).expect("write config");
+    config_path
+}
+
 #[test]
 fn scan_project_round_trips_against_stub() {
     let state_root = tempfile::tempdir().expect("state");
@@ -128,6 +143,39 @@ fn scan_headless_suppresses_human_progress() {
     assert!(
         stdout.is_empty(),
         "expected --headless to suppress every stdout line, got: {stdout:?}"
+    );
+}
+
+#[test]
+fn scan_no_orchestration_skips_launch_profile() {
+    let state_root = tempfile::tempdir().expect("state");
+    let repo_src = tempfile::tempdir().expect("repo");
+    fs::write(repo_src.path().join("README.md"), b"hi\n").expect("seed");
+
+    let stub_dir = tempfile::tempdir().expect("stub");
+    let stub_path = write_stub(stub_dir.path());
+    let config_path =
+        write_config_with_unreachable_launch(state_root.path(), &stub_path, repo_src.path());
+
+    let assert = Command::cargo_bin("nyctos")
+        .expect("nyctos binary")
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "--state-dir",
+            state_root.path().to_str().unwrap(),
+            "scan",
+            "--project",
+            "demo-project",
+            "--no-orchestration",
+        ])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    assert!(
+        stdout.contains("scan: project demo-project run "),
+        "expected project-scoped run summary, got: {stdout}"
     );
 }
 
