@@ -19,7 +19,7 @@ use axum::{
     http::{header, StatusCode},
     middleware::{self, Next},
     response::{sse::Event as SseEvent, sse::Sse, IntoResponse, Response},
-    routing::{get, post},
+    routing::{get, patch, post},
     Json, Router,
 };
 use futures_util::{SinkExt, Stream, StreamExt};
@@ -140,6 +140,8 @@ pub fn build_router(state: ServerState) -> Router {
         .route("/api/v1/runs/{id}/summary.html", get(run_summary_html))
         .route("/api/v1/findings", get(list_findings))
         .route("/api/v1/vulnerabilities", get(list_vulnerabilities))
+        .route("/api/v1/vulnerabilities/status", patch(bulk_update_vulnerability_status))
+        .route("/api/v1/vulnerabilities/{id}/status", patch(update_vulnerability_status))
         .route("/api/v1/findings/{id}", get(get_finding))
         .route("/api/v1/findings/{id}/repro-bundle", post(create_repro_bundle))
         .route("/api/v1/findings/{id}/repro-bundle.tar", get(download_repro_bundle))
@@ -2480,6 +2482,7 @@ async fn start_pentest_project(
                 exploit_dry_run: request.exploit_dry_run,
                 browser_checks_enabled: request.browser_checks_enabled,
                 business_logic_templates_enabled: request.business_logic_templates_enabled,
+                research_mode_enabled: request.research_mode_enabled,
                 business_logic_template_ids: if request.business_logic_template_ids.is_empty() {
                     None
                 } else {
@@ -2793,7 +2796,7 @@ async fn run_vulnerabilities(
     Path(id): Path<String>,
 ) -> Result<Json<Vec<nyctos_types::product::VerifiedVulnerabilityRecord>>, ApiError> {
     require_run(&s, &id).await?;
-    Ok(Json(s.store.verified_vulnerabilities().list_by_run(&id).await?))
+    Ok(Json(s.store.verified_vulnerabilities().list_by_run_including_triaged(&id).await?))
 }
 
 async fn project_vulnerabilities(
@@ -2801,17 +2804,99 @@ async fn project_vulnerabilities(
     Path(project_id): Path<String>,
 ) -> Result<Json<Vec<nyctos_types::product::VerifiedVulnerabilityRecord>>, ApiError> {
     require_project(&s, &project_id).await?;
-    Ok(Json(s.store.verified_vulnerabilities().list_by_project(&project_id).await?))
+    Ok(Json(
+        s.store.verified_vulnerabilities().list_by_project_including_triaged(&project_id).await?,
+    ))
 }
 
 async fn list_vulnerabilities(
     State(s): State<ServerState>,
 ) -> Result<Json<Vec<nyctos_types::product::VerifiedVulnerabilityRecord>>, ApiError> {
-    Ok(Json(s.store.verified_vulnerabilities().list_all().await?))
+    Ok(Json(s.store.verified_vulnerabilities().list_all_including_triaged().await?))
 }
 
 async fn require_run(s: &ServerState, id: &str) -> Result<RunRecord, ApiError> {
     s.store.runs().get(id).await?.ok_or_else(|| ApiError::NotFound(format!("run `{id}` not found")))
+}
+
+#[derive(Debug, Deserialize)]
+struct VulnerabilityStatusPatch {
+    status: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct BulkVulnerabilityStatusPatch {
+    ids: Vec<String>,
+    status: String,
+}
+
+async fn update_vulnerability_status(
+    State(s): State<ServerState>,
+    Path(id): Path<String>,
+    Json(req): Json<VulnerabilityStatusPatch>,
+) -> Result<Json<nyctos_types::product::VerifiedVulnerabilityRecord>, ApiError> {
+    let status = normalize_vulnerability_status(&req.status)?;
+    let row = s
+        .store
+        .verified_vulnerabilities()
+        .set_status(&id, status)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("vulnerability `{id}` not found")))?;
+    Ok(Json(row))
+}
+
+async fn bulk_update_vulnerability_status(
+    State(s): State<ServerState>,
+    Json(req): Json<BulkVulnerabilityStatusPatch>,
+) -> Result<Json<Vec<nyctos_types::product::VerifiedVulnerabilityRecord>>, ApiError> {
+    if req.ids.is_empty() {
+        return Err(ApiError::BadRequest(
+            "ids must contain at least one vulnerability".to_string(),
+        ));
+    }
+    let status = normalize_vulnerability_status(&req.status)?;
+    let mut ids = Vec::new();
+    let mut seen = HashSet::new();
+    for raw in req.ids {
+        let id = raw.trim();
+        if id.is_empty() {
+            continue;
+        }
+        if seen.insert(id.to_string()) {
+            ids.push(id.to_string());
+        }
+    }
+    if ids.is_empty() {
+        return Err(ApiError::BadRequest(
+            "ids must contain at least one vulnerability".to_string(),
+        ));
+    }
+    for id in &ids {
+        if s.store.verified_vulnerabilities().get(id).await?.is_none() {
+            return Err(ApiError::NotFound(format!("vulnerability `{id}` not found")));
+        }
+    }
+    let mut updated = Vec::with_capacity(ids.len());
+    for id in ids {
+        let Some(row) = s.store.verified_vulnerabilities().set_status(&id, status).await? else {
+            return Err(ApiError::NotFound(format!("vulnerability `{id}` not found")));
+        };
+        updated.push(row);
+    }
+    Ok(Json(updated))
+}
+
+fn normalize_vulnerability_status(raw: &str) -> Result<&'static str, ApiError> {
+    let mut normalized = raw.trim().to_ascii_lowercase();
+    normalized.retain(|ch| !matches!(ch, ' ' | '-' | '_'));
+    match normalized.as_str() {
+        "open" => Ok("Open"),
+        "inprogress" | "investigating" => Ok("InProgress"),
+        "fixed" | "resolved" => Ok("Fixed"),
+        "falsepositive" => Ok("FalsePositive"),
+        "acceptedrisk" | "accepted" => Ok("AcceptedRisk"),
+        _ => Err(ApiError::BadRequest(format!("unknown vulnerability status `{raw}`"))),
+    }
 }
 
 // ---- /findings --------------------------------------------------------------

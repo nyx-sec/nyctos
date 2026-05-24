@@ -239,6 +239,15 @@ export interface RunFindingsQuery {
   chain_id?: string;
 }
 
+export interface VulnerabilityStatusPatch {
+  status: string;
+}
+
+export interface BulkVulnerabilityStatusPatch {
+  ids: string[];
+  status: string;
+}
+
 export const qk = {
   health: () => ["health"] as const,
   setupStatus: () => ["setup", "status"] as const,
@@ -705,6 +714,38 @@ export function useVulnerabilities(enabled = true) {
     queryKey: qk.vulnerabilities(),
     queryFn: () => request<VerifiedVulnerabilityRecord[]>("/vulnerabilities"),
     enabled,
+  });
+}
+
+export function useUpdateVulnerabilityStatus() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, status }: { id: string; status: string }) =>
+      request<VerifiedVulnerabilityRecord>(`/vulnerabilities/${encodeURIComponent(id)}/status`, {
+        method: "PATCH",
+        body: JSON.stringify({ status } satisfies VulnerabilityStatusPatch),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.vulnerabilities() });
+      qc.invalidateQueries({ queryKey: ["projects"] });
+      qc.invalidateQueries({ queryKey: ["runs"] });
+    },
+  });
+}
+
+export function useBulkUpdateVulnerabilityStatus() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: BulkVulnerabilityStatusPatch) =>
+      request<VerifiedVulnerabilityRecord[]>("/vulnerabilities/status", {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.vulnerabilities() });
+      qc.invalidateQueries({ queryKey: ["projects"] });
+      qc.invalidateQueries({ queryKey: ["runs"] });
+    },
   });
 }
 

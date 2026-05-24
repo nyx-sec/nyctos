@@ -164,43 +164,35 @@ impl<'a> LiveTestPlanSynthesizer<'a> {
                 "trusted-header auth bypass needs an inferred protected/admin endpoint",
             );
         };
-        let Some(admin_role) = role_matching(self.ctx.auth_profiles, &["admin", "owner", "staff"])
-        else {
-            return self.no_plan(
-                candidate,
-                NoPlanReasonCode::AuthMissing,
-                "trusted-header auth bypass needs an allowed admin/staff auth profile for calibration",
-            );
-        };
         let markers = sensitive_markers(candidate, endpoint);
-        let allowed = request_for_endpoint(endpoint, &admin_role);
+        let header_name = trusted_header_name(candidate);
+        let header_value = trusted_header_value(candidate, self.ctx.auth_profiles)
+            .unwrap_or_else(|| "admin@example.com".to_string());
+        let baseline = request_for_endpoint(endpoint, "anonymous");
         let mut exploit = request_for_endpoint(endpoint, "anonymous");
-        exploit.headers.insert("X-Forwarded-User".to_string(), admin_role.clone());
-        exploit.headers.insert("X-Original-User".to_string(), admin_role.clone());
+        exploit.headers.insert(header_name.clone(), header_value.clone());
         exploit.payload = Some(contextual_payload(
             "trusted-header-auth-bypass",
             PayloadTransport::Header,
-            "X-Forwarded-User",
-            &admin_role,
+            &header_name,
+            &header_value,
             "anonymous request receives protected content when trusted identity headers are supplied",
             "normal anonymous request remains forbidden or lacks sensitive markers",
             false,
             "The same anonymous request only becomes sensitive when trusted auth headers are present.",
         ));
-        let benign_steps = vec![allowed.clone(), request_for_endpoint(endpoint, "anonymous")];
-        LiveTestPlan::DifferentialHttp(DifferentialHttpPlan {
+        LiveTestPlan::SingleHttp(SingleHttpPlan {
             hypothesis: Some(candidate.hypothesis.clone()),
-            steps: vec![allowed, exploit],
-            benign_steps,
-            oracle: DifferentialOracle {
-                oracle_type: "forbidden_equivalence_break".to_string(),
-                expected_allowed_step: 0,
-                expected_forbidden_step: 1,
-                forbidden_status: vec![401, 403, 404],
-                sensitive_body_markers: markers,
+            request: exploit,
+            baseline: Some(baseline),
+            benign: None,
+            oracle: HttpOracle {
+                status_range: Some("2xx".to_string()),
+                body_contains: markers,
+                ..HttpOracle::default()
             },
             why_this_confirms: Some(
-                "Allowed role succeeds, normal anonymous control stays clean, and anonymous-with-trusted-header receives sensitive content.".to_string(),
+                "Normal anonymous access stays clean, while the same anonymous request with a trusted identity header receives protected content.".to_string(),
             ),
         })
     }
@@ -665,9 +657,19 @@ fn classify_strategy(candidate: &PentestCandidateRecord) -> LivePlanStrategy {
     let class = candidate.vuln_class.trim().to_ascii_uppercase().replace('-', "_");
     match class.as_str() {
         "AUTH_BYPASS" | "AUTHENTICATION_BYPASS" => {
+            if contains_any(&text, &["dev mail", "dev_mail", "/api/dev/mail", "otp"]) {
+                return LivePlanStrategy::DebugExposure;
+            }
             if contains_any(
                 &text,
-                &["trusted header", "x-forwarded-user", "x-original-user", "header auth"],
+                &[
+                    "trusted header",
+                    "x-forwarded-user",
+                    "x-original-user",
+                    "header auth",
+                    "cf-access-authenticated-user-email",
+                    "cf-access",
+                ],
             ) {
                 return LivePlanStrategy::TrustedHeaderAuthBypass;
             }
@@ -718,7 +720,14 @@ fn classify_strategy(candidate: &PentestCandidateRecord) -> LivePlanStrategy {
     }
     if contains_any(
         &text,
-        &["trusted header", "x-forwarded-user", "x-original-user", "header auth"],
+        &[
+            "trusted header",
+            "x-forwarded-user",
+            "x-original-user",
+            "header auth",
+            "cf-access-authenticated-user-email",
+            "cf-access",
+        ],
     ) {
         return LivePlanStrategy::TrustedHeaderAuthBypass;
     }
@@ -975,6 +984,9 @@ fn endpoint_from_raw(
     source: &str,
     target_urls: &[String],
 ) -> Option<EndpointCandidate> {
+    if looks_like_local_filesystem_path(raw) || looks_like_source_location_path(raw) {
+        return None;
+    }
     let url = absolute_url(raw, target_urls)?;
     if !target_urls.iter().any(|target| pentest_tools::url_is_under_target(&url, target)) {
         return None;
@@ -1010,6 +1022,19 @@ fn absolute_url(raw: &str, target_urls: &[String]) -> Option<String> {
     } else {
         Some(format!("{base}/{raw}"))
     }
+}
+
+fn looks_like_local_filesystem_path(raw: &str) -> bool {
+    let lower = raw.to_ascii_lowercase();
+    (lower.starts_with("/users/") || lower.starts_with("/home/"))
+        && contains_any(&lower, &["/library/", "/application", "/src/", "/workspace/"])
+}
+
+fn looks_like_source_location_path(raw: &str) -> bool {
+    let lower = raw.to_ascii_lowercase();
+    [".rs:", ".js:", ".ts:", ".tsx:", ".jsx:", ".py:", ".go:", ".rb:", ".php:"]
+        .iter()
+        .any(|needle| lower.contains(needle))
 }
 
 fn request_for_endpoint(endpoint: &EndpointCandidate, role: &str) -> LiveHttpRequest {
@@ -1164,7 +1189,17 @@ fn sensitive_markers(
     endpoint: &EndpointCandidate,
 ) -> Vec<String> {
     let text = candidate_text(candidate);
+    let endpoint_path = endpoint.path.to_ascii_lowercase();
     let mut markers = Vec::new();
+    if endpoint_path.contains("/api/dev/mail") || endpoint_path.contains("/dev/mail") {
+        markers.push("mail".to_string());
+    }
+    if endpoint_path.contains("/api/admin/bug-reports") {
+        markers.push("reports".to_string());
+    }
+    if endpoint_path.contains("/api/admin/users") {
+        markers.push("users".to_string());
+    }
     for (needle, marker) in [
         ("dev mail", "mail"),
         ("dev_mail", "mail"),
@@ -1183,7 +1218,7 @@ fn sensitive_markers(
         ("email", "email"),
         ("tenant", "tenant"),
     ] {
-        if text.contains(needle) || endpoint.path.to_ascii_lowercase().contains(needle) {
+        if text.contains(needle) || endpoint_path.contains(needle) {
             markers.push(marker.to_string());
         }
     }
@@ -1194,6 +1229,34 @@ fn sensitive_markers(
     markers.dedup();
     markers.truncate(4);
     markers
+}
+
+fn trusted_header_name(candidate: &PentestCandidateRecord) -> String {
+    let text = candidate_text(candidate);
+    if text.contains("cf-access-authenticated-user-email") || text.contains("cf-access") {
+        "Cf-Access-Authenticated-User-Email".to_string()
+    } else if text.contains("x-original-user") {
+        "X-Original-User".to_string()
+    } else {
+        "X-Forwarded-User".to_string()
+    }
+}
+
+fn trusted_header_value(
+    candidate: &PentestCandidateRecord,
+    profiles: &[ProjectAuthProfile],
+) -> Option<String> {
+    let email_re =
+        Regex::new(r#"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}"#).expect("email regex");
+    email_re.find(&candidate_text(candidate)).map(|m| m.as_str().to_string()).or_else(|| {
+        profiles
+            .iter()
+            .find(|profile| {
+                let role = profile.role.to_ascii_lowercase();
+                contains_any(&role, &["admin", "owner", "staff"])
+            })
+            .and_then(|profile| profile.username.clone().filter(|value| email_re.is_match(value)))
+    })
 }
 
 fn contextual_payload(
@@ -1371,16 +1434,25 @@ fn push_endpoint(out: &mut Vec<EndpointCandidate>, endpoint: EndpointCandidate) 
     }
 }
 
-fn endpoint_rank(endpoint: &EndpointCandidate) -> (u8, String) {
+fn endpoint_rank(endpoint: &EndpointCandidate) -> (u8, u8, usize, String) {
     let path = endpoint.path.to_ascii_lowercase();
-    let priority = if path.contains("admin") || path.contains("debug") || path.contains("dev") {
-        0
-    } else if path.contains("api") {
-        1
-    } else {
-        2
+    let source_priority = match endpoint.source.as_str() {
+        "source_path" => 3,
+        "candidate_text" => 2,
+        "api_client" => 1,
+        _ => 0,
     };
-    (priority, endpoint.path.clone())
+    let path_priority = if path.starts_with("/api/") {
+        0
+    } else if path.contains("admin") || path.contains("debug") || path.contains("dev") {
+        1
+    } else if path.contains("api") {
+        2
+    } else {
+        3
+    };
+    let specificity_priority = usize::MAX.saturating_sub(path.len());
+    (source_priority, path_priority, specificity_priority, endpoint.path.clone())
 }
 
 #[cfg(test)]
@@ -1656,6 +1728,82 @@ mod tests {
         let plan = synth.synthesize(&candidate);
 
         assert_eq!(plan.no_plan_reason().unwrap().code, NoPlanReasonCode::AuthMissing);
+    }
+
+    #[test]
+    fn trusted_cf_access_header_bypass_gets_http_plan_without_auth_profile() {
+        let model = RouteModel {
+            backend_routes: vec![RouteModelEndpoint {
+                method: "GET".to_string(),
+                path: "/api/admin/users/search".to_string(),
+                repo: Some("app".to_string()),
+                handler_file: Some("src/handlers/admin.rs".to_string()),
+                line: Some(42),
+                params: Vec::new(),
+                middleware: Vec::new(),
+                auth_checks: Vec::new(),
+                role_checks: Vec::new(),
+                body_fields: Vec::new(),
+                state_changing: false,
+                confidence: 0.9,
+                evidence: Vec::new(),
+            }],
+            ..RouteModel::default()
+        };
+        let targets = vec!["http://localhost:3000".to_string()];
+        let auth = Vec::new();
+        let synth = LiveTestPlanSynthesizer::new(LiveTestPlanSynthesisContext {
+            route_model: Some(&model),
+            target_urls: &targets,
+            auth_profiles: &auth,
+            browser_checks_enabled: false,
+            allow_state_changing: false,
+        });
+        let mut candidate = candidate(
+            "AUTH_BYPASS",
+            "src/handlers/admin.rs",
+            "Admin gate trusts Cf-Access-Authenticated-User-Email",
+        );
+        candidate.hypothesis =
+            "Trusted header bypass with Cf-Access-Authenticated-User-Email: eli@example.com"
+                .to_string();
+
+        let plan = synth.synthesize(&candidate);
+
+        match plan {
+            LiveTestPlan::SingleHttp(plan) => {
+                assert_eq!(plan.request.url, "http://localhost:3000/api/admin/users/search");
+                assert_eq!(
+                    plan.request.headers.get("Cf-Access-Authenticated-User-Email"),
+                    Some(&"eli@example.com".to_string())
+                );
+                assert!(plan.baseline.is_some());
+                assert!(plan.oracle.body_contains.iter().any(|m| m == "users"));
+            }
+            other => panic!("expected single HTTP trusted-header plan, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn endpoint_inference_ignores_local_filesystem_paths() {
+        let targets = vec!["http://localhost:3000".to_string()];
+        let auth = Vec::new();
+        let synth = LiveTestPlanSynthesizer::new(LiveTestPlanSynthesisContext {
+            route_model: None,
+            target_urls: &targets,
+            auth_profiles: &auth,
+            browser_checks_enabled: false,
+            allow_state_changing: false,
+        });
+        let candidate = candidate(
+            "CONFIG_EXPOSURE",
+            "src/auth.rs",
+            "Potential configuration exposure: /Users/elipeter/Library/Application Support/nyctos/src/auth.rs:46",
+        );
+
+        let plan = synth.synthesize(&candidate);
+
+        assert_eq!(plan.no_plan_reason().unwrap().code, NoPlanReasonCode::RouteNotInferred);
     }
 
     #[test]

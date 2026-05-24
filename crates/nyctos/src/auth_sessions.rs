@@ -264,14 +264,14 @@ async fn acquire_uncached_session(
         }
         ProjectAuthMode::BrowserLogin => Err(skip_reason(if !options.browser_checks_enabled {
             "browser login skipped: browser verification disabled by run config"
-        } else if !browser_runtime_available() {
+        } else if !browser_runtime_available(&options.workspace_paths) {
             "browser login skipped: Playwright runtime unavailable"
         } else {
             "browser login skipped: browser session capture is not wired in this pass"
         })),
         ProjectAuthMode::ManualSso => Err(skip_reason(if !options.browser_checks_enabled {
             "manual SSO skipped: browser verification disabled by run config"
-        } else if !browser_runtime_available() {
+        } else if !browser_runtime_available(&options.workspace_paths) {
             "manual SSO skipped: Playwright runtime unavailable"
         } else {
             "manual SSO skipped: interactive browser capture is not wired in this pass"
@@ -1353,11 +1353,8 @@ fn acquired_by(mode: ProjectAuthMode) -> &'static str {
     }
 }
 
-fn browser_runtime_available() -> bool {
-    std::process::Command::new("node")
-        .args(["-e", "require.resolve('playwright')"])
-        .output()
-        .is_ok_and(|out| out.status.success())
+fn browser_runtime_available(extra_roots: &[PathBuf]) -> bool {
+    crate::node_runtime::playwright_available(extra_roots)
 }
 
 fn safe_filename(value: &str) -> String {

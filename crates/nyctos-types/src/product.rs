@@ -416,6 +416,9 @@ pub struct StartPentestRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub business_logic_templates_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub research_mode_enabled: Option<bool>,
     #[serde(default)]
     pub business_logic_template_ids: Vec<String>,
 }

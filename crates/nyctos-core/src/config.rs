@@ -532,6 +532,12 @@ pub struct RunConfig {
     /// normal live-verifier safety gates.
     #[serde(default = "default_true")]
     pub business_logic_templates_enabled: bool,
+    /// Enable deeper authorized product-logic research. This adds
+    /// invariant-focused candidate hypotheses and gives AI planning /
+    /// exploration a broader product-logic brief. It does not relax
+    /// live execution safety gates.
+    #[serde(default)]
+    pub research_mode_enabled: bool,
     /// Optional allowlist of business-logic template ids. Empty means
     /// every registered template is considered.
     #[serde(default)]
@@ -601,6 +607,7 @@ impl Default for RunConfig {
             exploit_mode_enabled: false,
             exploit_dry_run: false,
             business_logic_templates_enabled: true,
+            research_mode_enabled: false,
             business_logic_template_ids: Vec::new(),
             exploit_request_cap: None,
             exploit_requests_per_second: None,

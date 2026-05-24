@@ -50,6 +50,11 @@ use crate::runtime::AiRuntime;
 /// downstream consumers must distinguish.
 pub const EXPLORATION_PROMPT_VERSION: &str = "phase23.exploration.v2";
 
+/// Research-mode exploration prompt revision. Research mode changes
+/// objective construction and self-pacing, but the same escape-suite,
+/// budget, host, and tool gates still wrap execution.
+pub const EXPLORATION_RESEARCH_PROMPT_VERSION: &str = "phase23.exploration.v2.research";
+
 /// Default per-run hard cap. $10 in USD micros, tuned for Claude Opus
 /// pricing.
 pub const DEFAULT_EXPLORATION_RUN_CAP_USD_MICROS: i64 = 10_000_000;
@@ -90,6 +95,12 @@ pub struct ExplorationScope {
     /// pivot, de-duplicate, and look for stronger evidence or related
     /// higher-impact flaws.
     pub known_leads: Vec<ExplorationKnownLead>,
+    /// Enables deeper product-logic exploration instructions without
+    /// changing the live execution gates enforced by the host.
+    pub research_mode_enabled: bool,
+    /// Product-invariant focus lines derived from ResearchMode
+    /// candidates and prior exploration memory.
+    pub research_focus: Vec<String>,
     /// Repository workspace root for CLI-native file/search/shell
     /// tools. The adapter also uses this as the subprocess cwd.
     pub workspace_root: Option<String>,
@@ -125,6 +136,8 @@ impl ExplorationScope {
             allowed_hosts: Vec::new(),
             target_endpoints: Vec::new(),
             known_leads: Vec::new(),
+            research_mode_enabled: false,
+            research_focus: Vec::new(),
             workspace_root: None,
             max_actions: 24,
             max_wall_clock: DEFAULT_EXPLORATION_WALL_CLOCK,
@@ -392,25 +405,50 @@ fn build_agent_task(scope: &ExplorationScope) -> AgentTask {
     // `crates/nyctos-ai/src/prompts/exploration.v2.{system,objective}.md`
     // so the trace viewer can resolve the literal template that drove a
     // given run.
-    let system = format!(
-        include_str!("../prompts/exploration.v2.system.md"),
-        max_actions = scope.max_actions,
-        max_secs = max_secs,
-    );
-
-    let objective = format!(
-        include_str!("../prompts/exploration.v2.objective.md"),
-        allowed = allowed,
-        targets = targets,
-        known_leads = known_leads,
-        workspace_root = workspace_root,
-        max_actions = scope.max_actions,
-        max_secs = max_secs,
-        sentinel = scope.sentinel_path,
-    );
+    let (prompt_version, system, objective) = if scope.research_mode_enabled {
+        let research_focus = render_research_focus(&scope.research_focus);
+        (
+            EXPLORATION_RESEARCH_PROMPT_VERSION.to_string(),
+            format!(
+                include_str!("../prompts/exploration.v2.research.system.md"),
+                max_actions = scope.max_actions,
+                max_secs = max_secs,
+            ),
+            format!(
+                include_str!("../prompts/exploration.v2.research.objective.md"),
+                allowed = allowed,
+                targets = targets,
+                known_leads = known_leads,
+                research_focus = research_focus,
+                workspace_root = workspace_root,
+                max_actions = scope.max_actions,
+                max_secs = max_secs,
+                sentinel = scope.sentinel_path,
+            ),
+        )
+    } else {
+        (
+            EXPLORATION_PROMPT_VERSION.to_string(),
+            format!(
+                include_str!("../prompts/exploration.v2.system.md"),
+                max_actions = scope.max_actions,
+                max_secs = max_secs,
+            ),
+            format!(
+                include_str!("../prompts/exploration.v2.objective.md"),
+                allowed = allowed,
+                targets = targets,
+                known_leads = known_leads,
+                workspace_root = workspace_root,
+                max_actions = scope.max_actions,
+                max_secs = max_secs,
+                sentinel = scope.sentinel_path,
+            ),
+        )
+    };
 
     AgentTask {
-        prompt_version: EXPLORATION_PROMPT_VERSION.to_string(),
+        prompt_version,
         task_id: scope.task_id.clone(),
         system,
         objective,
@@ -418,6 +456,19 @@ fn build_agent_task(scope: &ExplorationScope) -> AgentTask {
         working_directory: scope.workspace_root.clone(),
         max_turns: scope.max_actions,
     }
+}
+
+fn render_research_focus(focus: &[String]) -> String {
+    if focus.is_empty() {
+        return "(none; infer product invariants from routes, auth profiles, and known leads)"
+            .to_string();
+    }
+    focus
+        .iter()
+        .take(16)
+        .map(|line| format!("- {}", compact_prompt_field(line, 220)))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn render_known_leads(leads: &[ExplorationKnownLead]) -> String {
@@ -688,6 +739,25 @@ mod tests {
             cost_usd_micros: 0,
             extracted,
         }
+    }
+
+    #[test]
+    fn research_scope_uses_research_prompt_template_and_focus() {
+        let mut scope = sample_scope();
+        scope.research_mode_enabled = true;
+        scope.research_focus.push(
+            "ResearchMode entitlement_mismatch on POST /api/billing/subscriptions/{id}/downgrade"
+                .to_string(),
+        );
+        scope.max_actions = 40;
+
+        let task = build_agent_task(&scope);
+        assert_eq!(task.prompt_version, EXPLORATION_RESEARCH_PROMPT_VERSION);
+        assert_eq!(task.max_turns, 40);
+        assert!(task.system.contains("Vuln Research Mode"));
+        assert!(task.objective.contains("RESEARCH FOCUS"));
+        assert!(task.objective.contains("entitlement_mismatch"));
+        assert!(task.objective.contains("RESEARCH CHECKLIST"));
     }
 
     #[tokio::test]

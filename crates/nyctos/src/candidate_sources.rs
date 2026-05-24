@@ -1,17 +1,23 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use nyctos_core::store::{finding_id_hash, NyxSignalRecord, PentestCandidateRecord, Store};
+use nyctos_core::RunConfig;
 use nyctos_types::product::{ApiClientCallModel, FormModel, RouteModel, RouteModelEndpoint};
 
 use crate::pentest_tools;
 
 const SOURCE_LINE_WINDOW: i64 = 80;
+const RESEARCH_SOURCE: &str = "ResearchMode";
+const RESEARCH_MODE_VERSION: &str = "research-mode.product-invariants.v1";
+const MAX_RESEARCH_ROUTE_HYPOTHESES_PER_CATEGORY: usize = 4;
+const MAX_RESEARCH_MEMORY_HYPOTHESES: usize = 6;
 
 pub async fn synthesize_weak_signal_candidates(
     store: &Store,
     run_id: &str,
     project_id: &str,
     route_model: &RouteModel,
+    run_config: &RunConfig,
 ) -> anyhow::Result<u32> {
     let signals = store.nyx_signals().list_by_run(run_id, true).await?;
     let mut drafts = CandidateDrafts::default();
@@ -24,6 +30,20 @@ pub async fn synthesize_weak_signal_candidates(
     }
     for form in &route_model.forms {
         add_form_candidates(&mut drafts, form, &signals);
+    }
+    if run_config.research_mode_enabled {
+        let memory = match store.pentest_candidates().list_by_run(run_id).await {
+            Ok(rows) => rows,
+            Err(err) => {
+                tracing::warn!(
+                    run_id = %run_id,
+                    error = %err,
+                    "research mode candidate synthesis: failed to load exploration memory; continuing with route model only"
+                );
+                Vec::new()
+            }
+        };
+        add_research_mode_candidates(&mut drafts, route_model, &memory);
     }
 
     let candidates = drafts.into_records(run_id, project_id);
@@ -81,6 +101,7 @@ fn add_route_candidates(
                 "{} observed {} {}; live verification must prove exploit-specific behavior before this is reported.",
                 route_source, route.method, route.path
             ),
+            test_plan: None,
             confidence: lead.confidence + route.confidence.min(1.0) * 0.08,
         });
     }
@@ -119,6 +140,7 @@ fn add_api_client_candidates(drafts: &mut CandidateDrafts, call: &ApiClientCallM
                 "{} observed a client-side call to {} {}; live verification must prove the surface is vulnerable.",
                 source, call.method, call.path
             ),
+            test_plan: None,
             confidence: lead.confidence + call.confidence.min(1.0) * 0.06,
         });
     }
@@ -165,9 +187,392 @@ fn add_form_candidates(
                 "A {} form posts to {} with no static CSRF marker. Live verification must prove a cross-site request can cause an unauthorized state change.",
                 form.method, form.action
             ),
+            test_plan: None,
             confidence: 0.48 + form.confidence.min(1.0) * 0.08,
         });
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ResearchRouteCategory {
+    id: &'static str,
+    vuln_class: &'static str,
+    severity: &'static str,
+    title: &'static str,
+    invariant: &'static str,
+    route_terms: &'static [&'static str],
+    field_terms: &'static [&'static str],
+    require_state_changing: bool,
+    confidence: f64,
+}
+
+const RESEARCH_ROUTE_CATEGORIES: &[ResearchRouteCategory] = &[
+    ResearchRouteCategory {
+        id: "lifecycle_transition",
+        vuln_class: "LIFECYCLE_INVARIANT_BYPASS",
+        severity: "High",
+        title: "Lifecycle transition invariant",
+        invariant: "state transitions should enforce ownership, role, current state, and one-way transition rules",
+        route_terms: &[
+            "activate", "deactivate", "suspend", "unsuspend", "archive", "restore", "cancel",
+            "close", "reopen", "approve", "reject", "publish", "unpublish", "complete", "void",
+        ],
+        field_terms: &["status", "state", "transition", "workflow", "approved", "cancelled"],
+        require_state_changing: true,
+        confidence: 0.68,
+    },
+    ResearchRouteCategory {
+        id: "stale_access",
+        vuln_class: "STALE_ACCESS",
+        severity: "High",
+        title: "Stale access after access change",
+        invariant: "authorization decisions should be revalidated after membership, sharing, revocation, ownership, or deletion changes",
+        route_terms: &[
+            "share", "unshare", "revoke", "grant", "permission", "permissions", "member",
+            "members", "collaborator", "transfer", "delete", "remove",
+        ],
+        field_terms: &["role", "permission", "access", "owner", "member", "collaborator"],
+        require_state_changing: true,
+        confidence: 0.70,
+    },
+    ResearchRouteCategory {
+        id: "replay",
+        vuln_class: "REPLAY_OR_TOKEN_REUSE",
+        severity: "High",
+        title: "Replay or token reuse invariant",
+        invariant: "single-use tokens, invites, callbacks, OTPs, and webhooks should reject reuse, stale state, and reordered delivery",
+        route_terms: &[
+            "token", "reset", "invite", "invitation", "otp", "mfa", "magic", "callback",
+            "webhook", "redeem", "accept", "verify",
+        ],
+        field_terms: &["token", "code", "otp", "nonce", "signature", "event_id"],
+        require_state_changing: true,
+        confidence: 0.67,
+    },
+    ResearchRouteCategory {
+        id: "entitlement_mismatch",
+        vuln_class: "ENTITLEMENT_MISMATCH",
+        severity: "High",
+        title: "Downgrade or entitlement mismatch",
+        invariant: "billing, plan, quota, and role changes should stay consistent with server-side entitlements on every dependent action",
+        route_terms: &[
+            "billing", "subscription", "subscriptions", "plan", "plans", "entitlement",
+            "quota", "seat", "seats", "tier", "upgrade", "downgrade", "checkout",
+        ],
+        field_terms: &["plan", "tier", "role", "quota", "seat", "price", "amount", "entitlement"],
+        require_state_changing: false,
+        confidence: 0.69,
+    },
+    ResearchRouteCategory {
+        id: "invite_team_org_transition",
+        vuln_class: "INVITE_OR_MEMBERSHIP_TRANSITION",
+        severity: "High",
+        title: "Invite, team, or org transition invariant",
+        invariant: "invite, team, org, and role transitions should bind actor, target org, role, expiration, and current membership state",
+        route_terms: &[
+            "invite", "invitation", "team", "teams", "org", "organization", "workspace",
+            "member", "members", "role", "roles",
+        ],
+        field_terms: &["email", "role", "org_id", "team_id", "workspace_id", "expires"],
+        require_state_changing: true,
+        confidence: 0.71,
+    },
+    ResearchRouteCategory {
+        id: "webhook_event_consistency",
+        vuln_class: "WEBHOOK_EVENT_CONSISTENCY",
+        severity: "High",
+        title: "Webhook or event consistency invariant",
+        invariant: "event receivers and callbacks should authenticate origin, deduplicate delivery, and keep side effects consistent under retries",
+        route_terms: &[
+            "webhook", "callback", "event", "events", "receiver", "notification", "notify",
+            "integration",
+        ],
+        field_terms: &["event", "event_id", "signature", "hmac", "payload", "topic", "type"],
+        require_state_changing: true,
+        confidence: 0.66,
+    },
+    ResearchRouteCategory {
+        id: "ai_agent_indirect_action",
+        vuln_class: "AI_AGENT_INDIRECT_ACTION",
+        severity: "High",
+        title: "AI agent indirect action invariant",
+        invariant: "AI and agent endpoints should not let untrusted content trigger privileged tool calls, data access, or workflow side effects",
+        route_terms: &[
+            "ai", "assistant", "agent", "agents", "chat", "copilot", "llm", "tool", "tools",
+            "action", "actions",
+        ],
+        field_terms: &["prompt", "message", "instruction", "tool", "action", "query", "input"],
+        require_state_changing: false,
+        confidence: 0.66,
+    },
+    ResearchRouteCategory {
+        id: "background_job_side_effect",
+        vuln_class: "BACKGROUND_JOB_SIDE_EFFECT",
+        severity: "Medium",
+        title: "Background job side-effect invariant",
+        invariant: "queued, async, import/export, sync, and reporting actions should enforce auth, idempotency, tenant scope, and cleanup after completion",
+        route_terms: &[
+            "job", "jobs", "task", "tasks", "queue", "export", "import", "sync", "report",
+            "reports", "email", "worker", "batch",
+        ],
+        field_terms: &["job_id", "task_id", "format", "email", "callback", "file", "report_id"],
+        require_state_changing: true,
+        confidence: 0.61,
+    },
+];
+
+fn add_research_mode_candidates(
+    drafts: &mut CandidateDrafts,
+    route_model: &RouteModel,
+    memory: &[PentestCandidateRecord],
+) {
+    for category in RESEARCH_ROUTE_CATEGORIES {
+        let mut generated = 0_usize;
+        for route in route_model
+            .backend_routes
+            .iter()
+            .filter(|route| research_category_matches_route(category, route))
+        {
+            let memory_refs = memory_refs_for_route(route, memory);
+            drafts.add(research_route_lead(category, route, memory_refs));
+            generated += 1;
+            if generated >= MAX_RESEARCH_ROUTE_HYPOTHESES_PER_CATEGORY {
+                break;
+            }
+        }
+    }
+    add_research_memory_pivots(drafts, memory);
+}
+
+fn research_route_lead(
+    category: &ResearchRouteCategory,
+    route: &RouteModelEndpoint,
+    memory_refs: Vec<String>,
+) -> CandidateLead {
+    let method = route.method.to_ascii_uppercase();
+    let mut source_ids = vec![research_route_source_id(category.id, route)];
+    source_ids.extend(memory_refs.iter().map(|id| format!("research-memory:{id}")));
+    let component = research_route_component(category, route, &memory_refs);
+    CandidateLead {
+        class: category.vuln_class.to_string(),
+        title: format!("{}: {method} {}", category.title, route.path),
+        severity: category.severity.to_string(),
+        source: RESEARCH_SOURCE.to_string(),
+        source_ids,
+        component,
+        hypothesis: format!(
+            "Research mode selected {method} {path} because product invariant `{invariant}` may break across lifecycle, auth, replay, entitlement, team/org, event, AI-agent, or background-job boundaries. Confirmation requires concrete live evidence under the normal verifier safety policy.",
+            path = route.path,
+            invariant = category.invariant
+        ),
+        test_plan: Some(research_test_plan(category)),
+        confidence: (category.confidence + route.confidence.min(1.0) * 0.05).min(0.82),
+    }
+}
+
+fn add_research_memory_pivots(drafts: &mut CandidateDrafts, memory: &[PentestCandidateRecord]) {
+    let mut generated = 0_usize;
+    for candidate in memory.iter().filter(|c| c.source != RESEARCH_SOURCE) {
+        let text = candidate_memory_text(candidate);
+        let Some(category) = RESEARCH_ROUTE_CATEGORIES
+            .iter()
+            .find(|category| research_category_matches_text(category, &text))
+        else {
+            continue;
+        };
+        let (method, path) = candidate_primary_route(candidate)
+            .unwrap_or_else(|| ("GET".to_string(), format!("<candidate:{}>", candidate.id)));
+        let component = serde_json::json!({
+            "kind": "research_mode_memory",
+            "research_mode": true,
+            "research_mode_provenance": {
+                "mode": "research",
+                "version": RESEARCH_MODE_VERSION,
+                "source": "exploration_memory",
+                "category": category.id,
+                "invariant": category.invariant,
+                "source_candidate_id": candidate.id,
+                "source_candidate_source": candidate.source,
+            },
+            "category": category.id,
+            "invariant": category.invariant,
+            "source_candidate_id": candidate.id,
+            "memory_source": candidate.source,
+            "memory_title": candidate.title,
+            "method": method,
+            "url_path": path,
+        });
+        let mut source_ids =
+            vec![format!("research-memory:{}", candidate.id), candidate.id.clone()];
+        source_ids.extend(candidate.source_ids.iter().take(4).cloned());
+        drafts.add(CandidateLead {
+            class: category.vuln_class.to_string(),
+            title: format!("Research follow-up on {}: {}", category.title, candidate.title),
+            severity: category.severity.to_string(),
+            source: RESEARCH_SOURCE.to_string(),
+            source_ids,
+            component,
+            hypothesis: format!(
+                "Research mode used prior candidate `{}` as exploration memory and pivoted it into the `{}` invariant. The verifier must still collect fresh live evidence before reporting.",
+                candidate.id, category.id
+            ),
+            test_plan: Some(research_test_plan(category)),
+            confidence: (candidate.confidence + 0.05).clamp(0.55, 0.80),
+        });
+        generated += 1;
+        if generated >= MAX_RESEARCH_MEMORY_HYPOTHESES {
+            break;
+        }
+    }
+}
+
+fn research_route_component(
+    category: &ResearchRouteCategory,
+    route: &RouteModelEndpoint,
+    memory_refs: &[String],
+) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "research_mode_hypothesis",
+        "research_mode": true,
+        "research_mode_provenance": {
+            "mode": "research",
+            "version": RESEARCH_MODE_VERSION,
+            "source": "semantic_route_model",
+            "category": category.id,
+            "invariant": category.invariant,
+            "memory_candidate_ids": memory_refs,
+        },
+        "category": category.id,
+        "invariant": category.invariant,
+        "repo": route.repo,
+        "method": route.method,
+        "url_path": route.path,
+        "path": route.handler_file,
+        "line": route.line,
+        "params": route.params,
+        "body_fields": route.body_fields,
+        "auth_checks": route.auth_checks,
+        "role_checks": route.role_checks,
+        "state_changing": route.state_changing,
+    })
+}
+
+fn research_test_plan(category: &ResearchRouteCategory) -> String {
+    format!(
+        "Research mode invariant plan: map preconditions and forbidden transitions for `{}`; prefer read-only or dry-run evidence; if confirmation needs mutation, rely on the existing exploit-mode, state-changing, request-cap, rate-limit, target-scope, and reset gates. Record positive evidence only when the invariant is observably broken.",
+        category.invariant
+    )
+}
+
+fn research_category_matches_route(
+    category: &ResearchRouteCategory,
+    route: &RouteModelEndpoint,
+) -> bool {
+    if category.require_state_changing && !route.state_changing {
+        return false;
+    }
+    let text = research_route_text(route);
+    research_category_matches_text(category, &text)
+}
+
+fn research_category_matches_text(category: &ResearchRouteCategory, text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    category.route_terms.iter().chain(category.field_terms.iter()).any(|needle| {
+        let needle = needle.to_ascii_lowercase();
+        lower.contains(&needle)
+    })
+}
+
+fn research_route_text(route: &RouteModelEndpoint) -> String {
+    let mut parts = vec![route.method.as_str(), route.path.as_str()];
+    parts.extend(route.params.iter().map(String::as_str));
+    parts.extend(route.body_fields.iter().map(String::as_str));
+    parts.extend(route.auth_checks.iter().map(String::as_str));
+    parts.extend(route.role_checks.iter().map(String::as_str));
+    parts.join(" ")
+}
+
+fn research_route_source_id(category_id: &str, route: &RouteModelEndpoint) -> String {
+    format!(
+        "research-mode:{category_id}:{}:{}:{}:{}",
+        route.repo.as_deref().unwrap_or("*"),
+        route.method.to_ascii_uppercase(),
+        normalise_path(&route.path),
+        route.handler_file.as_deref().unwrap_or("*")
+    )
+}
+
+fn memory_refs_for_route(
+    route: &RouteModelEndpoint,
+    memory: &[PentestCandidateRecord],
+) -> Vec<String> {
+    let target = normalise_path(&route.path);
+    memory
+        .iter()
+        .filter(|candidate| candidate_mentions_route(candidate, &target))
+        .map(|candidate| candidate.id.clone())
+        .take(6)
+        .collect()
+}
+
+fn candidate_mentions_route(candidate: &PentestCandidateRecord, route_path: &str) -> bool {
+    let text_hit = candidate_memory_text(candidate).contains(route_path);
+    text_hit
+        || candidate.affected_components.iter().any(|component| {
+            component
+                .as_object()
+                .and_then(|obj| {
+                    obj.get("url_path")
+                        .or_else(|| obj.get("action"))
+                        .or_else(|| obj.get("matched_at"))
+                        .or_else(|| obj.get("target"))
+                        .or_else(|| obj.get("url"))
+                        .and_then(|value| value.as_str())
+                })
+                .map(|path| normalise_path(path) == route_path)
+                .unwrap_or(false)
+        })
+}
+
+fn candidate_memory_text(candidate: &PentestCandidateRecord) -> String {
+    let mut parts = vec![
+        candidate.source.as_str(),
+        candidate.title.as_str(),
+        candidate.vuln_class.as_str(),
+        candidate.hypothesis.as_str(),
+    ];
+    for component in &candidate.affected_components {
+        if let Some(obj) = component.as_object() {
+            for key in ["url_path", "action", "matched_at", "target", "url", "path", "kind"] {
+                if let Some(value) = obj.get(key).and_then(|value| value.as_str()) {
+                    parts.push(value);
+                }
+            }
+        }
+    }
+    parts.join(" ").to_ascii_lowercase()
+}
+
+fn candidate_primary_route(candidate: &PentestCandidateRecord) -> Option<(String, String)> {
+    for component in &candidate.affected_components {
+        let Some(obj) = component.as_object() else {
+            continue;
+        };
+        let path = obj
+            .get("url_path")
+            .or_else(|| obj.get("action"))
+            .or_else(|| obj.get("matched_at"))
+            .or_else(|| obj.get("target"))
+            .or_else(|| obj.get("url"))
+            .and_then(|value| value.as_str())?;
+        let method = obj
+            .get("method")
+            .and_then(|value| value.as_str())
+            .unwrap_or("GET")
+            .to_ascii_uppercase();
+        return Some((method, normalise_path(path)));
+    }
+    None
 }
 
 #[derive(Debug, Clone)]
@@ -248,6 +653,7 @@ struct CandidateLead {
     source_ids: Vec<String>,
     component: serde_json::Value,
     hypothesis: String,
+    test_plan: Option<String>,
     confidence: f64,
 }
 
@@ -280,6 +686,7 @@ struct CandidateDraft {
     components: Vec<serde_json::Value>,
     component_keys: BTreeSet<String>,
     hypotheses: Vec<String>,
+    test_plans: Vec<String>,
     confidence: f64,
 }
 
@@ -294,6 +701,7 @@ impl CandidateDraft {
             components: Vec::new(),
             component_keys: BTreeSet::new(),
             hypotheses: Vec::new(),
+            test_plans: Vec::new(),
             confidence: 0.0,
         }
     }
@@ -307,6 +715,11 @@ impl CandidateDraft {
         }
         if !self.hypotheses.iter().any(|h| h == &lead.hypothesis) {
             self.hypotheses.push(lead.hypothesis);
+        }
+        if let Some(test_plan) = lead.test_plan {
+            if !self.test_plans.iter().any(|p| p == &test_plan) {
+                self.test_plans.push(test_plan);
+            }
         }
         if severity_rank(&lead.severity) > severity_rank(&self.severity) {
             self.severity = lead.severity;
@@ -335,6 +748,11 @@ impl CandidateDraft {
                 );
             }
         }
+        let test_plan = if self.test_plans.is_empty() {
+            "Derive a safe live HTTP/browser confirmation from the combined weak signals; do not report as verified without live evidence.".to_string()
+        } else {
+            self.test_plans.join("\n")
+        };
         PentestCandidateRecord {
             id: format!("pc-weak-{}", finding_id_hash(run_id, key, None, &self.class, &source)),
             run_id: run_id.to_string(),
@@ -346,7 +764,7 @@ impl CandidateDraft {
             severity_guess: self.severity,
             affected_components: components,
             hypothesis: self.hypotheses.join("\n"),
-            test_plan: "Derive a safe live HTTP/browser confirmation from the combined weak signals; do not report as verified without live evidence.".to_string(),
+            test_plan,
             status: "NeedsLiveTest".to_string(),
             rejection_reason: None,
             confidence: self.confidence,
@@ -505,10 +923,15 @@ mod tests {
             ..RouteModel::default()
         };
 
-        let persisted =
-            synthesize_weak_signal_candidates(&store, "run-weak-1", "project-1", &route_model)
-                .await
-                .unwrap();
+        let persisted = synthesize_weak_signal_candidates(
+            &store,
+            "run-weak-1",
+            "project-1",
+            &route_model,
+            &RunConfig::default(),
+        )
+        .await
+        .unwrap();
         assert_eq!(persisted, 2);
         let candidates = store.pentest_candidates().list_by_run("run-weak-1").await.unwrap();
         assert_eq!(candidates.len(), 2);
@@ -522,5 +945,156 @@ mod tests {
         assert_eq!(candidate.status, "NeedsLiveTest");
         assert!(candidate.source_ids.len() >= 2);
         assert!(candidate.hypothesis.contains("live verification"));
+    }
+
+    #[tokio::test]
+    async fn research_mode_adds_product_invariant_hypotheses_normal_mode_does_not() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).await.unwrap();
+        store.projects().create("project-1", "acme", None, None, None, 1).await.unwrap();
+        store.runs().insert(&run_record("run-normal")).await.unwrap();
+        store.runs().insert(&run_record("run-research")).await.unwrap();
+
+        let route_model = RouteModel {
+            backend_routes: vec![
+                research_route(
+                    "POST",
+                    "/api/billing/subscriptions/{subscription_id}/downgrade",
+                    true,
+                    &["require_user"],
+                    &["plan_id", "effective_at"],
+                ),
+                research_route(
+                    "POST",
+                    "/api/orgs/{org_id}/invites",
+                    true,
+                    &["require_user"],
+                    &["email", "role", "expires_at"],
+                ),
+                research_route(
+                    "POST",
+                    "/api/jobs/export",
+                    true,
+                    &["require_user"],
+                    &["format", "callback_url"],
+                ),
+            ],
+            ..RouteModel::default()
+        };
+
+        let normal = synthesize_weak_signal_candidates(
+            &store,
+            "run-normal",
+            "project-1",
+            &route_model,
+            &RunConfig::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(normal, 0, "fixture routes should not produce normal weak-signal candidates");
+
+        store
+            .pentest_candidates()
+            .insert(&PentestCandidateRecord {
+                id: "pc-memory-invite".to_string(),
+                run_id: "run-research".to_string(),
+                project_id: "project-1".to_string(),
+                source: "ZAPBaseline".to_string(),
+                source_ids: vec!["zap:/api/orgs/{org_id}/invites".to_string()],
+                title: "Invite endpoint observed during crawl".to_string(),
+                vuln_class: "INTERNAL_SURFACE".to_string(),
+                severity_guess: "Medium".to_string(),
+                affected_components: vec![serde_json::json!({
+                    "kind": "route",
+                    "method": "POST",
+                    "url_path": "/api/orgs/{org_id}/invites",
+                    "repo": "api"
+                })],
+                hypothesis: "Crawler found an invite transition; check role and replay handling."
+                    .to_string(),
+                test_plan: "existing scanner lead".to_string(),
+                status: "NeedsLiveTest".to_string(),
+                rejection_reason: None,
+                confidence: 0.58,
+                trace_id: None,
+                created_at: 10,
+                updated_at: 10,
+            })
+            .await
+            .unwrap();
+
+        let research_config = RunConfig { research_mode_enabled: true, ..RunConfig::default() };
+        let research = synthesize_weak_signal_candidates(
+            &store,
+            "run-research",
+            "project-1",
+            &route_model,
+            &research_config,
+        )
+        .await
+        .unwrap();
+        assert!(research >= 3, "research mode should add invariant hypotheses");
+
+        let rows = store.pentest_candidates().list_by_run("run-research").await.unwrap();
+        let research_rows =
+            rows.iter().filter(|row| row.source == RESEARCH_SOURCE).collect::<Vec<_>>();
+        assert!(!research_rows.is_empty(), "expected ResearchMode candidates");
+        assert!(research_rows.iter().any(|row| row.vuln_class == "ENTITLEMENT_MISMATCH"));
+        assert!(research_rows
+            .iter()
+            .any(|row| row.vuln_class == "INVITE_OR_MEMBERSHIP_TRANSITION"));
+        assert!(research_rows.iter().any(|row| row.vuln_class == "BACKGROUND_JOB_SIDE_EFFECT"));
+        assert!(research_rows
+            .iter()
+            .any(|row| { row.source_ids.iter().any(|id| id.contains("pc-memory-invite")) }));
+        assert!(research_rows.iter().any(|row| {
+            row.affected_components.iter().any(|component| {
+                component
+                    .get("research_mode_provenance")
+                    .and_then(|p| p.get("version"))
+                    .and_then(|v| v.as_str())
+                    == Some(RESEARCH_MODE_VERSION)
+            })
+        }));
+    }
+
+    fn run_record(id: &str) -> RunRecord {
+        RunRecord {
+            id: id.to_string(),
+            project_id: Some("project-1".to_string()),
+            kind: "Scan".to_string(),
+            started_at: 2_000,
+            finished_at: None,
+            status: "Running".to_string(),
+            triggered_by: "Manual".to_string(),
+            git_ref: None,
+            parent_run_id: None,
+            wall_clock_ms: None,
+            total_ai_spend_usd_micros: 0,
+        }
+    }
+
+    fn research_route(
+        method: &str,
+        path: &str,
+        state_changing: bool,
+        auth_checks: &[&str],
+        body_fields: &[&str],
+    ) -> RouteModelEndpoint {
+        RouteModelEndpoint {
+            method: method.to_string(),
+            path: path.to_string(),
+            repo: Some("api".to_string()),
+            handler_file: Some("src/routes.rs".to_string()),
+            line: Some(42),
+            params: Vec::new(),
+            middleware: Vec::new(),
+            auth_checks: auth_checks.iter().map(|s| (*s).to_string()).collect(),
+            role_checks: Vec::new(),
+            body_fields: body_fields.iter().map(|s| (*s).to_string()).collect(),
+            state_changing,
+            confidence: 0.82,
+            evidence: Vec::new(),
+        }
     }
 }

@@ -84,6 +84,7 @@ nyctos scan --project acme-app
 nyctos scan --project acme-app --repo acme-backend
 nyctos scan --project acme-app --output report.json --since-ref origin/main
 nyctos scan --project acme-app --exploit-mode --allow-state-changing-live-probes --business-template tenant_object_isolation
+nyctos scan --project acme-app --research-mode
 ```
 
 | Flag | Effect |
@@ -96,6 +97,7 @@ nyctos scan --project acme-app --exploit-mode --allow-state-changing-live-probes
 | `--exploit-mode` | Enable exploit mode for this scan without editing `nyctos.toml`. State-changing probes still also require `--allow-state-changing-live-probes`. |
 | `--allow-state-changing-live-probes` | Allow mutating live probes for this scan when exploit mode is enabled. |
 | `--exploit-dry-run` | Evaluate guarded live plans and write audit records without sending HTTP/browser traffic. |
+| `--research-mode` | Enable Vuln Research Mode for this scan. Adds product-invariant hypotheses and deeper planning/exploration without relaxing live execution gates. |
 | `--no-business-logic-templates` | Disable business-logic template candidate synthesis for this scan. |
 | `--business-template ID` | Restrict business-logic template synthesis to the given id. Repeat for multiple ids. |
 | `--no-orchestration` | Run the scan without starting or health-checking the project's launch profile. Static scanning and source-only analysis still run. |

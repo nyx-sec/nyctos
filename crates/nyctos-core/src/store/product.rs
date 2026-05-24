@@ -690,6 +690,36 @@ impl<'a> VerifiedVulnerabilityStore<'a> {
         Ok(())
     }
 
+    pub async fn get(&self, id: &str) -> Result<Option<VerifiedVulnerabilityRecord>, StoreError> {
+        let row = sqlx::query(
+            r#"
+            SELECT id, run_id, project_id, title, severity, confidence, vuln_class,
+                   affected_components_json, business_impact, evidence_summary, repro_steps,
+                   remediation, source_candidate_ids_json, source_signal_ids_json,
+                   verification_attempt_ids_json, chain_id, status, first_seen, last_seen
+            FROM verified_vulnerabilities
+            WHERE id = ?
+            "#,
+        )
+        .bind(id)
+        .fetch_optional(self.pool)
+        .await?;
+        row.map(row_to_vulnerability).transpose()
+    }
+
+    pub async fn set_status(
+        &self,
+        id: &str,
+        status: &str,
+    ) -> Result<Option<VerifiedVulnerabilityRecord>, StoreError> {
+        sqlx::query("UPDATE verified_vulnerabilities SET status = ? WHERE id = ?")
+            .bind(status)
+            .bind(id)
+            .execute(self.pool)
+            .await?;
+        self.get(id).await
+    }
+
     pub async fn list_by_run(
         &self,
         run_id: &str,
@@ -702,6 +732,35 @@ impl<'a> VerifiedVulnerabilityStore<'a> {
                    verification_attempt_ids_json, chain_id, status, first_seen, last_seen
             FROM verified_vulnerabilities
             WHERE run_id = ? AND status != 'FalsePositive'
+            ORDER BY
+                CASE severity
+                    WHEN 'Critical' THEN 0
+                    WHEN 'High' THEN 1
+                    WHEN 'Medium' THEN 2
+                    WHEN 'Low' THEN 3
+                    ELSE 4
+                END,
+                last_seen DESC
+            "#,
+        )
+        .bind(run_id)
+        .fetch_all(self.pool)
+        .await?;
+        rows.into_iter().map(row_to_vulnerability).collect()
+    }
+
+    pub async fn list_by_run_including_triaged(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<VerifiedVulnerabilityRecord>, StoreError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, run_id, project_id, title, severity, confidence, vuln_class,
+                   affected_components_json, business_impact, evidence_summary, repro_steps,
+                   remediation, source_candidate_ids_json, source_signal_ids_json,
+                   verification_attempt_ids_json, chain_id, status, first_seen, last_seen
+            FROM verified_vulnerabilities
+            WHERE run_id = ?
             ORDER BY
                 CASE severity
                     WHEN 'Critical' THEN 0
@@ -740,6 +799,27 @@ impl<'a> VerifiedVulnerabilityStore<'a> {
         rows.into_iter().map(row_to_vulnerability).collect()
     }
 
+    pub async fn list_by_project_including_triaged(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<VerifiedVulnerabilityRecord>, StoreError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, run_id, project_id, title, severity, confidence, vuln_class,
+                   affected_components_json, business_impact, evidence_summary, repro_steps,
+                   remediation, source_candidate_ids_json, source_signal_ids_json,
+                   verification_attempt_ids_json, chain_id, status, first_seen, last_seen
+            FROM verified_vulnerabilities
+            WHERE project_id = ?
+            ORDER BY last_seen DESC
+            "#,
+        )
+        .bind(project_id)
+        .fetch_all(self.pool)
+        .await?;
+        rows.into_iter().map(row_to_vulnerability).collect()
+    }
+
     pub async fn list_all(&self) -> Result<Vec<VerifiedVulnerabilityRecord>, StoreError> {
         let rows = sqlx::query(
             r#"
@@ -749,6 +829,24 @@ impl<'a> VerifiedVulnerabilityStore<'a> {
                    verification_attempt_ids_json, chain_id, status, first_seen, last_seen
             FROM verified_vulnerabilities
             WHERE status != 'FalsePositive'
+            ORDER BY last_seen DESC
+            "#,
+        )
+        .fetch_all(self.pool)
+        .await?;
+        rows.into_iter().map(row_to_vulnerability).collect()
+    }
+
+    pub async fn list_all_including_triaged(
+        &self,
+    ) -> Result<Vec<VerifiedVulnerabilityRecord>, StoreError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, run_id, project_id, title, severity, confidence, vuln_class,
+                   affected_components_json, business_impact, evidence_summary, repro_steps,
+                   remediation, source_candidate_ids_json, source_signal_ids_json,
+                   verification_attempt_ids_json, chain_id, status, first_seen, last_seen
+            FROM verified_vulnerabilities
             ORDER BY last_seen DESC
             "#,
         )
@@ -1224,6 +1322,19 @@ mod tests {
         assert_eq!(
             s.verified_vulnerabilities().list_by_run("run-1").await.unwrap()[0].id,
             "vuln-1"
+        );
+        let updated = s
+            .verified_vulnerabilities()
+            .set_status("vuln-1", "FalsePositive")
+            .await
+            .unwrap()
+            .expect("updated vulnerability");
+        assert_eq!(updated.status, "FalsePositive");
+        assert!(s.verified_vulnerabilities().list_by_run("run-1").await.unwrap().is_empty());
+        assert_eq!(
+            s.verified_vulnerabilities().list_by_run_including_triaged("run-1").await.unwrap()[0]
+                .status,
+            "FalsePositive"
         );
     }
 

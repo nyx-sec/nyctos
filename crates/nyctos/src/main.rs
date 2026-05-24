@@ -41,6 +41,7 @@ mod candidate_sources;
 mod cmd;
 mod launch;
 mod live_planning;
+mod node_runtime;
 mod pentest_tools;
 mod route_model;
 mod scheduler;
@@ -189,6 +190,11 @@ enum Command {
         /// scan.
         #[arg(long)]
         no_business_logic_templates: bool,
+        /// Enable deeper authorized product-logic research for this
+        /// scan. This adds invariant-focused hypotheses and deeper AI
+        /// planning/exploration, without relaxing live safety gates.
+        #[arg(long)]
+        research_mode: bool,
         /// Restrict business-logic candidate synthesis to specific
         /// template ids. Repeat for multiple templates.
         #[arg(long = "business-template", value_name = "ID")]
@@ -373,6 +379,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             exploit_dry_run,
             browser_checks,
             no_business_logic_templates,
+            research_mode,
             business_logic_template_ids,
             no_orchestration,
             app_url,
@@ -401,6 +408,9 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             }
             if no_business_logic_templates {
                 run_config.run.business_logic_templates_enabled = false;
+            }
+            if research_mode {
+                run_config.run.research_mode_enabled = true;
             }
             if !business_logic_template_ids.is_empty() {
                 run_config.run.business_logic_template_ids = business_logic_template_ids;
@@ -1218,6 +1228,7 @@ async fn drive_scan(
         &run.id,
         project.id.as_str(),
         &route_model,
+        &config.run,
     )
     .await
     {
@@ -1446,6 +1457,7 @@ async fn drive_scan(
     let exploration_traces_dir = state_dir.traces();
     match ai_pipeline::run_ai_exploration_pass(
         &config.ai,
+        &config.run,
         store,
         &bundle,
         &workspaces_for_ai,
@@ -1489,6 +1501,7 @@ async fn drive_scan(
     let mut attack_plan_context: Option<String> = None;
     match ai_pipeline::run_attack_planning_pass(
         &config.ai,
+        &config.run,
         store,
         &secrets,
         &bundle,
@@ -1529,6 +1542,26 @@ async fn drive_scan(
                 false,
                 Some(format!("attack planning failed: {err}")),
             );
+        }
+    }
+
+    match materialize_ai_review_items_for_live_verification(
+        store,
+        &run.id,
+        project.id.as_str(),
+        now_epoch_ms(),
+    )
+    .await
+    {
+        Ok(count) if count > 0 => {
+            agent_review_notes.push(format!(
+                "live verifier queued {count} AI review item(s) for deterministic planning"
+            ));
+        }
+        Ok(_) => {}
+        Err(err) => {
+            agent_review_notes.push(format!("AI review item live-queueing failed: {err}"));
+            tracing::warn!(error = %err, "failed to queue AI review items for live verification");
         }
     }
 
@@ -2125,6 +2158,9 @@ async fn run_scan_for_api(
         }
         if let Some(enabled) = overrides.business_logic_templates_enabled {
             cfg.run.business_logic_templates_enabled = enabled;
+        }
+        if let Some(enabled) = overrides.research_mode_enabled {
+            cfg.run.research_mode_enabled = enabled;
         }
         if let Some(ids) = overrides.business_logic_template_ids {
             cfg.run.business_logic_template_ids = ids;
@@ -3084,6 +3120,193 @@ struct CandidateVerificationReport {
     browser_attempts: u32,
 }
 
+async fn materialize_ai_review_items_for_live_verification(
+    store: &Store,
+    run_id: &str,
+    project_id: &str,
+    now_ms: i64,
+) -> anyhow::Result<u32> {
+    let mut queued = 0_u32;
+
+    for finding in store.findings().list_by_run(run_id).await? {
+        if finding.status != "Quarantine" || finding.finding_origin != "AiExploration" {
+            continue;
+        }
+        let candidate = pentest_candidate_from_review_finding(&finding, project_id, now_ms);
+        store.pentest_candidates().insert(&candidate).await?;
+        queued += 1;
+    }
+
+    for candidate in store.candidate_findings().list_pending().await? {
+        if candidate.run_id != run_id {
+            continue;
+        }
+        let pentest_candidate = pentest_candidate_from_ai_candidate(&candidate, project_id, now_ms);
+        store.pentest_candidates().insert(&pentest_candidate).await?;
+        queued += 1;
+    }
+
+    Ok(queued)
+}
+
+fn pentest_candidate_from_review_finding(
+    finding: &FindingRecord,
+    project_id: &str,
+    now_ms: i64,
+) -> PentestCandidateRecord {
+    let verdict = exploration_verdict_blob(finding.verdict_blob.as_deref());
+    let endpoint = verdict.as_ref().and_then(|v| json_string_field(v, "endpoint"));
+    let hint = verdict.as_ref().and_then(|v| json_string_field(v, "suggested_payload_hint"));
+    let rationale = verdict
+        .as_ref()
+        .and_then(|v| json_string_field(v, "rationale"))
+        .unwrap_or_else(|| "AI exploration produced a review finding.".to_string());
+    let mut component = serde_json::json!({
+        "kind": "ai_exploration_finding",
+        "repo": &finding.repo,
+        "path": &finding.path,
+        "line": finding.line,
+        "rule": &finding.rule,
+        "cap": &finding.cap,
+        "finding_id": &finding.id,
+    });
+    if let Some(obj) = component.as_object_mut() {
+        insert_json_string(obj, "endpoint", endpoint.clone());
+        insert_json_string(obj, "route", endpoint_path_from_label(endpoint.as_deref()));
+        insert_json_string(obj, "url_path", endpoint_path_from_label(endpoint.as_deref()));
+        insert_json_string(obj, "suggested_payload_hint", hint.clone());
+    }
+    let vuln_class =
+        live_vuln_class_from_ai(&finding.cap, Some(&finding.rule), Some(&rationale), &finding.path);
+    PentestCandidateRecord {
+        id: format!("pc-finding-{}", finding.id),
+        run_id: finding.run_id.clone(),
+        project_id: project_id.to_string(),
+        source: "AiExplorationFinding".to_string(),
+        source_ids: vec![finding.id.clone()],
+        title: format_location_title(&vuln_class, &finding.path, finding.line),
+        vuln_class,
+        severity_guess: finding.severity.clone(),
+        affected_components: vec![component],
+        hypothesis: ai_hypothesis(&rationale, hint.as_deref()),
+        test_plan: "Use the first-class live verifier to derive and execute a safe HTTP/browser confirmation for this AI exploration finding.".to_string(),
+        status: "NeedsLiveTest".to_string(),
+        rejection_reason: None,
+        confidence: 0.78,
+        trace_id: None,
+        created_at: now_ms,
+        updated_at: now_ms,
+    }
+}
+
+fn pentest_candidate_from_ai_candidate(
+    candidate: &CandidateFindingRecord,
+    project_id: &str,
+    now_ms: i64,
+) -> PentestCandidateRecord {
+    let rationale = candidate
+        .rationale
+        .clone()
+        .unwrap_or_else(|| "AI novel-finding discovery proposed this issue.".to_string());
+    let vuln_class = live_vuln_class_from_ai(
+        &candidate.cap,
+        candidate.rule_hint.as_deref(),
+        Some(&rationale),
+        &candidate.path,
+    );
+    let mut component = serde_json::json!({
+        "kind": "ai_novel_candidate",
+        "repo": &candidate.repo,
+        "path": &candidate.path,
+        "line": candidate.line,
+        "cap": &candidate.cap,
+        "rule_hint": &candidate.rule_hint,
+        "candidate_id": &candidate.id,
+    });
+    if let Some(obj) = component.as_object_mut() {
+        insert_json_string(obj, "suggested_payload_hint", candidate.suggested_payload_hint.clone());
+    }
+    PentestCandidateRecord {
+        id: format!("pc-{}", candidate.id),
+        run_id: candidate.run_id.clone(),
+        project_id: project_id.to_string(),
+        source: "AiNovelFinding".to_string(),
+        source_ids: vec![candidate.id.clone()],
+        title: candidate
+            .rule_hint
+            .as_deref()
+            .map(human_title_from_rule)
+            .unwrap_or_else(|| format_location_title(&vuln_class, &candidate.path, candidate.line)),
+        vuln_class,
+        severity_guess: "High".to_string(),
+        affected_components: vec![component],
+        hypothesis: ai_hypothesis(&rationale, candidate.suggested_payload_hint.as_deref()),
+        test_plan: "Use the first-class live verifier to derive and execute a safe HTTP/browser confirmation for this AI candidate.".to_string(),
+        status: "NeedsLiveTest".to_string(),
+        rejection_reason: None,
+        confidence: 0.7,
+        trace_id: candidate.trace_id.clone(),
+        created_at: now_ms,
+        updated_at: now_ms,
+    }
+}
+
+fn live_vuln_class_from_ai(
+    cap: &str,
+    rule_hint: Option<&str>,
+    rationale: Option<&str>,
+    path: &str,
+) -> String {
+    let text = format!(
+        "{} {} {} {}",
+        cap,
+        rule_hint.unwrap_or_default(),
+        rationale.unwrap_or_default(),
+        path
+    )
+    .to_ascii_lowercase();
+    if text.contains("cf-access")
+        || text.contains("trusted_header")
+        || text.contains("trusted header")
+        || text.contains("client_header")
+    {
+        "AUTH_BYPASS".to_string()
+    } else if text.contains("dev_mail")
+        || text.contains("dev mail")
+        || text.contains("/api/dev/mail")
+    {
+        "DEBUG_EXPOSURE".to_string()
+    } else if text.contains("xss") || text.contains("innerhtml") || text.contains("inline_event") {
+        "DOM_XSS".to_string()
+    } else if cap.eq_ignore_ascii_case("OTHER") {
+        rule_hint
+            .and_then(|rule| rule.split(['.', ':']).next_back())
+            .map(|rule| rule.to_ascii_uppercase().replace('-', "_"))
+            .filter(|class| !class.trim().is_empty())
+            .unwrap_or_else(|| "OTHER".to_string())
+    } else {
+        cap.to_string()
+    }
+}
+
+fn ai_hypothesis(rationale: &str, hint: Option<&str>) -> String {
+    match hint.filter(|hint| !hint.trim().is_empty()) {
+        Some(hint) => format!("{rationale}\nSuggested verification hint: {hint}"),
+        None => rationale.to_string(),
+    }
+}
+
+fn endpoint_path_from_label(endpoint: Option<&str>) -> Option<String> {
+    let endpoint = endpoint?.trim();
+    let path = endpoint
+        .split(',')
+        .next()
+        .unwrap_or(endpoint)
+        .split_whitespace()
+        .find(|part| part.starts_with('/'))?;
+    Some(path.trim_end_matches([',', ';']).to_string())
+}
+
 async fn verify_pentest_candidates(
     ai_config: &AiConfig,
     store: &Store,
@@ -3220,6 +3443,19 @@ async fn verify_pentest_candidates(
                 ("Errored", None, None, None, Some(err.to_string()))
             }
         };
+        if status == "Rejected" {
+            if let Some(reason) = non_dispositive_rejection_reason(oracle.as_ref()) {
+                report.rejected = report.rejected.saturating_sub(1);
+                report.inconclusive += 1;
+                status = "Inconclusive";
+                error = Some(reason.clone());
+                if let Some(oracle_value) = oracle.as_mut().and_then(|v| v.as_object_mut()) {
+                    oracle_value
+                        .insert("non_dispositive".to_string(), serde_json::Value::Bool(true));
+                    oracle_value.insert("operator_reason".to_string(), reason.into());
+                }
+            }
+        }
         if let Some(meta) = replan_meta {
             attach_replan_meta(&mut request, &mut oracle, meta);
         }
@@ -3381,6 +3617,7 @@ async fn verify_pentest_candidates(
                     .pentest_candidates()
                     .set_status(&candidate.id, "Verified", None, finished)
                     .await?;
+                mark_source_review_items_verified(store, &candidate, &attempt_id).await?;
                 let vuln = vulnerability_from_candidate(
                     &candidate,
                     &attempt_id,
@@ -3417,6 +3654,36 @@ async fn verify_pentest_candidates(
         }
     }
     Ok(report)
+}
+
+async fn mark_source_review_items_verified(
+    store: &Store,
+    candidate: &PentestCandidateRecord,
+    attempt_id: &str,
+) -> anyhow::Result<()> {
+    for source_id in &candidate.source_ids {
+        if source_id.starts_with("cand-") {
+            store.candidate_findings().set_status(source_id, "Promoted").await?;
+        } else {
+            let verdict = serde_json::json!({
+                "kind": "LiveVerification",
+                "source": candidate.source,
+                "candidate_id": candidate.id,
+                "verification_attempt_id": attempt_id,
+                "title": candidate.title,
+            });
+            store
+                .findings()
+                .set_verify_result(
+                    source_id,
+                    "Open",
+                    &serde_json::to_string(&verdict)?,
+                    "LiveVerifier",
+                )
+                .await?;
+        }
+    }
+    Ok(())
 }
 
 async fn preflight_auth_sessions(
@@ -3555,6 +3822,28 @@ fn classify_failure_reason_text(reason: &str) -> Option<String> {
         Some("bad_endpoint".to_string())
     } else {
         Some("no_executable_plan".to_string())
+    }
+}
+
+fn non_dispositive_rejection_reason(oracle: Option<&serde_json::Value>) -> Option<String> {
+    let code = oracle.and_then(oracle_failure_code)?;
+    if matches!(
+        code.as_str(),
+        "bad_endpoint"
+            | "no_executable_plan"
+            | "weak_oracle"
+            | "runtime_unavailable"
+            | "browser_disabled"
+            | "auth_missing"
+            | "missing_seed_data"
+            | "route_not_inferred"
+            | "target_out_of_scope"
+    ) {
+        Some(format!(
+            "live verification was inconclusive, not a rejection: verifier failure code `{code}` indicates plan/setup weakness rather than disproving the finding"
+        ))
+    } else {
+        None
     }
 }
 
@@ -3710,10 +3999,21 @@ async fn materialize_review_vulnerabilities(
     now_ms: i64,
 ) -> anyhow::Result<ReviewSurfaceReport> {
     let mut report = ReviewSurfaceReport::default();
+    let live_verified_source_ids = store
+        .pentest_candidates()
+        .list_by_run(run_id)
+        .await?
+        .into_iter()
+        .filter(|candidate| candidate.status == "Verified")
+        .flat_map(|candidate| candidate.source_ids)
+        .collect::<HashSet<_>>();
 
     for finding in
         store.findings().list_by_run(run_id).await?.into_iter().filter(|f| f.status == "Quarantine")
     {
+        if live_verified_source_ids.contains(&finding.id) {
+            continue;
+        }
         let vuln = review_vulnerability_from_finding(&finding, project_id, now_ms);
         store.verified_vulnerabilities().upsert(&vuln).await?;
         report.quarantined_findings += 1;
@@ -3722,6 +4022,9 @@ async fn materialize_review_vulnerabilities(
     for candidate in
         store.candidate_findings().list_pending().await?.into_iter().filter(|c| c.run_id == run_id)
     {
+        if live_verified_source_ids.contains(&candidate.id) {
+            continue;
+        }
         let vuln = review_vulnerability_from_ai_candidate(&candidate, project_id, now_ms);
         store.verified_vulnerabilities().upsert(&vuln).await?;
         report.pending_ai_candidates += 1;
@@ -5484,6 +5787,30 @@ mod tests {
         assert_eq!(vuln.confidence, 0.68);
         assert!(vuln.verification_attempt_ids.is_empty());
         assert!(vuln.evidence_summary.contains("Needs review"));
+    }
+
+    #[test]
+    fn ai_candidate_is_queued_as_live_verifiable_pentest_candidate() {
+        let candidate =
+            pentest_candidate_from_ai_candidate(&pending_ai_candidate(), "project-review", 2_000);
+
+        assert_eq!(candidate.source, "AiNovelFinding");
+        assert_eq!(candidate.source_ids, vec!["cand-review"]);
+        assert_eq!(candidate.vuln_class, "AUTH_BYPASS");
+        assert_eq!(candidate.status, "NeedsLiveTest");
+        assert!(candidate.hypothesis.contains("Cf-Access-Authenticated-User-Email"));
+    }
+
+    #[test]
+    fn non_dispositive_rejection_codes_stay_inconclusive() {
+        let reason = non_dispositive_rejection_reason(Some(&serde_json::json!({
+            "failure_reason": {
+                "code": "bad_endpoint",
+                "message": "endpoint returned HTTP 404 during verification"
+            }
+        })));
+
+        assert!(reason.expect("reason").contains("inconclusive"));
     }
 
     #[tokio::test]

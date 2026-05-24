@@ -350,6 +350,7 @@ safe mode:
   "allow_state_changing_live_probes": false,
   "exploit_dry_run": false,
   "business_logic_templates_enabled": true,
+  "research_mode_enabled": false,
   "business_logic_template_ids": ["tenant_object_isolation"]
 }
 ```
@@ -369,6 +370,14 @@ exploit-mode opt-in.
 template ids for this run. Unknown ids are rejected with 400.
 `exploit_dry_run = true` lets operators inspect generated candidates
 and policy audit rows without sending guarded live traffic.
+
+`research_mode_enabled = true` enables Vuln Research Mode for this run;
+omit it to use `[run] research_mode_enabled` from config. It adds
+`ResearchMode` product-invariant candidates, prioritizes them in AI
+attack planning/exploration, and records research provenance on
+candidates and research-mode exploration findings. It is not an
+execution-safety override; exploit mode, state-changing, target-scope,
+request-cap, rate-limit, dry-run, and reset gates still apply.
 
 Response: `{ "run_id": "run-..." }`.
 

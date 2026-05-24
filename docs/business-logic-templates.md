@@ -81,6 +81,7 @@ The same selection can be supplied per run:
 nyctos scan \
   --exploit-mode \
   --allow-state-changing-live-probes \
+  --research-mode \
   --business-template tenant_object_isolation \
   --business-template webhook_callback_trust_boundary
 ```
@@ -95,6 +96,17 @@ allow_state_changing_live_probes = true
 exploit_dry_run = true
 business_logic_template_ids = ["webhook_callback_trust_boundary"]
 ```
+
+Vuln Research Mode complements templates. Templates create curated,
+template-provenance candidates for known business-logic patterns.
+Research mode adds separate `ResearchMode` candidates from the semantic
+route model and prior candidate memory when a product invariant looks
+risky but no concrete template applies yet. These include lifecycle
+bugs, stale access, replay, downgrade or entitlement mismatch,
+invite/team/org transitions, webhook/event consistency, AI-agent
+indirect actions, and background job side effects. Research-mode
+candidates still enter the same live verifier and safety gates as
+template candidates.
 
 Run summary example:
 
@@ -324,6 +336,11 @@ Verification attempts copy that provenance into `request` and `oracle`
 under `business_logic_template`. Verified vulnerabilities inherit the
 candidate's affected components, so reports can show the source
 template without parsing `source` strings.
+
+Research-mode candidates use `source = "ResearchMode"` and include
+`affected_components[*].research_mode_provenance` with the mode
+version, source (`semantic_route_model` or `exploration_memory`),
+category, invariant, and related memory candidate ids when present.
 
 Example verified vulnerability fragment:
 

@@ -25,6 +25,7 @@ pub use exploration::{
     ExplorationKnownLead, ExplorationOutcome, ExplorationScope,
     DEFAULT_EXPLORATION_RUN_CAP_USD_MICROS, DEFAULT_EXPLORATION_SOFT_CAP_USD_MICROS,
     DEFAULT_EXPLORATION_WALL_CLOCK, EXPLORATION_PROMPT_VERSION,
+    EXPLORATION_RESEARCH_PROMPT_VERSION,
 };
 pub use live_evidence_review::{
     run as run_live_evidence_review, LiveEvidenceReviewDecision, LiveEvidenceReviewInput,

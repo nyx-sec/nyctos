@@ -86,6 +86,8 @@ const SPEC_DERIVATION_EXCERPT_RADIUS: u32 = 4;
 /// binding) so the prompt envelope stays bounded.
 const SPEC_DERIVATION_MAX_EXCERPTS: usize = 3;
 
+const ATTACK_PLANNING_PROMPT_VERSION: &str = "phase-live.attack-planning.v1";
+const ATTACK_PLANNING_RESEARCH_PROMPT_VERSION: &str = "phase-live.attack-planning.research.v1";
 const LIVE_TEST_PLAN_PROMPT_VERSION: &str = "phase24.live_test_plan.v1";
 const LIVE_TEST_PLAN_EXCERPT_RADIUS: u32 = 18;
 const EXPLORATION_KNOWN_LEADS_MAX: usize = 24;
@@ -703,6 +705,7 @@ pub struct AttackPlanningPassReport {
 #[allow(clippy::too_many_arguments)]
 pub async fn run_attack_planning_pass(
     config: &AiConfig,
+    run_config: &RunConfig,
     store: &Store,
     secrets: &SecretStore,
     bundle: &RunBundle<Diag>,
@@ -713,10 +716,11 @@ pub async fn run_attack_planning_pass(
     events: EventSink,
 ) -> anyhow::Result<AttackPlanningPassReport> {
     let candidates = store.pentest_candidates().list_by_run(&bundle.run_id).await?;
-    let candidates: Vec<_> = candidates
+    let mut candidates: Vec<_> = candidates
         .into_iter()
         .filter(|c| matches!(c.status.as_str(), "Proposed" | "NeedsLiveTest"))
         .collect();
+    prioritize_candidates_for_planning(&mut candidates, run_config.research_mode_enabled);
     let mut report = AttackPlanningPassReport {
         candidates_seen: candidates.len() as u32,
         ..AttackPlanningPassReport::default()
@@ -754,6 +758,7 @@ pub async fn run_attack_planning_pass(
         route_model,
         auth_profiles,
         target_urls,
+        run_config.research_mode_enabled,
     );
     let budget = Budget {
         run_id: bundle.run_id.clone(),
@@ -811,6 +816,7 @@ fn build_attack_planning_prompt(
     route_model: &RouteModel,
     auth_profiles: &[ProjectAuthProfile],
     target_urls: &[String],
+    research_mode_enabled: bool,
 ) -> Prompt {
     let targets = target_urls.iter().map(|u| format!("- {u}")).collect::<Vec<_>>().join("\n");
     let routes = route_model::compact_route_model_for_prompt(route_model, 80);
@@ -842,23 +848,58 @@ fn build_attack_planning_prompt(
             .collect::<Vec<_>>(),
     )
     .unwrap_or_else(|_| "[]".to_string());
-    let system = r#"You are Nyctos's senior pentest planner. Produce a ranked, safe attack plan for authorized testing of the operator's local application.
+    let system = if research_mode_enabled {
+        r#"You are Nyctos's senior pentest planner operating in Vuln Research Mode. Produce a ranked, safe attack plan for authorized testing of the operator's local application.
+
+Research mode changes planning depth, not execution safety. Favor product-invariant hypotheses: lifecycle bugs, stale access, replay, downgrade/entitlement mismatch, invite/team/org transitions, webhook/event consistency, AI-agent indirect actions, and background job side effects. Use ResearchMode candidates and prior scanner leads as hypotheses to organize deeper exploration, not as proof.
 
 Return exactly one JSON object and no Markdown. Do not claim a vulnerability is verified. For each hypothesis, specify the deterministic evidence the verifier must collect and the rejecting evidence that would disprove it. Prefer harmless probes. Mark destructive or aggressive probes clearly so Nyctos can block them unless explicitly enabled."#
-        .to_string();
+            .to_string()
+    } else {
+        r#"You are Nyctos's senior pentest planner. Produce a ranked, safe attack plan for authorized testing of the operator's local application.
+
+Return exactly one JSON object and no Markdown. Do not claim a vulnerability is verified. For each hypothesis, specify the deterministic evidence the verifier must collect and the rejecting evidence that would disprove it. Prefer harmless probes. Mark destructive or aggressive probes clearly so Nyctos can block them unless explicitly enabled."#
+            .to_string()
+    };
+    let research_mode = if research_mode_enabled {
+        "enabled - prioritize product invariants and ResearchMode provenance"
+    } else {
+        "disabled"
+    };
     let user = format!(
-        "TARGET BASE URLS\n{targets}\n\nAUTH PROFILES\n{auth}\n\nROUTE MODEL\n{routes}\n\nCANDIDATES\n{candidates_json}\n\nRequired JSON shape:\n{{\"threat_model_summary\":\"...\",\"top_hypotheses\":[{{\"candidate_id\":\"...\",\"rank\":1,\"mapped_routes\":[\"GET /api/...\"],\"needed_auth_roles\":[\"anonymous\"],\"safest_probe\":\"...\",\"fallback_probe\":\"...\",\"destructiveness\":\"safe|state-changing|aggressive\",\"expected_confirming_evidence\":\"...\",\"expected_rejecting_evidence\":\"...\"}}]}}\n"
+        "TARGET BASE URLS\n{targets}\n\nAUTH PROFILES\n{auth}\n\nRESEARCH MODE\n{research_mode}\n\nROUTE MODEL\n{routes}\n\nCANDIDATES\n{candidates_json}\n\nRequired JSON shape:\n{{\"threat_model_summary\":\"...\",\"top_hypotheses\":[{{\"candidate_id\":\"...\",\"rank\":1,\"mapped_routes\":[\"GET /api/...\"],\"needed_auth_roles\":[\"anonymous\"],\"safest_probe\":\"...\",\"fallback_probe\":\"...\",\"destructiveness\":\"safe|state-changing|aggressive\",\"expected_confirming_evidence\":\"...\",\"expected_rejecting_evidence\":\"...\"}}]}}\n"
     );
     Prompt {
-        prompt_version: "phase-live.attack-planning.v1".to_string(),
+        prompt_version: if research_mode_enabled {
+            ATTACK_PLANNING_RESEARCH_PROMPT_VERSION
+        } else {
+            ATTACK_PLANNING_PROMPT_VERSION
+        }
+        .to_string(),
         task_id: format!("attack-plan-{}", short_candidate_id(&candidates[0].run_id)),
         model: None,
         system,
         user,
-        max_output_tokens: 3000,
+        max_output_tokens: if research_mode_enabled { 5000 } else { 3000 },
         temperature: 0.0,
         seed: None,
     }
+}
+
+fn prioritize_candidates_for_planning(
+    candidates: &mut [PentestCandidateRecord],
+    research_mode_enabled: bool,
+) {
+    candidates.sort_by(|a, b| {
+        research_candidate_rank(b, research_mode_enabled)
+            .cmp(&research_candidate_rank(a, research_mode_enabled))
+            .then_with(|| severity_rank(&b.severity_guess).cmp(&severity_rank(&a.severity_guess)))
+            .then_with(|| {
+                b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| a.source.cmp(&b.source))
+            .then_with(|| a.id.cmp(&b.id))
+    });
 }
 
 fn compact_attack_plan_context(raw: &str) -> String {
@@ -3333,6 +3374,7 @@ impl EscapeSuiteGate for StaticEscapeSuiteGate {
 /// the run.
 pub async fn run_ai_exploration_pass(
     config: &AiConfig,
+    run_config: &RunConfig,
     store: &Store,
     bundle: &RunBundle<Diag>,
     workspaces: &HashMap<String, WorkspaceHandle>,
@@ -3361,6 +3403,7 @@ pub async fn run_ai_exploration_pass(
         traces_dir,
         soft_cap_usd_micros,
         run_cap_usd_micros,
+        run_config.research_mode_enabled,
     )
     .await
 }
@@ -3381,6 +3424,7 @@ pub(crate) async fn drive_ai_exploration_pass<R: AiRuntime + ?Sized>(
     traces_dir: &std::path::Path,
     soft_cap_usd_micros: i64,
     run_cap_usd_micros: i64,
+    research_mode_enabled: bool,
 ) -> anyhow::Result<AiExplorationPassReport> {
     let mut report = AiExplorationPassReport::default();
     let runtime_name = runtime.name();
@@ -3407,6 +3451,7 @@ pub(crate) async fn drive_ai_exploration_pass<R: AiRuntime + ?Sized>(
             &candidate_leads,
             &repo_bundle.repo,
             EXPLORATION_KNOWN_LEADS_MAX,
+            research_mode_enabled,
         );
         let scope = build_exploration_scope(
             &bundle.run_id,
@@ -3416,6 +3461,7 @@ pub(crate) async fn drive_ai_exploration_pass<R: AiRuntime + ?Sized>(
             known_leads,
             soft_cap_usd_micros,
             run_cap_usd_micros,
+            research_mode_enabled,
         );
 
         let started_at = now_epoch_ms();
@@ -3445,6 +3491,7 @@ pub(crate) async fn drive_ai_exploration_pass<R: AiRuntime + ?Sized>(
             &runtime_model,
             started_at,
             traces_dir,
+            research_mode_enabled,
         )
         .await?;
     }
@@ -3459,7 +3506,13 @@ fn build_exploration_scope(
     known_leads: Vec<ExplorationKnownLead>,
     soft_cap_usd_micros: i64,
     run_cap_usd_micros: i64,
+    research_mode_enabled: bool,
 ) -> ExplorationScope {
+    let research_focus = if research_mode_enabled {
+        research_focus_from_known_leads(&known_leads)
+    } else {
+        Vec::new()
+    };
     let mut scope = ExplorationScope::new(run_id, format!("expl-{repo}"));
     scope.workspace_root = Some(workspace_root.to_string_lossy().to_string());
     scope.allowed_hosts = target_urls.iter().filter_map(|url| host_from_url(url)).collect();
@@ -3472,6 +3525,11 @@ fn build_exploration_scope(
         })
         .collect();
     scope.known_leads = known_leads;
+    scope.research_mode_enabled = research_mode_enabled;
+    scope.research_focus = research_focus;
+    if research_mode_enabled {
+        scope.max_actions = scope.max_actions.max(40);
+    }
     scope.soft_cap_usd_micros = soft_cap_usd_micros;
     scope.run_cap_usd_micros = run_cap_usd_micros;
     scope
@@ -3481,6 +3539,7 @@ fn exploration_known_leads_for_repo(
     candidates: &[PentestCandidateRecord],
     repo: &str,
     limit: usize,
+    research_mode_enabled: bool,
 ) -> Vec<ExplorationKnownLead> {
     let mut candidates = candidates
         .iter()
@@ -3488,8 +3547,9 @@ fn exploration_known_leads_for_repo(
         .filter(|c| candidate_applies_to_repo(c, repo))
         .collect::<Vec<_>>();
     candidates.sort_by(|a, b| {
-        severity_rank(&b.severity_guess)
-            .cmp(&severity_rank(&a.severity_guess))
+        research_candidate_rank(b, research_mode_enabled)
+            .cmp(&research_candidate_rank(a, research_mode_enabled))
+            .then_with(|| severity_rank(&b.severity_guess).cmp(&severity_rank(&a.severity_guess)))
             .then_with(|| {
                 b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal)
             })
@@ -3497,6 +3557,47 @@ fn exploration_known_leads_for_repo(
             .then_with(|| a.id.cmp(&b.id))
     });
     candidates.into_iter().take(limit).map(candidate_to_exploration_known_lead).collect()
+}
+
+fn research_focus_from_known_leads(leads: &[ExplorationKnownLead]) -> Vec<String> {
+    leads
+        .iter()
+        .filter(|lead| {
+            lead.source == "ResearchMode" || research_vuln_class_rank(&lead.vuln_class) > 0
+        })
+        .take(16)
+        .map(|lead| {
+            format!(
+                "{} {} {} - {}",
+                lead.source,
+                lead.vuln_class,
+                lead.location.as_deref().unwrap_or("unknown location"),
+                lead.hypothesis
+            )
+        })
+        .collect()
+}
+
+fn research_candidate_rank(candidate: &PentestCandidateRecord, research_mode_enabled: bool) -> u8 {
+    if !research_mode_enabled {
+        return 0;
+    }
+    let source_rank = if candidate.source == "ResearchMode" { 3 } else { 0 };
+    source_rank.max(research_vuln_class_rank(&candidate.vuln_class))
+}
+
+fn research_vuln_class_rank(vuln_class: &str) -> u8 {
+    match vuln_class {
+        "LIFECYCLE_INVARIANT_BYPASS"
+        | "STALE_ACCESS"
+        | "REPLAY_OR_TOKEN_REUSE"
+        | "ENTITLEMENT_MISMATCH"
+        | "INVITE_OR_MEMBERSHIP_TRANSITION"
+        | "WEBHOOK_EVENT_CONSISTENCY"
+        | "AI_AGENT_INDIRECT_ACTION"
+        | "BACKGROUND_JOB_SIDE_EFFECT" => 2,
+        _ => 0,
+    }
 }
 
 fn candidate_applies_to_repo(candidate: &PentestCandidateRecord, repo: &str) -> bool {
@@ -3583,6 +3684,7 @@ async fn apply_exploration_outcome(
     runtime_model: &str,
     started_at_ms: i64,
     traces_dir: &std::path::Path,
+    research_mode_enabled: bool,
 ) -> anyhow::Result<()> {
     let finished_at = now_epoch_ms();
     match outcome {
@@ -3638,6 +3740,7 @@ async fn apply_exploration_outcome(
                     &finding,
                     &prompt_version,
                     now_ms,
+                    research_mode_enabled,
                 )
                 .await
                 {
@@ -3751,6 +3854,7 @@ async fn persist_exploration_finding(
     finding: &ExplorationFinding,
     prompt_version: &str,
     now_ms: i64,
+    research_mode_enabled: bool,
 ) -> anyhow::Result<String> {
     let line = finding.line.map(i64::from);
     let rule = format!("ai-exploration:{}", finding.cap);
@@ -3761,6 +3865,16 @@ async fn persist_exploration_finding(
         "endpoint": finding.endpoint,
         "suggested_payload_hint": finding.suggested_payload_hint,
         "prompt_version": prompt_version,
+        "research_mode": research_mode_enabled,
+        "research_mode_provenance": if research_mode_enabled {
+            serde_json::json!({
+                "mode": "research",
+                "source": "ai_exploration",
+                "prompt_version": prompt_version,
+            })
+        } else {
+            serde_json::Value::Null
+        },
     }))?;
     let rec = FindingRecord {
         id: id.clone(),
@@ -6392,7 +6506,7 @@ mod tests {
             ),
         ];
 
-        let leads = exploration_known_leads_for_repo(&candidates, "repo-a", 8);
+        let leads = exploration_known_leads_for_repo(&candidates, "repo-a", 8, false);
         assert_eq!(
             leads.len(),
             3,
@@ -6436,11 +6550,57 @@ mod tests {
             &RouteModel::default(),
             &[],
             &["http://localhost:3000".to_string()],
+            false,
         );
 
         assert!(prompt.user.contains("\"source\": \"RouteDiscovery+JavaScriptBundle\""));
         assert!(prompt.user.contains("JavaScriptBundle:web:GET:/api/admin/debug"));
         assert!(prompt.user.contains("\"confidence\""));
+    }
+
+    #[test]
+    fn research_mode_prioritizes_research_candidates_in_attack_planning() {
+        let research = pentest_candidate(
+            "pc-research-entitlement",
+            "ResearchMode",
+            "Medium",
+            "NeedsLiveTest",
+            serde_json::json!({
+                "kind": "research_mode_hypothesis",
+                "repo": "api",
+                "method": "POST",
+                "url_path": "/api/billing/subscriptions/{id}/downgrade"
+            }),
+        );
+        let critical = pentest_candidate(
+            "pc-critical-scanner",
+            "Nuclei",
+            "Critical",
+            "NeedsLiveTest",
+            serde_json::json!({
+                "matched_at": "http://localhost:3000/debug"
+            }),
+        );
+        let mut normal = vec![research.clone(), critical.clone()];
+        prioritize_candidates_for_planning(&mut normal, false);
+        assert_eq!(normal[0].id, "pc-critical-scanner");
+
+        let mut research_mode = vec![critical, research];
+        prioritize_candidates_for_planning(&mut research_mode, true);
+        assert_eq!(research_mode[0].id, "pc-research-entitlement");
+
+        let prompt = build_attack_planning_prompt(
+            &research_mode,
+            &HashMap::new(),
+            &RouteModel::default(),
+            &[],
+            &["http://localhost:3000".to_string()],
+            true,
+        );
+        assert_eq!(prompt.prompt_version, ATTACK_PLANNING_RESEARCH_PROMPT_VERSION);
+        assert_eq!(prompt.max_output_tokens, 5000);
+        assert!(prompt.system.contains("Vuln Research Mode"));
+        assert!(prompt.user.contains("ResearchMode"));
     }
 
     #[tokio::test]
@@ -6505,6 +6665,7 @@ mod tests {
             traces_root.path(),
             DEFAULT_EXPLORATION_SOFT_CAP_USD_MICROS,
             DEFAULT_EXPLORATION_RUN_CAP_USD_MICROS,
+            false,
         )
         .await
         .unwrap();
@@ -6545,6 +6706,78 @@ mod tests {
         let blob = row.verdict_blob.as_deref().expect("verdict blob");
         assert!(blob.contains("AiExploration"));
         assert!(blob.contains("unauthenticated"));
+    }
+
+    #[tokio::test]
+    async fn drive_ai_exploration_research_mode_persists_research_provenance() {
+        let tmp_db = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp_db.path()).await.unwrap();
+        store.repos().upsert(&seed_repo("repo-research")).await.unwrap();
+        store.runs().insert(&seed_run("run-expl-research")).await.unwrap();
+
+        let workspace = tempfile::tempdir().unwrap();
+        let mut workspaces = HashMap::new();
+        workspaces.insert(
+            "repo-research".to_string(),
+            WorkspaceHandle::for_local_path_test("repo-research", workspace.path().to_path_buf()),
+        );
+
+        let mut result = empty_exploration_result();
+        result.prompt_version = nyctos_ai::EXPLORATION_RESEARCH_PROMPT_VERSION.to_string();
+        result.extracted.push(nyctos_types::agent::ExtractedAgentResult::ExplorationFinding {
+            path: "<api:/api/billing/subscriptions/1/downgrade>".into(),
+            line: None,
+            cap: "ENTITLEMENT_MISMATCH".into(),
+            rationale: "Downgrade does not update access to paid export job".into(),
+            endpoint: Some("POST /api/billing/subscriptions/{id}/downgrade".into()),
+            suggested_payload_hint: None,
+        });
+
+        let tracker = Arc::new(InMemoryBudgetTracker::new());
+        tracker.set_cap("run-expl-research", BudgetKind::AgentLoop, 10_000_000);
+        let runtime = ScriptedExplorationRuntime::new(vec![Ok(result)], 125_000, tracker.clone());
+        let bundle = make_bundle("run-expl-research", "repo-research", Vec::new());
+        let (tx, _rx) = tokio::sync::broadcast::channel(4);
+        let gate = StaticEscapeSuiteGate::green();
+        let traces_root = tempfile::tempdir().unwrap();
+
+        let report = drive_ai_exploration_pass(
+            &runtime,
+            &store,
+            &bundle,
+            &workspaces,
+            &["http://127.0.0.1:3000".to_string()],
+            &gate,
+            tx,
+            traces_root.path(),
+            DEFAULT_EXPLORATION_SOFT_CAP_USD_MICROS,
+            DEFAULT_EXPLORATION_RUN_CAP_USD_MICROS,
+            true,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(report.findings_quarantined, 1);
+        let tasks_seen = runtime.tasks_seen();
+        assert_eq!(tasks_seen[0].prompt_version, nyctos_ai::EXPLORATION_RESEARCH_PROMPT_VERSION);
+        assert_eq!(tasks_seen[0].max_turns, 40);
+        assert!(tasks_seen[0].system.contains("Vuln Research Mode"));
+
+        let filter = nyctos_core::store::FindingFilter {
+            repo: Some("repo-research"),
+            include_quarantine: true,
+            ..nyctos_core::store::FindingFilter::default()
+        };
+        let rows = store.findings().list_filtered(&filter).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(
+            row.prompt_version.as_deref(),
+            Some(nyctos_ai::EXPLORATION_RESEARCH_PROMPT_VERSION)
+        );
+        let blob = row.verdict_blob.as_deref().expect("verdict blob");
+        assert!(blob.contains("\"research_mode\":true"));
+        assert!(blob.contains("research_mode_provenance"));
     }
 
     #[tokio::test]
@@ -6590,6 +6823,7 @@ mod tests {
             traces_root.path(),
             DEFAULT_EXPLORATION_SOFT_CAP_USD_MICROS,
             DEFAULT_EXPLORATION_RUN_CAP_USD_MICROS,
+            false,
         )
         .await
         .unwrap();
@@ -6673,6 +6907,7 @@ mod tests {
             traces_root.path(),
             DEFAULT_EXPLORATION_SOFT_CAP_USD_MICROS,
             DEFAULT_EXPLORATION_RUN_CAP_USD_MICROS,
+            false,
         )
         .await
         .unwrap();
@@ -6755,6 +6990,7 @@ mod tests {
             traces_root.path(),
             DEFAULT_EXPLORATION_SOFT_CAP_USD_MICROS,
             DEFAULT_EXPLORATION_RUN_CAP_USD_MICROS,
+            false,
         )
         .await
         .unwrap();
@@ -6824,6 +7060,7 @@ mod tests {
             traces_root.path(),
             DEFAULT_EXPLORATION_SOFT_CAP_USD_MICROS,
             DEFAULT_EXPLORATION_RUN_CAP_USD_MICROS,
+            false,
         )
         .await
         .unwrap();

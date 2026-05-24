@@ -306,7 +306,7 @@ export type RouteModel = { backend_routes: Array<RouteModelEndpoint>, frontend_r
 
 export type RouteModelRecord = { id: string, run_id: string, project_id: string, model: RouteModel, created_at: number, };
 
-export type StartPentestRequest = { exploit_mode_enabled: boolean, allow_state_changing_live_probes: boolean, exploit_dry_run?: boolean, browser_checks_enabled?: boolean, business_logic_templates_enabled?: boolean, business_logic_template_ids: Array<string>, };
+export type StartPentestRequest = { exploit_mode_enabled: boolean, allow_state_changing_live_probes: boolean, exploit_dry_run?: boolean, browser_checks_enabled?: boolean, business_logic_templates_enabled?: boolean, research_mode_enabled?: boolean, business_logic_template_ids: Array<string>, };
 
 export type StartPentestResponse = { run_id: string, };
 

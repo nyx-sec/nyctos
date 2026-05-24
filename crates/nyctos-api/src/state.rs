@@ -70,6 +70,7 @@ pub struct ScanRunOverrides {
     pub exploit_dry_run: Option<bool>,
     pub browser_checks_enabled: Option<bool>,
     pub business_logic_templates_enabled: Option<bool>,
+    pub research_mode_enabled: Option<bool>,
     pub business_logic_template_ids: Option<Vec<String>>,
 }
 

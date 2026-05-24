@@ -145,6 +145,7 @@ See `docs/triggers/webhook.md` for the full handler contract.
 | `exploit_mode_enabled`             | bool | `false` | Master opt-in for invasive verification. State-changing probes still require `allow_state_changing_live_probes = true`; setting that older flag by itself is not enough. |
 | `exploit_dry_run`                  | bool | `false` | Evaluate guarded live plans and write audit records without sending HTTP/browser traffic where feasible. |
 | `business_logic_templates_enabled` | bool | `true` | Generate first-class business-logic pentest candidates from route/auth metadata. Generated plans still pass through normal verifier safety gates. |
+| `research_mode_enabled`            | bool | `false` | Enable Vuln Research Mode. This adds product-invariant hypotheses from the semantic route model and prior candidate memory, prioritizes those candidates in attack planning/exploration, and uses deeper research prompts. It does not relax live execution gates. |
 | `business_logic_template_ids`      | array of strings | `[]` | Optional allowlist of template ids. Empty means every registered template is considered. Use `nyctos business-logic templates` or `GET /api/v1/business-logic/templates` to list ids. |
 | `exploit_request_cap`              | int (optional) | unset (`10`) | Per-candidate cap for guarded live HTTP/browser actions. `0` is floored to `1`. |
 | `exploit_requests_per_second`      | int (optional) | unset (`5`) | Per-candidate rate limit for guarded live HTTP/browser actions. `0` is floored to `1`. |
@@ -191,6 +192,24 @@ pass through request caps, rate limits, target URL scope checks,
 auth-session acquisition, and reset-after-state-changing handling.
 See [`business-logic-templates.md`](business-logic-templates.md) for
 template ids, dry-run examples, skip reasons, and provenance shape.
+
+Vuln Research Mode is separate from exploit mode:
+
+```toml
+[run]
+research_mode_enabled = true
+```
+
+Research mode increases reasoning depth and candidate generation for
+authorized product-logic review. It adds `ResearchMode` candidates for
+invariants such as lifecycle bugs, stale access, replay, downgrade or
+entitlement mismatch, invite/team/org transitions, webhook/event
+consistency, AI-agent indirect actions, and background job side
+effects. The candidates carry `research_mode_provenance` in
+`affected_components`, and research-mode exploration findings carry the
+same provenance in their verdict blob. Live HTTP/browser execution
+still goes through the same target scope, request cap, rate limit,
+exploit-mode, state-changing, dry-run, and reset gates.
 
 Optional scanner findings are persisted as pentest candidates. Live web
 findings still pass live verification before surfacing as verified

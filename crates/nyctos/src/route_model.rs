@@ -138,8 +138,27 @@ fn extract_backend_routes(
     let route_decorator =
         Regex::new(r#"@(?:app|router|bp|blueprint)\.route\s*\(\s*["']([^"']+)["']([^)]*)\)"#)
             .expect("route decorator regex");
+    let worker_chain = Regex::new(
+        r#"(?s)\.(get|post|put|patch|delete|head|options)_async\s*\(\s*["']([^"']+)["']"#,
+    )
+    .expect("worker route regex");
 
     let lines: Vec<&str> = src.lines().collect();
+    for cap in worker_chain.captures_iter(src) {
+        let Some(m) = cap.get(0) else {
+            continue;
+        };
+        let idx = line_number_at(src, m.start()).saturating_sub(1) as usize;
+        push_backend_route(
+            repo,
+            rel,
+            idx.min(lines.len().saturating_sub(1)),
+            &cap[1],
+            &cap[2],
+            &lines,
+            out,
+        );
+    }
     for (idx, line) in lines.iter().enumerate() {
         for cap in express.captures_iter(line) {
             push_backend_route(repo, rel, idx, &cap[1], &cap[2], &lines, out);
@@ -879,6 +898,52 @@ fetch("/api/accounts/123", { method: "GET" });
         assert!(transfer.role_checks.iter().any(|m| m == "admin"));
         assert!(transfer.body_fields.iter().any(|f| f == "amount"));
         assert_eq!(model.api_client_calls.len(), 1);
+    }
+
+    #[test]
+    fn extracts_worker_async_router_chains() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("lib.rs"),
+            r#"
+let router = Router::new()
+    .get_async("/api/dev/mail", handle_dev_mail_list)
+    .delete_async("/api/dev/mail", handle_dev_mail_clear)
+    .put_async(
+        "/api/admin/bug-reports/:id/status",
+        handle_admin_update_bug_status,
+    )
+    .get_async("/api/admin/users/search", handle_admin_user_search);
+"#,
+        )
+        .unwrap();
+        let mut workspaces = BTreeMap::new();
+        workspaces.insert(
+            "worker".to_string(),
+            WorkspaceHandle::for_local_path_test("worker", tmp.path().to_path_buf()),
+        );
+
+        let model = extract_route_model(&workspaces);
+
+        assert!(model
+            .backend_routes
+            .iter()
+            .any(|r| r.method == "GET" && r.path == "/api/dev/mail"));
+        assert!(model
+            .backend_routes
+            .iter()
+            .any(|r| r.method == "DELETE" && r.path == "/api/dev/mail"));
+        let update = model
+            .backend_routes
+            .iter()
+            .find(|r| r.method == "PUT" && r.path == "/api/admin/bug-reports/:id/status")
+            .expect("multiline worker route");
+        assert!(update.state_changing);
+        assert!(update.params.iter().any(|p| p == "id"));
+        assert!(model
+            .backend_routes
+            .iter()
+            .any(|r| r.method == "GET" && r.path == "/api/admin/users/search"));
     }
 
     #[test]

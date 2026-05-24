@@ -22,7 +22,7 @@ use nyctos_api::{
 use nyctos_core::store::{
     ChainRecord, EnvironmentRunRecord, FindingRecord, PentestCandidateRecord,
     ProjectLaunchProfileInput, RepoRecord, RunRecord, VerificationAttemptRecord,
-    DEFAULT_PROJECT_ID,
+    VerifiedVulnerabilityRecord, DEFAULT_PROJECT_ID,
 };
 use nyctos_core::{run_event_log_path, Config, SecretStore, Store};
 use nyctos_types::event::{AgentEvent, EventSink, RepoOutcomeTag, ReproEvent, RunEvent};
@@ -427,6 +427,31 @@ fn sample_chain(id: &str, run_id: &str, members: &[&str]) -> ChainRecord {
     }
 }
 
+fn sample_vulnerability(id: &str, run_id: &str, project_id: &str) -> VerifiedVulnerabilityRecord {
+    VerifiedVulnerabilityRecord {
+        id: id.to_string(),
+        run_id: run_id.to_string(),
+        project_id: project_id.to_string(),
+        title: "Authentication bypass".to_string(),
+        severity: "Critical".to_string(),
+        confidence: 0.96,
+        vuln_class: "auth".to_string(),
+        affected_components: vec![serde_json::json!({"repo":"web","path":"src/auth.ts"})],
+        business_impact: "Attackers can enter another tenant's account.".to_string(),
+        evidence_summary: "Live verification reached the protected endpoint without a session."
+            .to_string(),
+        repro_steps: "Replay the verified browser script.".to_string(),
+        remediation: "Validate the session before issuing the callback token.".to_string(),
+        source_candidate_ids: vec!["candidate-1".to_string()],
+        source_signal_ids: vec!["signal-1".to_string()],
+        verification_attempt_ids: vec!["attempt-1".to_string()],
+        chain_id: None,
+        status: "Open".to_string(),
+        first_seen: 4_000,
+        last_seen: 4_100,
+    }
+}
+
 #[tokio::test]
 async fn health_returns_ok() {
     let srv = TestServer::start().await;
@@ -434,6 +459,55 @@ async fn health_returns_ok() {
     assert_eq!(resp.status(), reqwest::StatusCode::OK);
     let body: Value = resp.json().await.expect("json");
     assert_eq!(body["status"], "ok");
+}
+
+#[tokio::test]
+async fn vulnerability_status_endpoints_update_single_and_bulk_rows() {
+    let srv = TestServer::start().await;
+    let client = reqwest::Client::new();
+    let mut run = sample_run("run-vuln-status");
+    run.project_id = Some(DEFAULT_PROJECT_ID.to_string());
+    srv.store.runs().insert(&run).await.expect("run");
+    let vuln = sample_vulnerability("vuln-api", "run-vuln-status", DEFAULT_PROJECT_ID);
+    srv.store.verified_vulnerabilities().upsert(&vuln).await.expect("vuln");
+
+    let patched: Value = client
+        .patch(format!("{}/api/v1/vulnerabilities/vuln-api/status", srv.base()))
+        .json(&serde_json::json!({"status":"in progress"}))
+        .send()
+        .await
+        .expect("patch")
+        .error_for_status()
+        .expect("patch status")
+        .json()
+        .await
+        .expect("patch json");
+    assert_eq!(patched["status"], "InProgress");
+
+    let bulk: Value = client
+        .patch(format!("{}/api/v1/vulnerabilities/status", srv.base()))
+        .json(&serde_json::json!({"ids":["vuln-api"],"status":"false_positive"}))
+        .send()
+        .await
+        .expect("bulk patch")
+        .error_for_status()
+        .expect("bulk status")
+        .json()
+        .await
+        .expect("bulk json");
+    assert_eq!(bulk[0]["status"], "FalsePositive");
+
+    let listed: Value = client
+        .get(format!("{}/api/v1/vulnerabilities", srv.base()))
+        .send()
+        .await
+        .expect("list")
+        .error_for_status()
+        .expect("list status")
+        .json()
+        .await
+        .expect("list json");
+    assert_eq!(listed[0]["status"], "FalsePositive");
 }
 
 #[tokio::test]
@@ -1315,6 +1389,7 @@ async fn start_pentest_passes_exploit_overrides_to_trigger() {
             "exploit_dry_run": true,
             "browser_checks_enabled": true,
             "business_logic_templates_enabled": true,
+            "research_mode_enabled": true,
             "business_logic_template_ids": ["tenant_object_isolation"],
         }))
         .send()
@@ -1338,6 +1413,7 @@ async fn start_pentest_passes_exploit_overrides_to_trigger() {
             exploit_dry_run: Some(true),
             browser_checks_enabled: Some(true),
             business_logic_templates_enabled: Some(true),
+            research_mode_enabled: Some(true),
             business_logic_template_ids: Some(vec!["tenant_object_isolation".to_string()]),
         }),
     );

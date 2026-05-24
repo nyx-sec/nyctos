@@ -115,6 +115,7 @@ export function ProjectDetail({ view = "overview" }: ProjectDetailProps = {}) {
         exploit_mode_enabled: options.exploitMode,
         allow_state_changing_live_probes: options.allowStateChanging,
         browser_checks_enabled: options.browserChecks,
+        research_mode_enabled: options.researchMode,
         business_logic_template_ids: [],
       });
       showToast(`Pentest started (run ${run_id}).`, { tone: "success" });
@@ -1279,6 +1280,7 @@ interface StartPentestOptions {
   exploitMode: boolean;
   allowStateChanging: boolean;
   browserChecks: boolean;
+  researchMode: boolean;
 }
 
 interface StartPentestModalProps {
@@ -1291,6 +1293,7 @@ function StartPentestModal({ busy, onConfirm, onCancel }: StartPentestModalProps
   const [exploitMode, setExploitMode] = useState(false);
   const [allowStateChanging, setAllowStateChanging] = useState(false);
   const [browserChecks, setBrowserChecks] = useState(false);
+  const [researchMode, setResearchMode] = useState(false);
 
   function setExploitModeChecked(checked: boolean) {
     setExploitMode(checked);
@@ -1302,7 +1305,9 @@ function StartPentestModal({ busy, onConfirm, onCancel }: StartPentestModalProps
       title="Start pentest"
       confirmLabel={exploitMode ? "Start with exploit mode" : "Start safe pentest"}
       busy={busy}
-      onConfirm={() => onConfirm({ exploitMode, allowStateChanging, browserChecks })}
+      onConfirm={() =>
+        onConfirm({ exploitMode, allowStateChanging, browserChecks, researchMode })
+      }
       onCancel={onCancel}
       body={
         <div className="pentest-options">
@@ -1319,6 +1324,17 @@ function StartPentestModal({ busy, onConfirm, onCancel }: StartPentestModalProps
             <span>
               <strong>Browser verification</strong>
               <small>Allow Playwright-backed checks for DOM and browser-only workflows.</small>
+            </span>
+          </label>
+          <label className="pentest-options__check">
+            <input
+              type="checkbox"
+              checked={researchMode}
+              onChange={(event) => setResearchMode(event.currentTarget.checked)}
+            />
+            <span>
+              <strong>Vuln research mode</strong>
+              <small>Generate deeper product-invariant hypotheses without changing safety gates.</small>
             </span>
           </label>
           <label className="pentest-options__check">
