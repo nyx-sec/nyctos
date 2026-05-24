@@ -9,7 +9,9 @@
   height: 100dvh;
   min-height: 0;
   overflow: hidden;
-  background: var(--bg);
+  background:
+    linear-gradient(180deg, rgba(242, 240, 234, 0.72) 0, rgba(249, 248, 244, 0) 180px),
+    var(--bg);
 }
 
 .app-layout__sidebar {
@@ -43,8 +45,10 @@
   min-width: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 34px 42px 56px;
-  background: var(--bg);
+  padding: 36px 42px 56px;
+  background:
+    linear-gradient(180deg, rgba(242, 240, 234, 0.58) 0, rgba(249, 248, 244, 0) 220px),
+    var(--bg);
   scrollbar-gutter: stable;
 }
 

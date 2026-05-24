@@ -27,8 +27,9 @@ pub use event::{
     RepoOutcomeTag, ReproEvent, RunEvent, SandboxEvent,
 };
 pub use live_plan::{
-    BrowserOracle, BrowserStep, BrowserWorkflowPlan, DifferentialHttpPlan, DifferentialOracle,
-    HttpOracle, HttpWorkflowPlan, LiveHttpRequest, LivePlanValidationError, LiveTestPlan,
-    NoPlanReason, NoPlanReasonCode, SingleHttpPlan,
+    AuthzBrowserRoleComparisonPlan, AuthzObjectOwnershipPlan, AuthzOracle, AuthzOwnedObject,
+    AuthzRoleComparisonPlan, BrowserOracle, BrowserStep, BrowserWorkflowPlan, DifferentialHttpPlan,
+    DifferentialOracle, HttpOracle, HttpWorkflowPlan, LiveHttpRequest, LivePlanValidationError,
+    LiveTestPlan, NoPlanReason, NoPlanReasonCode, SingleHttpPlan,
 };
 pub use verify::{Oracle, VerifyResult, VerifyRun, VerifyVerdict};

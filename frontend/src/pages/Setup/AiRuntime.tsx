@@ -10,27 +10,27 @@ const CHOICES: { value: AiRuntimeChoice; label: string; body: string }[] = [
   {
     value: "claude-code",
     label: "Claude Code CLI (recommended)",
-    body: "All-in-one local CLI backend for structured one-shot tasks and agent exploration.",
+    body: "Local CLI agent.",
   },
   {
     value: "codex",
     label: "Codex CLI",
-    body: "All-in-one local CLI backend using your installed codex command.",
+    body: "Local CLI agent.",
   },
   {
     value: "anthropic",
     label: "Anthropic API",
-    body: "Optional direct API mode for structured one-shot tasks. Requires an API key stored in the OS keychain.",
+    body: "Direct API key in the OS keychain.",
   },
   {
     value: "local-llm",
     label: "Local OpenAI-compatible runtime",
-    body: "Point at an LM Studio / Ollama / vLLM endpoint already running on this machine.",
+    body: "Local /v1 endpoint.",
   },
   {
     value: "none",
     label: "None (static-pass only)",
-    body: "Skip every AI step. The daemon still runs nyx static analysis end-to-end.",
+    body: "Static pass only.",
   },
 ];
 
@@ -38,10 +38,7 @@ export function AiRuntimeStep({ form, update }: Props) {
   return (
     <div className="setup-step__body">
       <h3>Pick an AI runtime</h3>
-      <p>
-        Claude Code is the recommended all-in-one backend. Anthropic API is available as a direct
-        API fallback, not a companion requirement.
-      </p>
+      <p>Claude Code is the default. You can switch later in Settings.</p>
       <div className="setup-choices">
         {CHOICES.map((choice) => (
           <label
@@ -73,10 +70,7 @@ export function AiRuntimeStep({ form, update }: Props) {
             value={form.anthropicApiKey}
             onChange={(e) => update({ anthropicApiKey: e.target.value })}
           />
-          <p className="setup-hint">
-            Stored in your operating-system keychain on save; never written to
-            <code> nyctos.toml</code> or the JSON log.
-          </p>
+          <p className="setup-hint">Stored in the OS keychain.</p>
         </div>
       )}
 
@@ -101,10 +95,7 @@ export function AiRuntimeStep({ form, update }: Props) {
               value={form.localLlmToken}
               onChange={(e) => update({ localLlmToken: e.target.value })}
             />
-            <p className="setup-hint">
-              Only set this if your local runtime expects an
-              <code> Authorization: Bearer ...</code> header. Stored in the OS keychain.
-            </p>
+            <p className="setup-hint">Optional. Stored in the OS keychain.</p>
           </div>
         </>
       )}
@@ -112,9 +103,7 @@ export function AiRuntimeStep({ form, update }: Props) {
       {form.aiRuntime === "claude-code" && (
         <div className="setup-field">
           <p>
-            The daemon will look for a <code>claude</code> binary on <code>$PATH</code> when you
-            reach the next step. It can run structured tasks and agent exploration without an
-            Anthropic API key.
+            Nyctos will look for <code>claude</code> on <code>$PATH</code>.
           </p>
         </div>
       )}
@@ -122,8 +111,7 @@ export function AiRuntimeStep({ form, update }: Props) {
       {form.aiRuntime === "codex" && (
         <div className="setup-field">
           <p>
-            The daemon will look for a <code>codex</code> binary on <code>$PATH</code> when you
-            reach the next step. Codex CLI uses its own local authentication and configuration.
+            Nyctos will look for <code>codex</code> on <code>$PATH</code>.
           </p>
         </div>
       )}

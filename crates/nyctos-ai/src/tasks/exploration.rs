@@ -517,6 +517,22 @@ fn lift_extracted(result: &AgentResult) -> (Vec<ExplorationFinding>, Vec<AuditEn
                 };
                 audit.push(AuditEntry { action: "<other>".to_string(), summary });
             }
+            ExtractedAgentResult::AuthProfileDiscovered { profile, .. } => {
+                audit.push(AuditEntry {
+                    action: "record_auth_profile".to_string(),
+                    summary: format!("role={}", profile.role),
+                });
+            }
+            ExtractedAgentResult::AuthSetupVerification { status, checks, warnings } => {
+                audit.push(AuditEntry {
+                    action: "record_auth_verification".to_string(),
+                    summary: format!(
+                        "status={status} checks={} warnings={}",
+                        checks.len(),
+                        warnings.len()
+                    ),
+                });
+            }
         }
     }
     (findings, audit)

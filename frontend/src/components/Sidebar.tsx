@@ -1,7 +1,7 @@
 import { type FC, useEffect, useRef, useState } from "react";
 import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 import { type ProjectRecord, useProjects } from "@/api/client";
-import { useAdvancedMode } from "@/api/preferences";
+import { useActiveProjectPreference, useAdvancedMode } from "@/api/preferences";
 import {
   ChainsIcon,
   EnvironmentsIcon,
@@ -34,17 +34,15 @@ const GLOBAL_NAV: NavItem[] = [
   { to: "/vulnerabilities", label: "Vulnerabilities", Icon: FindingsIcon, group: "primary" },
 ];
 
-const SECONDARY_NAV: NavItem[] = [
+const SECONDARY_NAV: Omit<NavItem, "to">[] = [
   {
-    to: "/findings",
     label: "Legacy Findings",
     Icon: FindingsIcon,
     group: "secondary",
     advanced: true,
   },
-  { to: "/chains", label: "Raw Chains", Icon: ChainsIcon, group: "secondary", advanced: true },
+  { label: "Raw Chains", Icon: ChainsIcon, group: "secondary", advanced: true },
   {
-    to: "/quarantine",
     label: "Candidate Queue",
     Icon: QuarantineIcon,
     group: "secondary",
@@ -67,13 +65,29 @@ interface SidebarProps {
 export function Sidebar({ setupComplete }: SidebarProps) {
   const [advanced] = useAdvancedMode();
   const { pathname } = useLocation();
-  const activeProjectId = setupComplete ? projectIdFromPathname(pathname) : undefined;
+  const pathProjectId = setupComplete ? projectIdFromPathname(pathname) : undefined;
+  const [rememberedProjectId, setRememberedProjectId] = useActiveProjectPreference();
+  const activeProjectId = setupComplete
+    ? (pathProjectId ??
+      (usesRememberedProjectSelection(pathname) ? rememberedProjectId : undefined))
+    : undefined;
   const primary = setupComplete
     ? activeProjectId
       ? scopedProjectNav(activeProjectId)
       : GLOBAL_NAV
     : SETUP_NAV;
-  const secondary = setupComplete ? SECONDARY_NAV.filter((item) => !item.advanced || advanced) : [];
+  const secondary = setupComplete
+    ? scopedSecondaryNav(activeProjectId).filter((item) => !item.advanced || advanced)
+    : [];
+
+  useEffect(() => {
+    if (!setupComplete) return;
+    if (pathProjectId) {
+      setRememberedProjectId(pathProjectId);
+    } else if (pathname === "/projects") {
+      setRememberedProjectId(undefined);
+    }
+  }, [pathProjectId, pathname, setupComplete, setRememberedProjectId]);
 
   return (
     <aside className="app-layout__sidebar" aria-label="Primary navigation">
@@ -82,7 +96,12 @@ export function Sidebar({ setupComplete }: SidebarProps) {
           <img src="/logo.png" alt="Nyctos" className="sidebar__brand-logo" />
         </Link>
       </div>
-      {setupComplete && <ProjectSwitcher activeProjectId={activeProjectId} />}
+      {setupComplete && (
+        <ProjectSwitcher
+          activeProjectId={activeProjectId}
+          rememberProjectId={setRememberedProjectId}
+        />
+      )}
       <nav className="sidebar__nav">
         {primary.map((item, idx) => (
           <NavItemLink
@@ -130,7 +149,13 @@ function NavItemLink({ item, showSection }: { item: NavItem; showSection?: boole
   );
 }
 
-function ProjectSwitcher({ activeProjectId }: { activeProjectId?: string }) {
+function ProjectSwitcher({
+  activeProjectId,
+  rememberProjectId,
+}: {
+  activeProjectId?: string;
+  rememberProjectId: (projectId: string | undefined) => void;
+}) {
   const projects = useProjects(true);
   const navigate = useNavigate();
   const { pathname } = useLocation();
@@ -162,6 +187,7 @@ function ProjectSwitcher({ activeProjectId }: { activeProjectId?: string }) {
 
   function selectProject(nextProjectId?: string) {
     setOpen(false);
+    rememberProjectId(nextProjectId);
     navigate(nextProjectId ? pathForProjectSwitch(pathname, nextProjectId) : "/projects");
   }
 
@@ -297,6 +323,27 @@ function scopedProjectNav(projectId: string): NavItem[] {
   ];
 }
 
+function scopedSecondaryNav(projectId: string | undefined): NavItem[] {
+  const prefix = projectId ? `/projects/${encodeURIComponent(projectId)}` : "";
+  return SECONDARY_NAV.map((item) => ({
+    ...item,
+    to: `${prefix}${secondaryPathForLabel(item.label)}`,
+  }));
+}
+
+function secondaryPathForLabel(label: string): string {
+  switch (label) {
+    case "Legacy Findings":
+      return "/findings";
+    case "Raw Chains":
+      return "/chains";
+    case "Candidate Queue":
+      return "/quarantine";
+    default:
+      return "/findings";
+  }
+}
+
 function projectIdFromPathname(pathname: string): string | undefined {
   const match = pathname.match(/^\/projects\/([^/]+)/);
   if (!match) return undefined;
@@ -307,8 +354,15 @@ function projectIdFromPathname(pathname: string): string | undefined {
   }
 }
 
+function usesRememberedProjectSelection(pathname: string): boolean {
+  return pathname !== "/projects" && pathname !== "/setup";
+}
+
 function pathForProjectSwitch(pathname: string, projectId: string): string {
   const encoded = encodeURIComponent(projectId);
+  if (pathname === "/settings") {
+    return "/settings";
+  }
   if (/^\/projects\/[^/]+\/runs(\/|$)/.test(pathname) || pathname.startsWith("/runs")) {
     return `/projects/${encoded}/runs`;
   }
@@ -326,6 +380,15 @@ function pathForProjectSwitch(pathname: string, projectId: string): string {
     pathname.startsWith("/vulnerabilities")
   ) {
     return `/projects/${encoded}/vulnerabilities`;
+  }
+  if (/^\/projects\/[^/]+\/findings(\/|$)/.test(pathname) || pathname.startsWith("/findings")) {
+    return `/projects/${encoded}/findings`;
+  }
+  if (/^\/projects\/[^/]+\/chains(\/|$)/.test(pathname) || pathname.startsWith("/chains")) {
+    return `/projects/${encoded}/chains`;
+  }
+  if (/^\/projects\/[^/]+\/quarantine(\/|$)/.test(pathname) || pathname.startsWith("/quarantine")) {
+    return `/projects/${encoded}/quarantine`;
   }
   return `/projects/${encoded}`;
 }

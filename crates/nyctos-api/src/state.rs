@@ -14,6 +14,7 @@ use tokio::sync::{Mutex, RwLock};
 use nyctos_core::store::StoreError;
 use nyctos_core::{Config, SecretStore, Store};
 use nyctos_types::event::{AgentEvent, AiEvent, EventSink, RunEvent, SandboxEvent};
+use nyctos_types::project::{AuthSetupVerification, ProjectAuthOwnedObject, ProjectAuthProfile};
 
 /// Future returned by [`ScanTrigger::trigger`]. Boxed so the trait can be
 /// object-safe.
@@ -84,6 +85,46 @@ pub trait ScanTrigger: Send + Sync + 'static {
         repo: Option<String>,
         run_overrides: Option<ScanRunOverrides>,
     ) -> ScanFuture<'a>;
+}
+
+pub type AuthSetupAgentFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<AuthSetupAgentOutput, AuthSetupAgentError>> + Send + 'a>>;
+
+#[derive(Debug, Clone)]
+pub struct AuthSetupAgentRequest {
+    pub project_id: String,
+    pub project_name: String,
+    pub target_base_url: Option<String>,
+    pub workspace_roots: Vec<PathBuf>,
+    pub requested_roles: Vec<String>,
+    pub seeded_objects: Vec<ProjectAuthOwnedObject>,
+    pub existing_profiles: Vec<ProjectAuthProfile>,
+    pub static_login_paths: Vec<String>,
+    pub static_object_routes: Vec<String>,
+    pub files_inspected: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct AuthSetupAgentOutput {
+    pub profiles: Vec<ProjectAuthProfile>,
+    pub roles: Vec<String>,
+    pub login_paths: Vec<String>,
+    pub object_routes: Vec<String>,
+    pub files_inspected: usize,
+    pub verification: AuthSetupVerification,
+    pub message: String,
+}
+
+#[derive(Debug, Error)]
+pub enum AuthSetupAgentError {
+    #[error("auth setup agent unavailable: {0}")]
+    Unavailable(String),
+    #[error("auth setup agent failed: {0}")]
+    Failed(String),
+}
+
+pub trait AuthSetupAgent: Send + Sync + 'static {
+    fn explore<'a>(&'a self, req: AuthSetupAgentRequest) -> AuthSetupAgentFuture<'a>;
 }
 
 #[derive(Debug, Error)]
@@ -284,6 +325,7 @@ pub struct ServerState {
     pub scan: Arc<dyn ScanTrigger>,
     pub setup: SetupContext,
     pub auth: AuthConfig,
+    pub auth_setup_agent: Option<Arc<dyn AuthSetupAgent>>,
     /// Per-run event replay buffer. Populated by a tap task the daemon
     /// runs alongside the broadcast channel and read by `events_ws` on
     /// upgrade so newly-attached LiveScanView clients catch the
@@ -323,6 +365,7 @@ impl ServerState {
             scan,
             setup,
             auth,
+            auth_setup_agent: None,
             replay: Arc::new(EventReplay::new()),
             state_repos_dir: None,
             state_bundles_dir: None,
@@ -335,6 +378,11 @@ impl ServerState {
     /// remove `<state_repos_dir>/<name>/` when a repo is removed.
     pub fn with_state_repos_dir(mut self, dir: PathBuf) -> Self {
         self.state_repos_dir = Some(dir);
+        self
+    }
+
+    pub fn with_auth_setup_agent(mut self, agent: Arc<dyn AuthSetupAgent>) -> Self {
+        self.auth_setup_agent = Some(agent);
         self
     }
 

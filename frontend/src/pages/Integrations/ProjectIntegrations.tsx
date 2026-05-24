@@ -14,11 +14,12 @@ import {
   useProjectIntegrations,
   useTestProjectIntegration,
 } from "@/api/client";
-import { Badge } from "@/components/Badge";
 import { Button } from "@/components/Button";
 import { Card } from "@/components/Card";
 import { EmptyState } from "@/components/EmptyState";
+import { PageHeader, PageShell } from "@/components/Page";
 import { Spinner } from "@/components/Spinner";
+import { useToast } from "@/components/Toast";
 
 type FormKind = ProjectIntegrationKind;
 
@@ -43,7 +44,7 @@ export function ProjectIntegrations() {
   const patch = usePatchProjectIntegration(projectId ?? "");
   const remove = useDeleteProjectIntegration(projectId ?? "");
   const test = useTestProjectIntegration(projectId ?? "");
-  const [banner, setBanner] = useState<string | null>(null);
+  const { showToast } = useToast();
   const [form, setForm] = useState(defaultForm());
 
   const rows = useMemo(() => integrations.data ?? [], [integrations.data]);
@@ -77,14 +78,13 @@ export function ProjectIntegrations() {
   }
 
   async function createIntegration() {
-    setBanner(null);
     try {
       const body = buildRequest(form);
       const row = await create.mutateAsync(body);
-      setBanner(`Created ${row.name}.`);
+      showToast(`Created ${row.name}.`, { tone: "success" });
       setForm(defaultForm());
     } catch (err) {
-      setBanner(`Could not create integration: ${String(err)}`);
+      showToast(`Could not create integration: ${String(err)}`, { tone: "danger" });
     }
   }
 
@@ -92,17 +92,16 @@ export function ProjectIntegrations() {
     try {
       await patch.mutateAsync({ id: row.id, patch: { enabled: !row.enabled } });
     } catch (err) {
-      setBanner(`Could not update ${row.name}: ${String(err)}`);
+      showToast(`Could not update ${row.name}: ${String(err)}`, { tone: "danger" });
     }
   }
 
   async function sendTest(row: ProjectIntegrationRecord) {
-    setBanner(null);
     try {
       await test.mutateAsync(row.id);
-      setBanner(`Sent test delivery to ${row.name}.`);
+      showToast(`Sent test delivery to ${row.name}.`, { tone: "success" });
     } catch (err) {
-      setBanner(`Test delivery failed for ${row.name}: ${String(err)}`);
+      showToast(`Test delivery failed for ${row.name}: ${String(err)}`, { tone: "danger" });
     }
   }
 
@@ -110,175 +109,163 @@ export function ProjectIntegrations() {
     if (!window.confirm(`Delete "${row.name}"?`)) return;
     try {
       await remove.mutateAsync(row.id);
-      setBanner(`Deleted ${row.name}.`);
+      showToast(`Deleted ${row.name}.`, { tone: "success" });
     } catch (err) {
-      setBanner(`Could not delete ${row.name}: ${String(err)}`);
+      showToast(`Could not delete ${row.name}: ${String(err)}`, { tone: "danger" });
     }
   }
 
   return (
-    <div className="page-stack integrations-page">
-      <section className="settings-page__header" aria-labelledby="integrations-title">
-        <div>
-          <h1 id="integrations-title">Integrations</h1>
-          <p>{project.data.name}</p>
-        </div>
-        <Badge tone="info">{rows.length} configured</Badge>
-      </section>
+    <PageShell className="integrations-page">
+      <PageHeader title="Integrations" meta={`${project.data.name} · ${rows.length} configured`} />
 
-      {banner && (
-        <div className="project-banner" role="status" aria-live="polite">
-          {banner}
-        </div>
-      )}
+      <div className="integrations-grid">
+        <Card title="Add integration" className="integration-card integration-card--form">
+          <div className="integration-form">
+            <label>
+              <span>Name</span>
+              <input
+                value={form.name}
+                onChange={(event) => setForm((cur) => ({ ...cur, name: event.target.value }))}
+                placeholder="Security alerts"
+              />
+            </label>
 
-      <Card title="Add Integration" subtitle="Deliver project events to external systems.">
-        <div className="integration-form">
-          <label>
-            <span>Name</span>
-            <input
-              value={form.name}
-              onChange={(event) => setForm((cur) => ({ ...cur, name: event.target.value }))}
-              placeholder="Security alerts"
-            />
-          </label>
-
-          <fieldset className="integration-form__segmented">
-            <legend>Integration type</legend>
-            {KIND_CHOICES.map((choice) => (
-              <button
-                key={choice.value}
-                type="button"
-                className={form.kind === choice.value ? "active" : ""}
-                onClick={() => setForm((cur) => ({ ...cur, kind: choice.value }))}
-              >
-                {choice.label}
-              </button>
-            ))}
-          </fieldset>
-
-          <fieldset className="integration-form__events">
-            <legend>Events</legend>
-            {EVENT_CHOICES.map((choice) => (
-              <label key={choice.value}>
-                <input
-                  type="checkbox"
-                  checked={form.events.includes(choice.value)}
-                  onChange={(event) =>
-                    setForm((cur) => ({
-                      ...cur,
-                      events: event.currentTarget.checked
-                        ? [...cur.events, choice.value]
-                        : cur.events.filter((value) => value !== choice.value),
-                    }))
-                  }
-                />
-                <span>{choice.label}</span>
-              </label>
-            ))}
-          </fieldset>
-
-          <label>
-            <span>Minimum severity</span>
-            <select
-              value={form.minSeverity}
-              onChange={(event) => setForm((cur) => ({ ...cur, minSeverity: event.target.value }))}
-            >
-              {SEVERITIES.map((severity) => (
-                <option key={severity || "all"} value={severity}>
-                  {severity || "All severities"}
-                </option>
+            <fieldset className="integration-form__segmented">
+              <legend>Integration type</legend>
+              {KIND_CHOICES.map((choice) => (
+                <button
+                  key={choice.value}
+                  type="button"
+                  className={form.kind === choice.value ? "active" : ""}
+                  onClick={() => setForm((cur) => ({ ...cur, kind: choice.value }))}
+                >
+                  {choice.label}
+                </button>
               ))}
-            </select>
-          </label>
+            </fieldset>
 
-          {form.kind === "webhook" && <WebhookFields form={form} setForm={setForm} />}
-          {form.kind === "slack" && <SlackFields form={form} setForm={setForm} />}
-          {form.kind === "smtp" && <SmtpFields form={form} setForm={setForm} />}
+            <fieldset className="integration-form__events">
+              <legend>Events</legend>
+              {EVENT_CHOICES.map((choice) => (
+                <label key={choice.value}>
+                  <input
+                    type="checkbox"
+                    checked={form.events.includes(choice.value)}
+                    onChange={(event) =>
+                      setForm((cur) => ({
+                        ...cur,
+                        events: event.currentTarget.checked
+                          ? [...cur.events, choice.value]
+                          : cur.events.filter((value) => value !== choice.value),
+                      }))
+                    }
+                  />
+                  <span>{choice.label}</span>
+                </label>
+              ))}
+            </fieldset>
 
-          <label className="integration-form__check">
-            <input
-              type="checkbox"
-              checked={form.enabled}
-              onChange={(event) => setForm((cur) => ({ ...cur, enabled: event.target.checked }))}
-            />
-            <span>Enabled</span>
-          </label>
+            <label>
+              <span>Minimum severity</span>
+              <select
+                value={form.minSeverity}
+                onChange={(event) =>
+                  setForm((cur) => ({ ...cur, minSeverity: event.target.value }))
+                }
+              >
+                {SEVERITIES.map((severity) => (
+                  <option key={severity || "all"} value={severity}>
+                    {severity || "All severities"}
+                  </option>
+                ))}
+              </select>
+            </label>
 
-          <div className="integration-form__actions">
-            <Button variant="primary" disabled={create.isPending} onClick={createIntegration}>
-              {create.isPending ? "Adding..." : "Add integration"}
-            </Button>
+            {form.kind === "webhook" && <WebhookFields form={form} setForm={setForm} />}
+            {form.kind === "slack" && <SlackFields form={form} setForm={setForm} />}
+            {form.kind === "smtp" && <SmtpFields form={form} setForm={setForm} />}
+
+            <label className="integration-form__check">
+              <input
+                type="checkbox"
+                checked={form.enabled}
+                onChange={(event) => setForm((cur) => ({ ...cur, enabled: event.target.checked }))}
+              />
+              <span>Enabled</span>
+            </label>
+
+            <div className="integration-form__actions">
+              <Button variant="primary" disabled={create.isPending} onClick={createIntegration}>
+                {create.isPending ? "Adding..." : "Add integration"}
+              </Button>
+            </div>
           </div>
-        </div>
-      </Card>
+        </Card>
 
-      <Card title="Configured Integrations" subtitle="Project-scoped delivery targets.">
-        {integrations.isPending && (
-          <div className="repo-list__pending">
-            <Spinner /> Loading integrations...
-          </div>
-        )}
-        {integrations.error && (
-          <p className="repo-list__error" role="alert">
-            Failed to load integrations: {String(integrations.error)}
-          </p>
-        )}
-        {!integrations.isPending && rows.length === 0 && (
-          <EmptyState
-            title="No integrations yet"
-            body="Add a webhook, Slack channel, or SMTP relay for this project."
-          />
-        )}
-        {rows.length > 0 && (
-          <div className="integration-list">
-            {rows.map((row) => (
-              <article key={row.id} className="integration-row">
-                <div>
-                  <div className="integration-row__title">
-                    <strong>{row.name}</strong>
-                    <Badge tone={row.enabled ? "success" : "neutral"}>
-                      {row.enabled ? "Enabled" : "Off"}
-                    </Badge>
-                    <Badge tone="info">{kindLabel(row.kind)}</Badge>
+        <Card title="Configured" className="integration-card">
+          {integrations.isPending && (
+            <div className="repo-list__pending">
+              <Spinner /> Loading integrations...
+            </div>
+          )}
+          {integrations.error && (
+            <p className="repo-list__error" role="alert">
+              Failed to load integrations: {String(integrations.error)}
+            </p>
+          )}
+          {!integrations.isPending && rows.length === 0 && (
+            <EmptyState title="No integrations yet" />
+          )}
+          {rows.length > 0 && (
+            <div className="integration-list">
+              {rows.map((row) => (
+                <article key={row.id} className="integration-row">
+                  <div>
+                    <div className="integration-row__title">
+                      <strong>{row.name}</strong>
+                      <span>
+                        {kindLabel(row.kind)} · {row.enabled ? "Enabled" : "Off"}
+                      </span>
+                    </div>
+                    <p>{row.target}</p>
+                    <small>
+                      {row.events.map(eventLabel).join(", ")}
+                      {row.min_severity ? ` · ${row.min_severity}+` : ""}
+                    </small>
                   </div>
-                  <p>{row.target}</p>
-                  <small>
-                    {row.events.map(eventLabel).join(", ")}
-                    {row.min_severity ? ` · ${row.min_severity}+` : ""}
-                  </small>
-                </div>
-                <div className="integration-row__status">
-                  <span>{deliveryStatus(row)}</span>
-                  {row.last_delivery_error && <code>{row.last_delivery_error}</code>}
-                </div>
-                <div className="integration-row__actions">
-                  <Button variant="ghost" size="sm" onClick={() => toggleEnabled(row)}>
-                    {row.enabled ? "Disable" : "Enable"}
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    disabled={test.isPending}
-                    onClick={() => sendTest(row)}
-                  >
-                    Test
-                  </Button>
-                  <Button
-                    variant="danger"
-                    size="sm"
-                    disabled={remove.isPending}
-                    onClick={() => deleteIntegration(row)}
-                  >
-                    Delete
-                  </Button>
-                </div>
-              </article>
-            ))}
-          </div>
-        )}
-      </Card>
-    </div>
+                  <div className="integration-row__status">
+                    <span>{deliveryStatus(row)}</span>
+                    {row.last_delivery_error && <code>{row.last_delivery_error}</code>}
+                  </div>
+                  <div className="integration-row__actions">
+                    <Button variant="ghost" size="sm" onClick={() => toggleEnabled(row)}>
+                      {row.enabled ? "Disable" : "Enable"}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      disabled={test.isPending}
+                      onClick={() => sendTest(row)}
+                    >
+                      Test
+                    </Button>
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      disabled={remove.isPending}
+                      onClick={() => deleteIntegration(row)}
+                    >
+                      Delete
+                    </Button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+        </Card>
+      </div>
+    </PageShell>
   );
 }
 

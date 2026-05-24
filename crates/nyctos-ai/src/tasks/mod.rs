@@ -6,6 +6,7 @@
 //! limited to validation failures, and budget caps all live here so the
 //! adapter layer can stay vendor-neutral.
 
+pub mod auth_setup;
 pub mod chain_reasoning;
 pub mod exploration;
 pub mod live_evidence_review;
@@ -13,6 +14,10 @@ pub mod novel_findings;
 pub mod payload_synthesis;
 pub mod spec_derivation;
 
+pub use auth_setup::{
+    run as run_auth_setup, AuthSetupOutcome, AuthSetupScope, AUTH_SETUP_PROMPT_VERSION,
+    DEFAULT_AUTH_SETUP_RUN_CAP_USD_MICROS,
+};
 pub use chain_reasoning::{run as run_chain_reasoning, ChainReasoningOutcome};
 pub use exploration::{
     run as run_exploration, AuditEntry as ExplorationAuditEntry, EscapeSuiteGate,

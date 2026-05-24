@@ -206,6 +206,108 @@ fn default_forbidden_statuses() -> Vec<u16> {
     vec![401, 403, 404]
 }
 
+fn default_role_comparison_oracle_type() -> String {
+    "role_comparison_break".to_string()
+}
+
+fn default_object_ownership_oracle_type() -> String {
+    "object_ownership_break".to_string()
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthzOracle {
+    #[serde(default = "default_role_comparison_oracle_type", rename = "type")]
+    pub oracle_type: String,
+    #[serde(default = "default_forbidden_statuses")]
+    pub forbidden_status: Vec<u16>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub positive_markers: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_status_range: Option<String>,
+}
+
+impl AuthzOracle {
+    pub fn role_comparison(markers: Vec<String>) -> Self {
+        Self {
+            oracle_type: default_role_comparison_oracle_type(),
+            forbidden_status: default_forbidden_statuses(),
+            positive_markers: markers,
+            allowed_status_range: None,
+        }
+    }
+
+    pub fn object_ownership(markers: Vec<String>) -> Self {
+        Self {
+            oracle_type: default_object_ownership_oracle_type(),
+            forbidden_status: default_forbidden_statuses(),
+            positive_markers: markers,
+            allowed_status_range: None,
+        }
+    }
+
+    pub fn has_positive_evidence(&self) -> bool {
+        self.positive_markers.iter().any(|s| !s.trim().is_empty())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthzOwnedObject {
+    pub name: String,
+    pub owner_role: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id_var: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub positive_markers: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AuthzRoleComparisonPlan {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hypothesis: Option<String>,
+    pub allowed_role: String,
+    pub challenged_role: String,
+    pub request: LiveHttpRequest,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub setup_steps: Vec<LiveHttpRequest>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub benign_steps: Vec<LiveHttpRequest>,
+    pub oracle: AuthzOracle,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why_this_confirms: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AuthzObjectOwnershipPlan {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hypothesis: Option<String>,
+    pub object: AuthzOwnedObject,
+    pub accessor_role: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub seed_steps: Vec<LiveHttpRequest>,
+    pub owner_request: LiveHttpRequest,
+    pub accessor_request: LiveHttpRequest,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub benign_steps: Vec<LiveHttpRequest>,
+    pub oracle: AuthzOracle,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why_this_confirms: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AuthzBrowserRoleComparisonPlan {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hypothesis: Option<String>,
+    pub allowed_role: String,
+    pub challenged_role: String,
+    pub workflow: BrowserWorkflowPlan,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why_this_confirms: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DifferentialHttpPlan {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -313,6 +415,12 @@ pub enum LiveTestPlan {
     #[serde(rename = "http_workflow", alias = "multi_step_http")]
     HttpWorkflow(HttpWorkflowPlan),
     DifferentialHttp(DifferentialHttpPlan),
+    #[serde(rename = "authz_role_comparison", alias = "role_comparison")]
+    AuthzRoleComparison(AuthzRoleComparisonPlan),
+    #[serde(rename = "authz_object_ownership", alias = "object_ownership")]
+    AuthzObjectOwnership(AuthzObjectOwnershipPlan),
+    #[serde(rename = "authz_browser_role_comparison", alias = "browser_role_comparison")]
+    AuthzBrowserRoleComparison(AuthzBrowserRoleComparisonPlan),
     #[serde(rename = "browser_workflow", alias = "browser")]
     BrowserWorkflow(BrowserWorkflowPlan),
     #[serde(rename = "no_plan")]
@@ -325,6 +433,9 @@ impl LiveTestPlan {
             Self::SingleHttp(_) => "single_http",
             Self::HttpWorkflow(_) => "http_workflow",
             Self::DifferentialHttp(_) => "differential_http",
+            Self::AuthzRoleComparison(_) => "authz_role_comparison",
+            Self::AuthzObjectOwnership(_) => "authz_object_ownership",
+            Self::AuthzBrowserRoleComparison(_) => "authz_browser_role_comparison",
             Self::BrowserWorkflow(_) => "browser_workflow",
             Self::NoPlan(_) => "no_plan",
         }
@@ -393,6 +504,81 @@ impl LiveTestPlan {
                     ));
                 }
             }
+            Self::AuthzRoleComparison(plan) => {
+                validate_role_name("allowed_role", &plan.allowed_role)?;
+                validate_role_name("challenged_role", &plan.challenged_role)?;
+                if plan.allowed_role == plan.challenged_role {
+                    return Err(LivePlanValidationError::InvalidField(
+                        "allowed_role and challenged_role must be different".to_string(),
+                    ));
+                }
+                validate_http_request(&plan.request)?;
+                for step in &plan.setup_steps {
+                    validate_http_request(step)?;
+                    validate_payload(step.payload.as_ref())?;
+                }
+                for step in &plan.benign_steps {
+                    validate_http_request(step)?;
+                    validate_payload(step.payload.as_ref())?;
+                }
+                validate_payload(plan.request.payload.as_ref())?;
+                if !plan.oracle.has_positive_evidence() {
+                    return Err(LivePlanValidationError::WeakOracle(
+                        "authz_role_comparison plans require positive_markers".to_string(),
+                    ));
+                }
+            }
+            Self::AuthzObjectOwnership(plan) => {
+                validate_role_name("object.owner_role", &plan.object.owner_role)?;
+                validate_role_name("accessor_role", &plan.accessor_role)?;
+                if plan.object.owner_role == plan.accessor_role {
+                    return Err(LivePlanValidationError::InvalidField(
+                        "object.owner_role and accessor_role must be different".to_string(),
+                    ));
+                }
+                if plan.object.name.trim().is_empty() {
+                    return Err(LivePlanValidationError::MissingField("object.name".to_string()));
+                }
+                validate_http_request(&plan.owner_request)?;
+                validate_payload(plan.owner_request.payload.as_ref())?;
+                validate_http_request(&plan.accessor_request)?;
+                validate_payload(plan.accessor_request.payload.as_ref())?;
+                for step in &plan.seed_steps {
+                    validate_http_request(step)?;
+                    validate_payload(step.payload.as_ref())?;
+                }
+                for step in &plan.benign_steps {
+                    validate_http_request(step)?;
+                    validate_payload(step.payload.as_ref())?;
+                }
+                if !plan.oracle.has_positive_evidence()
+                    && plan.object.positive_markers.iter().all(|s| s.trim().is_empty())
+                    && plan.object.id.as_deref().is_none_or(|s| s.trim().is_empty())
+                {
+                    return Err(LivePlanValidationError::WeakOracle(
+                        "authz_object_ownership plans require positive object markers".to_string(),
+                    ));
+                }
+            }
+            Self::AuthzBrowserRoleComparison(plan) => {
+                validate_role_name("allowed_role", &plan.allowed_role)?;
+                validate_role_name("challenged_role", &plan.challenged_role)?;
+                if plan.allowed_role == plan.challenged_role {
+                    return Err(LivePlanValidationError::InvalidField(
+                        "allowed_role and challenged_role must be different".to_string(),
+                    ));
+                }
+                if plan.workflow.url.trim().is_empty() {
+                    return Err(LivePlanValidationError::MissingField("workflow.url".to_string()));
+                }
+                if !plan.workflow.oracle.has_positive_evidence() {
+                    return Err(LivePlanValidationError::WeakOracle(
+                        "authz_browser_role_comparison plans require a positive browser oracle"
+                            .to_string(),
+                    ));
+                }
+                validate_payload(plan.workflow.payload.as_ref())?;
+            }
             Self::BrowserWorkflow(plan) => {
                 if plan.url.trim().is_empty() {
                     return Err(LivePlanValidationError::MissingField("url".to_string()));
@@ -435,6 +621,14 @@ fn validate_http_request(request: &LiveHttpRequest) -> Result<(), LivePlanValida
     Ok(())
 }
 
+fn validate_role_name(field: &str, role: &str) -> Result<(), LivePlanValidationError> {
+    if role.trim().is_empty() {
+        Err(LivePlanValidationError::MissingField(field.to_string()))
+    } else {
+        Ok(())
+    }
+}
+
 fn validate_payload(payload: Option<&ContextualPayload>) -> Result<(), LivePlanValidationError> {
     if let Some(payload) = payload {
         payload.validate().map_err(LivePlanValidationError::Payload)?;
@@ -445,6 +639,7 @@ fn validate_payload(payload: Option<&ContextualPayload>) -> Result<(), LivePlanV
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LivePlanValidationError {
     MissingField(String),
+    InvalidField(String),
     WeakOracle(String),
     Payload(PayloadValidationError),
 }
@@ -453,6 +648,7 @@ impl fmt::Display for LivePlanValidationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MissingField(field) => write!(f, "live test plan missing {field}"),
+            Self::InvalidField(reason) => write!(f, "invalid live test plan field: {reason}"),
             Self::WeakOracle(reason) => write!(f, "weak live test oracle: {reason}"),
             Self::Payload(err) => write!(f, "invalid payload: {err}"),
         }
@@ -526,5 +722,100 @@ mod tests {
             why_this_confirms: None,
         });
         assert!(matches!(plan.validate(), Err(LivePlanValidationError::WeakOracle(_))));
+    }
+
+    #[test]
+    fn authz_object_ownership_requires_positive_marker() {
+        let plan = LiveTestPlan::AuthzObjectOwnership(AuthzObjectOwnershipPlan {
+            hypothesis: Some("peer reads owner project".to_string()),
+            object: AuthzOwnedObject {
+                name: "project".to_string(),
+                owner_role: "user_a".to_string(),
+                id: None,
+                id_var: Some("object_id".to_string()),
+                route: Some("/api/projects/{id}".to_string()),
+                positive_markers: Vec::new(),
+            },
+            accessor_role: "user_b".to_string(),
+            seed_steps: Vec::new(),
+            owner_request: LiveHttpRequest::get("http://localhost:3000/api/projects/proj-1"),
+            accessor_request: LiveHttpRequest::get("http://localhost:3000/api/projects/proj-1"),
+            benign_steps: Vec::new(),
+            oracle: AuthzOracle::object_ownership(Vec::new()),
+            why_this_confirms: None,
+        });
+        assert!(matches!(plan.validate(), Err(LivePlanValidationError::WeakOracle(_))));
+    }
+
+    #[test]
+    fn authz_role_comparison_roundtrips_with_markers() {
+        let plan = LiveTestPlan::AuthzRoleComparison(AuthzRoleComparisonPlan {
+            hypothesis: Some("user can read admin report".to_string()),
+            allowed_role: "admin".to_string(),
+            challenged_role: "user".to_string(),
+            request: LiveHttpRequest::get("http://localhost:3000/api/admin/report"),
+            setup_steps: Vec::new(),
+            benign_steps: Vec::new(),
+            oracle: AuthzOracle::role_comparison(vec!["admin-report".to_string()]),
+            why_this_confirms: Some(
+                "the user role receives the same admin marker as admin".to_string(),
+            ),
+        });
+        plan.validate().unwrap();
+        let raw = serde_json::to_string(&plan).unwrap();
+        assert!(raw.contains("\"kind\":\"authz_role_comparison\""));
+        let back: LiveTestPlan = serde_json::from_str(&raw).unwrap();
+        assert_eq!(back.kind_str(), "authz_role_comparison");
+    }
+
+    #[test]
+    fn authz_browser_role_comparison_requires_positive_oracle() {
+        let plan = LiveTestPlan::AuthzBrowserRoleComparison(AuthzBrowserRoleComparisonPlan {
+            hypothesis: Some("user can view admin panel".to_string()),
+            allowed_role: "admin".to_string(),
+            challenged_role: "user".to_string(),
+            workflow: BrowserWorkflowPlan {
+                url: "http://localhost:3000/admin".to_string(),
+                role: String::new(),
+                steps: Vec::new(),
+                baseline: None,
+                oracle: BrowserOracle::default(),
+                payload: None,
+                state_changing: false,
+                why_this_confirms: None,
+            },
+            why_this_confirms: None,
+        });
+
+        assert!(matches!(plan.validate(), Err(LivePlanValidationError::WeakOracle(_))));
+    }
+
+    #[test]
+    fn authz_browser_role_comparison_roundtrips_with_marker() {
+        let plan = LiveTestPlan::AuthzBrowserRoleComparison(AuthzBrowserRoleComparisonPlan {
+            hypothesis: Some("user can view admin panel".to_string()),
+            allowed_role: "admin".to_string(),
+            challenged_role: "user".to_string(),
+            workflow: BrowserWorkflowPlan {
+                url: "http://localhost:3000/admin".to_string(),
+                role: String::new(),
+                steps: Vec::new(),
+                baseline: None,
+                oracle: BrowserOracle {
+                    text_contains: vec!["Admin Console".to_string()],
+                    ..BrowserOracle::default()
+                },
+                payload: None,
+                state_changing: false,
+                why_this_confirms: None,
+            },
+            why_this_confirms: None,
+        });
+
+        plan.validate().unwrap();
+        let raw = serde_json::to_string(&plan).unwrap();
+        assert!(raw.contains("\"kind\":\"authz_browser_role_comparison\""));
+        let back: LiveTestPlan = serde_json::from_str(&raw).unwrap();
+        assert_eq!(back.kind_str(), "authz_browser_role_comparison");
     }
 }

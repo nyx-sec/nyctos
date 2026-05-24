@@ -14,6 +14,14 @@ function setAdvancedPref(value: "on" | "off") {
   }
 }
 
+function setActiveProjectPref(projectId: string | undefined) {
+  if (projectId) {
+    window.localStorage.setItem("nyx.active_project_id", projectId);
+  } else {
+    window.localStorage.removeItem("nyx.active_project_id");
+  }
+}
+
 function jsonResponse(body: unknown, init: ResponseInit = { status: 200 }) {
   return new Response(JSON.stringify(body), {
     ...init,
@@ -50,6 +58,7 @@ function renderLayout({
 describe("AppLayout", () => {
   beforeEach(() => {
     setAdvancedPref("off");
+    setActiveProjectPref(undefined);
   });
 
   afterEach(() => {
@@ -143,5 +152,89 @@ describe("AppLayout", () => {
     expect(screen.getByRole("option", { name: /calcom/ })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("button", { name: "New project" })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Create project" })).toBeNull();
+  });
+
+  it("keeps the remembered project selected on settings", async () => {
+    setActiveProjectPref("project-1");
+    renderLayout({
+      route: "/settings",
+      projects: [
+        {
+          id: "project-1",
+          name: "calcom",
+          description: null,
+          target_base_url: null,
+          env_config_json: null,
+          runtime_profile: null,
+          default_launch_profile: null,
+          created_at: 1,
+          updated_at: 1,
+        },
+      ],
+    });
+
+    const switcher = await screen.findByRole("combobox", { name: "Switch project" });
+    await waitFor(() => expect(switcher).toHaveTextContent("calcom"));
+    expect(screen.getByRole("link", { name: /Overview/ })).toHaveAttribute(
+      "href",
+      "/projects/project-1",
+    );
+  });
+
+  it("scopes advanced triage links to the active project", async () => {
+    setAdvancedPref("on");
+    renderLayout({
+      route: "/projects/project-1/vulnerabilities",
+      projects: [
+        {
+          id: "project-1",
+          name: "calcom",
+          description: null,
+          target_base_url: null,
+          env_config_json: null,
+          runtime_profile: null,
+          default_launch_profile: null,
+          created_at: 1,
+          updated_at: 1,
+        },
+      ],
+    });
+
+    await screen.findByRole("combobox", { name: "Switch project" });
+    expect(screen.getByRole("link", { name: /Legacy Findings/ })).toHaveAttribute(
+      "href",
+      "/projects/project-1/findings",
+    );
+    expect(screen.getByRole("link", { name: /Raw Chains/ })).toHaveAttribute(
+      "href",
+      "/projects/project-1/chains",
+    );
+    expect(screen.getByRole("link", { name: /Candidate Queue/ })).toHaveAttribute(
+      "href",
+      "/projects/project-1/quarantine",
+    );
+  });
+
+  it("shows all projects on the project index even with a remembered project", async () => {
+    setActiveProjectPref("project-1");
+    renderLayout({
+      route: "/projects",
+      projects: [
+        {
+          id: "project-1",
+          name: "calcom",
+          description: null,
+          target_base_url: null,
+          env_config_json: null,
+          runtime_profile: null,
+          default_launch_profile: null,
+          created_at: 1,
+          updated_at: 1,
+        },
+      ],
+    });
+
+    const switcher = await screen.findByRole("combobox", { name: "Switch project" });
+    expect(switcher).toHaveTextContent("All projects");
   });
 });

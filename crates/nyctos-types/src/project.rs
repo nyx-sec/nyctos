@@ -181,6 +181,21 @@ pub struct ProjectAuthAssertion {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ProjectAuthOwnedObject {
+    /// Operator-supplied label for a pre-seeded object owned by this
+    /// auth profile, e.g. `invoice`, `project`, or `document`.
+    pub name: String,
+    /// Stable object id or slug used in authorization probes.
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub route: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub marker: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct ProjectAuthProfile {
     /// Stable role name used by live plans, e.g. `anonymous`, `user`,
     /// `admin`, `user_a`, or `user_b`.
@@ -233,6 +248,8 @@ pub struct ProjectAuthProfile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub custom_command: Option<String>,
+    #[serde(default)]
+    pub owned_objects: Vec<ProjectAuthOwnedObject>,
 }
 
 /// Project-level build/run profile for launching the full local app before
@@ -266,6 +283,49 @@ pub struct ProjectRuntimeProfile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "number")]
     pub timeout_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct AuthSetupRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub target_base_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub roles: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub seeded_objects: Vec<ProjectAuthOwnedObject>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthSetupVerificationStatus {
+    Verified,
+    NeedsReview,
+    Skipped,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct AuthSetupVerification {
+    pub status: AuthSetupVerificationStatus,
+    #[serde(default)]
+    pub checks: Vec<String>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct AuthSetupResponse {
+    pub project: ProjectRecord,
+    pub roles: Vec<String>,
+    pub login_paths: Vec<String>,
+    pub object_routes: Vec<String>,
+    pub agent_used: bool,
+    pub verification: AuthSetupVerification,
+    #[ts(type = "number")]
+    pub profiles_added: usize,
+    #[ts(type = "number")]
+    pub profiles_updated: usize,
+    pub message: String,
 }
 
 /// On-the-wire shape of a `projects` table row. `created_at` and
@@ -504,12 +564,19 @@ mod tests {
             }],
             post_login_assertion: None,
             custom_command: None,
+            owned_objects: vec![ProjectAuthOwnedObject {
+                name: "project".to_string(),
+                id: "proj-user-a-1".to_string(),
+                route: Some("/api/projects/{id}".to_string()),
+                marker: Some("nyctos-user-a-project".to_string()),
+            }],
         };
 
         let value = serde_json::to_value(&profile).expect("json");
         assert_eq!(value["mode"], "session_import");
         assert_eq!(value["post_login_assertions"][0]["kind"], "cookie_exists");
         assert_eq!(value["otp_source"]["kind"], "mailbox");
+        assert_eq!(value["owned_objects"][0]["id"], "proj-user-a-1");
         assert!(serde_json::from_value::<ProjectAuthProfile>(value).is_ok());
     }
 

@@ -6,7 +6,8 @@
 //! single run; without the filter every `AgentEvent` lands on the
 //! socket.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::path::{Path as FsPath, PathBuf};
 use std::time::{Duration, Instant};
 
 use axum::{
@@ -22,6 +23,7 @@ use axum::{
     Json, Router,
 };
 use futures_util::{SinkExt, Stream, StreamExt};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::io::AsyncReadExt;
@@ -61,12 +63,16 @@ use nyctos_types::product::{
     TestLaunchTargetResponse,
 };
 use nyctos_types::project::{
-    CreateProjectRequest, PatchProjectRequest, ProjectRuntimeProfile, TriStateJson,
-    TriStateProjectRuntimeProfile,
+    AuthSetupRequest, AuthSetupResponse, AuthSetupVerification, AuthSetupVerificationStatus,
+    CreateProjectRequest, PatchProjectRequest, ProjectAuthMode, ProjectAuthOwnedObject,
+    ProjectAuthProfile, ProjectRuntimeProfile, TriStateJson, TriStateProjectRuntimeProfile,
 };
 use nyctos_types::repo::{CreateRepoRequest, PatchRepoRequest, TestRepoRequest, TestRepoResponse};
 
-use crate::state::{ApiError, ScanRunOverrides, ScanTriggerSource, ServerState};
+use crate::state::{
+    ApiError, AuthSetupAgentOutput, AuthSetupAgentRequest, ScanRunOverrides, ScanTriggerSource,
+    ServerState,
+};
 
 /// Build the production router with every `/api/v1/...` route attached.
 pub fn build_router(state: ServerState) -> Router {
@@ -82,6 +88,7 @@ pub fn build_router(state: ServerState) -> Router {
             "/api/v1/projects/{project_id}",
             get(get_project).patch(patch_project).delete(delete_project),
         )
+        .route("/api/v1/projects/{project_id}/auth/auto-setup", post(auth_auto_setup_project))
         .route(
             "/api/v1/projects/{project_id}/repos",
             get(list_project_repos).post(create_project_repo),
@@ -899,6 +906,156 @@ async fn patch_project(
     Ok(Json(row))
 }
 
+async fn auth_auto_setup_project(
+    State(s): State<ServerState>,
+    Path(id): Path<String>,
+    Json(req): Json<AuthSetupRequest>,
+) -> Result<Json<AuthSetupResponse>, ApiError> {
+    let project = s
+        .store
+        .projects()
+        .get(&id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("project `{id}` not found")))?;
+    let target_base_url = auth_setup_target_base_url(&project, req.target_base_url.as_deref());
+    if let Some(url) = target_base_url.as_deref() {
+        if !is_local_http_url(url) {
+            return Err(ApiError::BadRequest(format!("target URL `{url}` must be local")));
+        }
+    }
+
+    let repos = s.store.repos().list_by_project(&id).await?;
+    let workspace_roots = auth_setup_workspace_roots(&repos, s.state_repos_dir.as_deref());
+    let discovery = discover_auth_setup(&workspace_roots);
+    let mut agent_fallback_warning = None;
+    let agent_output = if let Some(agent) = s.auth_setup_agent.as_ref() {
+        let agent_req = AuthSetupAgentRequest {
+            project_id: id.clone(),
+            project_name: project.name.clone(),
+            target_base_url: target_base_url.clone(),
+            workspace_roots: workspace_roots.clone(),
+            requested_roles: req.roles.clone(),
+            seeded_objects: req.seeded_objects.clone(),
+            existing_profiles: project
+                .runtime_profile
+                .as_ref()
+                .map(|profile| profile.auth_profiles.clone())
+                .unwrap_or_default(),
+            static_login_paths: discovery.login_paths.clone(),
+            static_object_routes: discovery.object_routes.clone(),
+            files_inspected: discovery.files_inspected,
+        };
+        match agent.explore(agent_req).await {
+            Ok(output) if output.profiles.is_empty() => {
+                agent_fallback_warning = Some(
+                    "Auth exploration agent completed without profiles; static repo scan fallback used."
+                        .to_string(),
+                );
+                None
+            }
+            Ok(output) => Some(output),
+            Err(err) => {
+                agent_fallback_warning = Some(format!("{err}; static repo scan fallback used."));
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let mut runtime_profile = project.runtime_profile.clone().unwrap_or_else(|| {
+        empty_runtime_profile_for_auth_setup(
+            target_base_url.clone(),
+            project.default_launch_profile.as_ref(),
+        )
+    });
+    if runtime_profile.target_base_url.is_none() {
+        runtime_profile.target_base_url = target_base_url.clone();
+    }
+    if runtime_profile.health_check_url.is_none() {
+        runtime_profile.health_check_url = target_base_url.clone();
+    }
+
+    let agent_used = agent_output.is_some();
+    let (
+        roles,
+        login_paths,
+        object_routes,
+        verification,
+        agent_message,
+        profiles_added,
+        profiles_updated,
+    ) = if let Some(output) = agent_output {
+        apply_agent_auth_setup_output(
+            &mut runtime_profile.auth_profiles,
+            output,
+            discovery.login_paths.first().cloned(),
+            &req.seeded_objects,
+        )
+    } else {
+        let roles = auth_setup_roles(&req.roles, &discovery);
+        let (profiles_added, profiles_updated) = merge_auth_setup_profiles(
+            &mut runtime_profile.auth_profiles,
+            &roles,
+            discovery.login_paths.first().cloned(),
+            &req.seeded_objects,
+        );
+        let verification =
+            static_auth_setup_verification(&discovery, agent_fallback_warning.clone());
+        (
+            roles,
+            discovery.login_paths.clone(),
+            discovery.object_routes.clone(),
+            verification,
+            None,
+            profiles_added,
+            profiles_updated,
+        )
+    };
+    let runtime_profile_json = serde_json::to_string(&runtime_profile).map_err(|e| {
+        ApiError::BadRequest(format!("runtime_profile must serialize to JSON: {e}"))
+    })?;
+    let now = now_epoch_ms();
+    let patch = ProjectPatch {
+        description: ProjectPatchOption::Unset,
+        target_base_url: target_base_url
+            .clone()
+            .map(|url| ProjectPatchOption::Set(Some(url)))
+            .unwrap_or(ProjectPatchOption::Unset),
+        env_config_json: ProjectPatchOption::Unset,
+        runtime_profile_json: ProjectPatchOption::Set(Some(runtime_profile_json)),
+        updated_at: now,
+    };
+    if !s.store.projects().update(&id, &patch).await? {
+        return Err(ApiError::NotFound(format!("project `{id}` not found")));
+    }
+    let project = s
+        .store
+        .projects()
+        .get(&id)
+        .await?
+        .ok_or_else(|| ApiError::Internal("project vanished after auth setup".to_string()))?;
+    let message = auth_setup_response_message(
+        agent_used,
+        profiles_added,
+        profiles_updated,
+        discovery.files_inspected,
+        &verification,
+        agent_message,
+        agent_fallback_warning,
+    );
+    Ok(Json(AuthSetupResponse {
+        project,
+        roles,
+        login_paths,
+        object_routes,
+        agent_used,
+        verification,
+        profiles_added,
+        profiles_updated,
+        message,
+    }))
+}
+
 fn project_patch_for(opt: &Option<Option<String>>) -> ProjectPatchOption<Option<String>> {
     match opt {
         None => ProjectPatchOption::Unset,
@@ -933,6 +1090,549 @@ fn normalize_create_target_base_url(
 
 fn normalize_optional_string(value: Option<&str>) -> Option<String> {
     value.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string)
+}
+
+fn auth_setup_target_base_url(project: &ProjectRecord, requested: Option<&str>) -> Option<String> {
+    normalize_optional_string(requested)
+        .or_else(|| {
+            project
+                .runtime_profile
+                .as_ref()
+                .and_then(|profile| normalize_optional_string(profile.target_base_url.as_deref()))
+        })
+        .or_else(|| normalize_optional_string(project.target_base_url.as_deref()))
+        .or_else(|| {
+            project.default_launch_profile.as_ref().and_then(|profile| {
+                profile
+                    .target_urls
+                    .first()
+                    .and_then(|url| normalize_optional_string(Some(url.as_str())))
+            })
+        })
+}
+
+fn empty_runtime_profile_for_auth_setup(
+    target_base_url: Option<String>,
+    launch: Option<&nyctos_types::product::ProjectLaunchProfile>,
+) -> ProjectRuntimeProfile {
+    let launch_target = launch
+        .and_then(|profile| profile.target_urls.first())
+        .and_then(|url| normalize_optional_string(Some(url.as_str())));
+    let target = target_base_url.or(launch_target);
+    ProjectRuntimeProfile {
+        build_commands: Vec::new(),
+        start_commands: Vec::new(),
+        health_check_url: target.clone(),
+        health_check_command: None,
+        target_base_url: target,
+        allowed_hosts: Vec::new(),
+        env_vars: Vec::new(),
+        auth_profiles: Vec::new(),
+        env_file: None,
+        timeout_seconds: None,
+    }
+}
+
+#[derive(Debug, Default)]
+struct AuthSetupDiscovery {
+    login_paths: Vec<String>,
+    object_routes: Vec<String>,
+    files_inspected: usize,
+    admin_signal: bool,
+}
+
+fn auth_setup_workspace_roots(
+    repos: &[RepoRecord],
+    state_repos_dir: Option<&FsPath>,
+) -> Vec<PathBuf> {
+    let mut seen = BTreeSet::new();
+    let mut out = Vec::new();
+    for repo in repos {
+        if matches!(repo.source_kind.as_str(), "local" | "local-path") {
+            let path = PathBuf::from(&repo.source_url_or_path);
+            if path.is_dir() && seen.insert(path.clone()) {
+                out.push(path);
+            }
+        }
+        if let Some(root) = state_repos_dir {
+            let path = root.join(&repo.name);
+            if path.is_dir() && seen.insert(path.clone()) {
+                out.push(path);
+            }
+        }
+    }
+    out
+}
+
+fn discover_auth_setup(workspace_paths: &[PathBuf]) -> AuthSetupDiscovery {
+    let mut discovery = AuthSetupDiscovery::default();
+    let path_re =
+        Regex::new(r#"(?i)["'`](/[^"'`\s]*?(?:login|signin|sign-in|session|auth)[^"'`\s]*)["'`]"#)
+            .expect("auth setup path regex");
+    let object_re = Regex::new(
+        r#"(?i)["'`](/[^"'`\s]*(?:projects|invoices|accounts|documents|orders|users|tenants|orgs)[^"'`\s]*/(?::[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\}|[0-9A-Fa-f-]{4,})[^"'`\s]*)["'`]"#,
+    )
+    .expect("auth setup object-route regex");
+    for root in workspace_paths {
+        discover_auth_setup_in_root(root, &path_re, &object_re, &mut discovery);
+    }
+    discovery.login_paths = dedupe_setup_paths(discovery.login_paths);
+    discovery.object_routes = dedupe_setup_paths(discovery.object_routes);
+    discovery
+}
+
+fn discover_auth_setup_in_root(
+    root: &FsPath,
+    path_re: &Regex,
+    object_re: &Regex,
+    discovery: &mut AuthSetupDiscovery,
+) {
+    let mut stack = vec![(root.to_path_buf(), 0usize)];
+    while let Some((path, depth)) = stack.pop() {
+        if discovery.files_inspected >= 1_000 || depth > 8 {
+            break;
+        }
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if meta.file_type().is_symlink() {
+            continue;
+        }
+        if meta.is_dir() {
+            if should_skip_auth_setup_dir(&path) {
+                continue;
+            }
+            if let Ok(entries) = std::fs::read_dir(&path) {
+                for entry in entries.flatten() {
+                    stack.push((entry.path(), depth + 1));
+                }
+            }
+            continue;
+        }
+        if !meta.is_file()
+            || meta.len() > 256 * 1024
+            || !path.extension().and_then(|e| e.to_str()).is_some_and(is_auth_setup_extension)
+        {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        discovery.files_inspected += 1;
+        let lower = text.to_ascii_lowercase();
+        if lower.contains("/admin") || lower.contains("requireadmin") || lower.contains("is_admin")
+        {
+            discovery.admin_signal = true;
+        }
+        for cap in path_re.captures_iter(&text) {
+            if let Some(path) = cap.get(1).map(|m| m.as_str()) {
+                if auth_setup_path_is_login_candidate(path) {
+                    discovery.login_paths.push(path.to_string());
+                }
+            }
+        }
+        for cap in object_re.captures_iter(&text) {
+            if let Some(path) = cap.get(1).map(|m| m.as_str()) {
+                discovery.object_routes.push(path.to_string());
+            }
+        }
+    }
+}
+
+fn should_skip_auth_setup_dir(path: &FsPath) -> bool {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    matches!(
+        name,
+        ".git" | "node_modules" | "target" | "dist" | "build" | ".next" | "coverage" | "vendor"
+    )
+}
+
+fn is_auth_setup_extension(ext: &str) -> bool {
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+        "js" | "jsx"
+            | "ts"
+            | "tsx"
+            | "mjs"
+            | "cjs"
+            | "rs"
+            | "py"
+            | "rb"
+            | "go"
+            | "php"
+            | "java"
+            | "kt"
+            | "cs"
+            | "html"
+            | "vue"
+            | "svelte"
+    )
+}
+
+fn auth_setup_path_is_login_candidate(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower.contains("login")
+        || lower.contains("signin")
+        || lower.contains("sign-in")
+        || lower.contains("/session")
+        || lower.contains("/auth")
+}
+
+fn dedupe_setup_paths(paths: Vec<String>) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    let mut out = Vec::new();
+    for path in paths {
+        let trimmed = path.trim();
+        if trimmed.is_empty() || trimmed.contains("..") {
+            continue;
+        }
+        let normalized = trimmed.trim_end_matches('/').to_string();
+        if seen.insert(normalized.clone()) {
+            out.push(normalized);
+        }
+    }
+    out.sort_by_key(|p| {
+        let lower = p.to_ascii_lowercase();
+        (!lower.contains("login") && !lower.contains("signin"), !lower.contains("/api/"), p.len())
+    });
+    out
+}
+
+fn auth_setup_roles(requested: &[String], discovery: &AuthSetupDiscovery) -> Vec<String> {
+    let mut roles =
+        requested.iter().filter_map(|role| normalize_role_name(role)).collect::<Vec<_>>();
+    if roles.is_empty() {
+        roles.extend(["user_a".to_string(), "user_b".to_string()]);
+        if discovery.admin_signal {
+            roles.push("admin".to_string());
+        }
+    }
+    let mut seen = BTreeSet::new();
+    roles.retain(|role| seen.insert(role.clone()));
+    roles
+}
+
+fn normalize_role_name(role: &str) -> Option<String> {
+    let role = role.trim();
+    if role.is_empty() || role.eq_ignore_ascii_case("anonymous") {
+        return None;
+    }
+    Some(role.to_string())
+}
+
+fn apply_agent_auth_setup_output(
+    profiles: &mut Vec<ProjectAuthProfile>,
+    output: AuthSetupAgentOutput,
+    fallback_login_path: Option<String>,
+    seeded_objects: &[ProjectAuthOwnedObject],
+) -> (Vec<String>, Vec<String>, Vec<String>, AuthSetupVerification, Option<String>, usize, usize) {
+    let roles = if output.roles.is_empty() {
+        output
+            .profiles
+            .iter()
+            .filter_map(|profile| normalize_role_name(&profile.role))
+            .collect::<Vec<_>>()
+    } else {
+        output.roles.clone()
+    };
+    let login_paths = output.login_paths.clone();
+    let object_routes = output.object_routes.clone();
+    let verification = output.verification.clone();
+    let message = Some(output.message);
+    let (profiles_added, profiles_updated) = merge_auth_setup_profile_records(
+        profiles,
+        output.profiles,
+        fallback_login_path,
+        seeded_objects,
+    );
+    (roles, login_paths, object_routes, verification, message, profiles_added, profiles_updated)
+}
+
+fn merge_auth_setup_profile_records(
+    profiles: &mut Vec<ProjectAuthProfile>,
+    candidates: Vec<ProjectAuthProfile>,
+    fallback_login_path: Option<String>,
+    seeded_objects: &[ProjectAuthOwnedObject],
+) -> (usize, usize) {
+    let mut added = 0usize;
+    let mut updated = 0usize;
+    for candidate in candidates {
+        let Some(candidate) = finalize_auth_setup_candidate(
+            candidate,
+            fallback_login_path.as_deref(),
+            seeded_objects,
+        ) else {
+            continue;
+        };
+        if let Some(existing) = profiles.iter_mut().find(|profile| profile.role == candidate.role) {
+            if merge_auth_setup_candidate(existing, candidate) {
+                updated += 1;
+            }
+        } else {
+            profiles.push(candidate);
+            added += 1;
+        }
+    }
+    (added, updated)
+}
+
+fn finalize_auth_setup_candidate(
+    mut profile: ProjectAuthProfile,
+    fallback_login_path: Option<&str>,
+    seeded_objects: &[ProjectAuthOwnedObject],
+) -> Option<ProjectAuthProfile> {
+    profile.role = normalize_role_name(&profile.role)?;
+    if profile.mode == ProjectAuthMode::Anonymous {
+        profile.mode = ProjectAuthMode::AiAuto;
+    }
+    if profile.label.as_deref().is_none_or(|label| label.trim().is_empty()) {
+        profile.label = Some(format!("AI setup {}", profile.role));
+    }
+    if profile.login_url.as_deref().is_none_or(|url| url.trim().is_empty()) {
+        profile.login_url = fallback_login_path.map(str::to_string);
+    }
+    if !auth_setup_profile_has_secret_ref(&profile) {
+        let role_env = env_role_slug(&profile.role);
+        profile.username_env = Some(format!("NYCTOS_{role_env}_USERNAME"));
+        profile.password_env = Some(format!("NYCTOS_{role_env}_PASSWORD"));
+    }
+    if profile.owned_objects.is_empty() {
+        profile.owned_objects = seeded_objects.to_vec();
+    }
+    Some(profile)
+}
+
+fn merge_auth_setup_candidate(
+    existing: &mut ProjectAuthProfile,
+    candidate: ProjectAuthProfile,
+) -> bool {
+    let before = existing.clone();
+    existing.mode = candidate.mode;
+    merge_option(&mut existing.label, candidate.label);
+    merge_option(&mut existing.session_cache_ttl_seconds, candidate.session_cache_ttl_seconds);
+    merge_option(&mut existing.session_import_path, candidate.session_import_path);
+    merge_option(&mut existing.login_url, candidate.login_url);
+    merge_option(&mut existing.username, candidate.username);
+    merge_option(&mut existing.username_env, candidate.username_env);
+    merge_option(&mut existing.login_email_env, candidate.login_email_env);
+    merge_option(&mut existing.password_env, candidate.password_env);
+    merge_option(&mut existing.password_secret_ref, candidate.password_secret_ref);
+    merge_option(&mut existing.cookie_env, candidate.cookie_env);
+    merge_option(&mut existing.bearer_token_env, candidate.bearer_token_env);
+    if !candidate.headers.is_empty() {
+        existing.headers = candidate.headers;
+    }
+    merge_option(&mut existing.otp_source, candidate.otp_source);
+    if !candidate.post_login_assertions.is_empty() {
+        existing.post_login_assertions = candidate.post_login_assertions;
+    }
+    merge_option(&mut existing.post_login_assertion, candidate.post_login_assertion);
+    merge_option(&mut existing.custom_command, candidate.custom_command);
+    if !candidate.owned_objects.is_empty() {
+        existing.owned_objects = candidate.owned_objects;
+    }
+    *existing != before
+}
+
+fn merge_option<T>(slot: &mut Option<T>, candidate: Option<T>) {
+    if candidate.is_some() {
+        *slot = candidate;
+    }
+}
+
+fn auth_setup_profile_has_secret_ref(profile: &ProjectAuthProfile) -> bool {
+    profile.session_import_path.is_some()
+        || profile.username_env.is_some()
+        || profile.login_email_env.is_some()
+        || profile.password_env.is_some()
+        || profile.password_secret_ref.is_some()
+        || profile.cookie_env.is_some()
+        || profile.bearer_token_env.is_some()
+        || !profile.headers.is_empty()
+        || profile.custom_command.is_some()
+}
+
+fn static_auth_setup_verification(
+    discovery: &AuthSetupDiscovery,
+    fallback_warning: Option<String>,
+) -> AuthSetupVerification {
+    let mut checks = Vec::new();
+    let mut warnings = Vec::new();
+    if discovery.files_inspected > 0 {
+        checks.push(format!(
+            "Static repo scan inspected {} source file(s).",
+            discovery.files_inspected
+        ));
+    } else {
+        warnings.push("No local repo files were available for auth setup.".to_string());
+    }
+    if discovery.login_paths.is_empty() {
+        warnings.push("No login or session route was discovered.".to_string());
+    } else {
+        checks.push(format!("Discovered login/session path {}.", discovery.login_paths[0]));
+    }
+    if discovery.object_routes.is_empty() {
+        warnings.push("No object ownership routes were discovered.".to_string());
+    } else {
+        checks.push(format!(
+            "Discovered {} object ownership route hint(s).",
+            discovery.object_routes.len()
+        ));
+    }
+    if let Some(warning) = fallback_warning {
+        warnings.push(warning);
+    }
+    AuthSetupVerification {
+        status: if warnings.is_empty() {
+            AuthSetupVerificationStatus::Verified
+        } else if discovery.files_inspected == 0 {
+            AuthSetupVerificationStatus::Skipped
+        } else {
+            AuthSetupVerificationStatus::NeedsReview
+        },
+        checks,
+        warnings,
+    }
+}
+
+fn auth_setup_response_message(
+    agent_used: bool,
+    profiles_added: usize,
+    profiles_updated: usize,
+    files_inspected: usize,
+    verification: &AuthSetupVerification,
+    agent_message: Option<String>,
+    fallback_warning: Option<String>,
+) -> String {
+    if let Some(message) = agent_message.filter(|message| !message.trim().is_empty()) {
+        return message;
+    }
+    let changed = profiles_added + profiles_updated;
+    let verification_phrase = match verification.status {
+        AuthSetupVerificationStatus::Verified => "verification passed",
+        AuthSetupVerificationStatus::NeedsReview => "verification needs review",
+        AuthSetupVerificationStatus::Skipped => "verification skipped",
+    };
+    let mut message = if agent_used {
+        if changed == 0 {
+            format!("Auth exploration agent kept the existing role profiles unchanged; {verification_phrase}.")
+        } else {
+            format!(
+                "Auth exploration agent saved {changed} repo-specific role profile(s); {verification_phrase}."
+            )
+        }
+    } else if changed == 0 {
+        format!("Auth setup kept the existing role profiles unchanged; {verification_phrase}.")
+    } else {
+        format!(
+            "Auth setup saved {changed} role profile(s) from {files_inspected} inspected source file(s); {verification_phrase}."
+        )
+    };
+    if let Some(warning) = fallback_warning {
+        message.push(' ');
+        message.push_str(&warning);
+    }
+    message
+}
+
+fn merge_auth_setup_profiles(
+    profiles: &mut Vec<ProjectAuthProfile>,
+    roles: &[String],
+    login_path: Option<String>,
+    seeded_objects: &[ProjectAuthOwnedObject],
+) -> (usize, usize) {
+    let mut added = 0usize;
+    let mut updated = 0usize;
+    for role in roles {
+        if let Some(existing) = profiles.iter_mut().find(|profile| profile.role == *role) {
+            if fill_auth_setup_profile(existing, login_path.as_deref(), seeded_objects) {
+                updated += 1;
+            }
+        } else {
+            profiles.push(auth_setup_profile(role, login_path.as_deref(), seeded_objects));
+            added += 1;
+        }
+    }
+    (added, updated)
+}
+
+fn auth_setup_profile(
+    role: &str,
+    login_path: Option<&str>,
+    seeded_objects: &[ProjectAuthOwnedObject],
+) -> ProjectAuthProfile {
+    let role_env = env_role_slug(role);
+    ProjectAuthProfile {
+        role: role.to_string(),
+        mode: ProjectAuthMode::AiAuto,
+        label: Some(format!("AI setup {role}")),
+        session_cache_ttl_seconds: None,
+        session_import_path: None,
+        login_url: login_path.map(str::to_string),
+        username: None,
+        username_env: Some(format!("NYCTOS_{role_env}_USERNAME")),
+        login_email_env: None,
+        password_env: Some(format!("NYCTOS_{role_env}_PASSWORD")),
+        password_secret_ref: None,
+        cookie_env: None,
+        bearer_token_env: None,
+        headers: Vec::new(),
+        otp_source: None,
+        post_login_assertions: Vec::new(),
+        post_login_assertion: None,
+        custom_command: None,
+        owned_objects: seeded_objects.to_vec(),
+    }
+}
+
+fn fill_auth_setup_profile(
+    profile: &mut ProjectAuthProfile,
+    login_path: Option<&str>,
+    seeded_objects: &[ProjectAuthOwnedObject],
+) -> bool {
+    let mut changed = false;
+    if profile.login_url.as_deref().is_none_or(|v| v.trim().is_empty()) {
+        if let Some(login_path) = login_path {
+            profile.login_url = Some(login_path.to_string());
+            changed = true;
+        }
+    }
+    let role_env = env_role_slug(&profile.role);
+    if profile.username_env.as_deref().is_none_or(|v| v.trim().is_empty())
+        && profile.username.as_deref().is_none_or(|v| v.trim().is_empty())
+        && profile.login_email_env.as_deref().is_none_or(|v| v.trim().is_empty())
+    {
+        profile.username_env = Some(format!("NYCTOS_{role_env}_USERNAME"));
+        changed = true;
+    }
+    if profile.password_env.as_deref().is_none_or(|v| v.trim().is_empty()) {
+        profile.password_env = Some(format!("NYCTOS_{role_env}_PASSWORD"));
+        changed = true;
+    }
+    if profile.owned_objects.is_empty() && !seeded_objects.is_empty() {
+        profile.owned_objects = seeded_objects.to_vec();
+        changed = true;
+    }
+    changed
+}
+
+fn env_role_slug(role: &str) -> String {
+    let mut out = String::new();
+    for ch in role.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_uppercase());
+        } else if !out.ends_with('_') {
+            out.push('_');
+        }
+    }
+    let out = out.trim_matches('_').to_string();
+    if out.is_empty() {
+        "ROLE".to_string()
+    } else {
+        out
+    }
 }
 
 fn launch_profile_input_from_runtime(
@@ -1936,6 +2636,8 @@ async fn require_run(s: &ServerState, id: &str) -> Result<RunRecord, ApiError> {
 #[derive(Debug, Deserialize)]
 pub struct FindingsQuery {
     #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
     pub repo: Option<String>,
     #[serde(default)]
     pub run_id: Option<String>,
@@ -1959,7 +2661,11 @@ async fn list_findings(
     State(s): State<ServerState>,
     Query(q): Query<FindingsQuery>,
 ) -> Result<Json<Vec<FindingRecord>>, ApiError> {
+    if let Some(project_id) = q.project_id.as_deref() {
+        require_project(&s, project_id).await?;
+    }
     let filter = FindingFilter {
+        project_id: q.project_id.as_deref(),
         repo: q.repo.as_deref(),
         run_id: q.run_id.as_deref(),
         cap: q.cap.as_deref(),
@@ -2028,6 +2734,7 @@ async fn findings_for_run(
     let prior_run_id = s.store.runs().prior_run_id(&run_id, started_at).await?;
 
     let filter = FindingFilter {
+        project_id: None,
         run_id: Some(&run_id),
         repo: q.repo.as_deref(),
         cap: q.cap.as_deref(),
@@ -2203,11 +2910,22 @@ async fn get_chain(
 
 // ---- /quarantine ------------------------------------------------------------
 
+#[derive(Debug, Deserialize, Default)]
+struct QuarantineQuery {
+    #[serde(default)]
+    project_id: Option<String>,
+}
+
 async fn list_quarantine(
     State(s): State<ServerState>,
+    Query(q): Query<QuarantineQuery>,
 ) -> Result<Json<Vec<QuarantineItem>>, ApiError> {
+    if let Some(project_id) = q.project_id.as_deref() {
+        require_project(&s, project_id).await?;
+    }
     let mut out: Vec<QuarantineItem> = Vec::new();
     let filter = FindingFilter {
+        project_id: q.project_id.as_deref(),
         status: Some("Quarantine"),
         include_quarantine: true,
         ..Default::default()
@@ -2232,7 +2950,11 @@ async fn list_quarantine(
             last_seen: Some(f.last_seen),
         });
     }
-    let pending = s.store.candidate_findings().list_pending().await?;
+    let pending = if let Some(project_id) = q.project_id.as_deref() {
+        s.store.candidate_findings().list_pending_by_project(project_id).await?
+    } else {
+        s.store.candidate_findings().list_pending().await?
+    };
     for c in pending {
         out.push(QuarantineItem {
             kind: QuarantineKind::Candidate,

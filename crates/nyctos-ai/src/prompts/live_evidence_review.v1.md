@@ -33,6 +33,9 @@ Return `block` or `downgrade` for:
   banner, or other marker unrelated to the candidate.
 - cases where the response could be explained by normal access,
   default routing, or failed authentication.
+- authorization checks where the lower-privilege or peer role did not
+  receive the same specific role/object/UI marker that the allowed owner
+  role received.
 
 KEEP HARD CHECKS AUTHORITATIVE
 If the deterministic oracle rejected, errored, or found no positive live

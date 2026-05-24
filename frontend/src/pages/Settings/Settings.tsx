@@ -2,36 +2,37 @@ import { type ReactNode, useEffect, useState } from "react";
 import type { AiRuntimeChoice, SandboxBackendChoice, SetupStatusResponse } from "@/api/client";
 import { useDoctor, useSetupStatus, useSubmitSetup } from "@/api/client";
 import { useAdvancedMode } from "@/api/preferences";
-import { Badge } from "@/components/Badge";
 import { Button } from "@/components/Button";
 import { Card } from "@/components/Card";
+import { PageHeader, PageShell } from "@/components/Page";
 import { Spinner } from "@/components/Spinner";
+import { useToast } from "@/components/Toast";
 
 const AI_CHOICES: { value: AiRuntimeChoice; label: string; body: string }[] = [
   {
     value: "claude-code",
     label: "Claude Code CLI (recommended)",
-    body: "All-in-one local CLI backend for structured tasks and agent exploration.",
+    body: "Local CLI agent.",
   },
   {
     value: "codex",
     label: "Codex CLI",
-    body: "All-in-one local CLI backend using your installed codex command.",
+    body: "Local CLI agent.",
   },
   {
     value: "anthropic",
     label: "Anthropic API",
-    body: "Optional direct API mode for structured one-shot tasks using a key in the OS keychain.",
+    body: "Direct API key in the OS keychain.",
   },
   {
     value: "local-llm",
     label: "Local OpenAI-compatible",
-    body: "LM Studio, Ollama, vLLM, or another local /v1 endpoint.",
+    body: "Local /v1 endpoint.",
   },
   {
     value: "none",
     label: "None",
-    body: "Static-pass only. AI triage and candidate generation stay off.",
+    body: "Static pass only.",
   },
 ];
 
@@ -39,32 +40,32 @@ const BACKEND_CHOICES: { value: SandboxBackendChoice; label: string; body: strin
   {
     value: "auto",
     label: "Auto",
-    body: "Pick the strongest available backend at scan time.",
+    body: "Choose at scan time.",
   },
   {
     value: "process",
     label: "Process",
-    body: "No kernel isolation. Always available.",
+    body: "No kernel isolation.",
   },
   {
     value: "birdcage",
     label: "Birdcage",
-    body: "macOS Seatbelt profile for local sandboxing.",
+    body: "macOS Seatbelt.",
   },
   {
     value: "docker",
     label: "Docker",
-    body: "Container fallback when Docker is running.",
+    body: "Container sandbox.",
   },
   {
     value: "libkrun",
     label: "libkrun",
-    body: "Linux KVM-backed microVM backend.",
+    body: "Linux microVM.",
   },
   {
     value: "firecracker",
     label: "Firecracker",
-    body: "Linux Firecracker microVM backend.",
+    body: "Linux microVM.",
   },
 ];
 
@@ -83,7 +84,7 @@ export function Settings() {
   const [localLlmToken, setLocalLlmToken] = useState("");
   const [budgetEnabled, setBudgetEnabled] = useState(false);
   const [budgetUsd, setBudgetUsd] = useState("25");
-  const [savedMessage, setSavedMessage] = useState<string | null>(null);
+  const { showToast } = useToast();
 
   useEffect(() => {
     if (!status.data) return;
@@ -101,25 +102,25 @@ export function Settings() {
 
   if (status.isPending) {
     return (
-      <div className="settings-page">
+      <PageShell className="settings-page">
         <Card>
           <div className="settings-page__pending">
             <Spinner size="lg" />
           </div>
         </Card>
-      </div>
+      </PageShell>
     );
   }
 
   if (status.error) {
     return (
-      <div className="settings-page">
+      <PageShell className="settings-page">
         <Card title="Settings">
           <p className="settings-page__error" role="alert">
             {String(status.error)}
           </p>
         </Card>
-      </div>
+      </PageShell>
     );
   }
 
@@ -146,7 +147,6 @@ export function Settings() {
   const canSave = dirty && !validationMessage && !submit.isPending;
 
   async function saveSettings() {
-    setSavedMessage(null);
     const body: {
       ai_runtime: AiRuntimeChoice;
       anthropic_api_key?: string;
@@ -171,7 +171,7 @@ export function Settings() {
       }
     }
     await submit.mutateAsync(body);
-    setSavedMessage("Settings saved.");
+    showToast("Settings saved.", { tone: "success" });
   }
 
   async function runDoctor() {
@@ -197,45 +197,21 @@ export function Settings() {
   }
 
   return (
-    <div className="settings-page">
-      <section className="settings-page__header" aria-labelledby="settings-page-title">
-        <div>
-          <h1 id="settings-page-title">Configuration</h1>
-          <p>
-            {data?.config_path ? <code>{data.config_path}</code> : "Local daemon configuration"}
-          </p>
-        </div>
-        <div className="settings-page__header-status">
-          <Badge tone={data?.complete ? "success" : "warning"}>
-            {data?.complete ? "Configured" : "Setup pending"}
-          </Badge>
-        </div>
-      </section>
+    <PageShell size="wide" className="settings-page">
+      <PageHeader
+        title="Settings"
+        meta={data?.config_path ? <code>{data.config_path}</code> : "Local daemon configuration"}
+      />
 
-      <section className="settings-summary-grid" aria-label="Current settings">
-        <SummaryTile
-          label="AI agent"
-          value={runtimeLabel(data?.ai_runtime)}
-          detail={runtimeDetail(data)}
-        />
-        <SummaryTile
-          label="Backend"
-          value={backendLabel(data?.sandbox_backend)}
-          detail={sandboxDetail(data)}
-        />
-        <SummaryTile
-          label="API"
-          value={data?.ui_listen_addr ?? "127.0.0.1:8765"}
-          detail={data?.ui_open_browser === false ? "Browser launch off" : "Browser launch on"}
-        />
-        <SummaryTile label="AI budget" value={budgetSummary(data)} detail={budgetDetail(data)} />
-        <SummaryTile label="Scan limits" value={scanLimit(data)} detail={stateDetail(data)} />
-      </section>
+      <dl className="settings-summary-list" aria-label="Current settings">
+        <SummaryItem label="AI" value={runtimeLabel(data?.ai_runtime)} />
+        <SummaryItem label="Backend" value={backendLabel(data?.sandbox_backend)} />
+        <SummaryItem label="Budget" value={budgetSummary(data)} />
+      </dl>
 
       <div className="settings-panel">
         <SettingsSection
-          title="System Checks"
-          subtitle="Verifies the state directory, selected AI agent, and selected sandbox backend."
+          title="Checks"
           actions={
             <Button variant="ghost" onClick={runDoctor} disabled={doctor.isPending}>
               {doctor.isPending ? <Spinner /> : "Run checks"}
@@ -263,16 +239,11 @@ export function Settings() {
               ))}
             </ul>
           ) : (
-            <p className="settings-page__hint">
-              No checks have been run for the current selection.
-            </p>
+            <p className="settings-page__hint">No checks yet.</p>
           )}
         </SettingsSection>
 
-        <SettingsSection
-          title="AI Agent"
-          subtitle="Runtime used for AI triage, generation, and exploration."
-        >
+        <SettingsSection title="AI runtime">
           <div className="settings-choice-grid">
             {AI_CHOICES.map((choice) => (
               <label
@@ -343,10 +314,7 @@ export function Settings() {
           )}
         </SettingsSection>
 
-        <SettingsSection
-          title="Backend"
-          subtitle="Sandbox backend used by dynamic verification and repro runs."
-        >
+        <SettingsSection title="Backend">
           <div className="settings-choice-grid settings-choice-grid--backend">
             {BACKEND_CHOICES.map((choice) => (
               <label
@@ -368,15 +336,11 @@ export function Settings() {
           </div>
         </SettingsSection>
 
-        <SettingsSection title="AI Budget" subtitle="Optional run-level spend guard for AI work.">
+        <SettingsSection title="Budget">
           <section className="settings-page__section">
             <header className="settings-page__row">
               <div>
                 <h3 className="settings-page__row-title">Run budget cap</h3>
-                <p className="settings-page__row-help">
-                  Default is unlimited. Enable this only when you want Nyctos to stop AI review
-                  after a fixed dollar amount.
-                </p>
               </div>
               <label className="settings-page__toggle">
                 <input
@@ -410,17 +374,11 @@ export function Settings() {
           </section>
         </SettingsSection>
 
-        <SettingsSection
-          title="Local Settings"
-          subtitle="Preferences and local daemon details for this host."
-        >
+        <SettingsSection title="Local">
           <section className="settings-page__section">
             <header className="settings-page__row">
               <div>
                 <h3 className="settings-page__row-title">Advanced UI</h3>
-                <p className="settings-page__row-help">
-                  Reveals raw findings, chains, and quarantine views in the sidebar.
-                </p>
               </div>
               <label className="settings-page__toggle">
                 <input
@@ -450,8 +408,16 @@ export function Settings() {
               <dd>{data?.log_level ?? "info"}</dd>
             </div>
             <div>
+              <dt>API</dt>
+              <dd>{data?.ui_listen_addr ?? "127.0.0.1:8765"}</dd>
+            </div>
+            <div>
               <dt>Sandbox network</dt>
               <dd>{data?.sandbox_allow_network ? "Allowed" : "Blocked"}</dd>
+            </div>
+            <div>
+              <dt>Scan limits</dt>
+              <dd>{scanLimit(data)}</dd>
             </div>
           </dl>
         </SettingsSection>
@@ -465,29 +431,27 @@ export function Settings() {
               {String(submit.error)}
             </span>
           )}
-          {savedMessage && <span>{savedMessage}</span>}
         </div>
         <Button variant="primary" onClick={saveSettings} disabled={!canSave}>
           {submit.isPending ? <Spinner /> : "Save changes"}
         </Button>
       </div>
-    </div>
+    </PageShell>
   );
 }
 
-function SummaryTile({ label, value, detail }: { label: string; value: string; detail: string }) {
+function SummaryItem({ label, value }: { label: string; value: string }) {
   return (
-    <div className="settings-summary-tile">
-      <span className="settings-summary-tile__label">{label}</span>
-      <strong>{value}</strong>
-      <span>{detail}</span>
+    <div>
+      <dt>{label}</dt>
+      <dd>{value}</dd>
     </div>
   );
 }
 
 interface SettingsSectionProps {
   title: string;
-  subtitle: string;
+  subtitle?: string;
   actions?: ReactNode;
   children: ReactNode;
 }
@@ -499,7 +463,7 @@ function SettingsSection({ title, subtitle, actions, children }: SettingsSection
       <div className="settings-section__header">
         <div>
           <h2 id={titleId}>{title}</h2>
-          <p>{subtitle}</p>
+          {subtitle && <p>{subtitle}</p>}
         </div>
         {actions && <div className="settings-section__actions">{actions}</div>}
       </div>
@@ -526,32 +490,9 @@ function backendLabel(value: string | undefined): string {
   return BACKEND_CHOICES.find((choice) => choice.value === value)?.label ?? value ?? "Auto";
 }
 
-function runtimeDetail(data: SetupStatusResponse | undefined): string {
-  if (!data || data.ai_runtime === "none") return "Static-pass only";
-  if (data.ai_runtime === "claude-code" || data.ai_runtime === "codex") {
-    return "One-shot and agent exploration";
-  }
-  if (data.ai_runtime === "local-llm") return data.ai_api_base ?? "Local endpoint";
-  return data.ai_model ?? data.ai_provider ?? "Configured";
-}
-
-function sandboxDetail(data: SetupStatusResponse | undefined): string {
-  if (!data?.sandbox_enabled) return "Disabled";
-  return data.sandbox_allow_network ? "Network allowed" : "Network blocked";
-}
-
-function stateDetail(data: SetupStatusResponse | undefined): string {
-  return data?.state_dir ? "Custom state directory" : "Default state directory";
-}
-
 function budgetSummary(data: SetupStatusResponse | undefined): string {
   const micros = data?.default_run_budget_usd_micros;
   return typeof micros === "number" && micros > 0 ? formatBudgetUsd(micros) : "Unlimited";
-}
-
-function budgetDetail(data: SetupStatusResponse | undefined): string {
-  const micros = data?.default_run_budget_usd_micros;
-  return typeof micros === "number" && micros > 0 ? "Stops AI review at cap" : "No Nyctos cap";
 }
 
 function scanLimit(data: SetupStatusResponse | undefined): string {

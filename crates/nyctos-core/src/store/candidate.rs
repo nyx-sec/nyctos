@@ -1,7 +1,7 @@
 //! `candidate_findings` table - AI-proposed findings awaiting promotion.
 
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
+use sqlx::{Row, SqlitePool};
 
 use super::attack_graph::AttackGraphStore;
 use crate::store::StoreError;
@@ -113,6 +113,26 @@ impl<'a> CandidateFindingStore<'a> {
         Ok(rows)
     }
 
+    pub async fn list_pending_by_project(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<CandidateFindingRecord>, StoreError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT cf.id, cf.run_id, cf.repo, cf.path, cf.line, cf.cap, cf.rule_hint,
+                   cf.rationale, cf.suggested_payload_hint, cf.status, cf.prompt_version,
+                   cf.trace_id
+            FROM candidate_findings cf
+            JOIN runs r ON r.id = cf.run_id
+            WHERE cf.status = 'Pending' AND r.project_id = ?
+            "#,
+        )
+        .bind(project_id)
+        .fetch_all(self.pool)
+        .await?;
+        rows.into_iter().map(row_to_candidate_record).collect()
+    }
+
     pub async fn set_status(&self, id: &str, status: &str) -> Result<(), StoreError> {
         sqlx::query!("UPDATE candidate_findings SET status = ? WHERE id = ?", status, id)
             .execute(self.pool)
@@ -121,9 +141,30 @@ impl<'a> CandidateFindingStore<'a> {
     }
 }
 
+fn row_to_candidate_record(
+    row: sqlx::sqlite::SqliteRow,
+) -> Result<CandidateFindingRecord, StoreError> {
+    Ok(CandidateFindingRecord {
+        id: row.try_get("id")?,
+        run_id: row.try_get("run_id")?,
+        repo: row.try_get("repo")?,
+        path: row.try_get("path")?,
+        line: row.try_get("line")?,
+        cap: row.try_get("cap")?,
+        rule_hint: row.try_get("rule_hint")?,
+        rationale: row.try_get("rationale")?,
+        suggested_payload_hint: row.try_get("suggested_payload_hint")?,
+        status: row.try_get("status")?,
+        prompt_version: row.try_get("prompt_version")?,
+        trace_id: row.try_get("trace_id")?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::store::testutil::{fresh_store, sample_candidate, sample_repo, sample_run};
+    use crate::store::testutil::{
+        fresh_store, sample_candidate, sample_repo, sample_repo_for_project, sample_run,
+    };
 
     async fn seed(s: &crate::store::Store) {
         s.repos().upsert(&sample_repo("repo")).await.expect("repo");
@@ -154,6 +195,40 @@ mod tests {
         let pending = s.candidate_findings().list_pending().await.expect("list");
         let ids: Vec<_> = pending.into_iter().map(|c| c.id).collect();
         assert_eq!(ids, vec!["pending".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn list_pending_by_project_filters_via_run_project() {
+        let (_tmp, s) = fresh_store().await;
+        s.repos().upsert(&sample_repo("repo")).await.expect("repo");
+        s.projects()
+            .create("project-2", "project-2", None, None, None, 1_000)
+            .await
+            .expect("project-2");
+        s.repos().upsert(&sample_repo_for_project("repo-2", "project-2")).await.expect("repo-2");
+
+        let mut run_1 = sample_run("run-1");
+        run_1.project_id = Some(crate::store::project::DEFAULT_PROJECT_ID.to_string());
+        s.runs().insert(&run_1).await.expect("run-1");
+        let mut run_2 = sample_run("run-2");
+        run_2.project_id = Some("project-2".to_string());
+        s.runs().insert(&run_2).await.expect("run-2");
+
+        s.candidate_findings()
+            .insert(&sample_candidate("c-1", "run-1", "repo"))
+            .await
+            .expect("c-1");
+        s.candidate_findings()
+            .insert(&sample_candidate("c-2", "run-2", "repo-2"))
+            .await
+            .expect("c-2");
+
+        let got = s
+            .candidate_findings()
+            .list_pending_by_project(crate::store::project::DEFAULT_PROJECT_ID)
+            .await
+            .expect("project pending");
+        assert_eq!(got.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), vec!["c-1"]);
     }
 
     #[tokio::test]

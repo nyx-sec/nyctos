@@ -11,6 +11,7 @@ import {
   launchProfileFromDraft,
   ProjectRuntimeProfileForm,
   type RuntimeProfileDraft,
+  runtimeProfileFromDraft,
 } from "./ProjectRuntimeProfileForm";
 
 interface FormValues {
@@ -67,6 +68,11 @@ export function ProjectAddModal({ onClose, onAdded }: Props) {
     if (launchProfile) {
       body.default_launch_profile = launchProfile;
       if (launchProfile.target_urls[0]) body.target_base_url = launchProfile.target_urls[0];
+    }
+    const runtimeProfile = runtimeProfileFromDraft(profileDraft);
+    if (runtimeProfile) {
+      body.runtime_profile = runtimeProfile;
+      if (runtimeProfile.target_base_url) body.target_base_url = runtimeProfile.target_base_url;
     }
     try {
       const row = await create.mutateAsync(body);

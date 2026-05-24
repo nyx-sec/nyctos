@@ -2065,6 +2065,7 @@ dependencies = [
  "nyctos-core",
  "nyctos-sandbox",
  "nyctos-types",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",

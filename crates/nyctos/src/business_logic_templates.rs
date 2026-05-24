@@ -1136,6 +1136,7 @@ mod tests {
             post_login_assertions: Vec::new(),
             post_login_assertion: None,
             custom_command: None,
+            owned_objects: Vec::new(),
         }
     }
 

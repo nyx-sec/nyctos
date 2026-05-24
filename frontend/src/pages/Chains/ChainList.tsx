@@ -1,9 +1,10 @@
 import { useMemo } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import { type ChainRecord, type RunRecord, useRunChains, useRuns } from "@/api/client";
 import { Badge } from "@/components/Badge";
 import { Card } from "@/components/Card";
 import { EmptyState } from "@/components/EmptyState";
+import { PageHeader, PageShell } from "@/components/Page";
 import { Spinner } from "@/components/Spinner";
 import { extractChainRationale } from "@/pages/Findings/FindingList";
 import { parseMemberIds } from "./memberIds";
@@ -11,13 +12,14 @@ import { parseMemberIds } from "./memberIds";
 const RATIONALE_PREVIEW_CHARS = 160;
 
 export function ChainList() {
+  const { projectId } = useParams<{ projectId?: string }>();
   const [params, setParams] = useSearchParams();
   const runIdParam = params.get("run_id") ?? undefined;
 
   // The chain explorer is anchored on a single run. Operators pick a
   // run via the URL query param; otherwise we default to the most
   // recent Succeeded run so the page is useful on first visit.
-  const succeededQuery = useRuns("Succeeded");
+  const succeededQuery = useRuns("Succeeded", projectId);
   const succeededRuns = succeededQuery.data ?? [];
   const fallbackRunId = succeededRuns[0]?.id;
   const runId = runIdParam ?? fallbackRunId;
@@ -47,16 +49,19 @@ export function ChainList() {
   }, [isLoadingRuns, runId, chains]);
 
   return (
-    <div className="findings-page">
-      <div className="page-toolbar">
-        <p className="page-toolbar__meta">{headerMeta}</p>
-        <RunPicker
-          runs={succeededRuns}
-          value={runId}
-          onChange={setRunId}
-          disabled={isLoadingRuns || !hasCompletedRuns}
-        />
-      </div>
+    <PageShell className="findings-page">
+      <PageHeader
+        title="Raw Chains"
+        meta={headerMeta}
+        actions={
+          <RunPicker
+            runs={succeededRuns}
+            value={runId}
+            onChange={setRunId}
+            disabled={isLoadingRuns || !hasCompletedRuns}
+          />
+        }
+      />
 
       <Card className="table-card">
         {isLoadingChains && (
@@ -72,22 +77,16 @@ export function ChainList() {
         )}
 
         {!isLoadingChains && !chainsQuery.error && !runId && (
-          <EmptyState
-            title="No completed runs yet"
-            body="Run a scan from the Repos page; chain rationales appear here once chain reasoning finishes."
-          />
+          <EmptyState title="No completed runs yet" />
         )}
 
         {!isLoadingChains && !chainsQuery.error && runId && chains.length === 0 && (
-          <EmptyState
-            title="No chains for this run"
-            body="The chain reasoner did not surface any cross-finding rationales for this run."
-          />
+          <EmptyState title="No chains for this run" />
         )}
 
-        {chains.length > 0 && <ChainTable chains={chains} />}
+        {chains.length > 0 && <ChainTable chains={chains} projectId={projectId} />}
       </Card>
-    </div>
+    </PageShell>
   );
 }
 
@@ -123,45 +122,55 @@ function RunPicker({ runs, value, onChange, disabled }: RunPickerProps) {
 
 interface ChainTableProps {
   chains: ChainRecord[];
+  projectId?: string;
 }
 
-function ChainTable({ chains }: ChainTableProps) {
+function ChainTable({ chains, projectId }: ChainTableProps) {
   return (
-    <table className="findings-table" aria-label="Chains">
-      <thead>
-        <tr>
-          <th scope="col">Chain</th>
-          <th scope="col">Scope</th>
-          <th scope="col">Members</th>
-          <th scope="col">Rationale</th>
-        </tr>
-      </thead>
-      <tbody>
-        {chains.map((chain) => {
-          const rationale = extractChainRationale(chain.rationale_blob);
-          const members = parseMemberIds(chain.member_ids);
-          return (
-            <tr key={chain.id}>
-              <td className="findings-table__repo">
-                <Link to={`/chains/${encodeURIComponent(chain.id)}`}>{shortChainId(chain.id)}</Link>
-              </td>
-              <td>
-                {chain.cross_repo ? (
-                  <Badge tone="accent">cross-repo</Badge>
-                ) : (
-                  <Badge tone="neutral">single-repo</Badge>
-                )}
-              </td>
-              <td>{members.length}</td>
-              <td className="findings-table__rule" title={rationale ?? ""}>
-                {previewRationale(rationale)}
-              </td>
-            </tr>
-          );
-        })}
-      </tbody>
-    </table>
+    <div className="table-scroll">
+      <table className="findings-table data-table" aria-label="Chains">
+        <thead>
+          <tr>
+            <th scope="col">Chain</th>
+            <th scope="col">Scope</th>
+            <th scope="col">Members</th>
+            <th scope="col">Rationale</th>
+          </tr>
+        </thead>
+        <tbody>
+          {chains.map((chain) => {
+            const rationale = extractChainRationale(chain.rationale_blob);
+            const members = parseMemberIds(chain.member_ids);
+            return (
+              <tr key={chain.id}>
+                <td className="findings-table__repo">
+                  <Link to={chainHref(chain.id, projectId)}>{shortChainId(chain.id)}</Link>
+                </td>
+                <td>
+                  {chain.cross_repo ? (
+                    <Badge tone="accent">cross-repo</Badge>
+                  ) : (
+                    <Badge tone="neutral">single-repo</Badge>
+                  )}
+                </td>
+                <td>{members.length}</td>
+                <td className="findings-table__rule" title={rationale ?? ""}>
+                  {previewRationale(rationale)}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
   );
+}
+
+function chainHref(chainId: string, projectId: string | undefined): string {
+  const encodedChain = encodeURIComponent(chainId);
+  return projectId
+    ? `/projects/${encodeURIComponent(projectId)}/chains/${encodedChain}`
+    : `/chains/${encodedChain}`;
 }
 
 function previewRationale(rationale: string | null): string {

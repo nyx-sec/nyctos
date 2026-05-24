@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useParams, useSearchParams } from "react-router-dom";
 import {
   type ChainRecord,
   type FindingDiffStatus,
@@ -9,6 +9,7 @@ import {
   type RunFindingsQuery,
   useAllRepos,
   useFindings,
+  useProjectRepos,
   useRunChains,
   useRunFindings,
 } from "@/api/client";
@@ -16,6 +17,7 @@ import { Badge } from "@/components/Badge";
 import { Button } from "@/components/Button";
 import { Card } from "@/components/Card";
 import { EmptyState } from "@/components/EmptyState";
+import { PageHeader, PageShell } from "@/components/Page";
 import { Spinner } from "@/components/Spinner";
 import { DIFF_LABEL, DIFF_TONE, ORIGIN_TONE, SEVERITY_TONE, STATUS_TONE } from "./diff";
 import { FindingDetail } from "./FindingDetail";
@@ -29,11 +31,13 @@ const STATUS_OPTIONS = ["Open", "Verified", "Closed"];
 const SEVERITY_OPTIONS = ["Critical", "High", "Medium", "Low", "Info"];
 
 export function FindingList() {
+  const { projectId } = useParams<{ projectId?: string }>();
   const [params, setParams] = useSearchParams();
   const runId = params.get("run_id") ?? undefined;
 
   const filters: FindingsQuery = useMemo(() => {
     const f: FindingsQuery = {};
+    if (projectId && !runId) f.project_id = projectId;
     for (const key of FILTER_KEYS) {
       const v = params.get(key);
       if (v) f[key] = v;
@@ -43,7 +47,7 @@ export function FindingList() {
       f.include_quarantine = true;
     }
     return f;
-  }, [params, runId]);
+  }, [params, projectId, runId]);
 
   const runFilters: RunFindingsQuery = useMemo(() => {
     const f: RunFindingsQuery = {};
@@ -54,7 +58,8 @@ export function FindingList() {
     return f;
   }, [filters]);
 
-  const repos = useAllRepos();
+  const allRepos = useAllRepos(!projectId);
+  const projectRepos = useProjectRepos(projectId);
   const runQuery = useRunFindings(runId, runFilters);
   const listQuery = useFindings(runId ? {} : filters);
   const chainsQuery = useRunChains(runId);
@@ -86,7 +91,8 @@ export function FindingList() {
   const isLoading = runId ? runQuery.isPending : listQuery.isPending;
   const error = runId ? runQuery.error : listQuery.error;
 
-  const repoOptions = useMemo(() => (repos.data ?? []).map((r) => r.name), [repos.data]);
+  const repoRows = projectId ? projectRepos.data : allRepos.data;
+  const repoOptions = useMemo(() => (repoRows ?? []).map((r) => r.name), [repoRows]);
   const capOptions = useMemo(() => uniqueValues(rows, "cap"), [rows]);
 
   function setFilter(key: FilterKey, value: string | undefined) {
@@ -120,36 +126,39 @@ export function FindingList() {
       : `${rows.length} active ${rows.length === 1 ? "finding" : "findings"}`;
 
   return (
-    <div className="findings-page">
-      <div className="page-toolbar">
-        <p className="page-toolbar__meta">{resultSummary}</p>
-        <div className="findings-page__actions">
-          <label className="findings-page__toggle">
-            <input
-              type="checkbox"
-              checked={groupByChain}
-              onChange={(e) => setGroupByChain(e.target.checked)}
-            />
-            Group by chain
-          </label>
-          <label className="findings-page__toggle">
-            <input
-              type="checkbox"
-              checked={params.get("include_quarantine") === "true"}
-              onChange={(e) => {
-                const next = new URLSearchParams(params);
-                if (e.target.checked) next.set("include_quarantine", "true");
-                else next.delete("include_quarantine");
-                setParams(next, { replace: true });
-              }}
-            />
-            Show quarantined
-          </label>
-          <Button variant="ghost" size="sm" onClick={clearAll}>
-            Reset filters
-          </Button>
-        </div>
-      </div>
+    <PageShell size="wide" className="findings-page">
+      <PageHeader
+        title="Legacy Findings"
+        meta={resultSummary}
+        actions={
+          <div className="findings-page__actions">
+            <label className="findings-page__toggle">
+              <input
+                type="checkbox"
+                checked={groupByChain}
+                onChange={(e) => setGroupByChain(e.target.checked)}
+              />
+              Group by chain
+            </label>
+            <label className="findings-page__toggle">
+              <input
+                type="checkbox"
+                checked={params.get("include_quarantine") === "true"}
+                onChange={(e) => {
+                  const next = new URLSearchParams(params);
+                  if (e.target.checked) next.set("include_quarantine", "true");
+                  else next.delete("include_quarantine");
+                  setParams(next, { replace: true });
+                }}
+              />
+              Show quarantined
+            </label>
+            <Button variant="ghost" size="sm" onClick={clearAll}>
+              Reset filters
+            </Button>
+          </div>
+        }
+      />
 
       <Card className="table-card">
         <div className="findings-filters">
@@ -200,11 +209,7 @@ export function FindingList() {
         {!isLoading && !error && rows.length === 0 && (
           <EmptyState
             title="No findings match"
-            body={
-              runId
-                ? "This run produced no findings, or every row is filtered out."
-                : "No active findings. Run a scan from the Repos page to populate this view."
-            }
+            body={runId ? "Try clearing filters." : undefined}
           />
         )}
 
@@ -218,7 +223,7 @@ export function FindingList() {
       </Card>
 
       {selected && <FindingDetail id={selected} onClose={() => selectFinding(null)} />}
-    </div>
+    </PageShell>
   );
 }
 
@@ -367,7 +372,7 @@ function FindingTable({ grouped, selected, onSelect }: FindingTableProps) {
       {grouped.map((group) => (
         <section key={group.key} className="findings-group">
           {group.label && <h3 className="findings-group__title">{group.label}</h3>}
-          <table className="findings-table" aria-label="Findings">
+          <table className="findings-table data-table" aria-label="Findings">
             <thead>
               <tr>
                 <th scope="col">Diff</th>

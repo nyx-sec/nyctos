@@ -44,7 +44,7 @@ function renderSettings() {
 }
 
 async function waitForSettings() {
-  await screen.findByText("AI Agent");
+  await screen.findByText("AI runtime");
 }
 
 describe("Settings page", () => {
@@ -233,10 +233,8 @@ describe("Settings page", () => {
     renderSettings();
     await waitForSettings();
 
-    expect(screen.getByText("System Checks")).toBeInTheDocument();
-    expect(
-      screen.getByText("No checks have been run for the current selection."),
-    ).toBeInTheDocument();
+    expect(screen.getByText("Checks")).toBeInTheDocument();
+    expect(screen.getByText("No checks yet.")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Run checks" }));
 

@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentTraceRow, QuarantineItem } from "@/api/client";
+import { ToastProvider } from "@/components/Toast";
 import { QuarantineList } from "./QuarantineList";
 
 function jsonResponse(body: unknown, init: ResponseInit = { status: 200 }) {
@@ -14,7 +15,11 @@ function jsonResponse(body: unknown, init: ResponseInit = { status: 200 }) {
 
 function wrap(children: ReactNode) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
+  return (
+    <QueryClientProvider client={qc}>
+      <ToastProvider>{children}</ToastProvider>
+    </QueryClientProvider>
+  );
 }
 
 function makeItem(overrides: Partial<QuarantineItem> = {}): QuarantineItem {
@@ -100,7 +105,7 @@ describe("QuarantineList", () => {
     expect(await screen.findByText("from blob")).toBeInTheDocument();
   });
 
-  it("POSTs to /promote and surfaces the success banner", async () => {
+  it("POSTs to /promote and surfaces the success toast", async () => {
     const items = [makeItem({ kind: "candidate", id: "cand-promote" })];
     const promoteCalls: string[] = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {

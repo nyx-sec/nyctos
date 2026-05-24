@@ -1128,7 +1128,49 @@ Executable plan schema:
   "rationale": "brief reason this would confirm the candidate"
 }
 
-For authorization boundaries, prefer a differential plan when matching auth roles exist:
+For authorization boundaries, prefer first-class authz plans when matching auth roles exist. Use role comparison for vertical checks (for example user vs admin on the same action):
+{
+  "kind": "authz_role_comparison",
+  "hypothesis": "...",
+  "allowed_role": "admin",
+  "challenged_role": "user",
+  "request": {"method": "GET", "path": "/api/admin/report"},
+  "oracle": {
+    "type": "role_comparison_break",
+    "forbidden_status": [401,403,404],
+    "positive_markers": ["admin report", "accountId"]
+  }
+}
+
+Use object ownership for horizontal checks (for example user_b reading user_a's seeded object). Include a configured object id or seed and capture one before comparing owner vs accessor:
+{
+  "kind": "authz_object_ownership",
+  "hypothesis": "...",
+  "object": {"name": "project", "owner_role": "user_a", "id": "123", "positive_markers": ["nyctos-owned-project"]},
+  "accessor_role": "user_b",
+  "owner_request": {"method": "GET", "path": "/api/projects/123"},
+  "accessor_request": {"method": "GET", "path": "/api/projects/123"},
+  "oracle": {
+    "type": "object_ownership_break",
+    "forbidden_status": [401,403,404],
+    "positive_markers": ["nyctos-owned-project", "123"]
+  }
+}
+
+For client-side authorization checks where the role boundary only appears in the rendered app, compare the same browser workflow under two roles:
+{
+  "kind": "authz_browser_role_comparison",
+  "hypothesis": "...",
+  "allowed_role": "admin",
+  "challenged_role": "user",
+  "workflow": {
+    "url": "/app/admin",
+    "steps": [{"action": "wait_for_selector", "selector": "main"}],
+    "oracle": {"text_contains": "Admin Console"}
+  }
+}
+
+If you cannot provide positive role/object markers, use a legacy differential plan only for non-authz comparisons and expect it to be rejected as weak without sensitive_body_markers:
 {
   "kind": "differential_http",
   "hypothesis": "...",
@@ -1163,7 +1205,7 @@ For client-side-only bugs, use a browser plan only when browser verification is 
   "oracle": {"alert_contains": "nyctos-probe"}
 }
 
-At least one positive live evidence oracle is required: body_contains/header_contains for HTTP, or text_contains/html_contains/selector_exists/selector_text_contains/url_contains/title_contains/console_contains/alert_contains for browser. expect_status/status_range/body_not_contains may be included only as guards around that positive evidence. Do not return generic homepage checks, blocked-request checks, no-reflection checks, or static bundle/source checks."#
+At least one positive live evidence oracle is required: body_contains/header_contains for HTTP, positive_markers for authz role/object probes, or text_contains/html_contains/selector_exists/selector_text_contains/url_contains/title_contains/console_contains/alert_contains for browser and authz browser probes. expect_status/status_range/body_not_contains may be included only as guards around that positive evidence. Do not return generic homepage checks, blocked-request checks, no-reflection checks, or static bundle/source checks."#
         .to_string();
     let user = format!(
         "TARGET BASE URLS\n{targets}\n\nAUTH PROFILES\n{auth}\n\nBROWSER VERIFICATION\n{browser}\n\nSTATE-CHANGING POLICY\n{state_changing}\n\nROUTE MODEL\n{routes}\n\nSENIOR ATTACK PLAN CONTEXT\n{attack_plan}\n\nCANDIDATE\nid: {id}\ntitle: {title}\nclass: {vuln_class}\nseverity: {severity}\nstatus: {status}\nhypothesis: {hypothesis}\nsource_ids: {source_ids}\naffected_components:\n{components}\n\nSOURCE EXCERPT\n{excerpt}\n",

@@ -268,6 +268,50 @@ probes when `[run] exploit_reset_after_state_changing = true`. Start,
 build, seed, login, reset, and stop stdout/stderr are captured under
 `<state>/logs/environment/<run-id>/`.
 
+### `[project.runtime_profile]`
+
+Runtime profiles describe authenticated roles that live verification can
+use. Each role gets a named auth session, and authorization probes can
+compare the same request as different roles.
+
+```toml
+[project.runtime_profile]
+target_base_url = "http://localhost:3000"
+
+[[project.runtime_profile.auth_profiles]]
+role = "user_a"
+mode = "header_injection"
+bearer_token_env = "NYCTOS_USER_A_TOKEN"
+
+  [[project.runtime_profile.auth_profiles.owned_objects]]
+  name = "project"
+  id = "proj-user-a-1"
+  route = "/api/projects/{id}"
+  marker = "nyctos-user-a-project"
+
+[[project.runtime_profile.auth_profiles]]
+role = "user_b"
+mode = "header_injection"
+bearer_token_env = "NYCTOS_USER_B_TOKEN"
+
+[[project.runtime_profile.auth_profiles]]
+role = "admin"
+mode = "session_import"
+session_import_path = "sessions/admin-storage-state.json"
+```
+
+`owned_objects` are optional pre-seeded IDs for horizontal
+authorization checks. Nyctos treats the id and marker as positive live
+evidence markers: `user_b` must receive the same marker from `user_a`'s
+object before an IDOR-style vulnerability can verify.
+
+The local UI exposes an `AI setup` action in the auth profiles panel for
+projects with local repos. Clicking it inspects the checked-out source
+for login routes, object-shaped routes, and admin signals, then saves
+named role profiles and any seeded owned objects into
+`project.runtime_profile`. Pentests do not run this discovery step; they
+only use the saved profiles selected before the run.
+
 ### `[[project.repo]]`
 
 | Field        | Type   | Default | Description                                                                                  |

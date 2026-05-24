@@ -4,6 +4,7 @@ import { type RunRecord, useProject, useRuns } from "@/api/client";
 import { Badge, type BadgeTone } from "@/components/Badge";
 import { Card } from "@/components/Card";
 import { EmptyState } from "@/components/EmptyState";
+import { PageHeader, PageShell } from "@/components/Page";
 import { Spinner } from "@/components/Spinner";
 
 const STATUS_TONE: Record<string, BadgeTone> = {
@@ -30,53 +31,52 @@ export function RunList() {
   }, [running.data, succeeded.data, failed.data]);
   const pending = running.isPending || succeeded.isPending || failed.isPending;
   const error = running.error ?? succeeded.error ?? failed.error;
+  const meta = pending
+    ? "Loading runs..."
+    : projectId
+      ? `${rows.length} ${rows.length === 1 ? "run" : "runs"} · ${
+          project.data?.name ?? "this project"
+        }`
+      : `${rows.length} ${rows.length === 1 ? "run" : "runs"} across projects`;
 
   return (
-    <Card
-      title="Pentest runs"
-      subtitle={
-        projectId
-          ? `Pentests for ${project.data?.name ?? "this project"}`
-          : "Project-scoped pentests with live environment and verification status"
-      }
-    >
-      {pending && (
-        <div className="repo-list__pending">
-          <Spinner /> Loading runs...
-        </div>
-      )}
-      {error && (
-        <p className="repo-list__error" role="alert">
-          Failed to load runs: {String(error)}
-        </p>
-      )}
-      {!pending && rows.length === 0 && (
-        <EmptyState
-          title="No pentest runs"
-          body="Start a pentest from a project after configuring its launch profile."
-        />
-      )}
-      {rows.length > 0 && (
-        <div className="table-scroll">
-          <table className="repo-list__table" aria-label="Pentest runs">
-            <thead>
-              <tr>
-                <th scope="col">Run</th>
-                <th scope="col">Status</th>
-                <th scope="col">Project</th>
-                <th scope="col">Started</th>
-                <th scope="col">Duration</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((run) => (
-                <RunRow key={run.id} run={run} activeProjectId={projectId} />
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </Card>
+    <PageShell>
+      <PageHeader title="Pentest Runs" meta={meta} />
+
+      <Card className="table-card">
+        {pending && (
+          <div className="repo-list__pending">
+            <Spinner /> Loading runs...
+          </div>
+        )}
+        {error && (
+          <p className="repo-list__error" role="alert">
+            Failed to load runs: {String(error)}
+          </p>
+        )}
+        {!pending && rows.length === 0 && <EmptyState title="No runs yet" />}
+        {rows.length > 0 && (
+          <div className="table-scroll">
+            <table className="repo-list__table data-table" aria-label="Pentest runs">
+              <thead>
+                <tr>
+                  <th scope="col">Run</th>
+                  <th scope="col">Status</th>
+                  <th scope="col">Project</th>
+                  <th scope="col">Started</th>
+                  <th scope="col">Duration</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((run) => (
+                  <RunRow key={run.id} run={run} activeProjectId={projectId} />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+    </PageShell>
   );
 }
 
@@ -92,12 +92,12 @@ function RunRow({ run, activeProjectId }: { run: RunRecord; activeProjectId?: st
         <Link className="repo-list__name" to={runHref}>
           {run.id}
         </Link>
-        <span className="repo-list__meta"> {run.kind}</span>
+        <span className="repo-list__meta"> · {run.kind}</span>
       </td>
       <td>
         <Badge tone={STATUS_TONE[run.status] ?? "neutral"}>{run.status}</Badge>
       </td>
-      <td>{run.project_id ? <code>{run.project_id}</code> : "-"}</td>
+      <td>{run.project_id ? <code className="table-code">{run.project_id}</code> : "-"}</td>
       <td>{formatTime(run.started_at)}</td>
       <td>{formatDuration(run.wall_clock_ms)}</td>
     </tr>

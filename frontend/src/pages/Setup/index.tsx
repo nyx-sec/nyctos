@@ -81,11 +81,7 @@ export function SetupWizard() {
   return (
     <Card
       title="First-launch setup"
-      subtitle={
-        status.data?.config_path
-          ? `Writes ${status.data.config_path}`
-          : "Walk through three quick steps to configure the agent."
-      }
+      subtitle={status.data?.config_path ? `Writes ${status.data.config_path}` : undefined}
     >
       <ol className="setup-stepper" aria-label="Setup progress">
         {STEP_LABELS.map((label, idx) => (

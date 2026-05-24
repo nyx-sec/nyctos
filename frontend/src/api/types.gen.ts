@@ -16,17 +16,17 @@ export type TokenUsage = { input_tokens: number, output_tokens: number, };
 
 export type CacheStats = { cache_creation_tokens: number, cache_read_tokens: number, };
 
-export type Budget = { 
+export type Budget = {
 /**
  * Run identifier used as the budget-store key.
  */
-run_id: string, 
+run_id: string,
 /**
  * Budget bucket. `OneShot` for `one_shot` calls; `AgentLoop` for
  * multi-turn loops; `Total` is reserved for the per-run aggregate
  * the host writes itself.
  */
-kind: BudgetKind, 
+kind: BudgetKind,
 /**
  * Hard cap, in USD micros. Exceeding this cap halts the task.
  */
@@ -34,80 +34,80 @@ cap_usd_micros: number, };
 
 export type CostEstimate = { min_usd_micros: number, max_usd_micros: number, };
 
-export type Prompt = { 
+export type Prompt = {
 /**
  * Stable identifier of the prompt template. Adapters and the trace
  * store both persist this so a verdict can be tied back to the
  * exact prompt revision that produced it.
  */
-prompt_version: string, 
+prompt_version: string,
 /**
  * Logical task identifier used to namespace streaming events on
  * the bus. The caller supplies it; adapters echo it back in every
  * emitted `AiEvent`.
  */
-task_id: string, 
+task_id: string,
 /**
  * Model override. When `None`, the adapter's `default_model()` is
  * used.
  */
-model: string | null, 
+model: string | null,
 /**
  * System prompt. Adapters that support prompt caching may attach a
  * `cache_control` block to this slot.
  */
-system: string, 
+system: string,
 /**
  * User message body.
  */
-user: string, 
+user: string,
 /**
  * Hard ceiling on output tokens. Adapters clamp to vendor limits.
  */
-max_output_tokens: number, 
+max_output_tokens: number,
 /**
  * Sampling temperature. `0.0` for deterministic decoding.
  */
-temperature: number, 
+temperature: number,
 /**
  * Adapter-specific seed for deterministic sampling. Adapters that
  * do not expose a seed ignore this.
  */
 seed: number | null, };
 
-export type Response = { 
+export type Response = {
 /**
  * Echoes the `prompt_version` from the request.
  */
-prompt_version: string, 
+prompt_version: string,
 /**
  * Echoes the `task_id` from the request.
  */
-task_id: string, 
+task_id: string,
 /**
  * Model name as reported by the vendor (which may differ from the
  * requested alias).
  */
-model: string, 
+model: string,
 /**
  * Final completion text.
  */
-content: string, 
+content: string,
 /**
  * Token accounting.
  */
-usage: TokenUsage, 
+usage: TokenUsage,
 /**
  * Prompt-cache statistics, if the adapter reports them. `None`
  * when the runtime does not support caching.
  */
-cache: CacheStats | null, 
+cache: CacheStats | null,
 /**
  * Total cost charged for this call, in USD micros (1e-6 USD).
  */
 cost_usd_micros: number, };
 
-export type AgentTask = { prompt_version: string, task_id: string, system: string, objective: string, tools: Array<string>, 
+export type AgentTask = { prompt_version: string, task_id: string, system: string, objective: string, tools: Array<string>,
 /**
  * Optional working directory for CLI-backed agent loops. When set,
  * adapters launch the agent from this directory so native file,
@@ -116,19 +116,19 @@ export type AgentTask = { prompt_version: string, task_id: string, system: strin
  */
 working_directory?: string, max_turns: number, };
 
-export type ExtractedAgentResult = { "kind": "PayloadFound", rule_id: string, body: string, } | { "kind": "SpecFound", capability: string, spec: string, } | { "kind": "ChainsRanked", chain_ids: Array<string>, rationale: string, } | { "kind": "ExplorationFinding", path: string, line: number | null, cap: string, rationale: string, endpoint: string | null, suggested_payload_hint: string | null, } | { "kind": "ExplorationEvent", message: string, };
+export type ExtractedAgentResult = { "kind": "PayloadFound", rule_id: string, body: string, } | { "kind": "SpecFound", capability: string, spec: string, } | { "kind": "ChainsRanked", chain_ids: Array<string>, rationale: string, } | { "kind": "ExplorationFinding", path: string, line: number | null, cap: string, rationale: string, endpoint: string | null, suggested_payload_hint: string | null, } | { "kind": "ExplorationEvent", message: string, } | { "kind": "AuthProfileDiscovered", profile: ProjectAuthProfile, rationale: string, } | { "kind": "AuthSetupVerification", status: string, checks: Array<string>, warnings: Array<string>, };
 
-export type AgentResult = { prompt_version: string, task_id: string, 
+export type AgentResult = { prompt_version: string, task_id: string,
 /**
  * Model name as reported by the vendor. Empty when the adapter
  * cannot extract a per-call model id from the agent-loop stream.
  */
-model: string, final_message: string, turns: number, usage: TokenUsage, 
+model: string, final_message: string, turns: number, usage: TokenUsage,
 /**
  * Prompt-cache statistics. `None` when the adapter does not parse
  * per-turn cache deltas yet.
  */
-cache: CacheStats | null, cost_usd_micros: number, 
+cache: CacheStats | null, cost_usd_micros: number,
 /**
  * Structured artefacts the adapter lifted out of the agent loop's
  * tool-use trace. The Claude Code adapter populates these from
@@ -156,7 +156,7 @@ export type RepoSource = { "Git": { url: string, branch: string | null, auth: Gi
 
 export type Repo = { name: string, source: RepoSource, i_own_this: boolean, project_id: string, };
 
-export type RepoRecord = { id: string, name: string, project_id: string, source_kind: string, source_url_or_path: string, branch: string | null, auth_ref: string | null, i_own_this: boolean, last_scan_run_id: string | null, 
+export type RepoRecord = { id: string, name: string, project_id: string, source_kind: string, source_url_or_path: string, branch: string | null, auth_ref: string | null, i_own_this: boolean, last_scan_run_id: string | null,
 /**
  * `runs.finished_at` for the run pointed to by `last_scan_run_id`,
  * resolved through a `LEFT JOIN` on read. `None` when no scan has
@@ -178,7 +178,7 @@ export type RunRecord = { id: string, project_id?: string, kind: string, started
 
 export type ChainRecord = { id: string, run_id: string, cross_repo: boolean, member_ids: string, rationale_blob: string | null, attack_provenance: string | null, prompt_version: string | null, status: string, verification_attempt_id: string | null, evidence_blob: string | null, severity: string | null, };
 
-export type FindingRecord = { id: string, run_id: string, repo: string, path: string, line: number | null, cap: string, rule: string, severity: string, status: string, finding_origin: string, first_seen: number, last_seen: number, superseded_by: string | null, triage_state: string, triage_assigned_to: string | null, verdict_blob: string | null, repro_path: string | null, attack_provenance: string | null, prompt_version: string | null, chain_id: string | null, 
+export type FindingRecord = { id: string, run_id: string, repo: string, path: string, line: number | null, cap: string, rule: string, severity: string, status: string, finding_origin: string, first_seen: number, last_seen: number, superseded_by: string | null, triage_state: string, triage_assigned_to: string | null, verdict_blob: string | null, repro_path: string | null, attack_provenance: string | null, prompt_version: string | null, chain_id: string | null,
 /**
  * Back-link to `harness_specs.id` populated by SpecDerivation.
  * `None` for static-pass rows that never went through the AI
@@ -224,14 +224,33 @@ export type ProjectAuthAssertionKind = "url_contains" | "dom_text_contains" | "c
 
 export type ProjectAuthAssertion = { kind: ProjectAuthAssertionKind, value?: string, status?: number, };
 
-export type ProjectAuthProfile = { 
+export type ProjectAuthOwnedObject = {
+/**
+ * Operator-supplied label for a pre-seeded object owned by this
+ * auth profile, e.g. `invoice`, `project`, or `document`.
+ */
+name: string,
+/**
+ * Stable object id or slug used in authorization probes.
+ */
+id: string, route?: string, marker?: string, };
+
+export type ProjectAuthProfile = {
 /**
  * Stable role name used by live plans, e.g. `anonymous`, `user`,
  * `admin`, `user_a`, or `user_b`.
  */
-role: string, mode: ProjectAuthMode, label?: string, session_cache_ttl_seconds?: number, session_import_path?: string, login_url?: string, username?: string, username_env?: string, login_email_env?: string, password_env?: string, password_secret_ref?: string, cookie_env?: string, bearer_token_env?: string, headers: Array<ProjectAuthHeaderRef>, otp_source?: ProjectOtpSourceConfig, post_login_assertions: Array<ProjectAuthAssertion>, post_login_assertion?: string, custom_command?: string, };
+role: string, mode: ProjectAuthMode, label?: string, session_cache_ttl_seconds?: number, session_import_path?: string, login_url?: string, username?: string, username_env?: string, login_email_env?: string, password_env?: string, password_secret_ref?: string, cookie_env?: string, bearer_token_env?: string, headers: Array<ProjectAuthHeaderRef>, otp_source?: ProjectOtpSourceConfig, post_login_assertions: Array<ProjectAuthAssertion>, post_login_assertion?: string, custom_command?: string, owned_objects: Array<ProjectAuthOwnedObject>, };
 
 export type ProjectRuntimeProfile = { build_commands: Array<ProjectRuntimeCommand>, start_commands: Array<ProjectRuntimeCommand>, health_check_url?: string, health_check_command?: ProjectRuntimeCommand, target_base_url?: string, allowed_hosts: Array<string>, env_vars: Array<ProjectRuntimeEnvVar>, auth_profiles: Array<ProjectAuthProfile>, env_file?: string, timeout_seconds?: number, };
+
+export type AuthSetupRequest = { target_base_url?: string, roles?: Array<string>, seeded_objects?: Array<ProjectAuthOwnedObject>, };
+
+export type AuthSetupVerificationStatus = "verified" | "needs_review" | "skipped";
+
+export type AuthSetupVerification = { status: AuthSetupVerificationStatus, checks: Array<string>, warnings: Array<string>, };
+
+export type AuthSetupResponse = { project: ProjectRecord, roles: Array<string>, login_paths: Array<string>, object_routes: Array<string>, agent_used: boolean, verification: AuthSetupVerification, profiles_added: number, profiles_updated: number, message: string, };
 
 export type LaunchStep = { command: string, repo_id?: string, repo_name?: string, working_directory?: string, timeout_seconds?: number, };
 
@@ -287,12 +306,12 @@ export type ProjectRecord = { id: string, name: string, description: string | nu
 
 export type CreateProjectRequest = { name: string, description?: string, target_base_url?: string, env_config?: unknown, runtime_profile?: ProjectRuntimeProfile, default_launch_profile?: ProjectLaunchProfileInput, };
 
-export type PatchProjectRequest = { description?: string | null, target_base_url?: string | null, 
+export type PatchProjectRequest = { description?: string | null, target_base_url?: string | null,
 /**
  * Tri-state JSON value: omitted = no change, `null` = clear, value =
  * set. The body is re-serialized verbatim into `env_config_json`.
  */
-env_config?: unknown, 
+env_config?: unknown,
 /**
  * Tri-state runtime profile: omitted = no change, `null` = clear,
  * value = set. Serialized into the project row's JSON column.
@@ -301,107 +320,107 @@ runtime_profile?: ProjectRuntimeProfile | null, };
 
 export type HealthResponse = { status: string, version: string, };
 
-export type SetupStatusResponse = { 
+export type SetupStatusResponse = {
 /**
  * `true` once `nyctos.toml` is on disk.
  */
-complete: boolean, 
+complete: boolean,
 /**
  * Path the wizard would write to. Surfaced so the UI can render
  * the operator's resolved location.
  */
-config_path: string, 
+config_path: string,
 /**
  * Currently-configured AI runtime (matches `[ai].runtime`).
  */
-ai_runtime: string, 
+ai_runtime: string,
 /**
  * Optional non-secret AI provider label (matches `[ai].provider`).
  */
-ai_provider?: string, 
+ai_provider?: string,
 /**
  * Optional model override (matches `[ai].model`).
  */
-ai_model?: string, 
+ai_model?: string,
 /**
  * Optional non-secret base URL for local OpenAI-compatible
  * runtimes. Bearer tokens stay in the OS keychain.
  */
-ai_api_base?: string, 
+ai_api_base?: string,
 /**
  * Configured per-run AI budget cap in USD micros. `None` means
  * runs are uncapped.
  */
-default_run_budget_usd_micros?: number | null, 
+default_run_budget_usd_micros?: number | null,
 /**
  * Currently-configured sandbox backend (matches `[sandbox].backend`).
  */
-sandbox_backend: string, 
+sandbox_backend: string,
 /**
  * Whether sandboxing is enabled globally.
  */
-sandbox_enabled: boolean, 
+sandbox_enabled: boolean,
 /**
  * Whether sandboxed runs may access the network.
  */
-sandbox_allow_network: boolean, 
+sandbox_allow_network: boolean,
 /**
  * UI listen address (matches `[ui].listen_addr`).
  */
-ui_listen_addr: string, 
+ui_listen_addr: string,
 /**
  * Whether `nyctos serve` opens the browser by default.
  */
-ui_open_browser: boolean, 
+ui_open_browser: boolean,
 /**
  * Current log level (matches `[general].log_level`).
  */
-log_level: string, 
+log_level: string,
 /**
  * Optional configured state directory.
  */
-state_dir?: string, 
+state_dir?: string,
 /**
  * Maximum number of concurrent scans.
  */
-max_parallel_scans: number, 
+max_parallel_scans: number,
 /**
  * Per-scan timeout in seconds.
  */
 scan_timeout_secs: bigint, };
 
-export type SetupRequest = { 
+export type SetupRequest = {
 /**
  * Operator-typed AI runtime: `none` | `anthropic` | `local-llm` |
  * `claude-code` | `codex`. The wizard stashes API keys (when
  * relevant) out-of-band via `secrets`, not in the TOML.
  */
-ai_runtime: string, 
+ai_runtime: string,
 /**
  * Anthropic API key. Required when `ai_runtime = "anthropic"`.
  * Persisted to the OS keychain; never written to TOML or logs.
  */
-anthropic_api_key?: string, 
+anthropic_api_key?: string,
 /**
  * Endpoint URL for `local-llm` runtime (OpenAI-compatible). Stored
  * in `[ai].api_base`.
  */
-local_llm_url?: string, 
+local_llm_url?: string,
 /**
  * Optional bearer attached to `local-llm` requests; persisted to
  * the keychain.
  */
-local_llm_token?: string, 
+local_llm_token?: string,
 /**
  * Optional per-run AI budget cap in USD micros. `None` disables
  * the cap; a positive value enables it.
  */
-default_run_budget_usd_micros?: number | null, 
+default_run_budget_usd_micros?: number | null,
 /**
  * Sandbox backend: `auto` | `process` | `birdcage` | `libkrun`
  * | `firecracker` | `docker`.
  */
-sandbox_backend: string, 
+sandbox_backend: string,
 /**
  * Operator-attested ownership of the install. The daemon refuses
  * to commit the config when this is `false`.
@@ -414,28 +433,28 @@ export type DoctorCheck = { name: string, passed: boolean, message: string, };
 
 export type DoctorResponse = { checks: Array<DoctorCheck>, };
 
-export type DoctorRequest = { 
+export type DoctorRequest = {
 /**
  * AI runtime being verified. Doctor only inspects what the chosen
  * runtime depends on (e.g. CLI runtimes look for their binary).
  */
-ai_runtime: string, 
+ai_runtime: string,
 /**
  * Unsaved Anthropic API key supplied by the UI for this check.
  * The daemon only tests whether a non-empty key was provided; it
  * does not persist this field from `/setup/doctor`.
  */
-anthropic_api_key?: string, 
+anthropic_api_key?: string,
 /**
  * Unsaved local OpenAI-compatible endpoint URL supplied by the UI
  * for this check. Persisted only by `POST /setup`.
  */
-local_llm_url?: string, 
+local_llm_url?: string,
 /**
  * Unsaved local OpenAI-compatible bearer token supplied by the UI
  * for this check. Doctor only acknowledges its presence.
  */
-local_llm_token?: string, 
+local_llm_token?: string,
 /**
  * Sandbox backend being verified.
  */
@@ -443,7 +462,7 @@ sandbox_backend: string, };
 
 export type FindingDiffStatus = "new" | "regressed" | "closed" | "unchanged";
 
-export type FindingWithDiff = { diff_status: FindingDiffStatus, id: string, run_id: string, repo: string, path: string, line: number | null, cap: string, rule: string, severity: string, status: string, finding_origin: string, first_seen: number, last_seen: number, superseded_by: string | null, triage_state: string, triage_assigned_to: string | null, verdict_blob: string | null, repro_path: string | null, attack_provenance: string | null, prompt_version: string | null, chain_id: string | null, 
+export type FindingWithDiff = { diff_status: FindingDiffStatus, id: string, run_id: string, repo: string, path: string, line: number | null, cap: string, rule: string, severity: string, status: string, finding_origin: string, first_seen: number, last_seen: number, superseded_by: string | null, triage_state: string, triage_assigned_to: string | null, verdict_blob: string | null, repro_path: string | null, attack_provenance: string | null, prompt_version: string | null, chain_id: string | null,
 /**
  * Back-link to `harness_specs.id` populated by SpecDerivation.
  * `None` for static-pass rows that never went through the AI

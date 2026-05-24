@@ -49,10 +49,11 @@ use nyctos_types::{
         VerifiedVulnerabilityRecord,
     },
     project::{
+        AuthSetupRequest, AuthSetupResponse, AuthSetupVerification, AuthSetupVerificationStatus,
         CreateProjectRequest, PatchProjectRequest, ProjectAuthAssertion, ProjectAuthAssertionKind,
-        ProjectAuthHeaderRef, ProjectAuthMode, ProjectAuthProfile, ProjectOtpSourceConfig,
-        ProjectOtpSourceKind, ProjectRecord, ProjectRuntimeCommand, ProjectRuntimeEnvVar,
-        ProjectRuntimeProfile,
+        ProjectAuthHeaderRef, ProjectAuthMode, ProjectAuthOwnedObject, ProjectAuthProfile,
+        ProjectOtpSourceConfig, ProjectOtpSourceKind, ProjectRecord, ProjectRuntimeCommand,
+        ProjectRuntimeEnvVar, ProjectRuntimeProfile,
     },
     repo::{
         CreateRepoRequest, GitAuth, PatchRepoRequest, Repo, RepoRecord, RepoSource,
@@ -170,8 +171,13 @@ fn render() -> String {
         decl_of::<ProjectOtpSourceConfig>(),
         decl_of::<ProjectAuthAssertionKind>(),
         decl_of::<ProjectAuthAssertion>(),
+        decl_of::<ProjectAuthOwnedObject>(),
         decl_of::<ProjectAuthProfile>(),
         decl_of::<ProjectRuntimeProfile>(),
+        decl_of::<AuthSetupRequest>(),
+        decl_of::<AuthSetupVerificationStatus>(),
+        decl_of::<AuthSetupVerification>(),
+        decl_of::<AuthSetupResponse>(),
         decl_of::<LaunchStep>(),
         decl_of::<LaunchHealthCheck>(),
         decl_of::<LaunchEnvRef>(),
@@ -218,7 +224,7 @@ fn render() -> String {
     let decl_count = decls.len();
     for (idx, decl) in decls.into_iter().enumerate() {
         out.push_str("export ");
-        out.push_str(&decl);
+        out.push_str(&trim_trailing_line_whitespace(&decl));
         if !decl.ends_with('\n') {
             out.push('\n');
         }
@@ -231,4 +237,15 @@ fn render() -> String {
 
 fn decl_of<T: TS>() -> String {
     <T as TS>::decl(&Config::default())
+}
+
+fn trim_trailing_line_whitespace(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for segment in input.split_inclusive('\n') {
+        let (line, newline) =
+            segment.strip_suffix('\n').map(|line| (line, "\n")).unwrap_or((segment, ""));
+        out.push_str(line.trim_end_matches([' ', '\t']));
+        out.push_str(newline);
+    }
+    out
 }

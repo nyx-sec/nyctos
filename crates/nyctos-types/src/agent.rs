@@ -9,9 +9,11 @@
 //! All types derive `ts_rs::TS` so the frontend consumes them directly
 //! through the `build.rs`-generated bindings.
 
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use thiserror::Error;
 use ts_rs::TS;
+
+use crate::project::{ProjectAuthMode, ProjectAuthProfile};
 
 /// Single-turn prompt envelope. The `prompt_version` field is the only
 /// load-bearing constant - every adapter persists it alongside any
@@ -256,6 +258,13 @@ pub enum ExtractedAgentResult {
     /// Free-form exploration trace event. Captures anything the agent
     /// surfaced that does not fit a more specific variant.
     ExplorationEvent { message: String },
+    /// Auth setup output: one secret-safe auth profile generated after
+    /// inspecting the target repository.
+    AuthProfileDiscovered { profile: ProjectAuthProfile, rationale: String },
+    /// Auth setup output: the agent's self-check after comparing the
+    /// generated profiles back to the repository's auth routes and
+    /// session flow.
+    AuthSetupVerification { status: String, checks: Vec<String>, warnings: Vec<String> },
 }
 
 /// Classify a tool-use block emitted by an agent-loop adapter into a
@@ -314,10 +323,91 @@ pub fn classify_tool_use(name: &str, input: &serde_json::Value) -> Option<Extrac
                 suggested_payload_hint,
             })
         }
+        "record_auth_profile" => {
+            let profile = auth_profile_from_tool_input(input)?;
+            let rationale = optional_string(input, "rationale")
+                .unwrap_or_else(|| "repo auth profile".to_string());
+            Some(ExtractedAgentResult::AuthProfileDiscovered { profile, rationale })
+        }
+        "record_auth_verification" => {
+            let status =
+                optional_string(input, "status").unwrap_or_else(|| "needs_review".to_string());
+            let checks = string_array(input, "checks");
+            let warnings = string_array(input, "warnings");
+            Some(ExtractedAgentResult::AuthSetupVerification { status, checks, warnings })
+        }
         _ => Some(ExtractedAgentResult::ExplorationEvent {
             message: format!("tool {name} input={input}"),
         }),
     }
+}
+
+fn auth_profile_from_tool_input(input: &serde_json::Value) -> Option<ProjectAuthProfile> {
+    if let Some(profile) = input.get("profile") {
+        let mut parsed: ProjectAuthProfile = serde_json::from_value(profile.clone()).ok()?;
+        parsed.role = parsed.role.trim().to_string();
+        if parsed.role.is_empty() || parsed.role.eq_ignore_ascii_case("anonymous") {
+            return None;
+        }
+        return Some(parsed);
+    }
+
+    let role = optional_string(input, "role")?;
+    if role.is_empty() || role.eq_ignore_ascii_case("anonymous") {
+        return None;
+    }
+    let mode = parse_field(input, "mode").unwrap_or(ProjectAuthMode::AiAuto);
+    Some(ProjectAuthProfile {
+        role,
+        mode,
+        label: optional_string(input, "label"),
+        session_cache_ttl_seconds: input.get("session_cache_ttl_seconds").and_then(|v| v.as_u64()),
+        session_import_path: optional_string(input, "session_import_path"),
+        login_url: optional_string(input, "login_url"),
+        username: optional_string(input, "username"),
+        username_env: optional_string(input, "username_env"),
+        login_email_env: optional_string(input, "login_email_env"),
+        password_env: optional_string(input, "password_env"),
+        password_secret_ref: optional_string(input, "password_secret_ref"),
+        cookie_env: optional_string(input, "cookie_env"),
+        bearer_token_env: optional_string(input, "bearer_token_env"),
+        headers: parse_vec(input, "headers"),
+        otp_source: parse_field(input, "otp_source"),
+        post_login_assertions: parse_vec(input, "post_login_assertions"),
+        post_login_assertion: optional_string(input, "post_login_assertion"),
+        custom_command: optional_string(input, "custom_command"),
+        owned_objects: parse_vec(input, "owned_objects"),
+    })
+}
+
+fn optional_string(input: &serde_json::Value, field: &str) -> Option<String> {
+    let value = input.get(field)?.as_str()?.trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+fn string_array(input: &serde_json::Value, field: &str) -> Vec<String> {
+    input
+        .get(field)
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn parse_vec<T: DeserializeOwned>(input: &serde_json::Value, field: &str) -> Vec<T> {
+    input.get(field).cloned().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default()
+}
+
+fn parse_field<T: DeserializeOwned>(input: &serde_json::Value, field: &str) -> Option<T> {
+    input.get(field).cloned().and_then(|v| serde_json::from_value(v).ok())
 }
 
 /// Reason the adapter halted a task. Surfaced both on the event bus

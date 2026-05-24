@@ -3,6 +3,7 @@
   --bg-secondary: #f2f0ea;
   --bg-tertiary: #ebe7dc;
   --surface: #ffffff;
+  --surface-subtle: #fbfaf7;
   --bg-hover: #f2f0ea;
   --text: #0d0c0a;
   --text-secondary: #3c3830;
@@ -110,7 +111,7 @@
   --header-bg: rgba(249, 248, 244, 0.84);
 
   --shadow-sm: 0 1px 3px rgba(13, 12, 10, 0.07);
-  --shadow-md: 0 4px 14px rgba(13, 12, 10, 0.09);
+  --shadow-md: 0 8px 24px rgba(13, 12, 10, 0.08);
   --shadow-lg: 0 20px 56px rgba(13, 12, 10, 0.13);
   --focus-ring: 0 0 0 2px var(--accent-light), 0 0 0 4px rgba(11, 61, 42, 0.25);
   --transition-fast: 100ms ease;

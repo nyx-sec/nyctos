@@ -2,12 +2,13 @@ use std::collections::BTreeMap;
 
 use nyctos_core::store::PentestCandidateRecord;
 use nyctos_types::live_plan::{
-    BrowserOracle, BrowserStep, BrowserWorkflowPlan, DifferentialHttpPlan, DifferentialOracle,
-    HttpOracle, LiveHttpRequest, LiveTestPlan, NoPlanReason, NoPlanReasonCode, SingleHttpPlan,
+    AuthzObjectOwnershipPlan, AuthzOracle, AuthzOwnedObject, BrowserOracle, BrowserStep,
+    BrowserWorkflowPlan, DifferentialHttpPlan, DifferentialOracle, HttpOracle, LiveHttpRequest,
+    LiveTestPlan, NoPlanReason, NoPlanReasonCode, SingleHttpPlan,
 };
 use nyctos_types::payload::{ContextualPayload, PayloadTransport};
 use nyctos_types::product::{ApiClientCallModel, RouteModel, RouteModelEndpoint};
-use nyctos_types::project::ProjectAuthProfile;
+use nyctos_types::project::{ProjectAuthOwnedObject, ProjectAuthProfile};
 use regex::Regex;
 
 use crate::pentest_tools;
@@ -185,7 +186,11 @@ impl<'a> LiveTestPlanSynthesizer<'a> {
     ) -> LiveTestPlan {
         let Some(endpoint) = endpoints
             .iter()
-            .find(|endpoint| endpoint.url.chars().any(|c| c.is_ascii_digit()))
+            .find(|endpoint| {
+                endpoint.path.contains(':')
+                    || endpoint.path.contains('{')
+                    || object_id_from_endpoint(endpoint).is_some()
+            })
             .or_else(|| endpoints.first())
         else {
             return self.no_plan(
@@ -194,13 +199,6 @@ impl<'a> LiveTestPlanSynthesizer<'a> {
                 "IDOR verification needs an inferred object endpoint",
             );
         };
-        if endpoint.path.contains(':') || endpoint.path.contains('{') {
-            return self.no_plan(
-                candidate,
-                NoPlanReasonCode::MissingSeedData,
-                "IDOR route has an object parameter but no concrete user A object id was discovered",
-            );
-        }
         let Some(user_a) =
             role_matching(self.ctx.auth_profiles, &["user_a", "alice", "member_a", "user"])
         else {
@@ -218,19 +216,33 @@ impl<'a> LiveTestPlanSynthesizer<'a> {
                 "IDOR verification needs a second forbidden user auth profile",
             );
         };
-        let allowed = request_for_endpoint(endpoint, &user_a);
-        let forbidden = request_for_endpoint(endpoint, &user_b);
-        LiveTestPlan::DifferentialHttp(DifferentialHttpPlan {
+        let Some((object_endpoint, object)) =
+            concrete_authz_object_endpoint(self.ctx.auth_profiles, &user_a, endpoint)
+        else {
+            return self.no_plan(
+                candidate,
+                NoPlanReasonCode::MissingSeedData,
+                "IDOR route has an object parameter but no configured user A owned object id was discovered",
+            );
+        };
+        let mut markers = sensitive_markers(candidate, &object_endpoint);
+        markers.extend(object.positive_markers.clone());
+        if let Some(id) = object.id.clone() {
+            markers.push(id);
+        }
+        markers.sort();
+        markers.dedup();
+        let owner_request = request_for_endpoint(&object_endpoint, &user_a);
+        let accessor_request = request_for_endpoint(&object_endpoint, &user_b);
+        LiveTestPlan::AuthzObjectOwnership(AuthzObjectOwnershipPlan {
             hypothesis: Some(candidate.hypothesis.clone()),
-            steps: vec![allowed.clone(), forbidden],
-            benign_steps: vec![allowed],
-            oracle: DifferentialOracle {
-                oracle_type: "forbidden_equivalence_break".to_string(),
-                expected_allowed_step: 0,
-                expected_forbidden_step: 1,
-                forbidden_status: vec![401, 403, 404],
-                sensitive_body_markers: sensitive_markers(candidate, endpoint),
-            },
+            object,
+            accessor_role: user_b,
+            seed_steps: Vec::new(),
+            owner_request,
+            accessor_request,
+            benign_steps: Vec::new(),
+            oracle: AuthzOracle::object_ownership(markers),
             why_this_confirms: Some(
                 "User A can access the object and user B unexpectedly receives the same sensitive object markers.".to_string(),
             ),
@@ -870,6 +882,137 @@ fn request_for_endpoint(endpoint: &EndpointCandidate, role: &str) -> LiveHttpReq
     }
 }
 
+fn concrete_authz_object_endpoint(
+    profiles: &[ProjectAuthProfile],
+    owner_role: &str,
+    endpoint: &EndpointCandidate,
+) -> Option<(EndpointCandidate, AuthzOwnedObject)> {
+    if let Some(owned) = configured_owned_object_for_endpoint(profiles, owner_role, endpoint) {
+        let object_id = owned.id.trim();
+        if object_id.is_empty() {
+            return None;
+        }
+        let mut object_endpoint = endpoint.clone();
+        object_endpoint.path = path_with_first_param_value(&endpoint.path, object_id);
+        object_endpoint.url = replace_path_in_url(&endpoint.url, &object_endpoint.path)
+            .unwrap_or_else(|| endpoint.url.clone());
+        let mut markers = Vec::new();
+        if let Some(marker) = owned.marker.as_deref().filter(|s| !s.trim().is_empty()) {
+            markers.push(marker.to_string());
+        }
+        markers.push(object_id.to_string());
+        return Some((
+            object_endpoint,
+            AuthzOwnedObject {
+                name: owned.name.clone(),
+                owner_role: owner_role.to_string(),
+                id: Some(object_id.to_string()),
+                id_var: Some("object_id".to_string()),
+                route: owned.route.clone(),
+                positive_markers: markers,
+            },
+        ));
+    }
+
+    if endpoint.path.contains(':') || endpoint.path.contains('{') {
+        return None;
+    }
+    let id = object_id_from_endpoint(endpoint);
+    let mut markers = Vec::new();
+    if let Some(id) = id.clone() {
+        markers.push(id);
+    }
+    Some((
+        endpoint.clone(),
+        AuthzOwnedObject {
+            name: object_name_from_path(&endpoint.path),
+            owner_role: owner_role.to_string(),
+            id,
+            id_var: Some("object_id".to_string()),
+            route: Some(endpoint.path.clone()),
+            positive_markers: markers,
+        },
+    ))
+}
+
+fn configured_owned_object_for_endpoint<'a>(
+    profiles: &'a [ProjectAuthProfile],
+    owner_role: &str,
+    endpoint: &EndpointCandidate,
+) -> Option<&'a ProjectAuthOwnedObject> {
+    let profile = profiles.iter().find(|profile| profile.role == owner_role)?;
+    profile
+        .owned_objects
+        .iter()
+        .find(|object| {
+            object.route.as_deref().is_some_and(|route| {
+                route_resource_key(route) == route_resource_key(&endpoint.path)
+            })
+        })
+        .or_else(|| profile.owned_objects.first())
+}
+
+fn route_resource_key(path: &str) -> String {
+    path.split('/')
+        .filter(|part| {
+            !part.is_empty()
+                && !part.starts_with(':')
+                && !(part.starts_with('{') && part.ends_with('}'))
+        })
+        .map(str::to_ascii_lowercase)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn path_with_first_param_value(path: &str, value: &str) -> String {
+    path.split('/')
+        .map(|part| {
+            if part.starts_with(':') || (part.starts_with('{') && part.ends_with('}')) {
+                value.to_string()
+            } else {
+                part.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn replace_path_in_url(url: &str, path: &str) -> Option<String> {
+    let parsed = reqwest::Url::parse(url).ok()?;
+    let host = parsed.host_str()?;
+    let port = parsed.port().map(|port| format!(":{port}")).unwrap_or_default();
+    Some(format!(
+        "{}://{}{}{}",
+        parsed.scheme(),
+        host,
+        port,
+        if path.starts_with('/') { path.to_string() } else { format!("/{path}") }
+    ))
+}
+
+fn object_id_from_endpoint(endpoint: &EndpointCandidate) -> Option<String> {
+    endpoint
+        .path
+        .split('/')
+        .rev()
+        .find(|part| part.chars().any(|ch| ch.is_ascii_digit()))
+        .map(str::to_string)
+}
+
+fn object_name_from_path(path: &str) -> String {
+    path.split('/')
+        .filter(|part| !part.is_empty())
+        .rev()
+        .find(|part| {
+            !part.chars().any(|ch| ch.is_ascii_digit())
+                && !part.starts_with(':')
+                && !(part.starts_with('{') && part.ends_with('}'))
+        })
+        .unwrap_or("object")
+        .trim_matches(['{', '}', ':'])
+        .to_string()
+}
+
 fn sensitive_markers(
     candidate: &PentestCandidateRecord,
     endpoint: &EndpointCandidate,
@@ -1145,6 +1288,33 @@ mod tests {
         }
     }
 
+    fn auth_profile_with_object(
+        role: &str,
+        object: Option<ProjectAuthOwnedObject>,
+    ) -> ProjectAuthProfile {
+        ProjectAuthProfile {
+            role: role.to_string(),
+            mode: nyctos_types::project::ProjectAuthMode::HeaderInjection,
+            label: None,
+            session_cache_ttl_seconds: None,
+            session_import_path: None,
+            login_url: None,
+            username: None,
+            username_env: None,
+            login_email_env: None,
+            password_env: None,
+            password_secret_ref: None,
+            cookie_env: None,
+            bearer_token_env: None,
+            headers: Vec::new(),
+            otp_source: None,
+            post_login_assertions: Vec::new(),
+            post_login_assertion: None,
+            custom_command: None,
+            owned_objects: object.into_iter().collect(),
+        }
+    }
+
     #[test]
     fn infers_admin_endpoint_from_handler_path() {
         let targets = vec!["http://localhost:3000".to_string()];
@@ -1340,6 +1510,66 @@ mod tests {
         let plan = synth.synthesize(&candidate);
 
         assert_eq!(plan.no_plan_reason().unwrap().code, NoPlanReasonCode::AuthMissing);
+    }
+
+    #[test]
+    fn idor_with_configured_owned_object_becomes_authz_object_plan() {
+        let model = RouteModel {
+            backend_routes: vec![RouteModelEndpoint {
+                method: "GET".to_string(),
+                path: "/api/projects/{id}".to_string(),
+                repo: Some("app".to_string()),
+                handler_file: Some("src/routes/projects.rs".to_string()),
+                line: Some(42),
+                params: vec!["id".to_string()],
+                middleware: Vec::new(),
+                auth_checks: Vec::new(),
+                role_checks: Vec::new(),
+                body_fields: Vec::new(),
+                state_changing: false,
+                confidence: 0.9,
+                evidence: Vec::new(),
+            }],
+            ..RouteModel::default()
+        };
+        let targets = vec!["http://localhost:3000".to_string()];
+        let owner_object = ProjectAuthOwnedObject {
+            name: "project".to_string(),
+            id: "proj-user-a-1".to_string(),
+            route: Some("/api/projects/{id}".to_string()),
+            marker: Some("nyctos-owned-project".to_string()),
+        };
+        let auth = vec![
+            auth_profile_with_object("user_a", Some(owner_object)),
+            auth_profile_with_object("user_b", None),
+        ];
+        let synth = LiveTestPlanSynthesizer::new(LiveTestPlanSynthesisContext {
+            route_model: Some(&model),
+            target_urls: &targets,
+            auth_profiles: &auth,
+            browser_checks_enabled: false,
+            allow_state_changing: false,
+        });
+        let candidate = candidate(
+            "IDOR",
+            "src/routes/projects.rs",
+            "Project detail route may not enforce object ownership",
+        );
+
+        let plan = synth.synthesize(&candidate);
+
+        match plan {
+            LiveTestPlan::AuthzObjectOwnership(plan) => {
+                assert_eq!(plan.object.owner_role, "user_a");
+                assert_eq!(plan.accessor_role, "user_b");
+                assert_eq!(
+                    plan.owner_request.url,
+                    "http://localhost:3000/api/projects/proj-user-a-1"
+                );
+                assert!(plan.oracle.positive_markers.iter().any(|m| m == "nyctos-owned-project"));
+            }
+            other => panic!("expected authz object ownership plan, got {other:?}"),
+        }
     }
 
     #[test]

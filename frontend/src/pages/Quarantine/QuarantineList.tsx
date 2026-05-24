@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useParams } from "react-router-dom";
 import {
   type QuarantineItem,
   useDismissQuarantine,
@@ -10,7 +11,9 @@ import { Badge, type BadgeTone } from "@/components/Badge";
 import { Button } from "@/components/Button";
 import { Card } from "@/components/Card";
 import { EmptyState } from "@/components/EmptyState";
+import { PageHeader, PageShell } from "@/components/Page";
 import { Spinner } from "@/components/Spinner";
+import { useToast } from "@/components/Toast";
 
 const KIND_TONE: Record<QuarantineItem["kind"], BadgeTone> = {
   finding: "warning",
@@ -29,10 +32,11 @@ const KIND_LABEL: Record<QuarantineItem["kind"], string> = {
  * the row into the regular Findings table.
  */
 export function QuarantineList() {
-  const query = useQuarantine();
+  const { projectId } = useParams<{ projectId?: string }>();
+  const query = useQuarantine(projectId);
   const promote = usePromoteQuarantine();
   const dismiss = useDismissQuarantine();
-  const [banner, setBanner] = useState<string | null>(null);
+  const { showToast } = useToast();
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const rows = query.data ?? [];
@@ -43,12 +47,12 @@ export function QuarantineList() {
   }, [rows]);
 
   async function onPromote(item: QuarantineItem) {
-    setBanner(`Promoting ${shortId(item.id)}…`);
+    showToast(`Promoting ${shortId(item.id)}...`, { tone: "info" });
     try {
       await promote.mutateAsync(item.id);
-      setBanner(`Promoted ${shortId(item.id)} into findings.`);
+      showToast(`Promoted ${shortId(item.id)} into findings.`, { tone: "success" });
     } catch (err) {
-      setBanner(`Promote failed for ${shortId(item.id)}: ${String(err)}`);
+      showToast(`Promote failed for ${shortId(item.id)}: ${String(err)}`, { tone: "danger" });
     }
   }
 
@@ -60,13 +64,13 @@ export function QuarantineList() {
     ) {
       return;
     }
-    setBanner(`Dismissing ${shortId(item.id)}…`);
+    showToast(`Dismissing ${shortId(item.id)}...`, { tone: "info" });
     try {
       await dismiss.mutateAsync(item.id);
-      setBanner(`Dismissed ${shortId(item.id)}.`);
+      showToast(`Dismissed ${shortId(item.id)}.`, { tone: "success" });
       if (selectedId === item.id) setSelectedId(null);
     } catch (err) {
-      setBanner(`Dismiss failed for ${shortId(item.id)}: ${String(err)}`);
+      showToast(`Dismiss failed for ${shortId(item.id)}: ${String(err)}`, { tone: "danger" });
     }
   }
 
@@ -76,20 +80,18 @@ export function QuarantineList() {
     : `${counts.findings + counts.candidates} awaiting review`;
 
   return (
-    <div className="quarantine-page">
-      <div className="page-toolbar">
-        <p className="page-toolbar__meta">{countLabel}</p>
-        <Button onClick={() => query.refetch()} disabled={query.isPending}>
-          Refresh
-        </Button>
-      </div>
+    <PageShell size="wide" className="quarantine-page">
+      <PageHeader
+        title="Candidate Queue"
+        meta={countLabel}
+        actions={
+          <Button onClick={() => query.refetch()} disabled={query.isPending}>
+            Refresh
+          </Button>
+        }
+      />
 
       <Card className="quarantine-page__list">
-        {banner && (
-          <p className="quarantine-page__banner" role="status">
-            {banner}
-          </p>
-        )}
         {query.isPending && (
           <div className="quarantine-page__pending">
             <Spinner /> Loading quarantine...
@@ -100,15 +102,10 @@ export function QuarantineList() {
             Failed to load quarantine: {String(query.error)}
           </p>
         )}
-        {!query.isPending && rows.length === 0 && (
-          <EmptyState
-            title="Nothing in quarantine"
-            body="Unconfirmed findings will appear here when a scan needs manual review."
-          />
-        )}
+        {!query.isPending && rows.length === 0 && <EmptyState title="Nothing in quarantine" />}
         {rows.length > 0 && (
           <div className="table-scroll">
-            <table className="quarantine-page__table">
+            <table className="quarantine-page__table data-table">
               <thead>
                 <tr>
                   <th scope="col">Kind</th>
@@ -168,16 +165,12 @@ export function QuarantineList() {
         )}
       </Card>
 
-      <aside className="quarantine-page__side">
-        {selected ? (
+      {selected && (
+        <aside className="quarantine-page__side">
           <QuarantineDetail item={selected} onClose={() => setSelectedId(null)} />
-        ) : (
-          <Card title="Trace viewer">
-            <p className="quarantine-page__hint">Select a row above to inspect the scan trace.</p>
-          </Card>
-        )}
-      </aside>
-    </div>
+        </aside>
+      )}
+    </PageShell>
   );
 }
 

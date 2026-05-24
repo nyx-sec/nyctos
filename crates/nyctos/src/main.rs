@@ -33,6 +33,7 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 
 mod ai_pipeline;
 mod auth_sessions;
+mod auth_setup_ai;
 mod banner;
 mod business_logic_templates;
 mod candidate_sources;
@@ -1849,8 +1850,13 @@ async fn serve(
     let auth_config = AuthConfig::new(auth_token.clone());
 
     let ui_bootstrap = Arc::new(nyctos_ui::UiBootstrap { auth_token: auth_token.clone() });
+    let auth_setup_agent = Arc::new(auth_setup_ai::ConfiguredAuthSetupAgent::new(
+        setup.config.clone(),
+        events_tx.clone(),
+    ));
     let mut server_state =
         ServerState::new(store.clone(), events_tx.clone(), trigger.clone(), setup, auth_config)
+            .with_auth_setup_agent(auth_setup_agent)
             .with_state_repos_dir(state_dir.repos())
             .with_state_bundles_dir(state_dir.bundles())
             .with_state_logs_dir(state_dir.logs());
@@ -3559,6 +3565,12 @@ fn candidate_has_runnable_test_plan(
 }
 
 fn verification_attempt_method(request: Option<&serde_json::Value>) -> String {
+    if matches!(
+        request.and_then(|v| v.get("kind")).and_then(|v| v.as_str()),
+        Some("authz_browser_role_comparison") | Some("browser_role_comparison")
+    ) {
+        return "authz_browser_role_comparison".to_string();
+    }
     if let Some(tool) = request
         .and_then(|v| v.get("policy_audit"))
         .and_then(|v| v.as_array())
@@ -3574,6 +3586,15 @@ fn verification_attempt_method(request: Option<&serde_json::Value>) -> String {
         Some("browser") | Some("browser_workflow") => "browser".to_string(),
         Some("http_workflow") | Some("multi_step_http") => "http_workflow".to_string(),
         Some("differential_http") => "differential_http".to_string(),
+        Some("authz_role_comparison") | Some("role_comparison") => {
+            "authz_role_comparison".to_string()
+        }
+        Some("authz_object_ownership") | Some("object_ownership") => {
+            "authz_object_ownership".to_string()
+        }
+        Some("authz_browser_role_comparison") | Some("browser_role_comparison") => {
+            "authz_browser_role_comparison".to_string()
+        }
         Some("single_http") | Some("http") => "http".to_string(),
         Some(other) => other.to_string(),
         None => "http".to_string(),

@@ -706,7 +706,11 @@ fn render_task_markdown(task: &AgentTask) -> String {
          \n\
          ## Objective\n{objective}\n\
          \n\
-         ## Tools available\n{tools}\n",
+         ## Tools available\n{tools}\n\
+         \n\
+         When you need to record a structured Nyctos artifact, emit a JSON object on its own line \
+         using this shape: {{\"tool\":\"<listed tool name>\",\"input\":{{...}}}}. Use one of the \
+         listed `record_*` tool names as the `tool` value and place its arguments in `input`.\n",
         pv = task.prompt_version,
         tid = task.task_id,
         working_directory = working_directory,

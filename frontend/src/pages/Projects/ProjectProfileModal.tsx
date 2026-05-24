@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import type { ProjectRecord } from "@/api/client";
-import { usePatchDefaultLaunchProfile } from "@/api/client";
+import { usePatchDefaultLaunchProfile, usePatchProject } from "@/api/client";
 import { Button } from "@/components/Button";
 import { Spinner } from "@/components/Spinner";
 import {
@@ -9,6 +9,8 @@ import {
   launchProfileToDraft,
   ProjectRuntimeProfileForm,
   type RuntimeProfileDraft,
+  runtimeProfileFromDraft,
+  runtimeProfileToDraft,
 } from "./ProjectRuntimeProfileForm";
 
 interface Props {
@@ -19,10 +21,8 @@ interface Props {
 
 export function ProjectProfileModal({ project, onClose, onSaved }: Props) {
   const patchProfile = usePatchDefaultLaunchProfile(project.id);
-  const initialDraft = useMemo(
-    () => launchProfileToDraft(project.default_launch_profile, project.target_base_url ?? ""),
-    [project.default_launch_profile, project.target_base_url],
-  );
+  const patchProject = usePatchProject();
+  const initialDraft = useMemo(() => profileDraftFromProject(project), [project]);
   const [draft, setDraft] = useState<RuntimeProfileDraft>(initialDraft);
   const [error, setError] = useState<string | null>(null);
 
@@ -38,13 +38,18 @@ export function ProjectProfileModal({ project, onClose, onSaved }: Props) {
       return;
     }
     const launchProfile = launchProfileFromDraft(draft);
+    const runtimeProfile = runtimeProfileFromDraft(draft);
     if (!launchProfile) {
       setError("Add an app URL before saving the launch profile.");
       return;
     }
     try {
       await patchProfile.mutateAsync(launchProfile);
-      onSaved(project);
+      const updated = await patchProject.mutateAsync({
+        id: project.id,
+        patch: { runtime_profile: runtimeProfile ?? null },
+      });
+      onSaved(updated);
     } catch (err) {
       setError(String(err));
     }
@@ -71,7 +76,7 @@ export function ProjectProfileModal({ project, onClose, onSaved }: Props) {
         </header>
 
         <div className="modal__body">
-          <ProjectRuntimeProfileForm value={draft} onChange={setDraft} />
+          <ProjectRuntimeProfileForm value={draft} onChange={setDraft} projectId={project.id} />
           {error && (
             <p className="repo-add__error" role="alert">
               {error}
@@ -87,12 +92,22 @@ export function ProjectProfileModal({ project, onClose, onSaved }: Props) {
             type="button"
             variant="primary"
             onClick={onSubmit}
-            disabled={patchProfile.isPending}
+            disabled={patchProfile.isPending || patchProject.isPending}
           >
-            {patchProfile.isPending ? <Spinner /> : "Save profile"}
+            {patchProfile.isPending || patchProject.isPending ? <Spinner /> : "Save profile"}
           </Button>
         </footer>
       </div>
     </div>
   );
+}
+
+function profileDraftFromProject(project: ProjectRecord): RuntimeProfileDraft {
+  const draft = launchProfileToDraft(project.default_launch_profile, project.target_base_url ?? "");
+  const runtimeDraft = runtimeProfileToDraft(
+    project.runtime_profile,
+    project.target_base_url ?? "",
+  );
+  draft.auth_profiles = runtimeDraft.auth_profiles;
+  return draft;
 }

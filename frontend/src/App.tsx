@@ -63,6 +63,22 @@ export function App() {
         <Route path="/projects/:projectId/runs" element={<RunList />} />
         <Route path="/projects/:projectId/runs/:runId" element={<LiveScanView />} />
         <Route path="/projects/:projectId/vulnerabilities" element={<VulnerabilityList />} />
+        <Route
+          path="/projects/:projectId/findings"
+          element={advanced ? <FindingList /> : <Navigate to="/settings" replace />}
+        />
+        <Route
+          path="/projects/:projectId/chains"
+          element={advanced ? <ChainList /> : <Navigate to="/settings" replace />}
+        />
+        <Route
+          path="/projects/:projectId/chains/:chainId"
+          element={advanced ? <ChainDetail /> : <Navigate to="/settings" replace />}
+        />
+        <Route
+          path="/projects/:projectId/quarantine"
+          element={advanced ? <QuarantineList /> : <Navigate to="/settings" replace />}
+        />
         <Route path="/runs" element={<RunList />} />
         <Route path="/runs/:runId" element={<LiveScanView />} />
         <Route path="/vulnerabilities" element={<VulnerabilityList />} />

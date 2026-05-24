@@ -16,32 +16,32 @@ const CHOICES: { value: SandboxBackendChoice; label: string; body: string }[] = 
   {
     value: "auto",
     label: "Auto",
-    body: "Pick the strongest backend available on this host at scan time.",
+    body: "Choose at scan time.",
   },
   {
     value: "process",
     label: "Process",
-    body: "No kernel isolation. Static-pass only. Works everywhere.",
+    body: "No kernel isolation.",
   },
   {
     value: "birdcage",
     label: "Birdcage (macOS Seatbelt)",
-    body: "macOS only. Sandboxed scan process with a curated Seatbelt profile.",
+    body: "macOS Seatbelt.",
   },
   {
     value: "libkrun",
     label: "libkrun microVM",
-    body: "Linux only. Lightweight KVM-backed microVM.",
+    body: "Linux microVM.",
   },
   {
     value: "firecracker",
     label: "Firecracker microVM",
-    body: "Linux only. AWS Firecracker microVM.",
+    body: "Linux microVM.",
   },
   {
     value: "docker",
     label: "Docker container",
-    body: "Cross-platform. Requires a running docker daemon.",
+    body: "Container sandbox.",
   },
 ];
 
@@ -56,10 +56,7 @@ export function SandboxStep({
   return (
     <div className="setup-step__body">
       <h3>Pick a sandbox backend</h3>
-      <p>
-        The sandbox isolates dynamic / repro runs from the host. The static pass runs in-process
-        regardless of backend choice.
-      </p>
+      <p>Used for dynamic verification and repro runs.</p>
       <div className="setup-choices">
         {CHOICES.map((choice) => (
           <label
@@ -93,10 +90,7 @@ export function SandboxStep({
           </p>
         )}
         {doctorChecks.length === 0 ? (
-          <p className="setup-hint">
-            Run the checks to verify that the runtime + backend you picked are usable on this host
-            before committing the config.
-          </p>
+          <p className="setup-hint">Run checks before saving.</p>
         ) : (
           <ul className="setup-doctor__list">
             {doctorChecks.map((check) => (

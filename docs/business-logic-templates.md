@@ -138,6 +138,60 @@ object id, and asks whether the second role can read the first role's
 object. Confirmation requires the forbidden-role response to contain
 the seeded marker.
 
+First-class IDOR/authz plans can also describe the ownership boundary
+directly. This shape runs the owner request and peer request through
+separate named sessions and verifies only when both live responses carry
+the same object-specific marker:
+
+```json
+{
+  "kind": "authz_object_ownership",
+  "object": {
+    "name": "project",
+    "owner_role": "user_a",
+    "id": "proj-user-a-1",
+    "route": "/api/projects/{id}",
+    "positive_markers": ["nyctos-user-a-project", "proj-user-a-1"]
+  },
+  "accessor_role": "user_b",
+  "owner_request": {
+    "method": "GET",
+    "path": "/api/projects/{{object_id}}"
+  },
+  "accessor_request": {
+    "method": "GET",
+    "path": "/api/projects/{{object_id}}"
+  },
+  "oracle": {
+    "type": "object_ownership_break",
+    "forbidden_status": [401, 403, 404],
+    "positive_markers": ["nyctos-user-a-project", "proj-user-a-1"]
+  }
+}
+```
+
+For UI-only authorization boundaries, the live verifier can compare the
+same browser workflow under two roles. The workflow below verifies only
+when both `admin` and `user` sessions render the same positive admin UI
+marker:
+
+```json
+{
+  "kind": "authz_browser_role_comparison",
+  "allowed_role": "admin",
+  "challenged_role": "user",
+  "workflow": {
+    "url": "/app/admin",
+    "steps": [
+      {"action": "wait_for_selector", "selector": "main"}
+    ],
+    "oracle": {
+      "text_contains": "Admin Console"
+    }
+  }
+}
+```
+
 ```json
 {
   "kind": "http_workflow",

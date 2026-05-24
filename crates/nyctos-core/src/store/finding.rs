@@ -112,6 +112,7 @@ pub fn finding_id_hash(repo: &str, path: &str, line: Option<i64>, cap: &str, rul
 /// without cloning.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct FindingFilter<'a> {
+    pub project_id: Option<&'a str>,
     pub repo: Option<&'a str>,
     pub run_id: Option<&'a str>,
     pub cap: Option<&'a str>,
@@ -323,6 +324,12 @@ impl<'a> FindingStore<'a> {
         if !filter.include_quarantine {
             push_clause(&mut qb);
             qb.push("status != 'Quarantine'");
+        }
+        if let Some(project_id) = filter.project_id {
+            push_clause(&mut qb);
+            qb.push("run_id IN (SELECT id FROM runs WHERE project_id = ")
+                .push_bind(project_id.to_string())
+                .push(")");
         }
         if let Some(repo) = filter.repo {
             push_clause(&mut qb);
@@ -595,7 +602,7 @@ impl<'a> FindingStore<'a> {
 mod tests {
     use super::*;
     use crate::store::testutil::{
-        fresh_store, sample_chain, sample_finding, sample_repo, sample_run,
+        fresh_store, sample_chain, sample_finding, sample_repo, sample_repo_for_project, sample_run,
     };
 
     async fn seed(s: &crate::store::Store) {
@@ -889,6 +896,39 @@ mod tests {
             .expect("origin");
         assert_eq!(by_origin.len(), 1);
         assert_eq!(by_origin[0].id, b.id);
+    }
+
+    #[tokio::test]
+    async fn list_filtered_scopes_by_project() {
+        let (_tmp, s) = fresh_store().await;
+        s.repos().upsert(&sample_repo("repo-1")).await.expect("repo-1");
+        s.projects()
+            .create("project-2", "project-2", None, None, None, 1_000)
+            .await
+            .expect("project-2");
+        s.repos().upsert(&sample_repo_for_project("repo-2", "project-2")).await.expect("repo-2");
+
+        let mut run_1 = sample_run("run-1");
+        run_1.project_id = Some(crate::store::project::DEFAULT_PROJECT_ID.to_string());
+        s.runs().insert(&run_1).await.expect("run-1");
+        let mut run_2 = sample_run("run-2");
+        run_2.project_id = Some("project-2".to_string());
+        s.runs().insert(&run_2).await.expect("run-2");
+
+        let a = sample_finding("run-1", "repo-1", "src/a.rs", "rule-a");
+        let b = sample_finding("run-2", "repo-2", "src/b.rs", "rule-b");
+        s.findings().upsert(&a).await.expect("a");
+        s.findings().upsert(&b).await.expect("b");
+
+        let got = s
+            .findings()
+            .list_filtered(&FindingFilter {
+                project_id: Some(crate::store::project::DEFAULT_PROJECT_ID),
+                ..Default::default()
+            })
+            .await
+            .expect("project filter");
+        assert_eq!(got.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(), vec![a.id.as_str()]);
     }
 
     #[tokio::test]

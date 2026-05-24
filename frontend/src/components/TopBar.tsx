@@ -38,6 +38,10 @@ function projectScopedTitle(pathname: string): string {
   if (/^\/projects\/[^/]+\/runs\/[^/]+/.test(pathname)) return "Pentest Run";
   if (/^\/projects\/[^/]+\/runs/.test(pathname)) return "Pentest Runs";
   if (/^\/projects\/[^/]+\/vulnerabilities/.test(pathname)) return "Vulnerabilities";
+  if (/^\/projects\/[^/]+\/findings/.test(pathname)) return "Legacy Findings";
+  if (/^\/projects\/[^/]+\/chains\/[^/]+/.test(pathname)) return "Chain";
+  if (/^\/projects\/[^/]+\/chains/.test(pathname)) return "Raw Chains";
+  if (/^\/projects\/[^/]+\/quarantine/.test(pathname)) return "Quarantine";
   if (/^\/projects\/[^/]+\/repos/.test(pathname)) return "Repositories";
   if (/^\/projects\/[^/]+\/environments/.test(pathname)) return "Environments";
   if (/^\/projects\/[^/]+\/integrations/.test(pathname)) return "Integrations";

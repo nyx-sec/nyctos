@@ -4,15 +4,17 @@ import { type ProjectRecord, useProjects } from "@/api/client";
 import { Button } from "@/components/Button";
 import { Card } from "@/components/Card";
 import { EmptyState } from "@/components/EmptyState";
+import { PageHeader, PageShell } from "@/components/Page";
 import { Spinner } from "@/components/Spinner";
+import { useToast } from "@/components/Toast";
 import { ProjectAddModal } from "./ProjectAddModal";
 
 export function ProjectList() {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const projects = useProjects();
+  const { showToast } = useToast();
   const [showAdd, setShowAdd] = useState(false);
-  const [banner, setBanner] = useState<string | null>(null);
   const addRequested = params.get("new") === "1";
   const showAddModal = showAdd || addRequested;
 
@@ -24,21 +26,18 @@ export function ProjectList() {
 
   return (
     <>
-      <div className="page-stack">
-        <div className="page-toolbar">
-          <p className="page-toolbar__meta">{projectCount}</p>
-          <Button variant="primary" onClick={() => setShowAdd(true)}>
-            New project
-          </Button>
-        </div>
+      <PageShell>
+        <PageHeader
+          title="Projects"
+          meta={projectCount}
+          actions={
+            <Button variant="primary" onClick={() => setShowAdd(true)}>
+              New project
+            </Button>
+          }
+        />
 
         <Card className="table-card">
-          {banner && (
-            <div className="repo-list__banner" role="status" aria-live="polite">
-              {banner}
-            </div>
-          )}
-
           {projects.isPending && (
             <div className="repo-list__pending">
               <Spinner /> Loading projects...
@@ -51,29 +50,29 @@ export function ProjectList() {
             </p>
           )}
 
-          {noneConfigured && (
-            <EmptyState title="No projects yet" body="Create one project to group related repos." />
-          )}
+          {noneConfigured && <EmptyState title="No projects yet" />}
 
           {rows.length > 0 && (
-            <table className="repo-list__table" aria-label="Configured projects">
-              <thead>
-                <tr>
-                  <th scope="col">Name</th>
-                  <th scope="col">Description</th>
-                  <th scope="col">App URL</th>
-                  <th scope="col">Updated</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((p) => (
-                  <ProjectRow key={p.id} project={p} />
-                ))}
-              </tbody>
-            </table>
+            <div className="table-scroll">
+              <table className="repo-list__table data-table" aria-label="Configured projects">
+                <thead>
+                  <tr>
+                    <th scope="col">Name</th>
+                    <th scope="col">Description</th>
+                    <th scope="col">App URL</th>
+                    <th scope="col">Updated</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((p) => (
+                    <ProjectRow key={p.id} project={p} />
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </Card>
-      </div>
+      </PageShell>
 
       {showAddModal && (
         <ProjectAddModal
@@ -84,7 +83,7 @@ export function ProjectList() {
           onAdded={(project) => {
             setShowAdd(false);
             clearAddParam(params, setParams);
-            setBanner(`Created ${project.name}.`);
+            showToast(`Created ${project.name}.`, { tone: "success" });
             navigate(`/projects/${encodeURIComponent(project.id)}`);
           }}
         />

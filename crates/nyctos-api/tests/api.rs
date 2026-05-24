@@ -15,7 +15,8 @@ use serde_json::Value;
 use tokio::sync::broadcast;
 
 use nyctos_api::{
-    build_router, AuthConfig, ScanTrigger, ScanTriggerError, ScanTriggerSource, ServerState,
+    build_router, AuthConfig, AuthSetupAgent, AuthSetupAgentFuture, AuthSetupAgentOutput,
+    AuthSetupAgentRequest, ScanTrigger, ScanTriggerError, ScanTriggerSource, ServerState,
     SetupContext,
 };
 use nyctos_core::store::{
@@ -25,6 +26,9 @@ use nyctos_core::store::{
 };
 use nyctos_core::{run_event_log_path, Config, SecretStore, Store};
 use nyctos_types::event::{AgentEvent, EventSink, RepoOutcomeTag, ReproEvent, RunEvent};
+use nyctos_types::project::{
+    AuthSetupVerification, AuthSetupVerificationStatus, ProjectAuthMode, ProjectAuthProfile,
+};
 
 struct StubScanTrigger {
     run_id: String,
@@ -73,6 +77,50 @@ impl ScanTrigger for RecordingOverridesTrigger {
     }
 }
 
+struct StubAuthSetupAgent;
+
+impl AuthSetupAgent for StubAuthSetupAgent {
+    fn explore<'a>(&'a self, req: AuthSetupAgentRequest) -> AuthSetupAgentFuture<'a> {
+        Box::pin(async move {
+            assert_eq!(req.static_login_paths, vec!["/api/auth/sign-in".to_string()]);
+            assert!(req.files_inspected > 0);
+            Ok(AuthSetupAgentOutput {
+                profiles: vec![ProjectAuthProfile {
+                    role: "manager".to_string(),
+                    mode: ProjectAuthMode::AiAuto,
+                    label: Some("Repo manager".to_string()),
+                    session_cache_ttl_seconds: None,
+                    session_import_path: None,
+                    login_url: Some("/api/auth/sign-in".to_string()),
+                    username: None,
+                    username_env: Some("NYCTOS_MANAGER_USERNAME".to_string()),
+                    login_email_env: None,
+                    password_env: Some("NYCTOS_MANAGER_PASSWORD".to_string()),
+                    password_secret_ref: None,
+                    cookie_env: None,
+                    bearer_token_env: None,
+                    headers: Vec::new(),
+                    otp_source: None,
+                    post_login_assertions: Vec::new(),
+                    post_login_assertion: None,
+                    custom_command: None,
+                    owned_objects: Vec::new(),
+                }],
+                roles: vec!["manager".to_string()],
+                login_paths: vec!["/api/auth/sign-in".to_string()],
+                object_routes: vec!["/api/workspaces/{id}".to_string()],
+                files_inspected: req.files_inspected,
+                verification: AuthSetupVerification {
+                    status: AuthSetupVerificationStatus::Verified,
+                    checks: vec!["agent matched sign-in route".to_string()],
+                    warnings: Vec::new(),
+                },
+                message: "Auth exploration agent saved 1 repo-specific role profile(s); verification passed.".to_string(),
+            })
+        })
+    }
+}
+
 struct TestServer {
     addr: std::net::SocketAddr,
     events: EventSink,
@@ -101,6 +149,25 @@ impl TestServer {
         with_auth: bool,
         setup_complete: bool,
     ) -> Self {
+        Self::start_with_options_and_agent(trigger, with_auth, setup_complete, None).await
+    }
+
+    async fn start_with_auth_setup_agent(agent: Arc<dyn AuthSetupAgent>) -> Self {
+        Self::start_with_options_and_agent(
+            Arc::new(StubScanTrigger { run_id: "run-fake".to_string() }),
+            false,
+            true,
+            Some(agent),
+        )
+        .await
+    }
+
+    async fn start_with_options_and_agent(
+        trigger: Arc<dyn ScanTrigger>,
+        with_auth: bool,
+        setup_complete: bool,
+        auth_setup_agent: Option<Arc<dyn AuthSetupAgent>>,
+    ) -> Self {
         let tmp = tempfile::tempdir().expect("tempdir");
         let store = Store::open(tmp.path()).await.expect("open store");
         let (events, _rx) = broadcast::channel::<AgentEvent>(64);
@@ -118,8 +185,11 @@ impl TestServer {
         };
         let token = auth.token.clone();
         let logs_dir = tmp.path().join("logs");
-        let state = ServerState::new(store.clone(), events.clone(), trigger, setup, auth)
+        let mut state = ServerState::new(store.clone(), events.clone(), trigger, setup, auth)
             .with_state_logs_dir(logs_dir.clone());
+        if let Some(agent) = auth_setup_agent {
+            state = state.with_auth_setup_agent(agent);
+        }
         let app = build_router(state);
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
@@ -3147,6 +3217,152 @@ async fn projects_crud_roundtrip() {
     let missing =
         client.get(format!("{}/api/v1/projects/{id}", srv.base())).send().await.expect("get");
     assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn auth_auto_setup_patches_runtime_profile_without_triggering_scan() {
+    let trigger = Arc::new(RecordingOverridesTrigger::default());
+    let srv = TestServer::start_with_trigger(trigger.clone() as Arc<dyn ScanTrigger>).await;
+    let client = reqwest::Client::new();
+    let created: Value = client
+        .post(format!("{}/api/v1/projects", srv.base()))
+        .json(&serde_json::json!({
+            "name": "authz-app",
+            "target_base_url": "http://localhost:3000"
+        }))
+        .send()
+        .await
+        .expect("post project")
+        .json()
+        .await
+        .expect("project json");
+    let project_id = created["id"].as_str().expect("project id");
+    let repo_dir = srv._tmp.path().join("auth-source");
+    std::fs::create_dir_all(repo_dir.join("src")).expect("mkdir");
+    std::fs::write(
+        repo_dir.join("src/routes.ts"),
+        r#"router.post("/api/auth/login", login);
+router.get("/api/projects/:id", requireUser, showProject);
+router.get("/api/admin/report", requireAdmin, adminReport);
+"#,
+    )
+    .expect("write source");
+    let now = nyctos_core::now_epoch_ms();
+    srv.store
+        .repos()
+        .upsert(&RepoRecord {
+            id: "repo-auth-source".to_string(),
+            name: "auth-source".to_string(),
+            project_id: project_id.to_string(),
+            source_kind: "local".to_string(),
+            source_url_or_path: repo_dir.display().to_string(),
+            branch: None,
+            auth_ref: None,
+            i_own_this: true,
+            last_scan_run_id: None,
+            last_scan_finished_at: None,
+            created_at: now,
+            updated_at: now,
+        })
+        .await
+        .expect("repo");
+
+    let response: Value = client
+        .post(format!("{}/api/v1/projects/{project_id}/auth/auto-setup", srv.base()))
+        .json(&serde_json::json!({ "target_base_url": "http://localhost:3000" }))
+        .send()
+        .await
+        .expect("post auth setup")
+        .json()
+        .await
+        .expect("json");
+
+    assert_eq!(response["profiles_added"], 3);
+    assert_eq!(response["agent_used"], false);
+    assert_eq!(response["verification"]["status"], "verified");
+    assert_eq!(response["roles"][0], "user_a");
+    assert!(response["login_paths"].as_array().unwrap().iter().any(|v| v == "/api/auth/login"));
+    assert!(response["object_routes"].as_array().unwrap().iter().any(|v| v == "/api/projects/:id"));
+    let profiles =
+        response["project"]["runtime_profile"]["auth_profiles"].as_array().expect("profiles");
+    assert!(profiles.iter().any(|profile| {
+        profile["role"] == "user_a"
+            && profile["mode"] == "ai_auto"
+            && profile["login_url"] == "/api/auth/login"
+            && profile["username_env"] == "NYCTOS_USER_A_USERNAME"
+            && profile["password_env"] == "NYCTOS_USER_A_PASSWORD"
+    }));
+    assert!(profiles.iter().any(|profile| profile["role"] == "admin"));
+    assert!(trigger.calls.lock().await.is_empty(), "auth setup must not trigger a pentest");
+}
+
+#[tokio::test]
+async fn auth_auto_setup_prefers_agent_profiles_when_available() {
+    let srv = TestServer::start_with_auth_setup_agent(Arc::new(StubAuthSetupAgent)).await;
+    let client = reqwest::Client::new();
+    let created: Value = client
+        .post(format!("{}/api/v1/projects", srv.base()))
+        .json(&serde_json::json!({
+            "name": "agent-authz-app",
+            "target_base_url": "http://localhost:3000"
+        }))
+        .send()
+        .await
+        .expect("post project")
+        .json()
+        .await
+        .expect("project json");
+    let project_id = created["id"].as_str().expect("project id");
+    let repo_dir = srv._tmp.path().join("agent-auth-source");
+    std::fs::create_dir_all(repo_dir.join("src")).expect("mkdir");
+    std::fs::write(
+        repo_dir.join("src/routes.ts"),
+        r#"router.post("/api/auth/sign-in", signIn);
+router.get("/api/workspaces/{id}", requireManager, showWorkspace);
+"#,
+    )
+    .expect("write source");
+    let now = nyctos_core::now_epoch_ms();
+    srv.store
+        .repos()
+        .upsert(&RepoRecord {
+            id: "repo-agent-auth-source".to_string(),
+            name: "agent-auth-source".to_string(),
+            project_id: project_id.to_string(),
+            source_kind: "local".to_string(),
+            source_url_or_path: repo_dir.display().to_string(),
+            branch: None,
+            auth_ref: None,
+            i_own_this: true,
+            last_scan_run_id: None,
+            last_scan_finished_at: None,
+            created_at: now,
+            updated_at: now,
+        })
+        .await
+        .expect("repo");
+
+    let response: Value = client
+        .post(format!("{}/api/v1/projects/{project_id}/auth/auto-setup", srv.base()))
+        .json(&serde_json::json!({ "target_base_url": "http://localhost:3000" }))
+        .send()
+        .await
+        .expect("post auth setup")
+        .json()
+        .await
+        .expect("json");
+
+    assert_eq!(response["agent_used"], true);
+    assert_eq!(response["roles"], serde_json::json!(["manager"]));
+    assert_eq!(response["verification"]["status"], "verified");
+    assert_eq!(
+        response["project"]["runtime_profile"]["auth_profiles"][0]["username_env"],
+        "NYCTOS_MANAGER_USERNAME"
+    );
+    assert_eq!(
+        response["project"]["runtime_profile"]["auth_profiles"].as_array().unwrap().len(),
+        1
+    );
 }
 
 #[tokio::test]

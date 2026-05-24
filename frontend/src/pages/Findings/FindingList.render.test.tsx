@@ -152,8 +152,6 @@ describe("FindingList full-render", () => {
     });
 
     render(wrap(<FindingList />));
-    expect(
-      await screen.findByText(/produced no findings, or every row is filtered/),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("Try clearing filters.")).toBeInTheDocument();
   });
 });

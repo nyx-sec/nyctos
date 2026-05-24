@@ -12,26 +12,29 @@ import { Badge } from "@/components/Badge";
 import { Button } from "@/components/Button";
 import { Card } from "@/components/Card";
 import { EmptyState } from "@/components/EmptyState";
+import { PageHeader, PageShell } from "@/components/Page";
 import { Spinner } from "@/components/Spinner";
 import { extractChainRationale } from "@/pages/Findings/FindingList";
 import { shortChainId } from "./ChainList";
 import { parseMemberIds } from "./memberIds";
 
 export function ChainDetail() {
-  const { chainId = "" } = useParams<{ chainId: string }>();
+  const { chainId = "", projectId } = useParams<{ chainId: string; projectId?: string }>();
   const navigate = useNavigate();
   const chainQuery = useChain(chainId);
+  const chainListHref = projectId ? `/projects/${encodeURIComponent(projectId)}/chains` : "/chains";
 
   return (
-    <div className="findings-page">
-      <div className="page-toolbar">
-        <p className="page-toolbar__meta">
-          {chainQuery.data ? `Chain ${shortChainId(chainQuery.data.id)}` : "Chain"}
-        </p>
-        <Button variant="ghost" size="sm" onClick={() => navigate("/chains")}>
-          ← Back to chains
-        </Button>
-      </div>
+    <PageShell className="findings-page">
+      <PageHeader
+        title={chainQuery.data ? `Chain ${shortChainId(chainQuery.data.id)}` : "Chain"}
+        meta={chainQuery.data?.run_id ? `Run ${chainQuery.data.run_id}` : undefined}
+        actions={
+          <Button variant="ghost" size="sm" onClick={() => navigate(chainListHref)}>
+            Back to chains
+          </Button>
+        }
+      />
 
       {chainQuery.isPending && (
         <Card>
@@ -49,15 +52,16 @@ export function ChainDetail() {
         </Card>
       )}
 
-      {chainQuery.data && <ChainBody chain={chainQuery.data} />}
-    </div>
+      {chainQuery.data && <ChainBody chain={chainQuery.data} projectId={projectId} />}
+    </PageShell>
   );
 }
 
 interface ChainBodyProps {
   chain: ChainRecord;
+  projectId?: string;
 }
-function ChainBody({ chain }: ChainBodyProps) {
+function ChainBody({ chain, projectId }: ChainBodyProps) {
   const rationale = extractChainRationale(chain.rationale_blob);
   const members = parseMemberIds(chain.member_ids);
   const signalsQuery = useRunSignals(members.length > 0 ? chain.run_id : undefined);
@@ -97,19 +101,9 @@ function ChainBody({ chain }: ChainBodyProps) {
         )}
       </Card>
 
-      <Card
-        title={`Members (${members.length})`}
-        subtitle={
-          members.length > 0
-            ? "Findings and signals linked by this chain. Click legacy findings to open them."
-            : undefined
-        }
-      >
+      <Card title={`Members (${members.length})`}>
         {members.length === 0 ? (
-          <EmptyState
-            title="No member findings"
-            body="This chain row has no member ids on the wire — the rationale stands alone."
-          />
+          <EmptyState title="No member findings" />
         ) : (
           <ul className="chain-detail__members">
             {members.map((id) => (
@@ -117,6 +111,7 @@ function ChainBody({ chain }: ChainBodyProps) {
                 <MemberRow
                   memberId={id}
                   runId={chain.run_id}
+                  projectId={projectId}
                   signal={signalsByMemberId.get(id)}
                   signalsPending={signalsQuery.isPending}
                 />
@@ -132,13 +127,14 @@ function ChainBody({ chain }: ChainBodyProps) {
 interface MemberRowProps {
   memberId: string;
   runId: string;
+  projectId?: string;
   signal: NyxSignalRecord | undefined;
   signalsPending: boolean;
 }
 
-function MemberRow({ memberId, runId, signal, signalsPending }: MemberRowProps) {
+function MemberRow({ memberId, runId, projectId, signal, signalsPending }: MemberRowProps) {
   const finding = useFinding(memberId);
-  const focusHref = `/findings?run_id=${encodeURIComponent(runId)}&focus=${encodeURIComponent(memberId)}`;
+  const focusHref = findingFocusHref(runId, memberId, projectId);
 
   if (finding.data) {
     return <FindingMemberRow finding={finding.data} focusHref={focusHref} />;
@@ -160,6 +156,11 @@ function MemberRow({ memberId, runId, signal, signalsPending }: MemberRowProps) 
       <code>{memberId}</code> — linked record not found
     </span>
   );
+}
+
+function findingFocusHref(runId: string, memberId: string, projectId: string | undefined): string {
+  const prefix = projectId ? `/projects/${encodeURIComponent(projectId)}` : "";
+  return `${prefix}/findings?run_id=${encodeURIComponent(runId)}&focus=${encodeURIComponent(memberId)}`;
 }
 
 function FindingMemberRow({ finding, focusHref }: { finding: FindingRecord; focusHref: string }) {

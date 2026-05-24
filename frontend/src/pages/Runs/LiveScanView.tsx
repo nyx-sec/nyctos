@@ -16,6 +16,7 @@ import type { AiEvent, RunEvent, SandboxEvent } from "@/api/types.gen";
 import { Badge, type BadgeTone } from "@/components/Badge";
 import { Button } from "@/components/Button";
 import { Card } from "@/components/Card";
+import { PageShell } from "@/components/Page";
 import { Spinner } from "@/components/Spinner";
 
 type RepoPhase = "queued" | "static" | "static-done" | "dynamic-done" | "finished" | "failed";
@@ -187,7 +188,7 @@ export function LiveScanView() {
     : `/vulnerabilities?run_id=${encodeURIComponent(runId)}`;
 
   return (
-    <div className="live-scan">
+    <PageShell size="wide" className="live-scan">
       <Card
         title={`Run ${runId}`}
         subtitle={
@@ -330,7 +331,7 @@ export function LiveScanView() {
           </p>
         )}
       </Card>
-    </div>
+    </PageShell>
   );
 }
 

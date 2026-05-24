@@ -10,6 +10,8 @@ import { useEffect, useRef, useState } from "react";
 import type {
   AgentEvent,
   AgentTraceRow,
+  AuthSetupRequest,
+  AuthSetupResponse,
   BundleManifest,
   ChainRecord,
   CreateProjectIntegrationRequest,
@@ -33,6 +35,7 @@ import type {
   PatchRepoRequest,
   PentestCandidateRecord,
   ProjectAuthHeaderRef,
+  ProjectAuthOwnedObject,
   ProjectAuthProfile,
   ProjectIntegrationEvent,
   ProjectIntegrationKind,
@@ -65,6 +68,8 @@ import type {
 
 export type {
   AgentTraceRow,
+  AuthSetupRequest,
+  AuthSetupResponse,
   BundleManifest,
   ChainRecord,
   CreateProjectIntegrationRequest,
@@ -88,6 +93,7 @@ export type {
   PatchRepoRequest,
   PentestCandidateRecord,
   ProjectAuthHeaderRef,
+  ProjectAuthOwnedObject,
   ProjectAuthProfile,
   ProjectIntegrationEvent,
   ProjectIntegrationKind,
@@ -207,6 +213,7 @@ export type SandboxBackendChoice =
 // ---- query keys ------------------------------------------------------------
 
 export interface FindingsQuery {
+  project_id?: string;
   repo?: string;
   run_id?: string;
   cap?: string;
@@ -251,6 +258,7 @@ export const qk = {
   findings: (params: FindingsQuery) =>
     [
       "findings",
+      params.project_id ?? null,
       params.repo ?? null,
       params.run_id ?? null,
       params.cap ?? null,
@@ -277,7 +285,8 @@ export const qk = {
     ] as const,
   chain: (id: string) => ["chains", id] as const,
   runChains: (run_id: string) => ["runs", run_id, "chains"] as const,
-  quarantine: () => ["quarantine"] as const,
+  quarantine: (projectId?: string) =>
+    projectId ? (["quarantine", projectId] as const) : (["quarantine"] as const),
   findingTraces: (id: string) => ["findings", id, "traces"] as const,
   defaultLaunchProfile: (projectId: string) =>
     ["projects", projectId, "launch-profile", "default"] as const,
@@ -409,6 +418,22 @@ export function usePatchDefaultLaunchProfile(projectId: string) {
   });
 }
 
+export function useAuthAutoSetup(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: AuthSetupRequest = {}) =>
+      request<AuthSetupResponse>(`/projects/${encodeURIComponent(projectId)}/auth/auto-setup`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    onSuccess: (data) => {
+      invalidateProjectLists(qc);
+      qc.invalidateQueries({ queryKey: qk.project(projectId) });
+      qc.setQueryData(qk.project(projectId), data.project);
+    },
+  });
+}
+
 export function useDeleteProject() {
   const qc = useQueryClient();
   return useMutation({
@@ -436,7 +461,7 @@ export function useProjectRepos(projectId: string | undefined) {
  * Fans out N+1 calls (one project list + one per project); fine while
  * project counts are small.
  */
-export function useAllRepos() {
+export function useAllRepos(enabled = true) {
   return useQuery({
     queryKey: qk.allRepos(),
     queryFn: async () => {
@@ -446,6 +471,7 @@ export function useAllRepos() {
       );
       return lists.flat();
     },
+    enabled,
   });
 }
 
@@ -590,7 +616,7 @@ export function useStartPentest(projectId: string) {
   });
 }
 
-export function useRuns(status?: string, projectId?: string) {
+export function useRuns(status?: string, projectId?: string, enabled = true) {
   return useQuery({
     queryKey: qk.runs(status, projectId),
     queryFn: () => {
@@ -600,6 +626,7 @@ export function useRuns(status?: string, projectId?: string) {
       const query = params.toString();
       return request<RunRecord[]>(`/runs${query ? `?${query}` : ""}`);
     },
+    enabled,
   });
 }
 
@@ -775,10 +802,13 @@ function invalidateRepoLists(qc: QueryClient, projectId: string) {
 
 // ---- quarantine + traces ---------------------------------------------------
 
-export function useQuarantine() {
+export function useQuarantine(projectId?: string) {
   return useQuery({
-    queryKey: qk.quarantine(),
-    queryFn: () => request<QuarantineItem[]>("/quarantine"),
+    queryKey: qk.quarantine(projectId),
+    queryFn: () => {
+      const qs = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
+      return request<QuarantineItem[]>(`/quarantine${qs}`);
+    },
   });
 }
 

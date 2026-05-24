@@ -3,6 +3,7 @@ import type {
   LaunchEnvRef,
   LaunchHealthCheck,
   LaunchStep,
+  ProjectAuthOwnedObject,
   ProjectAuthProfile,
   ProjectLaunchProfile,
   ProjectLaunchProfileInput,
@@ -10,8 +11,10 @@ import type {
   ProjectRuntimeEnvVar,
   ProjectRuntimeProfile,
 } from "@/api/client";
-import { testLaunchTarget } from "@/api/client";
+import { testLaunchTarget, useAuthAutoSetup } from "@/api/client";
 import { Button } from "@/components/Button";
+import { Spinner } from "@/components/Spinner";
+import { useToast } from "@/components/Toast";
 
 export type LaunchMode = "already-running" | "custom-commands" | "docker-compose";
 export type ReadinessKind = "target-url" | "custom-url" | "command" | "skip";
@@ -65,6 +68,13 @@ export interface AuthAssertionDraft {
   status: string;
 }
 
+export interface AuthOwnedObjectDraft {
+  name: string;
+  id: string;
+  route: string;
+  marker: string;
+}
+
 export interface AuthProfileDraft {
   role: string;
   mode: AuthMode;
@@ -87,6 +97,7 @@ export interface AuthProfileDraft {
   post_login_assertion: string;
   post_login_assertions: AuthAssertionDraft[];
   custom_command: string;
+  owned_objects: AuthOwnedObjectDraft[];
 }
 
 export interface RuntimeProfileDraft {
@@ -157,6 +168,13 @@ const blankAssertion = (): AuthAssertionDraft => ({
   status: "",
 });
 
+const blankOwnedObject = (): AuthOwnedObjectDraft => ({
+  name: "",
+  id: "",
+  route: "",
+  marker: "",
+});
+
 const blankAuthProfile = (): AuthProfileDraft => ({
   role: "",
   mode: "header_injection",
@@ -179,6 +197,7 @@ const blankAuthProfile = (): AuthProfileDraft => ({
   post_login_assertion: "",
   post_login_assertions: [],
   custom_command: "",
+  owned_objects: [],
 });
 
 export function emptyRuntimeProfileDraft(targetBaseUrl = ""): RuntimeProfileDraft {
@@ -395,9 +414,10 @@ export function launchProfileFromDraft(
 interface Props {
   value: RuntimeProfileDraft;
   onChange: (next: RuntimeProfileDraft) => void;
+  projectId?: string;
 }
 
-export function ProjectRuntimeProfileForm({ value, onChange }: Props) {
+export function ProjectRuntimeProfileForm({ value, onChange, projectId }: Props) {
   const setField = (field: keyof RuntimeProfileDraft) => (e: ChangeEvent<HTMLInputElement>) => {
     onChange({ ...value, [field]: e.target.value });
   };
@@ -562,6 +582,11 @@ export function ProjectRuntimeProfileForm({ value, onChange }: Props) {
         <summary>Auth profiles</summary>
         <AuthProfileRows
           rows={value.auth_profiles}
+          projectId={projectId}
+          targetBaseUrl={value.target_base_url}
+          onAuthSetupApplied={(profiles) =>
+            onChange({ ...value, auth_profiles: authDrafts(profiles) })
+          }
           onChange={(rows) => onChange({ ...value, auth_profiles: rows })}
         />
       </details>
@@ -849,13 +874,45 @@ function EnvRows({
 
 function AuthProfileRows({
   rows,
+  projectId,
+  targetBaseUrl,
+  onAuthSetupApplied,
   onChange,
 }: {
   rows: AuthProfileDraft[];
+  projectId?: string;
+  targetBaseUrl: string;
+  onAuthSetupApplied: (profiles: ProjectAuthProfile[]) => void;
   onChange: (rows: AuthProfileDraft[]) => void;
 }) {
   const update = (index: number, patch: Partial<AuthProfileDraft>) =>
     onChange(replaceAt(rows, index, { ...rows[index], ...patch }));
+  const authSetup = useAuthAutoSetup(projectId ?? "");
+  const { showToast } = useToast();
+
+  async function runAuthSetup() {
+    if (!projectId) {
+      showToast("Save the project before running auth setup.", { tone: "warning" });
+      return;
+    }
+    try {
+      const seeded_objects = rows
+        .flatMap((row) => row.owned_objects)
+        .map(ownedObjectFromDraft)
+        .filter(isDefined);
+      const result = await authSetup.mutateAsync({
+        target_base_url: trimOrUndefined(targetBaseUrl),
+        seeded_objects,
+      });
+      onAuthSetupApplied(result.project.runtime_profile?.auth_profiles ?? []);
+      const warningText = result.verification.warnings.join(" ");
+      showToast(warningText ? `${result.message} ${warningText}` : result.message, {
+        tone: result.verification.status === "verified" ? "success" : "warning",
+      });
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : String(err), { tone: "danger" });
+    }
+  }
 
   return (
     <div className="runtime-profile-list">
@@ -864,9 +921,19 @@ function AuthProfileRows({
           <h4>Roles</h4>
           <p className="runtime-profile-note">Secrets use env refs only.</p>
         </div>
-        <Button size="sm" variant="ghost" onClick={() => onChange([...rows, blankAuthProfile()])}>
-          Add role
-        </Button>
+        <div className="runtime-profile-actions">
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={runAuthSetup}
+            disabled={authSetup.isPending || !projectId}
+          >
+            {authSetup.isPending ? <Spinner /> : "AI setup"}
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => onChange([...rows, blankAuthProfile()])}>
+            Add role
+          </Button>
+        </div>
       </div>
       {rows.map((row, index) => (
         <div className="runtime-auth-row" key={`runtime-auth-${index}`}>
@@ -1046,6 +1113,11 @@ function AuthProfileRows({
             prefix={`runtime-auth-assertion-${index}`}
             onChange={(post_login_assertions) => update(index, { post_login_assertions })}
           />
+          <OwnedObjectRows
+            rows={row.owned_objects}
+            prefix={`runtime-auth-owned-object-${index}`}
+            onChange={(owned_objects) => update(index, { owned_objects })}
+          />
           <Button
             size="sm"
             variant="ghost"
@@ -1188,6 +1260,86 @@ function AssertionRows({
   );
 }
 
+function OwnedObjectRows({
+  rows,
+  prefix,
+  onChange,
+}: {
+  rows: AuthOwnedObjectDraft[];
+  prefix: string;
+  onChange: (rows: AuthOwnedObjectDraft[]) => void;
+}) {
+  return (
+    <details className="runtime-auth-advanced">
+      <summary>Owned objects</summary>
+      <div className="runtime-auth-nested-list">
+        <Button size="sm" variant="ghost" onClick={() => onChange([...rows, blankOwnedObject()])}>
+          Add object
+        </Button>
+        {rows.map((row, index) => (
+          <div className="runtime-auth-owned-row" key={`${prefix}-${index}`}>
+            <div className="setup-field">
+              <label htmlFor={`${prefix}-name-${index}`}>Name</label>
+              <input
+                id={`${prefix}-name-${index}`}
+                type="text"
+                autoComplete="off"
+                placeholder="project"
+                value={row.name}
+                onChange={(e) => onChange(replaceAt(rows, index, { ...row, name: e.target.value }))}
+              />
+            </div>
+            <div className="setup-field">
+              <label htmlFor={`${prefix}-id-${index}`}>Object ID</label>
+              <input
+                id={`${prefix}-id-${index}`}
+                type="text"
+                autoComplete="off"
+                placeholder="proj-user-a-1"
+                value={row.id}
+                onChange={(e) => onChange(replaceAt(rows, index, { ...row, id: e.target.value }))}
+              />
+            </div>
+            <div className="setup-field">
+              <label htmlFor={`${prefix}-route-${index}`}>Route</label>
+              <input
+                id={`${prefix}-route-${index}`}
+                type="text"
+                autoComplete="off"
+                placeholder="/api/projects/{id}"
+                value={row.route}
+                onChange={(e) =>
+                  onChange(replaceAt(rows, index, { ...row, route: e.target.value }))
+                }
+              />
+            </div>
+            <div className="setup-field">
+              <label htmlFor={`${prefix}-marker-${index}`}>Marker</label>
+              <input
+                id={`${prefix}-marker-${index}`}
+                type="text"
+                autoComplete="off"
+                placeholder="nyctos-user-a-project"
+                value={row.marker}
+                onChange={(e) =>
+                  onChange(replaceAt(rows, index, { ...row, marker: e.target.value }))
+                }
+              />
+            </div>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => onChange(rows.filter((_, i) => i !== index))}
+            >
+              Remove
+            </Button>
+          </div>
+        ))}
+      </div>
+    </details>
+  );
+}
+
 function authModeUsesLogin(mode: AuthMode): boolean {
   return (
     mode === "browser_login" ||
@@ -1241,6 +1393,12 @@ function authDrafts(profiles: ProjectAuthProfile[]): AuthProfileDraft[] {
       status: assertion.status?.toString() ?? "",
     })),
     custom_command: profile.custom_command ?? "",
+    owned_objects: (profile.owned_objects ?? []).map((object) => ({
+      name: object.name,
+      id: object.id,
+      route: object.route ?? "",
+      marker: object.marker ?? "",
+    })),
   }));
 }
 
@@ -1312,6 +1470,7 @@ function authFromDraft(draft: AuthProfileDraft): ProjectAuthProfile | undefined 
     mode: draft.mode,
     headers: [],
     post_login_assertions: [],
+    owned_objects: [],
   };
   const label = trimOrUndefined(draft.label);
   const session_cache_ttl_seconds = positiveIntOrUndefined(draft.session_cache_ttl_seconds);
@@ -1374,6 +1533,19 @@ function authFromDraft(draft: AuthProfileDraft): ProjectAuthProfile | undefined 
     .filter(isDefined);
   if (post_login_assertion) out.post_login_assertion = post_login_assertion;
   if (custom_command) out.custom_command = custom_command;
+  out.owned_objects = draft.owned_objects.map(ownedObjectFromDraft).filter(isDefined);
+  return out;
+}
+
+function ownedObjectFromDraft(draft: AuthOwnedObjectDraft): ProjectAuthOwnedObject | undefined {
+  const name = trimOrUndefined(draft.name);
+  const id = trimOrUndefined(draft.id);
+  if (!name || !id) return undefined;
+  const out: ProjectAuthOwnedObject = { name, id };
+  const route = trimOrUndefined(draft.route);
+  const marker = trimOrUndefined(draft.marker);
+  if (route) out.route = route;
+  if (marker) out.marker = marker;
   return out;
 }
 

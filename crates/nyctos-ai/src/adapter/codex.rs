@@ -450,8 +450,9 @@ fn render_agent_prompt(task: &AgentTask) -> String {
          ## Tools available\n{tools}\n\
          \n\
          When you need to record a structured Nyctos artifact, emit a JSON object on its own line \
-         using this shape: {{\"tool\":\"record_exploration_finding\",\"input\":{{...}}}}. \
-         Use the listed tool name as the `tool` value and place its arguments in `input`.\n",
+         using this shape: {{\"tool\":\"<listed tool name>\",\"input\":{{...}}}}. \
+         Use one of the listed `record_*` tool names as the `tool` value and place its arguments \
+         in `input`.\n",
         pv = task.prompt_version,
         tid = task.task_id,
         working_directory =

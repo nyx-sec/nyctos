@@ -26,6 +26,10 @@ pub use adapter::codex::{
 pub use runtime::{
     deterministic_seed, AiRuntime, BudgetTracker, InMemoryBudgetTracker, SharedBudgetTracker,
 };
+pub use tasks::auth_setup::{
+    run as run_auth_setup, AuthSetupOutcome, AuthSetupScope, AUTH_SETUP_PROMPT_VERSION,
+    DEFAULT_AUTH_SETUP_RUN_CAP_USD_MICROS,
+};
 pub use tasks::chain_reasoning::{run as run_chain_reasoning, ChainReasoningOutcome};
 pub use tasks::exploration::{
     run as run_exploration, AuditEntry as ExplorationAuditEntry, EscapeSuiteGate,
