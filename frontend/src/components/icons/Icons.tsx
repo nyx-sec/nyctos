@@ -65,15 +65,6 @@ export function OverviewIcon({ className, size = 18 }: IconProps) {
   );
 }
 
-export function PlusIcon({ className, size = 18 }: IconProps) {
-  return (
-    <svg {...svgProps({ className, size })} viewBox="0 0 18 18">
-      <path d="M9 3.5v11" />
-      <path d="M3.5 9h11" />
-    </svg>
-  );
-}
-
 export function RunsIcon({ className, size = 18 }: IconProps) {
   return (
     <svg {...svgProps({ className, size })} viewBox="0 0 18 18">

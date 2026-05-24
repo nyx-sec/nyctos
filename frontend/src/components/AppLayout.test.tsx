@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -116,9 +116,8 @@ describe("AppLayout", () => {
       ],
     });
 
-    expect(await screen.findByRole("combobox", { name: "Switch project" })).toHaveValue(
-      "project-1",
-    );
+    const switcher = await screen.findByRole("combobox", { name: "Switch project" });
+    await waitFor(() => expect(switcher).toHaveTextContent("calcom"));
     expect(screen.getByRole("link", { name: /Overview/ })).toHaveAttribute(
       "href",
       "/projects/project-1",
@@ -139,5 +138,10 @@ describe("AppLayout", () => {
       "aria-current",
       "page",
     );
+
+    fireEvent.click(switcher);
+    expect(screen.getByRole("option", { name: /calcom/ })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("button", { name: "New project" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Create project" })).toBeNull();
   });
 });

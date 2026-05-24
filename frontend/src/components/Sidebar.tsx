@@ -1,4 +1,4 @@
-import type { FC } from "react";
+import { type FC, useEffect, useRef, useState } from "react";
 import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 import { type ProjectRecord, useProjects } from "@/api/client";
 import { useAdvancedMode } from "@/api/preferences";
@@ -8,7 +8,6 @@ import {
   FindingsIcon,
   type IconProps,
   OverviewIcon,
-  PlusIcon,
   QuarantineIcon,
   ReposIcon,
   RunsIcon,
@@ -134,17 +133,45 @@ function ProjectSwitcher({ activeProjectId }: { activeProjectId?: string }) {
   const projects = useProjects(true);
   const navigate = useNavigate();
   const { pathname } = useLocation();
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const [open, setOpen] = useState(false);
   const rows = projects.data ?? [];
   const activeProject = rows.find((project) => project.id === activeProjectId);
   const activeLabel = activeProject?.name ?? (activeProjectId ? "Project" : "All projects");
   const activeInitial = initialForProject(activeProject);
-  const selectValue = activeProjectId ?? "";
   const hasActiveOption =
     !activeProjectId || rows.some((project) => project.id === activeProjectId);
 
+  useEffect(() => {
+    function onPointerDown(event: PointerEvent) {
+      if (!menuRef.current?.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, []);
+
+  function selectProject(nextProjectId?: string) {
+    setOpen(false);
+    navigate(nextProjectId ? pathForProjectSwitch(pathname, nextProjectId) : "/projects");
+  }
+
+  function createProject() {
+    setOpen(false);
+    navigate("/projects?new=1");
+  }
+
   return (
     <div className="sidebar__workspace">
-      <div className="sidebar__workspace-current">
+      <div className="sidebar__workspace-current" ref={menuRef}>
         <Link
           to={activeProjectId ? `/projects/${encodeURIComponent(activeProjectId)}` : "/projects"}
           className="sidebar__workspace-avatar"
@@ -155,28 +182,69 @@ function ProjectSwitcher({ activeProjectId }: { activeProjectId?: string }) {
         <label className="sidebar__workspace-label" htmlFor="project-switcher">
           Project
         </label>
-        <select
+        <button
           id="project-switcher"
-          className="sidebar__workspace-select"
-          value={selectValue}
-          onChange={(event) => {
-            const nextProjectId = event.target.value || undefined;
-            navigate(nextProjectId ? pathForProjectSwitch(pathname, nextProjectId) : "/projects");
-          }}
+          type="button"
+          className="sidebar__workspace-trigger"
           disabled={projects.isPending}
+          role="combobox"
+          aria-controls="project-switcher-menu"
+          aria-expanded={open}
           aria-label="Switch project"
+          onClick={() => setOpen((cur) => !cur)}
         >
-          <option value="">All projects</option>
-          {!hasActiveOption && <option value={activeProjectId}>{activeLabel}</option>}
-          {rows.map((project) => (
-            <option key={project.id} value={project.id}>
-              {project.name}
-            </option>
-          ))}
-        </select>
-        <Link className="sidebar__new-project" to="/projects?new=1" aria-label="Create project">
-          <PlusIcon size={16} />
-        </Link>
+          <span>{activeLabel}</span>
+          <span className="sidebar__workspace-caret" aria-hidden="true" />
+        </button>
+        {open && (
+          <div id="project-switcher-menu" className="sidebar__workspace-menu" role="listbox">
+            <button
+              type="button"
+              className="sidebar__workspace-option"
+              role="option"
+              aria-selected={!activeProjectId}
+              onClick={() => selectProject()}
+            >
+              <span className="sidebar__workspace-check" aria-hidden="true">
+                {!activeProjectId ? "✓" : ""}
+              </span>
+              <span>All projects</span>
+            </button>
+            {!hasActiveOption && (
+              <button
+                type="button"
+                className="sidebar__workspace-option"
+                role="option"
+                aria-selected
+                onClick={() => selectProject(activeProjectId)}
+              >
+                <span className="sidebar__workspace-check" aria-hidden="true">
+                  ✓
+                </span>
+                <span>{activeLabel}</span>
+              </button>
+            )}
+            {rows.map((project) => (
+              <button
+                key={project.id}
+                type="button"
+                className="sidebar__workspace-option"
+                role="option"
+                aria-selected={project.id === activeProjectId}
+                onClick={() => selectProject(project.id)}
+              >
+                <span className="sidebar__workspace-check" aria-hidden="true">
+                  {project.id === activeProjectId ? "✓" : ""}
+                </span>
+                <span>{project.name}</span>
+              </button>
+            ))}
+            <div className="sidebar__workspace-menu-separator" />
+            <button type="button" className="sidebar__workspace-action" onClick={createProject}>
+              New project
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
