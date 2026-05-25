@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/nyctos/nyctos/security/advisories/new
+    about: Do not file public issues for vulnerabilities. Use private disclosure through SECURITY.md.
+  - name: Question or discussion
+    url: https://github.com/nyctos/nyctos/discussions
+    about: Open-ended questions, ideas, and usage help belong in Discussions.

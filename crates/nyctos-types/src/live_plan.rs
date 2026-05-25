@@ -209,6 +209,10 @@ pub struct LiveHttpRequest {
     pub payload: Option<ContextualPayload>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<HttpWorkflowStepPurpose>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oracle: Option<HttpOracle>,
 }
 
 impl LiveHttpRequest {
@@ -225,8 +229,21 @@ impl LiveHttpRequest {
             destructive: false,
             payload: None,
             label: None,
+            purpose: None,
+            oracle: None,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HttpWorkflowStepPurpose {
+    Seed,
+    PositiveControl,
+    StateTransition,
+    Exploit,
+    Postcondition,
+    Cleanup,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -274,11 +291,28 @@ pub struct HttpWorkflowPlan {
     pub steps: Vec<LiveHttpRequest>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub benign_steps: Vec<LiveHttpRequest>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cleanup_steps: Vec<LiveHttpRequest>,
     pub oracle: HttpOracle,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oracle_step: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why_this_confirms: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipe: Option<StatefulFixtureRecipe>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatefulFixtureRecipe {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixture: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset_required: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleanup_required: Option<bool>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_roles: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -585,10 +619,71 @@ impl LiveTestPlan {
                     validate_http_request(step)?;
                     validate_payload(step.payload.as_ref())?;
                 }
-                if !plan.oracle.has_positive_evidence() {
+                for step in &plan.cleanup_steps {
+                    validate_http_request(step)?;
+                    validate_payload(step.payload.as_ref())?;
+                }
+                let step_oracles_have_evidence = plan
+                    .steps
+                    .iter()
+                    .chain(plan.benign_steps.iter())
+                    .chain(plan.cleanup_steps.iter())
+                    .filter_map(|step| step.oracle.as_ref())
+                    .any(HttpOracle::has_positive_evidence);
+                if !plan.oracle.has_positive_evidence() && !step_oracles_have_evidence {
                     return Err(LivePlanValidationError::WeakOracle(
-                        "http_workflow plans require body/header positive evidence".to_string(),
+                        "http_workflow plans require workflow or step body/header positive evidence"
+                            .to_string(),
                     ));
+                }
+                if let Some(recipe) = &plan.recipe {
+                    if recipe.id.trim().is_empty() {
+                        return Err(LivePlanValidationError::MissingField("recipe.id".to_string()));
+                    }
+                    let mut has_mutation = false;
+                    let mut has_cleanup = !plan.cleanup_steps.is_empty();
+                    let mut has_required_purpose = false;
+                    for step in plan
+                        .steps
+                        .iter()
+                        .chain(plan.benign_steps.iter())
+                        .chain(plan.cleanup_steps.iter())
+                    {
+                        match step.purpose {
+                            Some(HttpWorkflowStepPurpose::Seed)
+                            | Some(HttpWorkflowStepPurpose::StateTransition)
+                            | Some(HttpWorkflowStepPurpose::Exploit)
+                            | Some(HttpWorkflowStepPurpose::Cleanup) => {
+                                has_mutation |= step.destructive
+                                    || !matches!(step.method.as_str(), "GET" | "HEAD" | "OPTIONS");
+                            }
+                            _ => {}
+                        }
+                        has_cleanup |= step.purpose == Some(HttpWorkflowStepPurpose::Cleanup);
+                        has_required_purpose |= matches!(
+                            step.purpose,
+                            Some(HttpWorkflowStepPurpose::Seed)
+                                | Some(HttpWorkflowStepPurpose::PositiveControl)
+                                | Some(HttpWorkflowStepPurpose::StateTransition)
+                                | Some(HttpWorkflowStepPurpose::Exploit)
+                                | Some(HttpWorkflowStepPurpose::Postcondition)
+                        );
+                    }
+                    if !has_required_purpose {
+                        return Err(LivePlanValidationError::MissingField(
+                            "recipe step purpose".to_string(),
+                        ));
+                    }
+                    if has_mutation
+                        && recipe.reset_required != Some(true)
+                        && recipe.cleanup_required != Some(true)
+                        && !has_cleanup
+                    {
+                        return Err(LivePlanValidationError::InvalidField(
+                            "mutating stateful recipes require reset_required or cleanup_steps"
+                                .to_string(),
+                        ));
+                    }
                 }
             }
             Self::DifferentialHttp(plan) => {

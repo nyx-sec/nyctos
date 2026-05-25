@@ -4,8 +4,9 @@ use nyctos_core::store::PentestCandidateRecord;
 use nyctos_types::live_plan::{
     AuthRoleCapability, AuthRolePairCapability, AuthzObjectOwnershipPlan, AuthzOracle,
     AuthzOwnedObject, BrowserOracle, BrowserStep, BrowserWorkflowPlan, DifferentialHttpPlan,
-    DifferentialOracle, EnvCapabilityReport, EnvCapabilityStatus, HttpOracle, LiveHttpRequest,
-    LiveTestPlan, NoPlanReason, NoPlanReasonCode, OwnedObjectCapability, SingleHttpPlan,
+    DifferentialOracle, EnvCapabilityReport, EnvCapabilityStatus, HttpOracle, HttpWorkflowPlan,
+    HttpWorkflowStepPurpose, LiveHttpRequest, LiveTestPlan, NoPlanReason, NoPlanReasonCode,
+    OwnedObjectCapability, SingleHttpPlan, StatefulFixtureRecipe,
 };
 use nyctos_types::payload::{ContextualPayload, PayloadTransport};
 use nyctos_types::product::{ApiClientCallModel, RouteModel, RouteModelEndpoint};
@@ -165,6 +166,7 @@ enum LivePlanStrategy {
     CorsMisconfiguration,
     PathTraversal,
     SsrfUrlFetch,
+    StatefulLifecycleRecipe,
     WebhookTrustReviewOnly,
     FileUploadReviewOnly,
     BusinessLogicReviewOnly,
@@ -224,6 +226,9 @@ impl<'a> LiveTestPlanSynthesizer<'a> {
                 NoPlanReasonCode::UnsafeProbe,
                 "SSRF-style URL fetch needs an in-scope callback or seeded local target before Nyctos can safely verify it",
             ),
+            LivePlanStrategy::StatefulLifecycleRecipe => {
+                self.stateful_lifecycle_recipe(candidate, &endpoints)
+            }
             LivePlanStrategy::WebhookTrustReviewOnly => self.no_plan(
                 candidate,
                 NoPlanReasonCode::UnsafeProbe,
@@ -815,6 +820,204 @@ impl<'a> LiveTestPlanSynthesizer<'a> {
         })
     }
 
+    fn stateful_lifecycle_recipe(
+        &self,
+        candidate: &PentestCandidateRecord,
+        endpoints: &[EndpointCandidate],
+    ) -> LiveTestPlan {
+        let text = candidate_text(candidate);
+        let broker = AuthRoleBroker::new(self.ctx.auth_profiles);
+        let Some((owner_role, member_role)) = broker.role_pair("owner", "member") else {
+            return self.setup_missing(
+                candidate,
+                "AuthRole",
+                "stateful lifecycle recipes need distinct owner/member or inviter/invitee auth roles",
+            );
+        };
+        if let Some(capabilities) = self.ctx.capabilities {
+            for role in [&owner_role, &member_role] {
+                if !capabilities.auth_role_ready(role) {
+                    return self.setup_missing(
+                        candidate,
+                        "AuthRole",
+                        format!("auth role `{role}` is not ready for lifecycle recipe"),
+                    );
+                }
+            }
+            if !matches!(capabilities.seed, EnvCapabilityStatus::Available) {
+                return self.setup_missing(
+                    candidate,
+                    "SeedData",
+                    "stateful lifecycle recipe needs disposable seeded test data",
+                );
+            }
+            if !self.ctx.allow_state_changing
+                || !matches!(capabilities.state_changing, EnvCapabilityStatus::Available)
+            {
+                return self.no_plan(
+                    candidate,
+                    NoPlanReasonCode::StateChangingBlocked,
+                    "stateful lifecycle recipe mutates fixtures and requires exploit mode plus state-changing probe opt-in",
+                );
+            }
+            if !capabilities.dry_run
+                && !matches!(capabilities.reset, EnvCapabilityStatus::Available)
+            {
+                return self.setup_missing(
+                    candidate,
+                    "ResetHook",
+                    "mutating lifecycle recipe needs a reset hook or explicit cleanup plan",
+                );
+            }
+        } else if !self.ctx.allow_state_changing {
+            return self.no_plan(
+                candidate,
+                NoPlanReasonCode::StateChangingBlocked,
+                "stateful lifecycle recipe mutates fixtures and requires state-changing probe opt-in",
+            );
+        }
+
+        let all = lifecycle_route_endpoints(self.ctx.route_model, self.ctx.target_urls, endpoints);
+        let invite_create = all.iter().find(|e| route_looks_invite_create_endpoint(e));
+        let invite_accept = all.iter().find(|e| route_looks_invite_accept_endpoint(e));
+        let invite_cancel = all.iter().find(|e| route_looks_invite_cancel_endpoint(e));
+        let member_add = all.iter().find(|e| route_looks_member_add_endpoint(e));
+        let member_remove = all.iter().find(|e| route_looks_member_remove_endpoint(e));
+        let member_access =
+            all.iter().find(|e| !e.state_changing && route_looks_member_endpoint(e));
+        let marker =
+            format!("nyctos-lifecycle-{}", candidate.id.chars().take(8).collect::<String>());
+
+        if text.contains("direct member")
+            || text.contains("without invite")
+            || text.contains("without consent")
+        {
+            let Some(add) = member_add else {
+                return self.setup_missing(
+                    candidate,
+                    "SeedData",
+                    "direct member-add recipe needs a member creation route",
+                );
+            };
+            let Some(access) = member_access else {
+                return self.setup_missing(candidate, "SeedData", "direct member-add recipe needs a read-only member access route for postcondition");
+            };
+            return LiveTestPlan::HttpWorkflow(HttpWorkflowPlan {
+                hypothesis: Some(candidate.hypothesis.clone()),
+                steps: vec![
+                    lifecycle_step(access, &member_role, HttpWorkflowStepPurpose::PositiveControl, "member initially lacks access", None, Some(status_oracle(vec![401, 403, 404]))),
+                    lifecycle_step(add, &owner_role, HttpWorkflowStepPurpose::Exploit, "owner directly adds member without invite/consent", Some(member_json(&member_role, &marker)), Some(status_oracle(vec![200, 201, 204]))),
+                    lifecycle_step(access, &member_role, HttpWorkflowStepPurpose::Postcondition, "member gains access after direct add", None, Some(HttpOracle { status_range: Some("2xx".to_string()), body_contains: vec![marker.clone()], ..HttpOracle::default() })),
+                ],
+                benign_steps: Vec::new(),
+                cleanup_steps: member_remove.map(|remove| vec![lifecycle_step(remove, &owner_role, HttpWorkflowStepPurpose::Cleanup, "remove directly added member", Some(member_json(&member_role, &marker)), Some(status_oracle(vec![200, 202, 204, 404])))]).unwrap_or_default(),
+                oracle: HttpOracle { status_range: Some("2xx".to_string()), body_contains: vec![marker.clone()], ..HttpOracle::default() },
+                oracle_step: Some(2),
+                why_this_confirms: Some("The member cannot access the fixture before the direct add, the add succeeds without an invite/consent step, and the member then sees the controlled marker.".to_string()),
+                recipe: Some(recipe_metadata("direct_member_add_without_invite_consent", &owner_role, &member_role, member_remove.is_none())),
+            });
+        }
+
+        let (Some(create), Some(accept)) = (invite_create, invite_accept) else {
+            return self.setup_missing(
+                candidate,
+                "SeedData",
+                "invite lifecycle recipe needs invite creation and acceptance routes that expose a token/id",
+            );
+        };
+        if text.contains("finalized") || text.contains("token acceptance") {
+            return LiveTestPlan::HttpWorkflow(HttpWorkflowPlan {
+                hypothesis: Some(candidate.hypothesis.clone()),
+                steps: vec![
+                    invite_seed_step(create, &owner_role, &member_role, &marker),
+                    lifecycle_step(accept, &member_role, HttpWorkflowStepPurpose::PositiveControl, "invite token accepts once", Some(token_json("invite_token", &marker)), Some(HttpOracle { status_range: Some("2xx".to_string()), body_contains: vec![marker.clone()], ..HttpOracle::default() })),
+                    lifecycle_step(accept, &member_role, HttpWorkflowStepPurpose::Exploit, "finalized invite token accepts again", Some(token_json("invite_token", &marker)), Some(HttpOracle { status_range: Some("2xx".to_string()), body_contains: vec![marker.clone()], ..HttpOracle::default() })),
+                ],
+                benign_steps: Vec::new(),
+                cleanup_steps: Vec::new(),
+                oracle: HttpOracle { status_range: Some("2xx".to_string()), body_contains: vec![marker.clone()], ..HttpOracle::default() },
+                oracle_step: Some(2),
+                why_this_confirms: Some("The recipe captures a real invite token, finalizes it once, then proves the finalized token is still accepted.".to_string()),
+                recipe: Some(recipe_metadata("finalized_explorer_invite_token_acceptance", &owner_role, &member_role, true)),
+            });
+        }
+
+        let Some(cancel) = invite_cancel else {
+            return self.setup_missing(
+                candidate,
+                "SeedData",
+                "stale inviter cancel recipe needs an invite cancel/delete route",
+            );
+        };
+        let mut stale_steps = vec![
+            invite_seed_step(create, &owner_role, &member_role, &marker),
+            lifecycle_step(
+                accept,
+                &member_role,
+                HttpWorkflowStepPurpose::StateTransition,
+                "invitee accepts invite and finalizes membership",
+                Some(token_json("invite_token", &marker)),
+                Some(HttpOracle {
+                    status_range: Some("2xx".to_string()),
+                    body_contains: vec![marker.clone()],
+                    ..HttpOracle::default()
+                }),
+            ),
+        ];
+        if let (Some(remove), Some(access)) = (member_remove, member_access) {
+            stale_steps.push(lifecycle_step(
+                remove,
+                &owner_role,
+                HttpWorkflowStepPurpose::StateTransition,
+                "remove member after invite finalization",
+                Some(member_json(&member_role, &marker)),
+                Some(status_oracle(vec![200, 202, 204])),
+            ));
+            stale_steps.push(lifecycle_step(
+                access,
+                &member_role,
+                HttpWorkflowStepPurpose::Postcondition,
+                "member has no access after removal",
+                None,
+                Some(status_oracle(vec![401, 403, 404])),
+            ));
+        }
+        stale_steps.push(lifecycle_step(
+            cancel,
+            &owner_role,
+            HttpWorkflowStepPurpose::Exploit,
+            "stale inviter cancel succeeds after finalization",
+            Some(token_json("invite_token", &marker)),
+            Some(status_oracle(vec![200, 202, 204])),
+        ));
+        LiveTestPlan::HttpWorkflow(HttpWorkflowPlan {
+            hypothesis: Some(candidate.hypothesis.clone()),
+            steps: stale_steps,
+            benign_steps: Vec::new(),
+            cleanup_steps: Vec::new(),
+            oracle: HttpOracle { status_range: Some("2xx".to_string()), body_contains: vec![marker.clone()], ..HttpOracle::default() },
+            oracle_step: Some(1),
+            why_this_confirms: Some("The recipe creates and finalizes an invite, then verifies the stale inviter can still cancel it after lifecycle state changed.".to_string()),
+            recipe: Some(recipe_metadata(if text.contains("explorer") { "explorer_invite_stale_inviter_cancel" } else { "trip_invite_stale_inviter_cancel" }, &owner_role, &member_role, true)),
+        })
+    }
+
+    fn setup_missing(
+        &self,
+        candidate: &PentestCandidateRecord,
+        kind: &str,
+        message: impl Into<String>,
+    ) -> LiveTestPlan {
+        match self.no_plan(candidate, NoPlanReasonCode::SetupMissing, message) {
+            LiveTestPlan::NoPlan(mut plan) => {
+                plan.no_plan_reason =
+                    plan.no_plan_reason.with_context("setup_missing", kind.to_string());
+                LiveTestPlan::NoPlan(plan)
+            }
+            plan => plan,
+        }
+    }
+
     fn no_plan(
         &self,
         candidate: &PentestCandidateRecord,
@@ -1174,6 +1377,23 @@ fn classify_strategy(candidate: &PentestCandidateRecord) -> LivePlanStrategy {
         "FILE_DOWNLOAD_FLOW" | "UNSAFE_FILE_DOWNLOAD" => {
             return LivePlanStrategy::PathTraversal;
         }
+        "BUSINESS_LOGIC_ABUSE"
+            if contains_any(
+                &text,
+                &[
+                    "stale inviter",
+                    "finalized invite",
+                    "invite token acceptance",
+                    "direct member add",
+                    "without invite",
+                    "without consent",
+                    "member lifecycle",
+                    "invite lifecycle",
+                ],
+            ) =>
+        {
+            return LivePlanStrategy::StatefulLifecycleRecipe;
+        }
         "BUSINESS_LOGIC_ABUSE" | "PAYMENT_LOGIC_ABUSE" | "CREDITS_ABUSE" => {
             return LivePlanStrategy::BusinessLogicReviewOnly;
         }
@@ -1200,6 +1420,21 @@ fn classify_strategy(candidate: &PentestCandidateRecord) -> LivePlanStrategy {
         &["idor", "object isolation", "tenant isolation", "tenant", "user b", "user a"],
     ) {
         return LivePlanStrategy::IdorObjectIsolation;
+    }
+    if contains_any(
+        &text,
+        &[
+            "stale inviter",
+            "finalized invite",
+            "invite token acceptance",
+            "direct member add",
+            "without invite",
+            "without consent",
+            "member lifecycle",
+            "invite lifecycle",
+        ],
+    ) {
+        return LivePlanStrategy::StatefulLifecycleRecipe;
     }
     if contains_any(&text, &["csrf", "cross-site request"]) {
         return LivePlanStrategy::Csrf;
@@ -1514,7 +1749,168 @@ fn request_for_endpoint(endpoint: &EndpointCandidate, role: &str) -> LiveHttpReq
         destructive: endpoint.state_changing,
         payload: None,
         label: Some(endpoint.source.clone()),
+        purpose: None,
+        oracle: None,
     }
+}
+
+fn lifecycle_route_endpoints(
+    model: Option<&RouteModel>,
+    target_urls: &[String],
+    matched: &[EndpointCandidate],
+) -> Vec<EndpointCandidate> {
+    let mut out = matched.to_vec();
+    if let Some(model) = model {
+        out.extend(
+            model.backend_routes.iter().map(|route| endpoint_from_route(route, target_urls)),
+        );
+    }
+    out.sort_by(|a, b| a.url.cmp(&b.url).then(a.method.cmp(&b.method)));
+    out.dedup_by(|a, b| a.url == b.url && a.method == b.method);
+    out
+}
+
+fn lifecycle_step(
+    endpoint: &EndpointCandidate,
+    role: &str,
+    purpose: HttpWorkflowStepPurpose,
+    label: &str,
+    json: Option<serde_json::Value>,
+    oracle: Option<HttpOracle>,
+) -> LiveHttpRequest {
+    let mut request = request_for_endpoint(endpoint, role);
+    request.url = template_token_url(&request.url, endpoint);
+    request.json = json;
+    request.purpose = Some(purpose);
+    request.label = Some(label.to_string());
+    request.oracle = oracle;
+    request.destructive =
+        request.destructive || purpose != HttpWorkflowStepPurpose::PositiveControl;
+    request
+}
+
+fn invite_seed_step(
+    endpoint: &EndpointCandidate,
+    inviter_role: &str,
+    invitee_role: &str,
+    marker: &str,
+) -> LiveHttpRequest {
+    let mut request = lifecycle_step(
+        endpoint,
+        inviter_role,
+        HttpWorkflowStepPurpose::Seed,
+        "create disposable invite and capture token",
+        Some(member_json(invitee_role, marker)),
+        Some(HttpOracle { status_range: Some("2xx".to_string()), ..HttpOracle::default() }),
+    );
+    request.captures = Some(serde_json::json!({
+        "invite_token": {
+            "from": "json",
+            "path": "token",
+            "regex": r#"([A-Za-z0-9_.:-]+)"#
+        },
+        "invite_token_fallback": {
+            "from": "regex_body",
+            "regex": r#"(?i)"(?:token|invite_token|invitation_token|code|id|invite_id)"\s*:\s*"?([A-Za-z0-9_.:-]+)"?"#
+        }
+    }));
+    request
+}
+
+fn recipe_metadata(
+    id: &str,
+    owner_role: &str,
+    member_role: &str,
+    reset_required: bool,
+) -> StatefulFixtureRecipe {
+    StatefulFixtureRecipe {
+        id: id.to_string(),
+        fixture: Some("lifecycle_invite_member".to_string()),
+        reset_required: Some(reset_required),
+        cleanup_required: Some(!reset_required),
+        required_roles: vec![owner_role.to_string(), member_role.to_string()],
+    }
+}
+
+fn status_oracle(expect_status: Vec<u16>) -> HttpOracle {
+    HttpOracle { expect_status, ..HttpOracle::default() }
+}
+
+fn token_json(token_var: &str, marker: &str) -> serde_json::Value {
+    serde_json::json!({
+        "token": format!("{{{{{token_var}}}}}"),
+        "invite_token": format!("{{{{{token_var}}}}}"),
+        "marker": marker,
+    })
+}
+
+fn member_json(member_role: &str, marker: &str) -> serde_json::Value {
+    serde_json::json!({
+        "email": format!("{member_role}@nyctos.test"),
+        "user": member_role,
+        "member": member_role,
+        "role": "member",
+        "marker": marker,
+    })
+}
+
+fn template_token_url(url: &str, endpoint: &EndpointCandidate) -> String {
+    let mut out = url.to_string();
+    for param in &endpoint.params {
+        if param.to_ascii_lowercase().contains("token")
+            || param.to_ascii_lowercase().contains("code")
+            || param.to_ascii_lowercase().contains("invite")
+            || param == "id"
+        {
+            out = out
+                .replace(&format!(":{param}"), "{{invite_token}}")
+                .replace(&format!("{{{param}}}"), "{{invite_token}}");
+        }
+    }
+    out
+}
+
+fn route_looks_invite_create_endpoint(endpoint: &EndpointCandidate) -> bool {
+    let path = endpoint.path.to_ascii_lowercase();
+    endpoint.state_changing
+        && path.contains("invite")
+        && !["accept", "join", "redeem", "consume", "cancel", "delete"]
+            .iter()
+            .any(|needle| path.contains(needle))
+}
+
+fn route_looks_invite_accept_endpoint(endpoint: &EndpointCandidate) -> bool {
+    let path = endpoint.path.to_ascii_lowercase();
+    endpoint.state_changing
+        && path.contains("invite")
+        && ["accept", "join", "redeem", "consume"].iter().any(|needle| path.contains(needle))
+}
+
+fn route_looks_invite_cancel_endpoint(endpoint: &EndpointCandidate) -> bool {
+    let path = endpoint.path.to_ascii_lowercase();
+    endpoint.state_changing
+        && path.contains("invite")
+        && (matches!(endpoint.method.as_str(), "DELETE")
+            || ["cancel", "delete", "revoke"].iter().any(|needle| path.contains(needle)))
+}
+
+fn route_looks_member_endpoint(endpoint: &EndpointCandidate) -> bool {
+    let path = endpoint.path.to_ascii_lowercase();
+    path.contains("member") || path.contains("participant") || path.contains("explorer")
+}
+
+fn route_looks_member_add_endpoint(endpoint: &EndpointCandidate) -> bool {
+    endpoint.state_changing
+        && route_looks_member_endpoint(endpoint)
+        && !route_looks_member_remove_endpoint(endpoint)
+}
+
+fn route_looks_member_remove_endpoint(endpoint: &EndpointCandidate) -> bool {
+    let path = endpoint.path.to_ascii_lowercase();
+    endpoint.state_changing
+        && route_looks_member_endpoint(endpoint)
+        && (matches!(endpoint.method.as_str(), "DELETE")
+            || ["remove", "delete", "revoke"].iter().any(|needle| path.contains(needle)))
 }
 
 fn concrete_authz_object_endpoint(
@@ -2692,6 +3088,137 @@ mod tests {
                 assert!(plan.no_plan_reason.message.contains("browser"));
             }
             other => panic!("expected setup-missing no-plan, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn planner_emits_stateful_invite_lifecycle_recipe_when_gates_ready() {
+        let targets = vec!["http://localhost:3000".to_string()];
+        let mut owner = auth_profile_with_object("owner", None);
+        owner.bearer_token_env = Some("OWNER_TOKEN".to_string());
+        let mut member = auth_profile_with_object("member", None);
+        member.bearer_token_env = Some("MEMBER_TOKEN".to_string());
+        let auth = vec![owner, member];
+        let auth_env = BTreeMap::from([
+            ("OWNER_TOKEN".to_string(), "owner-token".to_string()),
+            ("MEMBER_TOKEN".to_string(), "member-token".to_string()),
+        ]);
+        let capabilities = discover_env_capabilities(EnvCapabilityDiscoveryInput {
+            target_urls: &targets,
+            auth_profiles: &auth,
+            auth_env_overrides: &auth_env,
+            browser_checks_enabled: false,
+            browser_available: false,
+            seed_supported: true,
+            reset_supported: true,
+            exploit_mode_enabled: true,
+            allow_state_changing: true,
+            dry_run: false,
+        });
+        let model = RouteModel {
+            backend_routes: vec![
+                RouteModelEndpoint {
+                    method: "POST".to_string(),
+                    path: "/api/trips/:trip_id/invites".to_string(),
+                    params: vec!["trip_id".to_string()],
+                    state_changing: true,
+                    confidence: 0.95,
+                    ..RouteModelEndpoint::default()
+                },
+                RouteModelEndpoint {
+                    method: "POST".to_string(),
+                    path: "/api/trips/invites/:token/accept".to_string(),
+                    params: vec!["token".to_string()],
+                    state_changing: true,
+                    confidence: 0.95,
+                    ..RouteModelEndpoint::default()
+                },
+                RouteModelEndpoint {
+                    method: "DELETE".to_string(),
+                    path: "/api/trips/invites/:token/cancel".to_string(),
+                    params: vec!["token".to_string()],
+                    state_changing: true,
+                    confidence: 0.95,
+                    ..RouteModelEndpoint::default()
+                },
+            ],
+            ..RouteModel::default()
+        };
+        let synth = LiveTestPlanSynthesizer::new(LiveTestPlanSynthesisContext {
+            route_model: Some(&model),
+            target_urls: &targets,
+            auth_profiles: &auth,
+            browser_checks_enabled: false,
+            allow_state_changing: true,
+            capabilities: Some(&capabilities),
+        });
+        let candidate = candidate(
+            "BUSINESS_LOGIC_ABUSE",
+            "src/routes/invites.rs",
+            "Trip invite stale inviter cancel after invite acceptance",
+        );
+
+        match synth.synthesize(&candidate) {
+            LiveTestPlan::HttpWorkflow(plan) => {
+                assert_eq!(plan.recipe.as_ref().unwrap().id, "trip_invite_stale_inviter_cancel");
+                assert_eq!(plan.steps[0].purpose, Some(HttpWorkflowStepPurpose::Seed));
+                assert_eq!(plan.steps[1].purpose, Some(HttpWorkflowStepPurpose::StateTransition));
+                assert_eq!(plan.steps[2].purpose, Some(HttpWorkflowStepPurpose::Exploit));
+                assert!(plan.steps[2].url.contains("{{invite_token}}"));
+                LiveTestPlan::HttpWorkflow(plan).validate().unwrap();
+            }
+            other => panic!("expected stateful lifecycle workflow, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn planner_returns_setup_missing_reset_hook_for_mutating_recipe_without_cleanup() {
+        let targets = vec!["http://localhost:3000".to_string()];
+        let mut owner = auth_profile_with_object("owner", None);
+        owner.bearer_token_env = Some("OWNER_TOKEN".to_string());
+        let mut member = auth_profile_with_object("member", None);
+        member.bearer_token_env = Some("MEMBER_TOKEN".to_string());
+        let auth = vec![owner, member];
+        let auth_env = BTreeMap::from([
+            ("OWNER_TOKEN".to_string(), "owner-token".to_string()),
+            ("MEMBER_TOKEN".to_string(), "member-token".to_string()),
+        ]);
+        let capabilities = discover_env_capabilities(EnvCapabilityDiscoveryInput {
+            target_urls: &targets,
+            auth_profiles: &auth,
+            auth_env_overrides: &auth_env,
+            browser_checks_enabled: false,
+            browser_available: false,
+            seed_supported: true,
+            reset_supported: false,
+            exploit_mode_enabled: true,
+            allow_state_changing: true,
+            dry_run: false,
+        });
+        let model = RouteModel::default();
+        let synth = LiveTestPlanSynthesizer::new(LiveTestPlanSynthesisContext {
+            route_model: Some(&model),
+            target_urls: &targets,
+            auth_profiles: &auth,
+            browser_checks_enabled: false,
+            allow_state_changing: true,
+            capabilities: Some(&capabilities),
+        });
+        let candidate = candidate(
+            "BUSINESS_LOGIC_ABUSE",
+            "src/routes/invites.rs",
+            "Finalized explorer invite token acceptance",
+        );
+
+        match synth.synthesize(&candidate) {
+            LiveTestPlan::NoPlan(plan) => {
+                assert_eq!(plan.no_plan_reason.code, NoPlanReasonCode::SetupMissing);
+                assert_eq!(
+                    plan.no_plan_reason.context.get("setup_missing").map(String::as_str),
+                    Some("ResetHook")
+                );
+            }
+            other => panic!("expected setup-missing reset hook no-plan, got {other:?}"),
         }
     }
 

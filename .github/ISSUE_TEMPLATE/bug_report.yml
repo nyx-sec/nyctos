@@ -1,0 +1,84 @@
+name: Bug report
+description: Report a crash, incorrect behavior, broken setup flow, or bad output in Nyctos.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. Please do not report security vulnerabilities here. Use private disclosure through `SECURITY.md`.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One or two sentences describing what went wrong.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Exact steps, commands, config snippets, target app setup, or a minimal repo/fixture.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include logs, error output, screenshots, findings, trace IDs, or API responses when useful.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Nyctos version or commit
+      placeholder: "nyctos 0.1.0 or commit SHA"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS / arch
+      placeholder: "macOS 15 arm64, Ubuntu 24.04 x86_64, Windows 11 x86_64"
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - CLI / scan orchestration
+        - Dashboard / frontend
+        - API / WebSocket events
+        - Setup / doctor
+        - Repo ingestion / nyx adapter
+        - Live verification
+        - Unsafe attack agent
+        - Sandbox / env-builder
+        - AI runtime / prompts
+        - SQLx / product store
+        - GitHub Action / CI
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: ai_runtime
+    attributes:
+      label: AI runtime, if relevant
+      placeholder: "none, Anthropic, Claude Code, Codex, local LLM"
+  - type: input
+    id: sandbox
+    attributes:
+      label: Sandbox backend, if relevant
+      placeholder: "process, birdcage, docker, libkrun, firecracker"
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context
+      description: Anything else that would help reproduce or understand the issue.

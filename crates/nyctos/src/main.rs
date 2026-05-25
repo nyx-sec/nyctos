@@ -4241,8 +4241,15 @@ fn collect_plan_capability_needs(
             }
         }
         LiveTestPlan::HttpWorkflow(plan) => {
-            for req in plan.steps.iter().chain(plan.benign_steps.iter()) {
+            for req in
+                plan.steps.iter().chain(plan.benign_steps.iter()).chain(plan.cleanup_steps.iter())
+            {
                 collect_request_need(req, roles, state_changing);
+            }
+            if plan.recipe.as_ref().and_then(|r| r.reset_required).unwrap_or(false)
+                || plan.recipe.as_ref().and_then(|r| r.cleanup_required).unwrap_or(false)
+            {
+                *state_changing = true;
             }
         }
         LiveTestPlan::DifferentialHttp(plan) => {
@@ -4253,11 +4260,17 @@ fn collect_plan_capability_needs(
         LiveTestPlan::AuthzRoleComparison(plan) => {
             roles.insert(plan.allowed_role.clone());
             roles.insert(plan.challenged_role.clone());
+            for req in plan.setup_steps.iter().chain(plan.benign_steps.iter()) {
+                collect_request_need(req, roles, state_changing);
+            }
             collect_request_need(&plan.request, roles, state_changing);
         }
         LiveTestPlan::AuthzObjectOwnership(plan) => {
             roles.insert(plan.object.owner_role.clone());
             roles.insert(plan.accessor_role.clone());
+            for req in plan.seed_steps.iter().chain(plan.benign_steps.iter()) {
+                collect_request_need(req, roles, state_changing);
+            }
             collect_request_need(&plan.owner_request, roles, state_changing);
             collect_request_need(&plan.accessor_request, roles, state_changing);
         }

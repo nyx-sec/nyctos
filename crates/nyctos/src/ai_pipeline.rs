@@ -3869,6 +3869,19 @@ pub async fn run_attack_agent_pass(
         Some(&metrics),
     );
     let trace_id = trace.id.clone();
+    let structured_replay_plans = vulnerabilities
+        .iter()
+        .map(|vulnerability| {
+            serde_json::json!({
+                "title": vulnerability.title,
+                "fingerprint": attack_vulnerability_fingerprint(vulnerability),
+                "structured_replay_plan": attack_agent_structured_replay_plan(
+                    vulnerability,
+                    target_urls,
+                ),
+            })
+        })
+        .collect::<Vec<_>>();
     trace.verifier_blob = Some(
         serde_json::json!({
             "kind": "unsafe_attack_agent",
@@ -3879,6 +3892,7 @@ pub async fn run_attack_agent_pass(
             "audit": audit,
             "final_message": final_message,
             "vulnerabilities": vulnerabilities,
+            "structured_replay_plans": structured_replay_plans,
         })
         .to_string(),
     );
@@ -3896,6 +3910,7 @@ pub async fn run_attack_agent_pass(
             environment_run_id,
             &trace_id,
             &candidates,
+            target_urls,
             vulnerability,
             finished_at,
         )
@@ -3985,6 +4000,7 @@ async fn persist_attack_agent_vulnerability(
     environment_run_id: &str,
     trace_id: &str,
     candidates: &[PentestCandidateRecord],
+    target_urls: &[String],
     vulnerability: AttackAgentVulnerability,
     now_ms: i64,
 ) -> anyhow::Result<bool> {
@@ -4000,6 +4016,11 @@ async fn persist_attack_agent_vulnerability(
     let affected_components = attack_components_or_default(&vulnerability);
     let severity = attack_agent_contextual_severity(&vulnerability);
     let reported_confidence = confidence_fraction(vulnerability.confidence);
+    let structured_replay_plan = attack_agent_structured_replay_plan(&vulnerability, target_urls);
+    let verifier_test_plan = structured_replay_plan
+        .get("plan")
+        .map(|plan| plan.to_string())
+        .unwrap_or_else(|| vulnerability.repro_steps.clone());
     let candidate = match matched_candidate {
         Some(existing) => PentestCandidateRecord {
             title: vulnerability.title.clone(),
@@ -4007,7 +4028,7 @@ async fn persist_attack_agent_vulnerability(
             severity_guess: severity.clone(),
             affected_components: affected_components.clone(),
             hypothesis: vulnerability.business_impact.clone(),
-            test_plan: vulnerability.repro_steps.clone(),
+            test_plan: verifier_test_plan.clone(),
             status: "Verified".to_string(),
             rejection_reason: None,
             confidence: reported_confidence.max(existing.confidence),
@@ -4026,7 +4047,7 @@ async fn persist_attack_agent_vulnerability(
             severity_guess: severity.clone(),
             affected_components: affected_components.clone(),
             hypothesis: vulnerability.business_impact.clone(),
-            test_plan: vulnerability.repro_steps.clone(),
+            test_plan: verifier_test_plan,
             status: "Verified".to_string(),
             rejection_reason: None,
             confidence: reported_confidence,
@@ -4056,6 +4077,7 @@ async fn persist_attack_agent_vulnerability(
             "trace_id": trace_id,
             "target": "local dev app",
             "safety_policy": "disabled",
+            "structured_replay_plan": structured_replay_plan,
         })),
         response: Some(serde_json::json!({
             "title": vulnerability.title.clone(),
@@ -4118,6 +4140,400 @@ async fn persist_attack_agent_vulnerability(
     };
     store.verified_vulnerabilities().upsert(&vuln).await?;
     Ok(promoted_existing)
+}
+
+fn attack_agent_structured_replay_plan(
+    vulnerability: &AttackAgentVulnerability,
+    target_urls: &[String],
+) -> serde_json::Value {
+    let policy_note = "agent-derived replay candidates must be executed only by the normal live verifier with LiveVerifierOptions and ExploitSafetyPolicy";
+    match extract_attack_agent_replay_plan(vulnerability, target_urls) {
+        Ok(plan) => serde_json::json!({
+            "source": "agent-derived",
+            "status": "available",
+            "policy_enforcement": "LiveVerifierOptions/ExploitSafetyPolicy",
+            "plan": plan,
+            "notes": [policy_note],
+        }),
+        Err(reason) => serde_json::json!({
+            "source": "agent-derived",
+            "status": "replay_unavailable",
+            "reason": reason,
+            "policy_enforcement": "LiveVerifierOptions/ExploitSafetyPolicy",
+            "notes": [policy_note],
+        }),
+    }
+}
+
+fn extract_attack_agent_replay_plan(
+    vulnerability: &AttackAgentVulnerability,
+    target_urls: &[String],
+) -> Result<serde_json::Value, String> {
+    for raw in attack_agent_json_plan_candidates(vulnerability) {
+        if let Ok(Some(plan)) = normalise_live_test_plan(&raw, target_urls) {
+            return Ok(plan);
+        }
+    }
+
+    let steps = attack_agent_http_steps(vulnerability);
+    if steps.is_empty() {
+        return Err("agent proof did not include extractable HTTP endpoint/method/body/role steps"
+            .to_string());
+    }
+    let body_contains = attack_agent_expected_markers(vulnerability);
+    if body_contains.is_empty() && !steps.iter().any(|step| step.get("oracle").is_some()) {
+        return Err(
+            "agent proof did not include a deterministic expected result/body/header marker"
+                .to_string(),
+        );
+    }
+
+    let plan = serde_json::json!({
+        "kind": "http_workflow",
+        "hypothesis": vulnerability.business_impact,
+        "steps": steps,
+        "oracle": {
+            "body_contains": body_contains,
+        },
+        "why_this_confirms": "Sanitized deterministic replay metadata extracted from unsafe attack-agent proof; execution remains gated by the normal live verifier policy.",
+    });
+    normalise_live_test_plan(&plan.to_string(), target_urls)?.ok_or_else(|| {
+        "agent-derived HTTP workflow was rejected by live-plan normalization".to_string()
+    })
+}
+
+fn attack_agent_json_plan_candidates(vulnerability: &AttackAgentVulnerability) -> Vec<String> {
+    let mut candidates = Vec::new();
+    for component in &vulnerability.affected_components {
+        for key in ["structured_replay_plan", "replay_plan", "live_test_plan", "plan"] {
+            if let Some(value) = component.get(key) {
+                candidates.push(value.to_string());
+            }
+        }
+    }
+    for raw in [&vulnerability.repro_steps, &vulnerability.evidence_summary] {
+        let trimmed = raw.trim();
+        if trimmed.starts_with('{') && trimmed.ends_with('}') {
+            candidates.push(trimmed.to_string());
+        }
+        for block in fenced_json_blocks(trimmed) {
+            candidates.push(block);
+        }
+    }
+    candidates
+}
+
+fn fenced_json_blocks(raw: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = raw;
+    while let Some(start) = rest.find("```") {
+        rest = &rest[start + 3..];
+        if let Some(newline) = rest.find('\n') {
+            let lang = rest[..newline].trim();
+            rest = &rest[newline + 1..];
+            if let Some(end) = rest.find("```") {
+                let body = rest[..end].trim();
+                if lang.eq_ignore_ascii_case("json") || body.starts_with('{') {
+                    out.push(body.to_string());
+                }
+                rest = &rest[end + 3..];
+            } else {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+    out
+}
+
+fn attack_agent_http_steps(vulnerability: &AttackAgentVulnerability) -> Vec<serde_json::Value> {
+    let mut steps = Vec::new();
+    for component in &vulnerability.affected_components {
+        if let Some(step) = attack_agent_step_from_component(component) {
+            steps.push(step);
+        }
+    }
+    if steps.is_empty() {
+        steps.extend(attack_agent_steps_from_text(&vulnerability.repro_steps));
+    }
+    steps
+}
+
+fn attack_agent_step_from_component(component: &serde_json::Value) -> Option<serde_json::Value> {
+    let endpoint_raw = first_string_field(component, &["url", "endpoint", "path", "route"])?;
+    let (endpoint_method, endpoint) = split_method_endpoint(&endpoint_raw);
+    let method = first_string_field(component, &["method", "http_method"])
+        .or(endpoint_method)
+        .unwrap_or_else(|| "GET".to_string());
+    let mut step = serde_json::Map::new();
+    step.insert("method".to_string(), serde_json::Value::String(method));
+    if endpoint.starts_with("http://") || endpoint.starts_with("https://") {
+        step.insert("url".to_string(), serde_json::Value::String(endpoint));
+    } else {
+        step.insert("path".to_string(), serde_json::Value::String(endpoint));
+    }
+    if let Some(role) = first_string_field(component, &["role", "as", "auth_role"]) {
+        step.insert("as".to_string(), serde_json::Value::String(role));
+    }
+    if let Some(body) = first_value_field(component, &["json", "body", "request_body", "payload"]) {
+        if body.is_object() || body.is_array() {
+            step.insert("json".to_string(), body.clone());
+        } else if let Some(body) = body.as_str() {
+            step.insert("body".to_string(), serde_json::Value::String(body.to_string()));
+        }
+    }
+    let destructive = method_is_state_changing(step.get("method").and_then(|v| v.as_str()));
+    step.insert("destructive".to_string(), serde_json::Value::Bool(destructive));
+    if let Some(marker) =
+        first_string_field(component, &["expected_result", "expected", "body_contains", "marker"])
+    {
+        step.insert("oracle".to_string(), serde_json::json!({ "body_contains": [marker] }));
+    }
+    Some(serde_json::Value::Object(step))
+}
+
+fn attack_agent_steps_from_text(raw: &str) -> Vec<serde_json::Value> {
+    raw.lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() {
+                return None;
+            }
+            if line.contains("curl ") || line.starts_with("curl") {
+                return attack_agent_step_from_curl(line);
+            }
+            attack_agent_step_from_http_line(line)
+        })
+        .collect()
+}
+
+fn attack_agent_step_from_http_line(line: &str) -> Option<serde_json::Value> {
+    let mut parts = line.split_whitespace();
+    let method = parts.next()?.trim_matches(|c: char| !c.is_ascii_alphabetic());
+    if !is_http_method(method) {
+        return None;
+    }
+    let endpoint = parts
+        .find(|part| {
+            part.starts_with('/') || part.starts_with("http://") || part.starts_with("https://")
+        })?
+        .trim_matches(|c: char| c == '`' || c == '"' || c == '\'' || c == ',' || c == ';')
+        .to_string();
+    Some(attack_agent_step_json(method, &endpoint, None, role_from_text(line)))
+}
+
+fn attack_agent_step_from_curl(line: &str) -> Option<serde_json::Value> {
+    let tokens = shell_like_tokens(line);
+    let mut method: Option<String> = None;
+    let mut body: Option<String> = None;
+    let mut url: Option<String> = None;
+    let mut idx = 0;
+    while idx < tokens.len() {
+        match tokens[idx].as_str() {
+            "-X" | "--request" => {
+                if let Some(next) = tokens.get(idx + 1) {
+                    method = Some(next.to_ascii_uppercase());
+                    idx += 1;
+                }
+            }
+            "-d" | "--data" | "--data-raw" | "--data-binary" | "--json" => {
+                if let Some(next) = tokens.get(idx + 1) {
+                    body = Some(next.clone());
+                    if method.is_none() {
+                        method = Some("POST".to_string());
+                    }
+                    idx += 1;
+                }
+            }
+            token
+                if token.starts_with("http://")
+                    || token.starts_with("https://")
+                    || token.starts_with('/') =>
+            {
+                url = Some(token.to_string());
+            }
+            _ => {}
+        }
+        idx += 1;
+    }
+    let url = url?;
+    let method = method.unwrap_or_else(|| "GET".to_string());
+    Some(attack_agent_step_json(&method, &url, body, role_from_text(line)))
+}
+
+fn attack_agent_step_json(
+    method: &str,
+    endpoint: &str,
+    body: Option<String>,
+    role: Option<String>,
+) -> serde_json::Value {
+    let mut step = serde_json::Map::new();
+    step.insert("method".to_string(), serde_json::Value::String(method.to_ascii_uppercase()));
+    if endpoint.starts_with("http://") || endpoint.starts_with("https://") {
+        step.insert("url".to_string(), serde_json::Value::String(endpoint.to_string()));
+    } else {
+        step.insert("path".to_string(), serde_json::Value::String(endpoint.to_string()));
+    }
+    if let Some(role) = role {
+        step.insert("as".to_string(), serde_json::Value::String(role));
+    }
+    if let Some(body) = body {
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+            step.insert("json".to_string(), json);
+        } else {
+            step.insert("body".to_string(), serde_json::Value::String(body));
+        }
+    }
+    step.insert(
+        "destructive".to_string(),
+        serde_json::Value::Bool(method_is_state_changing(Some(method))),
+    );
+    serde_json::Value::Object(step)
+}
+
+fn attack_agent_expected_markers(vulnerability: &AttackAgentVulnerability) -> Vec<String> {
+    let mut markers = Vec::new();
+    for component in &vulnerability.affected_components {
+        for key in ["expected_result", "expected", "body_contains", "marker"] {
+            if let Some(value) = first_string_field(component, &[key]) {
+                markers.push(value);
+            }
+        }
+    }
+    for raw in [&vulnerability.evidence_summary, &vulnerability.repro_steps] {
+        markers.extend(quoted_markers(raw));
+    }
+    let mut seen = HashSet::new();
+    markers
+        .into_iter()
+        .map(|marker| marker.trim().to_string())
+        .filter(|marker| marker.len() >= 4 && marker.len() <= 200)
+        .filter(|marker| seen.insert(marker.clone()))
+        .take(8)
+        .collect()
+}
+
+fn quoted_markers(raw: &str) -> Vec<String> {
+    let mut markers = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    for ch in raw.chars() {
+        if let Some(q) = quote {
+            if ch == q {
+                let marker = current.trim();
+                if marker.len() >= 4
+                    && !marker.starts_with("http://")
+                    && !marker.starts_with("https://")
+                    && !marker.starts_with('/')
+                {
+                    markers.push(marker.to_string());
+                }
+                current.clear();
+                quote = None;
+            } else {
+                current.push(ch);
+            }
+        } else if matches!(ch, '"' | '\'' | '`') {
+            quote = Some(ch);
+        }
+    }
+    markers
+}
+
+fn first_string_field(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    let obj = value.as_object()?;
+    for key in keys {
+        if let Some(value) = obj.get(*key).and_then(|v| v.as_str()) {
+            let value = value.trim();
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn first_value_field<'a>(
+    value: &'a serde_json::Value,
+    keys: &[&str],
+) -> Option<&'a serde_json::Value> {
+    let obj = value.as_object()?;
+    keys.iter().find_map(|key| obj.get(*key).filter(|value| !value.is_null()))
+}
+
+fn is_http_method(method: &str) -> bool {
+    matches!(
+        method.trim().to_ascii_uppercase().as_str(),
+        "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS"
+    )
+}
+
+fn split_method_endpoint(raw: &str) -> (Option<String>, String) {
+    let mut parts = raw.split_whitespace();
+    let Some(first) = parts.next() else {
+        return (None, raw.to_string());
+    };
+    if !is_http_method(first) {
+        return (None, raw.to_string());
+    }
+    let endpoint = parts.next().unwrap_or(raw).to_string();
+    (Some(first.to_ascii_uppercase()), endpoint)
+}
+
+fn method_is_state_changing(method: Option<&str>) -> bool {
+    !matches!(
+        method.unwrap_or("GET").trim().to_ascii_uppercase().as_str(),
+        "GET" | "HEAD" | "OPTIONS"
+    )
+}
+
+fn role_from_text(line: &str) -> Option<String> {
+    let lower = line.to_ascii_lowercase();
+    for prefix in ["role=", "role:", "as=", "as:"] {
+        if let Some(pos) = lower.find(prefix) {
+            let value =
+                line[pos + prefix.len()..].split_whitespace().next().unwrap_or("").trim_matches(
+                    |c: char| c == '"' || c == '\'' || c == '`' || c == ',' || c == ';',
+                );
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn shell_like_tokens(line: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    let mut chars = line.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if let Some(q) = quote {
+            if ch == q {
+                quote = None;
+            } else if ch == '\\' {
+                if let Some(next) = chars.next() {
+                    current.push(next);
+                }
+            } else {
+                current.push(ch);
+            }
+        } else if matches!(ch, '"' | '\'') {
+            quote = Some(ch);
+        } else if ch.is_whitespace() {
+            if !current.is_empty() {
+                tokens.push(std::mem::take(&mut current));
+            }
+        } else {
+            current.push(ch);
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
 }
 
 fn attack_agent_candidate_match<'a>(
@@ -8263,5 +8679,63 @@ mod tests {
         assert_eq!(severity, "Low");
         assert!(risk < 4.0);
         assert!(rationale.contains("development-only exposure lowers production risk"));
+    }
+
+    #[test]
+    fn attack_agent_replay_extracts_agent_derived_http_workflow() {
+        let vulnerability = AttackAgentVulnerability {
+            title: "Tenant export bypass".to_string(),
+            vuln_class: "Broken Access Control".to_string(),
+            severity: "High".to_string(),
+            confidence: 95,
+            affected_components: vec![serde_json::json!({
+                "endpoint": "/api/admin/export",
+                "method": "GET",
+                "role": "anonymous",
+                "expected_result": "customer_email",
+            })],
+            business_impact: "Anonymous users can export tenant data.".to_string(),
+            evidence_summary: "Response included `customer_email`.".to_string(),
+            repro_steps: "GET /api/admin/export as:anonymous".to_string(),
+            remediation: "Require admin authorization.".to_string(),
+            source_candidate_ids: Vec::new(),
+            source_signal_ids: Vec::new(),
+            proof_artifact_paths: Vec::new(),
+        };
+
+        let replay =
+            attack_agent_structured_replay_plan(&vulnerability, &["http://localhost:8787".into()]);
+
+        assert_eq!(replay["source"], "agent-derived");
+        assert_eq!(replay["status"], "available");
+        assert_eq!(replay["policy_enforcement"], "LiveVerifierOptions/ExploitSafetyPolicy");
+        assert_eq!(replay["plan"]["kind"], "http_workflow");
+        assert_eq!(replay["plan"]["steps"][0]["url"], "http://localhost:8787/api/admin/export");
+        assert_eq!(replay["plan"]["steps"][0]["as"], "anonymous");
+        assert_eq!(replay["plan"]["oracle"]["body_contains"][0], "customer_email");
+    }
+
+    #[test]
+    fn attack_agent_replay_marks_unavailable_without_expected_marker() {
+        let vulnerability = AttackAgentVulnerability {
+            title: "Vague proof".to_string(),
+            vuln_class: "Unknown".to_string(),
+            severity: "Low".to_string(),
+            confidence: 50,
+            affected_components: Vec::new(),
+            business_impact: "Maybe reachable.".to_string(),
+            evidence_summary: "It seemed to work.".to_string(),
+            repro_steps: "curl http://localhost:8787/api/thing".to_string(),
+            remediation: "Investigate.".to_string(),
+            source_candidate_ids: Vec::new(),
+            source_signal_ids: Vec::new(),
+            proof_artifact_paths: Vec::new(),
+        };
+
+        let replay =
+            attack_agent_structured_replay_plan(&vulnerability, &["http://localhost:8787".into()]);
+
+        assert_eq!(replay["status"], "replay_unavailable");
+        assert!(replay["reason"].as_str().unwrap().contains("expected result"));
     }
 }
