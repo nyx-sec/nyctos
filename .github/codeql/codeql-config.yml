@@ -1,0 +1,9 @@
+name: "CodeQL Config"
+
+paths-ignore:
+  - "fuzz/corpus"
+  - "fuzz/artifacts"
+  - "fuzz/target"
+  - "frontend/dist"
+  - "frontend/node_modules"
+  - "target"

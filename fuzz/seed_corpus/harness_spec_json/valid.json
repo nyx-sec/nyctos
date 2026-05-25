@@ -1,0 +1,1 @@
+{"schema_version":1,"cap":"SQL_QUERY","lang":"python","entry":"app.handlers:lookup","setup":["import sqlite3"],"invoke":"lookup(@PAYLOAD)","payload_arg":0,"oracle":"stdout contains marker","teardown":[]}

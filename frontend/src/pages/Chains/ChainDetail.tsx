@@ -141,7 +141,10 @@ function ChainBody({ chain, projectId }: ChainBodyProps) {
           <EvidenceSection title="Prerequisites" values={graphEvidence.prerequisites} />
           <EvidenceSection title="Evidence" values={graphEvidence.evidence} />
           <EvidenceSection title="Blast radius" values={graphEvidence.blast_radius} />
-          <EvidenceSection title="Missing verification" values={graphEvidence.missing_verification_steps} />
+          <EvidenceSection
+            title="Missing verification"
+            values={graphEvidence.missing_verification_steps}
+          />
         </Card>
       )}
 
@@ -176,7 +179,9 @@ function GraphMember({ member }: { member: GraphChainMember }) {
   return (
     <div className="chain-detail__graph-member">
       <div>
-        <span className="chain-detail__graph-title">{member.label || member.ref_id || member.id}</span>
+        <span className="chain-detail__graph-title">
+          {member.label || member.ref_id || member.id}
+        </span>
         {tags && <span className="chain-detail__graph-tags">{tags}</span>}
       </div>
       <code>{member.ref_id || member.id}</code>

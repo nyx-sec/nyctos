@@ -1,5 +1,7 @@
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::Future;
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::process::ExitCode;
@@ -3441,8 +3443,8 @@ async fn verify_pentest_candidates(
     let candidates = store.pentest_candidates().list_by_run(run_id).await?;
     let mut report = CandidateVerificationReport::default();
     let auth_session_manager = auth_sessions::AuthSessionManager::default();
-    let capability_report = live_planning::discover_env_capabilities(
-        live_planning::EnvCapabilityDiscoveryInput {
+    let capability_report =
+        live_planning::discover_env_capabilities(live_planning::EnvCapabilityDiscoveryInput {
             target_urls,
             auth_profiles,
             auth_env_overrides,
@@ -3454,8 +3456,7 @@ async fn verify_pentest_candidates(
             exploit_mode_enabled: run_config.exploit_mode_enabled,
             allow_state_changing: run_config.state_changing_live_probes_allowed(),
             dry_run: run_config.exploit_dry_run,
-        },
-    );
+        });
     let _ = events.send(AgentEvent::Run {
         data: RunEvent::LiveVerificationCapabilities {
             run_id: run_id.to_string(),
@@ -3557,39 +3558,71 @@ async fn verify_pentest_candidates(
             policy: pentest_tools::ExploitSafetyPolicy::from_run_config(run_config),
             audit_log: audit_log.clone(),
         };
-        let mut outcome = execute_candidate_test_plan(&candidate, &options).await;
-        let mut replan_meta = None;
+        let mut current_candidate = candidate.clone();
+        let mut outcome = execute_candidate_test_plan(&current_candidate, &options).await;
+        let mut attempted_plan_blobs = HashSet::from([current_candidate.test_plan.clone()]);
+        let mut verification_attempt_meta =
+            vec![adaptive_attempt_metadata(0, None, &current_candidate.test_plan, &outcome)];
         if let Some(model) = route_model {
-            if let Some(failure_code) = outcome_failure_code(outcome.as_ref().ok()) {
-                let synthesizer = live_planning::LiveTestPlanSynthesizer::new(
-                    live_planning::LiveTestPlanSynthesisContext {
-                        route_model: Some(model),
-                        target_urls,
-                        auth_profiles,
-                        browser_checks_enabled: run_config.browser_checks_enabled,
-                        allow_state_changing: run_config.state_changing_live_probes_allowed(),
-                        capabilities: Some(&capability_report),
-                    },
-                );
-                if let Some(replan) =
-                    synthesizer.replan_after_failure(&candidate, Some(failure_code.as_str()))
+            let synthesizer = live_planning::LiveTestPlanSynthesizer::new(
+                live_planning::LiveTestPlanSynthesisContext {
+                    route_model: Some(model),
+                    target_urls,
+                    auth_profiles,
+                    browser_checks_enabled: run_config.browser_checks_enabled,
+                    allow_state_changing: run_config.state_changing_live_probes_allowed(),
+                    capabilities: Some(&capability_report),
+                },
+            );
+            for replan_index in 1..=2 {
+                let Some(failure) = outcome_failure(outcome.as_ref().ok()) else {
+                    break;
+                };
+                if !failure_retryable(&failure.code) {
+                    break;
+                }
+                if failure.code == "weak_oracle" {
+                    if let Some(marker) = derive_control_marker_from_failure(&failure) {
+                        current_candidate = candidate_with_positive_marker(
+                            &current_candidate,
+                            &marker,
+                            "adaptive_control_response",
+                        );
+                    }
+                }
+                if let Some(replan) = synthesizer
+                    .replan_after_failure(&current_candidate, Some(failure.code.as_str()))
                 {
                     let replan_blob = serde_json::to_string(&replan)?;
-                    if replan_blob != candidate.test_plan {
-                        let retry_candidate = PentestCandidateRecord {
+                    if attempted_plan_blobs.insert(replan_blob.clone()) {
+                        current_candidate = PentestCandidateRecord {
                             test_plan: replan_blob.clone(),
                             ..candidate.clone()
                         };
-                        let retry_outcome =
-                            execute_candidate_test_plan(&retry_candidate, &options).await;
-                        replan_meta = Some(serde_json::json!({
-                            "attempted": true,
-                            "trigger_failure_code": failure_code,
-                            "plan_kind": replan.kind_str(),
-                            "accepted": retry_outcome.as_ref().ok().is_some_and(|o| matches!(o, VerificationOutcome::Confirmed { .. })),
+                        outcome = execute_candidate_test_plan(&current_candidate, &options).await;
+                        verification_attempt_meta.push(adaptive_attempt_metadata(
+                            replan_index,
+                            Some(&failure),
+                            &current_candidate.test_plan,
+                            &outcome,
+                        ));
+                    } else {
+                        verification_attempt_meta.push(serde_json::json!({
+                            "index": replan_index,
+                            "trigger_failure": failure.as_json(),
+                            "skipped": true,
+                            "reason": "adaptive replanning returned a plan that was already attempted",
                         }));
-                        outcome = retry_outcome;
+                        break;
                     }
+                } else {
+                    verification_attempt_meta.push(serde_json::json!({
+                        "index": replan_index,
+                        "trigger_failure": failure.as_json(),
+                        "skipped": true,
+                        "reason": "no alternate executable plan was available for the classified failure",
+                    }));
+                    break;
                 }
             }
         }
@@ -3628,9 +3661,15 @@ async fn verify_pentest_candidates(
                 }
             }
         }
-        if let Some(meta) = replan_meta {
-            attach_replan_meta(&mut request, &mut oracle, meta);
-        }
+        attach_replan_meta(
+            &mut request,
+            &mut oracle,
+            serde_json::json!({
+                "bounded": true,
+                "max_retries_per_candidate": 2,
+                "attempts": verification_attempt_meta,
+            }),
+        );
         if let Some(provenance) = business_logic_provenance_from_candidate(&candidate) {
             if let Some(request_value) = request.take() {
                 request = Some(with_business_logic_provenance(request_value, provenance.clone()));
@@ -4163,12 +4202,11 @@ fn executable_plan_capability_gap(
         })
         .collect::<Vec<_>>();
     if !missing_roles.is_empty() {
-        return Some(format!(
-            "live verification setup missing: {}",
-            missing_roles.join("; ")
-        ));
+        return Some(format!("live verification setup missing: {}", missing_roles.join("; ")));
     }
-    if browser_needed && !matches!(capabilities.browser, nyctos_types::live_plan::EnvCapabilityStatus::Available) {
+    if browser_needed
+        && !matches!(capabilities.browser, nyctos_types::live_plan::EnvCapabilityStatus::Available)
+    {
         return Some("live verification setup missing: browser runtime unavailable".to_string());
     }
     if state_changing
@@ -4178,7 +4216,7 @@ fn executable_plan_capability_gap(
         )
     {
         return Some(
-            "live verification unsafe without opt-in: state-changing probes require exploit_mode_enabled and allow_state_changing_live_probes"
+            "live verification setup missing (ExploitModeStateChanging): state-changing probes require exploit_mode_enabled and allow_state_changing_live_probes"
                 .to_string(),
         );
     }
@@ -4243,19 +4281,55 @@ fn collect_request_need(
     state_changing: &mut bool,
 ) {
     roles.insert(request.role.clone());
-    *state_changing |= request.destructive
-        || !matches!(request.method.as_str(), "GET" | "HEAD" | "OPTIONS");
+    *state_changing |=
+        request.destructive || !matches!(request.method.as_str(), "GET" | "HEAD" | "OPTIONS");
 }
 
-fn outcome_failure_code(outcome: Option<&VerificationOutcome>) -> Option<String> {
+#[derive(Debug, Clone)]
+struct VerificationFailure {
+    code: String,
+    message: String,
+    evidence: serde_json::Value,
+}
+
+impl VerificationFailure {
+    fn as_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "code": self.code,
+            "message": self.message,
+            "evidence": self.evidence,
+        })
+    }
+}
+
+fn outcome_failure(outcome: Option<&VerificationOutcome>) -> Option<VerificationFailure> {
     match outcome? {
         VerificationOutcome::Confirmed { .. } => None,
-        VerificationOutcome::Rejected { oracle, .. } => oracle_failure_code(oracle),
+        VerificationOutcome::Rejected { request, response, oracle } => {
+            let code = oracle_failure_code(oracle)?;
+            Some(VerificationFailure {
+                code,
+                message: oracle_failure_message(oracle)
+                    .unwrap_or_else(|| "verification oracle did not confirm".to_string()),
+                evidence: serde_json::json!({
+                    "request": compact_failure_evidence(request),
+                    "response": compact_failure_evidence(response),
+                    "oracle": compact_failure_evidence(oracle),
+                }),
+            })
+        }
         VerificationOutcome::Inconclusive { reason, trace }
         | VerificationOutcome::Blocked { reason, trace } => trace
             .as_ref()
             .and_then(oracle_failure_code)
-            .or_else(|| classify_failure_reason_text(reason)),
+            .or_else(|| classify_failure_reason_text(reason))
+            .map(|code| VerificationFailure {
+                code,
+                message: reason.clone(),
+                evidence: serde_json::json!({
+                    "trace": trace.as_ref().map(compact_failure_evidence),
+                }),
+            }),
     }
 }
 
@@ -4275,6 +4349,216 @@ fn oracle_failure_code(value: &serde_json::Value) -> Option<String> {
                 .and_then(|v| v.as_str())
                 .map(str::to_string)
         })
+}
+
+fn oracle_failure_message(value: &serde_json::Value) -> Option<String> {
+    value
+        .get("failure_reason")
+        .or_else(|| value.get("failure"))
+        .and_then(|v| v.get("message"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .or_else(|| {
+            value
+                .get("failure_reason")
+                .and_then(|v| v.as_array())
+                .and_then(|items| items.first())
+                .and_then(|v| v.get("message"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        })
+}
+
+fn failure_retryable(code: &str) -> bool {
+    matches!(code, "bad_endpoint" | "auth_missing" | "weak_oracle" | "no_executable_plan")
+}
+
+fn adaptive_attempt_metadata(
+    index: u32,
+    trigger: Option<&VerificationFailure>,
+    raw_plan: &str,
+    outcome: &anyhow::Result<VerificationOutcome>,
+) -> serde_json::Value {
+    let (status, failure) = match outcome {
+        Ok(VerificationOutcome::Confirmed { .. }) => ("confirmed", None),
+        Ok(VerificationOutcome::Rejected { .. }) => {
+            ("rejected", outcome_failure(outcome.as_ref().ok()))
+        }
+        Ok(VerificationOutcome::Blocked { .. }) => {
+            ("blocked", outcome_failure(outcome.as_ref().ok()))
+        }
+        Ok(VerificationOutcome::Inconclusive { .. }) => {
+            ("inconclusive", outcome_failure(outcome.as_ref().ok()))
+        }
+        Err(err) => (
+            "errored",
+            Some(VerificationFailure {
+                code: classify_failure_reason_text(&err.to_string())
+                    .unwrap_or_else(|| "no_executable_plan".to_string()),
+                message: err.to_string(),
+                evidence: serde_json::json!({}),
+            }),
+        ),
+    };
+    serde_json::json!({
+        "index": index,
+        "trigger_failure": trigger.map(VerificationFailure::as_json),
+        "plan_kind": plan_kind_for_metadata(raw_plan),
+        "plan_fingerprint": adaptive_plan_fingerprint(raw_plan),
+        "status": status,
+        "failure": failure.map(|f| f.as_json()),
+    })
+}
+
+fn plan_kind_for_metadata(raw_plan: &str) -> String {
+    pentest_tools::normalise_live_test_plan_typed(raw_plan, &[])
+        .ok()
+        .flatten()
+        .map(|plan| plan.kind_str().to_string())
+        .or_else(|| {
+            serde_json::from_str::<serde_json::Value>(raw_plan)
+                .ok()
+                .and_then(|v| v.get("kind").and_then(|k| k.as_str()).map(str::to_string))
+        })
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn adaptive_plan_fingerprint(raw_plan: &str) -> String {
+    let mut hasher = DefaultHasher::new();
+    raw_plan.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+fn compact_failure_evidence(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut out = serde_json::Map::new();
+            for key in [
+                "kind",
+                "url",
+                "path",
+                "method",
+                "status",
+                "actual_status",
+                "body_preview",
+                "body_len",
+                "headers",
+                "status_ok",
+                "body_ok",
+                "header_ok",
+                "body_contains",
+                "header_contains",
+                "failure_reason",
+                "explanation",
+                "response",
+                "baseline",
+                "allowed",
+                "challenged",
+                "tool_calls",
+            ] {
+                if let Some(child) = map.get(key) {
+                    out.insert(key.to_string(), compact_failure_evidence(child));
+                }
+            }
+            serde_json::Value::Object(out)
+        }
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.iter().take(4).map(compact_failure_evidence).collect())
+        }
+        serde_json::Value::String(s) => serde_json::Value::String(s.chars().take(240).collect()),
+        other => other.clone(),
+    }
+}
+
+fn derive_control_marker_from_failure(failure: &VerificationFailure) -> Option<String> {
+    let mut strings = Vec::new();
+    collect_marker_strings(&failure.evidence, &mut strings);
+    strings
+        .into_iter()
+        .map(|s| s.trim().trim_matches(['"', '\'', '{', '}', '[', ']']).to_string())
+        .find(|s| {
+            let lower = s.to_ascii_lowercase();
+            (3..=80).contains(&s.len())
+                && !matches!(
+                    lower.as_str(),
+                    "true" | "false" | "null" | "ok" | "success" | "failure" | "baseline"
+                )
+                && !lower.contains("[redacted]")
+                && !lower.starts_with("http://")
+                && !lower.starts_with("https://")
+        })
+}
+
+fn collect_marker_strings(value: &serde_json::Value, out: &mut Vec<String>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for key in [
+                "body_preview",
+                "marker",
+                "body_contains",
+                "positive_marker",
+                "positive_markers",
+                "explanation",
+            ] {
+                if let Some(child) = map.get(key) {
+                    collect_marker_strings(child, out);
+                }
+            }
+            for key in ["response", "baseline", "allowed", "challenged"] {
+                if let Some(child) = map.get(key) {
+                    collect_marker_strings(child, out);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_marker_strings(item, out);
+            }
+        }
+        serde_json::Value::String(s) => {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(s) {
+                collect_json_leaf_markers(&json, out);
+            } else {
+                out.push(s.chars().take(120).collect());
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_json_leaf_markers(value: &serde_json::Value, out: &mut Vec<String>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map {
+                if key.len() >= 3 {
+                    out.push(key.clone());
+                }
+                collect_json_leaf_markers(child, out);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_json_leaf_markers(item, out);
+            }
+        }
+        serde_json::Value::String(s) => out.push(s.chars().take(120).collect()),
+        serde_json::Value::Number(n) => out.push(n.to_string()),
+        serde_json::Value::Bool(b) => out.push(b.to_string()),
+        serde_json::Value::Null => {}
+    }
+}
+
+fn candidate_with_positive_marker(
+    candidate: &PentestCandidateRecord,
+    marker: &str,
+    source: &str,
+) -> PentestCandidateRecord {
+    let mut augmented = candidate.clone();
+    augmented.affected_components.push(serde_json::json!({
+        "source": source,
+        "positive_marker": marker,
+    }));
+    augmented
 }
 
 fn classify_failure_reason_text(reason: &str) -> Option<String> {
@@ -4326,11 +4610,16 @@ fn attach_replan_meta(
     oracle: &mut Option<serde_json::Value>,
     meta: serde_json::Value,
 ) {
+    if request.is_none() {
+        *request = Some(serde_json::json!({
+            "kind": "verification_attempt_metadata",
+        }));
+    }
     if let Some(request) = request.as_mut().and_then(|v| v.as_object_mut()) {
-        request.insert("replan".to_string(), meta.clone());
+        request.insert("verification_attempt".to_string(), meta.clone());
     }
     if let Some(oracle) = oracle.as_mut().and_then(|v| v.as_object_mut()) {
-        oracle.insert("replan".to_string(), meta);
+        oracle.insert("verification_attempt".to_string(), meta);
     }
 }
 

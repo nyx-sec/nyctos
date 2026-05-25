@@ -9,7 +9,6 @@ repository.workspace = true
 [dependencies]
 nyctos-nyx = { path = "../nyctos-nyx" }
 nyctos-types = { path = "../nyctos-types" }
-anyhow = { workspace = true }
 async-trait = "0.1"
 blake3 = { workspace = true }
 reqwest = { workspace = true }
@@ -17,9 +16,7 @@ semver = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
-thiserror = { workspace = true }
 tokio = { workspace = true }
-tracing = { workspace = true }
 which = { workspace = true }
 
 [dev-dependencies]

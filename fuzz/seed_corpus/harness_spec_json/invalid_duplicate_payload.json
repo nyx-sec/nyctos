@@ -1,0 +1,1 @@
+{"schema_version":1,"cap":"SQL_QUERY","lang":"python","entry":"app.handlers:lookup","invoke":"lookup(@PAYLOAD, @PAYLOAD)","oracle":"stdout contains marker"}

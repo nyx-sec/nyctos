@@ -17,7 +17,6 @@ path = "src/bin/escape_attempt.rs"
 [dependencies]
 nyctos-types = { path = "../nyctos-types" }
 nyctos-core = { path = "../nyctos-core" }
-anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_norway = { workspace = true }

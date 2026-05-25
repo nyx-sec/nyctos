@@ -184,6 +184,14 @@ impl<'a> LiveTestPlanSynthesizer<'a> {
     }
 
     pub fn synthesize(&self, candidate: &PentestCandidateRecord) -> LiveTestPlan {
+        self.synthesize_avoiding_urls(candidate, &[])
+    }
+
+    fn synthesize_avoiding_urls(
+        &self,
+        candidate: &PentestCandidateRecord,
+        avoided_urls: &[String],
+    ) -> LiveTestPlan {
         if self.ctx.target_urls.is_empty() {
             return self.no_plan(
                 candidate,
@@ -195,7 +203,10 @@ impl<'a> LiveTestPlanSynthesizer<'a> {
         if let Some(plan) = self.no_plan_for_missing_capability(candidate, strategy) {
             return plan;
         }
-        let endpoints = infer_endpoints(candidate, self.ctx.route_model, self.ctx.target_urls);
+        let mut endpoints = infer_endpoints(candidate, self.ctx.route_model, self.ctx.target_urls);
+        if !avoided_urls.is_empty() {
+            endpoints.retain(|endpoint| !avoided_urls.iter().any(|url| url == &endpoint.url));
+        }
         match strategy {
             LivePlanStrategy::TrustedHeaderAuthBypass => {
                 self.trusted_header_auth_bypass(candidate, &endpoints)
@@ -313,15 +324,22 @@ impl<'a> LiveTestPlanSynthesizer<'a> {
     ) -> Option<LiveTestPlan> {
         let retryable = matches!(
             failure_code,
-            Some("bad_endpoint" | "weak_oracle" | "no_executable_plan") | None
+            Some("bad_endpoint" | "weak_oracle" | "auth_missing" | "no_executable_plan") | None
         );
-        retryable.then(|| self.synthesize(candidate)).and_then(|plan| {
-            if matches!(plan, LiveTestPlan::NoPlan(_)) {
-                None
-            } else {
-                Some(plan)
-            }
-        })
+        let avoided_urls = if matches!(failure_code, Some("bad_endpoint")) {
+            plan_urls_from_raw(&candidate.test_plan)
+        } else {
+            Vec::new()
+        };
+        retryable.then(|| self.synthesize_avoiding_urls(candidate, &avoided_urls)).and_then(
+            |plan| {
+                if matches!(plan, LiveTestPlan::NoPlan(_)) {
+                    None
+                } else {
+                    Some(plan)
+                }
+            },
+        )
     }
 
     fn trusted_header_auth_bypass(
@@ -828,6 +846,52 @@ impl<'a> LiveTestPlanSynthesizer<'a> {
             }
         }
         LiveTestPlan::no_plan(reason)
+    }
+}
+
+fn plan_urls_from_raw(raw: &str) -> Vec<String> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    collect_plan_urls(&value, &mut out);
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn collect_plan_urls(value: &serde_json::Value, out: &mut Vec<String>) {
+    match value {
+        serde_json::Value::Object(obj) => {
+            if let Some(url) = obj.get("url").and_then(|v| v.as_str()) {
+                out.push(url.to_string());
+            }
+            for key in [
+                "request",
+                "baseline",
+                "benign",
+                "benign_control",
+                "owner_request",
+                "accessor_request",
+            ] {
+                if let Some(child) = obj.get(key) {
+                    collect_plan_urls(child, out);
+                }
+            }
+            for key in ["steps", "benign_steps", "setup_steps", "seed_steps"] {
+                if let Some(items) = obj.get(key).and_then(|v| v.as_array()) {
+                    for item in items {
+                        collect_plan_urls(item, out);
+                    }
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_plan_urls(item, out);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -1620,6 +1684,16 @@ fn sensitive_markers(
     ] {
         if text.contains(needle) || endpoint_path.contains(needle) {
             markers.push(marker.to_string());
+        }
+    }
+    for component in &candidate.affected_components {
+        for key in ["marker", "body_contains", "expected_marker", "positive_marker"] {
+            if let Some(marker) = component.get(key).and_then(|v| v.as_str()) {
+                markers.push(marker.to_string());
+            }
+        }
+        if let Some(items) = component.get("positive_markers").and_then(|v| v.as_array()) {
+            markers.extend(items.iter().filter_map(|v| v.as_str().map(str::to_string)));
         }
     }
     if markers.is_empty() {
@@ -2447,7 +2521,178 @@ mod tests {
             synth.replan_after_failure(&candidate, Some("bad_endpoint")),
             Some(LiveTestPlan::SingleHttp(_))
         ));
-        assert!(synth.replan_after_failure(&candidate, Some("auth_missing")).is_none());
+        assert!(matches!(
+            synth.replan_after_failure(&candidate, Some("auth_missing")),
+            Some(LiveTestPlan::SingleHttp(_))
+        ));
+        assert!(synth.replan_after_failure(&candidate, Some("browser_disabled")).is_none());
+    }
+
+    #[test]
+    fn bad_endpoint_replan_uses_alternate_route_model_match() {
+        let targets = vec!["http://localhost:3000".to_string()];
+        let bad_url = "http://localhost:3000/api/dev/mail-old";
+        let model = RouteModel {
+            backend_routes: vec![RouteModelEndpoint {
+                method: "GET".to_string(),
+                path: "/api/dev/mail".to_string(),
+                handler_file: Some("src/handlers/dev_mail.rs".to_string()),
+                state_changing: false,
+                confidence: 0.95,
+                ..RouteModelEndpoint::default()
+            }],
+            ..RouteModel::default()
+        };
+        let auth = Vec::new();
+        let synth = LiveTestPlanSynthesizer::new(LiveTestPlanSynthesisContext {
+            route_model: Some(&model),
+            target_urls: &targets,
+            auth_profiles: &auth,
+            browser_checks_enabled: false,
+            allow_state_changing: false,
+            capabilities: None,
+        });
+        let mut candidate = candidate(
+            "SENSITIVE_DATA_EXPOSURE",
+            "src/handlers/dev_mail.rs",
+            "Dev mail endpoint exposes email contents",
+        );
+        candidate.affected_components.push(serde_json::json!({
+            "method": "GET",
+            "url": bad_url,
+        }));
+        candidate.test_plan = serde_json::json!({
+            "kind": "single_http",
+            "request": {"method": "GET", "url": bad_url},
+            "oracle": {"body_contains": ["mail"]}
+        })
+        .to_string();
+
+        let replan = synth
+            .replan_after_failure(&candidate, Some("bad_endpoint"))
+            .expect("alternate route plan");
+
+        match replan {
+            LiveTestPlan::SingleHttp(plan) => {
+                assert_eq!(plan.request.url, "http://localhost:3000/api/dev/mail");
+            }
+            other => panic!("expected single HTTP replan, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn auth_missing_replan_uses_role_aliases() {
+        let targets = vec!["http://localhost:3000".to_string()];
+        let mut profile = auth_profile_with_object("app_owner", None);
+        profile.role_aliases = vec!["admin".to_string(), "staff".to_string()];
+        let auth = vec![profile];
+        let model = RouteModel {
+            backend_routes: vec![RouteModelEndpoint {
+                method: "GET".to_string(),
+                path: "/api/admin/users".to_string(),
+                handler_file: Some("src/routes/admin.rs".to_string()),
+                state_changing: false,
+                confidence: 0.95,
+                ..RouteModelEndpoint::default()
+            }],
+            ..RouteModel::default()
+        };
+        let synth = LiveTestPlanSynthesizer::new(LiveTestPlanSynthesisContext {
+            route_model: Some(&model),
+            target_urls: &targets,
+            auth_profiles: &auth,
+            browser_checks_enabled: false,
+            allow_state_changing: false,
+            capabilities: None,
+        });
+        let candidate =
+            candidate("AUTH_BYPASS", "src/routes/admin.rs", "Admin endpoint auth bypass");
+
+        let replan = synth.replan_after_failure(&candidate, Some("auth_missing"));
+
+        match replan {
+            Some(LiveTestPlan::DifferentialHttp(plan)) => {
+                assert_eq!(plan.steps[0].role, "app_owner");
+            }
+            other => panic!("expected aliased auth differential replan, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn weak_oracle_replan_uses_derived_positive_marker() {
+        let targets = vec!["http://localhost:3000".to_string()];
+        let auth = Vec::new();
+        let model = RouteModel {
+            backend_routes: vec![RouteModelEndpoint {
+                method: "GET".to_string(),
+                path: "/api/dev/mail".to_string(),
+                handler_file: Some("src/handlers/dev_mail.rs".to_string()),
+                state_changing: false,
+                confidence: 0.95,
+                ..RouteModelEndpoint::default()
+            }],
+            ..RouteModel::default()
+        };
+        let synth = LiveTestPlanSynthesizer::new(LiveTestPlanSynthesisContext {
+            route_model: Some(&model),
+            target_urls: &targets,
+            auth_profiles: &auth,
+            browser_checks_enabled: false,
+            allow_state_changing: false,
+            capabilities: None,
+        });
+        let mut candidate = candidate(
+            "SENSITIVE_DATA_EXPOSURE",
+            "src/handlers/dev_mail.rs",
+            "Sensitive endpoint exposes derived marker",
+        );
+        candidate.affected_components.push(serde_json::json!({
+            "positive_marker": "smtp"
+        }));
+
+        let replan = synth.replan_after_failure(&candidate, Some("weak_oracle"));
+
+        match replan {
+            Some(LiveTestPlan::SingleHttp(plan)) => {
+                assert!(plan.oracle.body_contains.iter().any(|m| m == "smtp"));
+            }
+            other => panic!("expected marker-aware replan, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn browser_disabled_path_is_setup_missing_with_capabilities() {
+        let targets = vec!["http://localhost:3000".to_string()];
+        let auth = Vec::new();
+        let capabilities = discover_env_capabilities(EnvCapabilityDiscoveryInput {
+            target_urls: &targets,
+            auth_profiles: &auth,
+            auth_env_overrides: &BTreeMap::new(),
+            browser_checks_enabled: true,
+            browser_available: false,
+            seed_supported: false,
+            reset_supported: false,
+            exploit_mode_enabled: false,
+            allow_state_changing: false,
+            dry_run: false,
+        });
+        let synth = LiveTestPlanSynthesizer::new(LiveTestPlanSynthesisContext {
+            route_model: None,
+            target_urls: &targets,
+            auth_profiles: &auth,
+            browser_checks_enabled: true,
+            allow_state_changing: false,
+            capabilities: Some(&capabilities),
+        });
+        let candidate = candidate("DOM_XSS", "src/app/search.tsx", "DOM XSS in search");
+
+        match synth.synthesize(&candidate) {
+            LiveTestPlan::NoPlan(plan) => {
+                assert_eq!(plan.no_plan_reason.code, NoPlanReasonCode::SetupMissing);
+                assert!(plan.no_plan_reason.message.contains("browser"));
+            }
+            other => panic!("expected setup-missing no-plan, got {other:?}"),
+        }
     }
 
     #[tokio::test]

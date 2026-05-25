@@ -951,8 +951,8 @@ pub async fn run_live_test_plan_synthesis_pass(
     report.candidates_seen = candidates.len() as u32;
 
     let empty_auth_env_overrides = std::collections::BTreeMap::new();
-    let capability_report = live_planning::discover_env_capabilities(
-        live_planning::EnvCapabilityDiscoveryInput {
+    let capability_report =
+        live_planning::discover_env_capabilities(live_planning::EnvCapabilityDiscoveryInput {
             target_urls,
             auth_profiles,
             auth_env_overrides: &empty_auth_env_overrides,
@@ -964,8 +964,7 @@ pub async fn run_live_test_plan_synthesis_pass(
             exploit_mode_enabled: allow_state_changing,
             allow_state_changing,
             dry_run: false,
-        },
-    );
+        });
     let _ = events.send(AgentEvent::Run {
         data: RunEvent::LiveVerificationCapabilities {
             run_id: bundle.run_id.clone(),

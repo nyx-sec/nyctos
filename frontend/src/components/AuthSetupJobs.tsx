@@ -94,10 +94,13 @@ export function AuthSetupJobsProvider({ children }: { children: ReactNode }) {
           await sleep(1_250);
         }
       } catch (err) {
-        showToast(`Could not read auth setup progress: ${err instanceof Error ? err.message : String(err)}`, {
-          tone: "danger",
-          durationMs: 8_000,
-        });
+        showToast(
+          `Could not read auth setup progress: ${err instanceof Error ? err.message : String(err)}`,
+          {
+            tone: "danger",
+            durationMs: 8_000,
+          },
+        );
       } finally {
         polling.current.delete(jobId);
       }
@@ -128,14 +131,9 @@ export function AuthSetupJobsProvider({ children }: { children: ReactNode }) {
     [jobs],
   );
 
-  const value = useMemo(
-    () => ({ startAuthSetup, jobForProject }),
-    [jobForProject, startAuthSetup],
-  );
+  const value = useMemo(() => ({ startAuthSetup, jobForProject }), [jobForProject, startAuthSetup]);
 
-  return (
-    <AuthSetupJobsContext.Provider value={value}>{children}</AuthSetupJobsContext.Provider>
-  );
+  return <AuthSetupJobsContext.Provider value={value}>{children}</AuthSetupJobsContext.Provider>;
 }
 
 export function useAuthSetupJobs(): AuthSetupJobsContextValue {

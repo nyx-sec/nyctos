@@ -159,7 +159,9 @@ function ChainTable({ chains, projectId }: ChainTableProps) {
                   )}
                 </td>
                 <td>{members.length}</td>
-                <td>{typeof evidence?.confidence === "number" ? `${evidence.confidence}%` : "—"}</td>
+                <td>
+                  {typeof evidence?.confidence === "number" ? `${evidence.confidence}%` : "—"}
+                </td>
                 <td>{proofGaps.length > 0 ? proofGaps.length : "—"}</td>
                 <td className="findings-table__rule" title={rationale ?? ""}>
                   {previewRationale(rationale)}

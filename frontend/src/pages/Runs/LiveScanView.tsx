@@ -545,32 +545,36 @@ function AuthzMatrixGroup({ group }: AuthzMatrixGroupProps) {
         </div>
         <Badge tone="neutral">{group.rows.length} checks</Badge>
       </div>
-      <div className="live-scan__authz-table" role="table" aria-label={`${group.resource} access`}>
-        <div className="live-scan__authz-table-head" role="row">
-          <span role="columnheader">Role</span>
-          <span role="columnheader">Expected</span>
-          <span role="columnheader">Observed</span>
-          <span role="columnheader">Evidence</span>
-        </div>
-        {group.rows.map((row) => (
-          <div key={row.id} className="live-scan__authz-row" role="row">
-            <span role="cell">
-              {row.role}
-              {row.tenant ? <small>{row.tenant}</small> : null}
-            </span>
-            <span role="cell">{row.expected_decision}</span>
-            <span role="cell">
-              <Badge tone={authzDecisionTone(row.expected_decision, row.observed_decision)}>
-                {row.observed_decision}
-              </Badge>
-            </span>
-            <span role="cell">
-              {row.action} {row.observed_status ? `HTTP ${row.observed_status}` : "no status"} ·{" "}
-              {row.body_marker_result} · {Math.round(row.confidence * 100)}%
-            </span>
-          </div>
-        ))}
-      </div>
+      <table className="live-scan__authz-table" aria-label={`${group.resource} access`}>
+        <thead>
+          <tr className="live-scan__authz-table-head">
+            <th scope="col">Role</th>
+            <th scope="col">Expected</th>
+            <th scope="col">Observed</th>
+            <th scope="col">Evidence</th>
+          </tr>
+        </thead>
+        <tbody>
+          {group.rows.map((row) => (
+            <tr key={row.id} className="live-scan__authz-row">
+              <td>
+                {row.role}
+                {row.tenant ? <small>{row.tenant}</small> : null}
+              </td>
+              <td>{row.expected_decision}</td>
+              <td>
+                <Badge tone={authzDecisionTone(row.expected_decision, row.observed_decision)}>
+                  {row.observed_decision}
+                </Badge>
+              </td>
+              <td>
+                {row.action} {row.observed_status ? `HTTP ${row.observed_status}` : "no status"} ·{" "}
+                {row.body_marker_result} · {Math.round(row.confidence * 100)}%
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

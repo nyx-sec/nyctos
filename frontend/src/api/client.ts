@@ -444,10 +444,13 @@ export function startAuthAutoSetup(
   projectId: string,
   body: AuthSetupRequest = {},
 ): Promise<AuthSetupStartResponse> {
-  return request<AuthSetupStartResponse>(`/projects/${encodeURIComponent(projectId)}/auth/auto-setup`, {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
+  return request<AuthSetupStartResponse>(
+    `/projects/${encodeURIComponent(projectId)}/auth/auto-setup`,
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    },
+  );
 }
 
 export function getAuthSetupJob(projectId: string, jobId: string): Promise<AuthSetupJobRecord> {
@@ -459,8 +462,7 @@ export function getAuthSetupJob(projectId: string, jobId: string): Promise<AuthS
 export function useAuthAutoSetup(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: AuthSetupRequest = {}) =>
-      startAuthAutoSetup(projectId, body),
+    mutationFn: (body: AuthSetupRequest = {}) => startAuthAutoSetup(projectId, body),
     onSuccess: (data) => {
       qc.setQueryData(qk.authSetupJob(projectId, data.job.id), data.job);
     },

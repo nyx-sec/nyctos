@@ -4896,6 +4896,13 @@
   display: grid;
   gap: var(--space-1);
   min-width: 0;
+  border-spacing: 0;
+  width: 100%;
+}
+
+.live-scan__authz-table thead,
+.live-scan__authz-table tbody {
+  display: contents;
 }
 
 .live-scan__authz-table-head,
@@ -4919,9 +4926,12 @@
   font-size: var(--text-sm);
 }
 
-.live-scan__authz-row span {
+.live-scan__authz-table th,
+.live-scan__authz-table td {
   min-width: 0;
   overflow-wrap: anywhere;
+  padding: 0;
+  text-align: left;
 }
 
 .live-scan__authz-row small {

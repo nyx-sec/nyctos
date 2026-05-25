@@ -1,36 +1,273 @@
-name: ci
+name: CI
+
+permissions:
+  contents: read
 
 on:
   push:
     branches: [main]
   pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
-  rust:
+  frontend:
+    name: frontend
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Frontend format check
+        working-directory: frontend
+        run: npm run format:check
+
+      - name: Frontend lint
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Frontend type check
+        working-directory: frontend
+        run: npm run typecheck
+
+      - name: Frontend tests
+        working-directory: frontend
+        run: npm test
+
+      - name: Frontend build
+        working-directory: frontend
+        run: npm run build
+
+  rustfmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+  clippy-stable:
+    name: clippy-stable
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Lint with Clippy
+        env:
+          SQLX_OFFLINE: "true"
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  dependency-policy:
+    name: dependency-policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@cargo-deny
+
+      - name: Rust advisory, ban, and source checks
+        run: cargo deny check advisories bans sources
+
+      - uses: bnjbvr/cargo-machete@v0.9.2
+
+  rustdoc:
+    name: rustdoc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check rustdoc
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+          SQLX_OFFLINE: "true"
+        run: cargo doc --workspace --no-deps --all-features
+
+  rust-beta-build:
+    name: rust-beta-build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@beta
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Beta compile compatibility check
+        env:
+          SQLX_OFFLINE: "true"
+        run: cargo check --workspace --all-features --tests
+
+  msrv:
+    name: msrv
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.83
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Compile check at MSRV
+        env:
+          SQLX_OFFLINE: "true"
+        run: cargo check --workspace --all-features --tests
+
+  rust-stable-test-linux:
+    name: rust-stable-test / linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@nextest
+
+      - name: Rust tests
+        env:
+          SQLX_OFFLINE: "true"
+        run: cargo nextest run --workspace --all-features
+
+  env-builder-docker:
+    name: env-builder-docker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@nextest
+
+      - name: Pull compose fixture image
+        run: docker pull alpine:3.20
+
+      - name: Smoke-test docker compose
+        run: |
+          docker info
+          docker compose version
+
+      - name: Docker compose env-builder tests
+        env:
+          NYCTOS_REQUIRE_DOCKER: "1"
+          SQLX_OFFLINE: "true"
+        run: cargo nextest run --all-features -p nyctos-sandbox --test env_builder
+
+  cross-platform-smoke:
+    name: cross-platform-smoke / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@nextest
+
+      - name: Build
+        env:
+          SQLX_OFFLINE: "true"
+        run: cargo build --workspace --all-features
+
+      - name: Smoke tests
+        env:
+          SQLX_OFFLINE: "true"
+        run: cargo nextest run --all-features -p nyctos-types -p nyctos-nyx
+
+  release-build:
+    name: release-build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Release build with embedded UI
+        env:
+          SQLX_OFFLINE: "true"
+        run: cargo build --release --workspace --all-features
+
+  generated-assets:
+    name: generated-assets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+
       - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@nextest
+
       - uses: taiki-e/install-action@v2
         with:
           tool: sqlx-cli
-      - name: cargo fmt --check
-        run: cargo fmt --all -- --check
-      - name: cargo clippy
-        run: cargo clippy --all-targets -- -D warnings
-      - name: cargo nextest
-        run: cargo nextest run --workspace
-      - name: ts-bindings up-to-date
+
+      - name: TypeScript bindings are up to date
+        env:
+          SQLX_OFFLINE: "true"
         run: |
-          cargo build -p nyctos-types
+          cargo run -p xtask -- gen-ts
           git diff --exit-code frontend/src/api/types.gen.ts
-      - name: missing-instrument lint
-        run: bash .ci/missing-instrument.sh
-      - name: sqlx cache up-to-date
+
+      - name: SQLx cache is up to date
         run: |
           rm -f /tmp/sqlx-prepare.db
           export DATABASE_URL="sqlite:///tmp/sqlx-prepare.db?mode=rwc"
@@ -38,32 +275,20 @@ jobs:
           sqlx migrate run --source crates/nyctos-core/migrations
           cargo sqlx prepare --workspace --check
 
-  guards:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: install ripgrep
-        run: sudo apt-get update && sudo apt-get install -y ripgrep
-      - name: license guard
-        run: ./.ci/license-guard.sh
-      - name: voice lint
-        run: ./.ci/voice-lint.sh
+      - name: Missing instrumentation lint
+        run: bash .ci/missing-instrument.sh
 
-  frontend:
+  repo-guards:
+    name: repo-guards
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: frontend
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - name: npm ci
-        run: npm ci
-      - name: typecheck
-        run: npm run typecheck
-      - name: vitest
-        run: npm run test
+
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
+      - name: License guard
+        run: ./.ci/license-guard.sh
+
+      - name: Voice lint
+        run: ./.ci/voice-lint.sh

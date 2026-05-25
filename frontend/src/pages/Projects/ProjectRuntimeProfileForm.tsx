@@ -626,7 +626,11 @@ export function ProjectRuntimeProfileForm({ value, onChange, projectId }: Props)
           targetBaseUrl={value.target_base_url}
           onAuthSetupApplied={(profile) => {
             const applied = runtimeProfileToDraft(profile, value.target_base_url);
-            onChange({ ...value, env_vars: applied.env_vars, auth_profiles: applied.auth_profiles });
+            onChange({
+              ...value,
+              env_vars: applied.env_vars,
+              auth_profiles: applied.auth_profiles,
+            });
           }}
           onChange={(rows) => onChange({ ...value, auth_profiles: rows })}
         />
@@ -897,9 +901,7 @@ function EnvRows({
               autoComplete="off"
               placeholder={row.secret ? "Secret value" : "value"}
               value={row.value}
-              onChange={(e) =>
-                onChange(replaceAt(rows, index, { ...row, value: e.target.value }))
-              }
+              onChange={(e) => onChange(replaceAt(rows, index, { ...row, value: e.target.value }))}
             />
           </div>
           <label className="runtime-env-row__secret">
@@ -944,8 +946,7 @@ function AuthProfileRows({
   const { jobForProject, startAuthSetup } = useAuthSetupJobs();
   const { showToast } = useToast();
   const authSetupJob = jobForProject(projectId);
-  const authSetupRunning =
-    authSetupJob?.status === "queued" || authSetupJob?.status === "running";
+  const authSetupRunning = authSetupJob?.status === "queued" || authSetupJob?.status === "running";
   const appliedJobId = useRef<string | null>(null);
 
   useEffect(() => {

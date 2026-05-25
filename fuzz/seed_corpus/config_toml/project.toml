@@ -1,0 +1,12 @@
+[general]
+log_level = "debug"
+
+[[project]]
+name = "demo"
+description = "seed"
+
+[[project.repo]]
+name = "self"
+i_own_this = true
+enabled = true
+source = { kind = "local-path", path = "." }
