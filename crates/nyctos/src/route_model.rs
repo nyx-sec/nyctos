@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use ignore::WalkBuilder;
@@ -11,6 +11,33 @@ use regex::Regex;
 
 const ROUTE_MODEL_MAX_FILE_BYTES: u64 = 512 * 1024;
 const ROUTE_MODEL_MAX_FILES_PER_REPO: usize = 2_000;
+
+#[derive(Debug, Clone)]
+struct SourceFile {
+    rel: String,
+    src: String,
+    route_source: bool,
+    openapi: bool,
+}
+
+#[derive(Debug, Default)]
+struct SemanticIndex {
+    service_names: BTreeSet<String>,
+    model_names: BTreeSet<String>,
+}
+
+#[derive(Debug, Default)]
+struct SemanticHints {
+    query_params: Vec<String>,
+    request_fields: Vec<String>,
+    response_hints: Vec<String>,
+    service_calls: Vec<String>,
+    model_names: Vec<String>,
+    resource_names: Vec<String>,
+    tenant_fields: Vec<String>,
+    owner_fields: Vec<String>,
+    side_effects: Vec<String>,
+}
 
 pub fn extract_route_model(workspaces: &BTreeMap<String, WorkspaceHandle>) -> RouteModel {
     let mut model = RouteModel::default();
@@ -36,6 +63,7 @@ fn extract_repo_routes(repo: &str, root: &Path, model: &mut RouteModel) {
     let mut frontend: BTreeMap<(String, String), FrontendRouteModel> = BTreeMap::new();
     let mut clients: BTreeMap<(String, String, String), ApiClientCallModel> = BTreeMap::new();
     let mut forms: BTreeMap<(String, String, String, i64), FormModel> = BTreeMap::new();
+    let mut files = Vec::new();
 
     let mut seen_files = 0_usize;
     for entry in WalkBuilder::new(root)
@@ -69,15 +97,25 @@ fn extract_repo_routes(repo: &str, root: &Path, model: &mut RouteModel) {
         };
         seen_files += 1;
         let rel = path.strip_prefix(root).unwrap_or(path).to_string_lossy().replace('\\', "/");
-        if is_route_source_file(path) {
-            extract_backend_routes(repo, &rel, &src, &mut backend);
-            extract_frontend_routes(repo, &rel, &src, &mut frontend);
-            extract_api_client_calls(repo, &rel, &src, &mut clients);
-            extract_forms(repo, &rel, &src, &mut forms);
-            extract_js_bundle_endpoints(repo, &rel, &src, &mut clients);
+        files.push(SourceFile {
+            rel,
+            src,
+            route_source: is_route_source_file(path),
+            openapi: is_openapi_candidate_file(path),
+        });
+    }
+
+    let index = build_semantic_index(&files);
+    for file in &files {
+        if file.route_source {
+            extract_backend_routes(repo, &file.rel, &file.src, &index, &mut backend);
+            extract_frontend_routes(repo, &file.rel, &file.src, &mut frontend);
+            extract_api_client_calls(repo, &file.rel, &file.src, &mut clients);
+            extract_forms(repo, &file.rel, &file.src, &mut forms);
+            extract_js_bundle_endpoints(repo, &file.rel, &file.src, &mut clients);
         }
-        if is_openapi_candidate_file(path) {
-            extract_openapi_routes(repo, &rel, &src, &mut backend, &mut model.notes);
+        if file.openapi {
+            extract_openapi_routes(repo, &file.rel, &file.src, &mut backend, &mut model.notes);
         }
     }
 
@@ -121,10 +159,48 @@ fn is_openapi_candidate_file(path: &Path) -> bool {
     file.contains("openapi") || file.contains("swagger")
 }
 
+fn build_semantic_index(files: &[SourceFile]) -> SemanticIndex {
+    let mut index = SemanticIndex::default();
+    let service_re = Regex::new(
+        r#"\b(?:class|function|const|let|var)\s+([A-Za-z_][A-Za-z0-9_]*(?:Service|Repository|Repo|Client|Gateway|Manager))\b"#,
+    )
+    .expect("service symbol regex");
+    let model_re = Regex::new(
+        r#"\b(?:class|interface|type|struct|model|Schema::create)\s+([A-Z][A-Za-z0-9_]*(?:Model|Entity|Schema|Record|Dto|DTO))\b"#,
+    )
+    .expect("model symbol regex");
+    let python_model_re =
+        Regex::new(r#"\bclass\s+([A-Z][A-Za-z0-9_]*)\s*\([^)]*(?:BaseModel|Model|SQLModel)"#)
+            .expect("python model regex");
+    for file in files.iter().filter(|f| f.route_source) {
+        for cap in service_re.captures_iter(&file.src) {
+            index.service_names.insert(cap[1].to_string());
+        }
+        for cap in model_re.captures_iter(&file.src) {
+            if !is_service_like_symbol(&cap[1]) {
+                index.model_names.insert(cap[1].to_string());
+            }
+        }
+        for cap in python_model_re.captures_iter(&file.src) {
+            if !is_service_like_symbol(&cap[1]) {
+                index.model_names.insert(cap[1].to_string());
+            }
+        }
+    }
+    index
+}
+
+fn is_service_like_symbol(symbol: &str) -> bool {
+    ["Service", "Repository", "Repo", "Client", "Gateway", "Manager", "Controller"]
+        .iter()
+        .any(|suffix| symbol.ends_with(suffix))
+}
+
 fn extract_backend_routes(
     repo: &str,
     rel: &str,
     src: &str,
+    index: &SemanticIndex,
     out: &mut BTreeMap<(String, String, String), RouteModelEndpoint>,
 ) {
     let express = Regex::new(
@@ -142,6 +218,20 @@ fn extract_backend_routes(
         r#"(?s)\.(get|post|put|patch|delete|head|options)_async\s*\(\s*["']([^"']+)["']"#,
     )
     .expect("worker route regex");
+    let nest_controller =
+        Regex::new(r#"@Controller\s*\(\s*["']([^"']*)["']\s*\)"#).expect("nest controller regex");
+    let nest_method = Regex::new(
+        r#"@(Get|Post|Put|Patch|Delete|Head|Options)\s*\(\s*["']?([^"')\n]*)["']?\s*\)"#,
+    )
+    .expect("nest method regex");
+    let rails_route = Regex::new(r#"\b(get|post|put|patch|delete|match)\s+["']([^"']+)["'][^\n]*"#)
+        .expect("rails route regex");
+    let rails_resources =
+        Regex::new(r#"\bresources\s+:([A-Za-z_][A-Za-z0-9_]*)"#).expect("rails resources regex");
+    let laravel_route = Regex::new(
+        r#"Route::(get|post|put|patch|delete|match|any)\s*\(\s*["']([^"']+)["']([^;]*)"#,
+    )
+    .expect("laravel route regex");
 
     let lines: Vec<&str> = src.lines().collect();
     for cap in worker_chain.captures_iter(src) {
@@ -155,22 +245,146 @@ fn extract_backend_routes(
             idx.min(lines.len().saturating_sub(1)),
             &cap[1],
             &cap[2],
+            None,
+            "rust-worker",
+            index,
             &lines,
             out,
         );
     }
+    for cap in rails_route.captures_iter(src) {
+        let Some(m) = cap.get(0) else {
+            continue;
+        };
+        let idx = line_number_at(src, m.start()).saturating_sub(1) as usize;
+        let methods = if cap[1].eq_ignore_ascii_case("match") {
+            vec!["GET".to_string(), "POST".to_string()]
+        } else {
+            vec![cap[1].to_ascii_uppercase()]
+        };
+        for method in methods {
+            push_backend_route(
+                repo,
+                rel,
+                idx.min(lines.len().saturating_sub(1)),
+                &method,
+                &cap[2],
+                rails_handler(m.as_str()),
+                "rails",
+                index,
+                &lines,
+                out,
+            );
+        }
+    }
+    for cap in rails_resources.captures_iter(src) {
+        let Some(m) = cap.get(0) else {
+            continue;
+        };
+        let idx = line_number_at(src, m.start()).saturating_sub(1) as usize;
+        let resource = &cap[1];
+        for (method, suffix, handler) in [
+            ("GET", "", "index"),
+            ("POST", "", "create"),
+            ("GET", "/:id", "show"),
+            ("PATCH", "/:id", "update"),
+            ("DELETE", "/:id", "destroy"),
+        ] {
+            push_backend_route(
+                repo,
+                rel,
+                idx.min(lines.len().saturating_sub(1)),
+                method,
+                &format!("/{resource}{suffix}"),
+                Some(handler.to_string()),
+                "rails",
+                index,
+                &lines,
+                out,
+            );
+        }
+    }
+    for cap in laravel_route.captures_iter(src) {
+        let Some(m) = cap.get(0) else {
+            continue;
+        };
+        let idx = line_number_at(src, m.start()).saturating_sub(1) as usize;
+        let methods = match cap[1].to_ascii_lowercase().as_str() {
+            "match" | "any" => vec!["GET".to_string(), "POST".to_string()],
+            other => vec![other.to_ascii_uppercase()],
+        };
+        let handler = laravel_handler(cap.get(3).map(|m| m.as_str()).unwrap_or(""));
+        for method in methods {
+            push_backend_route(
+                repo,
+                rel,
+                idx.min(lines.len().saturating_sub(1)),
+                &method,
+                &cap[2],
+                handler.clone(),
+                "laravel",
+                index,
+                &lines,
+                out,
+            );
+        }
+    }
+    let mut controller_prefix = String::new();
     for (idx, line) in lines.iter().enumerate() {
+        if let Some(cap) = nest_controller.captures(line) {
+            controller_prefix = normalise_route_path(&cap[1]);
+        }
+        if let Some(cap) = nest_method.captures(line) {
+            let method = nest_method_name_to_http(&cap[1]);
+            let path = join_route_paths(&controller_prefix, &cap[2]);
+            push_backend_route(
+                repo,
+                rel,
+                idx,
+                &method,
+                &path,
+                next_handler_name(&lines, idx),
+                "nest",
+                index,
+                &lines,
+                out,
+            );
+        }
         for cap in express.captures_iter(line) {
-            push_backend_route(repo, rel, idx, &cap[1], &cap[2], &lines, out);
+            push_backend_route(
+                repo, rel, idx, &cap[1], &cap[2], None, "express", index, &lines, out,
+            );
         }
         for cap in decorator.captures_iter(line) {
-            push_backend_route(repo, rel, idx, &cap[1], &cap[2], &lines, out);
+            push_backend_route(
+                repo,
+                rel,
+                idx,
+                &cap[1],
+                &cap[2],
+                next_handler_name(&lines, idx),
+                "python",
+                index,
+                &lines,
+                out,
+            );
         }
         for cap in route_decorator.captures_iter(line) {
             let methods =
                 methods_from_route_decorator(cap.get(2).map(|m| m.as_str()).unwrap_or(""));
             for method in methods {
-                push_backend_route(repo, rel, idx, &method, &cap[1], &lines, out);
+                push_backend_route(
+                    repo,
+                    rel,
+                    idx,
+                    &method,
+                    &cap[1],
+                    next_handler_name(&lines, idx),
+                    "python",
+                    index,
+                    &lines,
+                    out,
+                );
             }
         }
     }
@@ -182,6 +396,9 @@ fn push_backend_route(
     idx: usize,
     method: &str,
     path: &str,
+    handler_name: Option<String>,
+    framework: &str,
+    index: &SemanticIndex,
     lines: &[&str],
     out: &mut BTreeMap<(String, String, String), RouteModelEndpoint>,
 ) {
@@ -192,20 +409,38 @@ fn push_backend_route(
     }
     let key = (repo.to_string(), method.clone(), path.clone());
     let window = source_window(lines, idx, 12);
+    let semantic = semantic_hints(&path, &method, &window, index);
+    let mut body = body_fields(&window);
+    merge_strings(&mut body, semantic.request_fields.clone());
+    let mut side_effects = semantic.side_effects;
+    if !matches!(method.as_str(), "GET" | "HEAD" | "OPTIONS") && side_effects.is_empty() {
+        side_effects.push("writes_resource".to_string());
+    }
     merge_backend_route(
         out,
         key,
         RouteModelEndpoint {
             method: method.clone(),
             path: path.clone(),
+            framework: framework.to_string(),
             repo: Some(repo.to_string()),
             handler_file: Some(rel.to_string()),
+            handler_name,
             line: Some((idx + 1) as i64),
             params: route_params(&path),
+            query_params: semantic.query_params,
             middleware: middleware_markers(&window),
             auth_checks: auth_markers(&window),
             role_checks: role_markers(&window),
-            body_fields: body_fields(&window),
+            body_fields: body.clone(),
+            request_fields: body,
+            response_hints: semantic.response_hints,
+            service_calls: semantic.service_calls,
+            model_names: semantic.model_names,
+            resource_names: semantic.resource_names,
+            tenant_fields: semantic.tenant_fields,
+            owner_fields: semantic.owner_fields,
+            side_effects,
             state_changing: !matches!(method.as_str(), "GET" | "HEAD" | "OPTIONS"),
             confidence: route_confidence(&window),
             evidence: vec![RouteEvidence {
@@ -225,13 +460,28 @@ fn merge_backend_route(
     match out.get_mut(&key) {
         Some(existing) => {
             merge_strings(&mut existing.params, next.params);
+            merge_strings(&mut existing.query_params, next.query_params);
             merge_strings(&mut existing.middleware, next.middleware);
             merge_strings(&mut existing.auth_checks, next.auth_checks);
             merge_strings(&mut existing.role_checks, next.role_checks);
             merge_strings(&mut existing.body_fields, next.body_fields);
+            merge_strings(&mut existing.request_fields, next.request_fields);
+            merge_strings(&mut existing.response_hints, next.response_hints);
+            merge_strings(&mut existing.service_calls, next.service_calls);
+            merge_strings(&mut existing.model_names, next.model_names);
+            merge_strings(&mut existing.resource_names, next.resource_names);
+            merge_strings(&mut existing.tenant_fields, next.tenant_fields);
+            merge_strings(&mut existing.owner_fields, next.owner_fields);
+            merge_strings(&mut existing.side_effects, next.side_effects);
             existing.state_changing |= next.state_changing;
             existing.confidence = existing.confidence.max(next.confidence);
             existing.evidence.append(&mut next.evidence);
+            if existing.framework.is_empty() {
+                existing.framework = next.framework;
+            }
+            if existing.handler_name.is_none() {
+                existing.handler_name = next.handler_name;
+            }
             if existing.handler_file.is_none() {
                 existing.handler_file = next.handler_file;
             }
@@ -581,14 +831,28 @@ fn extract_openapi_routes(
                 RouteModelEndpoint {
                     method: method.clone(),
                     path: path.clone(),
+                    framework: "openapi".to_string(),
                     repo: Some(repo.to_string()),
                     handler_file: Some(rel.to_string()),
+                    handler_name: operation
+                        .get("operationId")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
                     line: Some(line),
                     params,
+                    query_params: openapi_query_parameters(operation),
                     middleware: vec!["openapi".to_string()],
                     auth_checks,
                     role_checks: Vec::new(),
-                    body_fields,
+                    body_fields: body_fields.clone(),
+                    request_fields: body_fields,
+                    response_hints: openapi_response_hints(operation),
+                    service_calls: Vec::new(),
+                    model_names: openapi_schema_refs(operation),
+                    resource_names: route_objects(&path),
+                    tenant_fields: Vec::new(),
+                    owner_fields: Vec::new(),
+                    side_effects: side_effects(&method, &path, ""),
                     state_changing: !matches!(method.as_str(), "GET" | "HEAD" | "OPTIONS"),
                     confidence,
                     evidence: vec![RouteEvidence {
@@ -621,6 +885,18 @@ fn openapi_parameters(value: &serde_json::Value) -> Vec<String> {
     out
 }
 
+fn openapi_query_parameters(value: &serde_json::Value) -> Vec<String> {
+    let mut out = Vec::new();
+    for param in value.get("parameters").and_then(|v| v.as_array()).into_iter().flatten() {
+        if param.get("in").and_then(|v| v.as_str()) == Some("query") {
+            if let Some(name) = param.get("name").and_then(|v| v.as_str()) {
+                out.push(name.to_string());
+            }
+        }
+    }
+    sorted_unique(out)
+}
+
 fn openapi_body_fields(value: &serde_json::Value) -> Vec<String> {
     let mut out = Vec::new();
     let Some(content) =
@@ -647,6 +923,45 @@ fn collect_schema_properties(schema: Option<&serde_json::Value>, out: &mut Vec<S
         for item in all_of {
             collect_schema_properties(Some(item), out);
         }
+    }
+}
+
+fn openapi_response_hints(value: &serde_json::Value) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(responses) = value.get("responses").and_then(|v| v.as_object()) {
+        for (status, response) in responses {
+            out.push(format!("status:{status}"));
+            collect_schema_refs(response, &mut out);
+        }
+    }
+    sorted_unique(out)
+}
+
+fn openapi_schema_refs(value: &serde_json::Value) -> Vec<String> {
+    let mut out = Vec::new();
+    collect_schema_refs(value, &mut out);
+    sorted_unique(out)
+}
+
+fn collect_schema_refs(value: &serde_json::Value, out: &mut Vec<String>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, value) in map {
+                if key == "$ref" {
+                    if let Some(raw) = value.as_str().and_then(|s| s.rsplit('/').next()) {
+                        out.push(raw.to_string());
+                    }
+                } else {
+                    collect_schema_refs(value, out);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_schema_refs(item, out);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -680,6 +995,205 @@ fn methods_from_route_decorator(raw: &str) -> Vec<String> {
     } else {
         out
     }
+}
+
+fn nest_method_name_to_http(raw: &str) -> String {
+    match raw.to_ascii_lowercase().as_str() {
+        "get" => "GET",
+        "post" => "POST",
+        "put" => "PUT",
+        "patch" => "PATCH",
+        "delete" => "DELETE",
+        "head" => "HEAD",
+        "options" => "OPTIONS",
+        _ => "GET",
+    }
+    .to_string()
+}
+
+fn join_route_paths(prefix: &str, child: &str) -> String {
+    let prefix = normalise_route_path(prefix);
+    let child = child.trim().trim_matches('/');
+    if child.is_empty() {
+        return prefix;
+    }
+    if prefix == "/" {
+        format!("/{child}")
+    } else {
+        format!("{}/{}", prefix.trim_end_matches('/'), child)
+    }
+}
+
+fn next_handler_name(lines: &[&str], idx: usize) -> Option<String> {
+    let re =
+        Regex::new(r#"\b(?:async\s+)?(?:function\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*(?:\([^)]*\)|=)"#)
+            .expect("handler regex");
+    for line in lines.iter().skip(idx + 1).take(5) {
+        let trimmed = line.trim();
+        if trimmed.starts_with('@') {
+            continue;
+        }
+        if let Some(cap) = re.captures(trimmed) {
+            return Some(cap[1].to_string());
+        }
+    }
+    None
+}
+
+fn laravel_handler(raw: &str) -> Option<String> {
+    let array_re = Regex::new(r#"\[([A-Za-z_][A-Za-z0-9_:]*)::class\s*,\s*["']([^"']+)["']"#)
+        .expect("laravel array handler regex");
+    let string_re = Regex::new(r#"["']([A-Za-z_][A-Za-z0-9_\\]+@[A-Za-z_][A-Za-z0-9_]*)["']"#)
+        .expect("laravel string handler regex");
+    array_re
+        .captures(raw)
+        .map(|cap| format!("{}.{}", &cap[1], &cap[2]))
+        .or_else(|| string_re.captures(raw).map(|cap| cap[1].replace('@', ".")))
+}
+
+fn rails_handler(raw: &str) -> Option<String> {
+    let re = Regex::new(r#"to:\s*["']([^"']+)["']"#).expect("rails handler regex");
+    re.captures(raw).map(|cap| cap[1].replace('#', "."))
+}
+
+fn semantic_hints(path: &str, method: &str, window: &str, index: &SemanticIndex) -> SemanticHints {
+    let mut hints =
+        SemanticHints { resource_names: route_objects(path), ..SemanticHints::default() };
+    hints.query_params = query_fields(window);
+    hints.request_fields = request_fields(window);
+    hints.response_hints = response_hints(window);
+    hints.tenant_fields =
+        field_markers(window, &["tenant", "tenant_id", "org_id", "organization_id", "account_id"]);
+    hints.owner_fields =
+        field_markers(window, &["owner", "owner_id", "user_id", "created_by", "account_id"]);
+    hints.service_calls = called_symbols(window, &index.service_names);
+    hints.model_names = called_symbols(window, &index.model_names);
+    merge_strings(
+        &mut hints.model_names,
+        models_matching_resources(&hints.resource_names, &index.model_names),
+    );
+    merge_strings(&mut hints.resource_names, resource_names_from_symbols(&hints.model_names));
+    hints.side_effects = side_effects(method, path, window);
+    hints
+}
+
+fn query_fields(window: &str) -> Vec<String> {
+    let mut out = capture_group(window, r#"\b(?:req|request)\.query\.([A-Za-z_][A-Za-z0-9_]*)"#);
+    out.extend(capture_group(
+        window,
+        r#"\b(?:params|query_params|request\.args)\s*\[\s*["']([A-Za-z_][A-Za-z0-9_]*)["']"#,
+    ));
+    sorted_unique(out)
+}
+
+fn request_fields(window: &str) -> Vec<String> {
+    let mut out = body_fields(window);
+    out.extend(capture_group(
+        window,
+        r#"\b(?:request\.json|request\.data|data|payload|body)\.([A-Za-z_][A-Za-z0-9_]*)"#,
+    ));
+    out.extend(capture_group(
+        window,
+        r#"\b(?:request\.json|request\.data|data|payload)\s*\[\s*["']([A-Za-z_][A-Za-z0-9_]*)["']"#,
+    ));
+    sorted_unique(out)
+}
+
+fn response_hints(window: &str) -> Vec<String> {
+    let mut out = capture_group(
+        window,
+        r#"\b(?:res\.json|jsonify|render|serialize)\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)"#,
+    );
+    out.extend(capture_group(window, r#"\breturn\s+([A-Za-z_][A-Za-z0-9_]*)"#));
+    sorted_unique(out)
+}
+
+fn field_markers(window: &str, names: &[&str]) -> Vec<String> {
+    let lower = window.to_ascii_lowercase();
+    let mut out = Vec::new();
+    for name in names {
+        if lower.contains(name) {
+            out.push((*name).to_string());
+        }
+    }
+    sorted_unique(out)
+}
+
+fn called_symbols(window: &str, symbols: &BTreeSet<String>) -> Vec<String> {
+    let mut out = Vec::new();
+    for symbol in symbols {
+        if window.contains(symbol) {
+            out.push(symbol.clone());
+        }
+    }
+    sorted_unique(out)
+}
+
+fn resource_names_from_symbols(symbols: &[String]) -> Vec<String> {
+    sorted_unique(symbols.iter().map(|s| {
+        s.trim_end_matches("Model")
+            .trim_end_matches("Entity")
+            .trim_end_matches("Schema")
+            .trim_end_matches("Record")
+            .to_ascii_lowercase()
+    }))
+}
+
+fn models_matching_resources(resources: &[String], models: &BTreeSet<String>) -> Vec<String> {
+    let mut out = Vec::new();
+    for model in models {
+        let lower = model.to_ascii_lowercase();
+        for resource in resources {
+            if lower.starts_with(resource) || lower.starts_with(&format!("{resource}s")) {
+                out.push(model.clone());
+            }
+        }
+    }
+    sorted_unique(out)
+}
+
+fn side_effects(method: &str, path: &str, window: &str) -> Vec<String> {
+    let lower = format!("{} {}", path.to_ascii_lowercase(), window.to_ascii_lowercase());
+    let mut out = Vec::new();
+    for (needle, effect) in [
+        ("delete", "delete_resource"),
+        ("destroy", "delete_resource"),
+        ("create", "create_resource"),
+        ("insert", "create_resource"),
+        ("update", "update_resource"),
+        ("save", "update_resource"),
+        ("transfer", "moves_value"),
+        ("payment", "moves_value"),
+        ("refund", "moves_value"),
+        ("email", "sends_message"),
+        ("notify", "sends_message"),
+        ("upload", "stores_file"),
+        ("export", "exports_data"),
+        ("download", "exports_data"),
+    ] {
+        if lower.contains(needle) {
+            out.push(effect.to_string());
+        }
+    }
+    if method == "DELETE" {
+        out.push("delete_resource".to_string());
+    }
+    sorted_unique(out)
+}
+
+fn capture_group(raw: &str, pattern: &str) -> Vec<String> {
+    let re = Regex::new(pattern).expect("semantic capture regex");
+    re.captures_iter(raw).map(|cap| cap[1].to_string()).collect()
+}
+
+fn sorted_unique<I>(items: I) -> Vec<String>
+where
+    I: IntoIterator<Item = String>,
+{
+    let mut out: Vec<String> = items.into_iter().filter(|s| !s.trim().is_empty()).collect();
+    out.sort();
+    out.dedup();
+    out
 }
 
 fn source_window(lines: &[&str], idx: usize, radius: usize) -> String {
@@ -749,6 +1263,28 @@ fn route_params(path: &str) -> Vec<String> {
     params.sort();
     params.dedup();
     params
+}
+
+fn route_objects(path: &str) -> Vec<String> {
+    let stop = [
+        "api", "v1", "v2", "admin", "auth", "login", "logout", "me", "search", "new", "edit",
+        "health", "debug", "metrics",
+    ];
+    let mut out = Vec::new();
+    for segment in path.split('/') {
+        let clean = segment
+            .trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-')
+            .trim_start_matches(':')
+            .trim_matches(|c| c == '{' || c == '}');
+        if clean.is_empty()
+            || clean.chars().all(|c| c.is_ascii_digit())
+            || stop.iter().any(|s| clean.eq_ignore_ascii_case(s))
+        {
+            continue;
+        }
+        out.push(clean.trim_end_matches('s').to_ascii_lowercase());
+    }
+    sorted_unique(out)
 }
 
 fn auth_markers(window: &str) -> Vec<String> {
@@ -829,12 +1365,24 @@ pub fn compact_route_model_for_prompt(model: &RouteModel, max_routes: usize) -> 
         } else {
             format!(" roles:{}", route.role_checks.join(","))
         };
+        let resources = if route.resource_names.is_empty() {
+            String::new()
+        } else {
+            format!(" resources:{}", route.resource_names.join(","))
+        };
+        let effects = if route.side_effects.is_empty() {
+            String::new()
+        } else {
+            format!(" effects:{}", route.side_effects.join(","))
+        };
         lines.push(format!(
-            "{} {} {}{} file:{}:{}",
+            "{} {} {}{}{}{} file:{}:{}",
             route.method,
             route.path,
             auth,
             roles,
+            resources,
+            effects,
             route.handler_file.as_deref().unwrap_or("?"),
             route.line.map(|l| l.to_string()).unwrap_or_else(|| "?".to_string())
         ));
@@ -1045,5 +1593,147 @@ paths:
         assert_eq!(form.method, "POST");
         assert!(form.fields.iter().any(|f| f == "email"));
         assert!(form.csrf_markers.iter().any(|f| f == "csrf_token"));
+    }
+
+    #[test]
+    fn extracts_nest_routes_with_semantic_hints() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("users.controller.ts"),
+            r#"
+@Controller("api/users")
+export class UsersController {
+  constructor(private readonly usersService: UsersService) {}
+
+  @Patch(":id")
+  async updateUser(@Param("id") id: string, @Body() body: UpdateUserDto, @Req() req) {
+    const tenantId = req.user.tenant_id;
+    const user = await this.usersService.update(id, body.email, tenantId);
+    return { user };
+  }
+}
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("users.service.ts"),
+            r#"
+export class UsersService {
+  async update(id: string, email: string, tenantId: string): Promise<UserEntity> {
+    return UserEntity.save({ id, email, tenant_id: tenantId });
+  }
+}
+export class UserEntity {}
+"#,
+        )
+        .unwrap();
+        let mut workspaces = BTreeMap::new();
+        workspaces.insert(
+            "api".to_string(),
+            WorkspaceHandle::for_local_path_test("api", tmp.path().to_path_buf()),
+        );
+
+        let model = extract_route_model(&workspaces);
+        let route = model
+            .backend_routes
+            .iter()
+            .find(|r| r.method == "PATCH" && r.path == "/api/users/:id")
+            .expect("nest route");
+        assert_eq!(route.framework, "nest");
+        assert_eq!(route.handler_name.as_deref(), Some("updateUser"));
+        assert!(route.params.iter().any(|p| p == "id"));
+        assert!(route.tenant_fields.iter().any(|f| f == "tenant_id"));
+        assert!(route.service_calls.iter().any(|s| s == "UsersService"));
+        assert!(route.model_names.iter().any(|m| m == "UserEntity"));
+        assert!(route.side_effects.iter().any(|s| s == "update_resource"));
+    }
+
+    #[test]
+    fn extracts_rails_and_laravel_route_declarations() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("routes.rb"),
+            r#"
+Rails.application.routes.draw do
+  resources :projects
+  post "/admin/reports/export", to: "reports#export"
+end
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("web.php"),
+            r#"
+Route::get('/orders/{id}', [OrderController::class, 'show']);
+Route::post('/orders/{id}/refund', [OrderController::class, 'refund'])->middleware('auth');
+"#,
+        )
+        .unwrap();
+        let mut workspaces = BTreeMap::new();
+        workspaces.insert(
+            "api".to_string(),
+            WorkspaceHandle::for_local_path_test("api", tmp.path().to_path_buf()),
+        );
+
+        let model = extract_route_model(&workspaces);
+        assert!(model
+            .backend_routes
+            .iter()
+            .any(|r| r.framework == "rails" && r.method == "GET" && r.path == "/projects/:id"));
+        let export = model
+            .backend_routes
+            .iter()
+            .find(|r| r.framework == "rails" && r.path == "/admin/reports/export")
+            .expect("rails export route");
+        assert_eq!(export.handler_name.as_deref(), Some("reports.export"));
+        assert!(export.side_effects.iter().any(|s| s == "exports_data"));
+        let refund = model
+            .backend_routes
+            .iter()
+            .find(|r| r.framework == "laravel" && r.path == "/orders/{id}/refund")
+            .expect("laravel refund route");
+        assert_eq!(refund.handler_name.as_deref(), Some("OrderController.refund"));
+        assert!(refund.params.iter().any(|p| p == "id"));
+        assert!(refund.side_effects.iter().any(|s| s == "moves_value"));
+    }
+
+    #[test]
+    fn infers_services_and_models_across_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("billing.routes.js"),
+            r#"
+router.post("/api/invoices/:id/pay", requireAuth, async (req, res) => {
+  const result = await BillingService.charge(req.params.id, req.body.amount, req.user.owner_id);
+  res.json({ invoice: result });
+});
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("billing.service.js"),
+            r#"
+class BillingService {}
+class InvoiceModel {}
+"#,
+        )
+        .unwrap();
+        let mut workspaces = BTreeMap::new();
+        workspaces.insert(
+            "api".to_string(),
+            WorkspaceHandle::for_local_path_test("api", tmp.path().to_path_buf()),
+        );
+
+        let model = extract_route_model(&workspaces);
+        let route = model
+            .backend_routes
+            .iter()
+            .find(|r| r.path == "/api/invoices/:id/pay")
+            .expect("billing route");
+        assert!(route.service_calls.iter().any(|s| s == "BillingService"));
+        assert!(route.model_names.iter().any(|m| m == "InvoiceModel"));
+        assert!(route.resource_names.iter().any(|r| r == "invoice"));
+        assert!(route.owner_fields.iter().any(|f| f == "owner_id"));
+        assert!(route.request_fields.iter().any(|f| f == "amount"));
     }
 }

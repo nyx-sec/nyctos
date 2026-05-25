@@ -2,15 +2,17 @@
 /**
  * Capture fresh README screenshots from the current Nyctos frontend.
  *
- * The script starts Vite, serves the real React app, mocks the daemon API
- * with a small seeded pentest, captures raw frames, then frames the stills
- * and builds a fast-forward demo GIF.
+ * The script serves the real React app, mocks the daemon API with a small
+ * seeded pentest, captures raw frames, then frames the stills and builds a
+ * paced demo GIF. It prefers the release bundle in frontend/dist and falls
+ * back to the Vite dev server when dist is missing.
  */
 import { execFileSync, spawn } from "node:child_process";
 import {
   copyFileSync,
   mkdirSync,
   rmSync,
+  statSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,6 +25,7 @@ const RAW_DIR = join(OUT_DIR, "raw");
 const GIF_RAW_DIR = join(RAW_DIR, "gif");
 const FRAMER = join(ROOT, "scripts", "frame-screenshots.py");
 const PORT = Number(process.env.NYCTOS_SCREENSHOT_PORT ?? 4197);
+const GIF_FRAME_MS = Number(process.env.NYCTOS_GIF_FRAME_MS ?? 1900);
 const BASE_URL = `http://127.0.0.1:${PORT}`;
 const VIEW = { width: 1600, height: 992 };
 const PROJECT_ID = "proj-checkout";
@@ -385,7 +388,7 @@ function attempt(input) {
 
 async function main() {
   cleanScreenshots();
-  const vite = await startVite();
+  const server = await startUiServer();
   let browser;
   try {
     browser = await chromium.launch({ headless: true });
@@ -410,7 +413,7 @@ async function main() {
     frameOutputs();
   } finally {
     if (browser) await browser.close();
-    vite.kill("SIGTERM");
+    server.kill("SIGTERM");
   }
 }
 
@@ -422,10 +425,23 @@ function cleanScreenshots() {
   mkdirSync(DOCS_OUT_DIR, { recursive: true });
 }
 
-async function startVite() {
+async function startUiServer() {
+  const mode = chooseServerMode();
+  const script = mode === "preview" ? "preview" : "dev";
   const child = spawn(
     "npm",
-    ["--prefix", "frontend", "run", "dev", "--", "--host", "127.0.0.1", "--port", String(PORT), "--strictPort"],
+    [
+      "--prefix",
+      "frontend",
+      "run",
+      script,
+      "--",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      String(PORT),
+      "--strictPort",
+    ],
     {
       cwd: ROOT,
       stdio: ["ignore", "pipe", "pipe"],
@@ -444,7 +460,7 @@ async function startVite() {
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
     if (child.exitCode !== null) {
-      throw new Error(`vite exited early:\n${output}`);
+      throw new Error(`vite ${script} exited early:\n${output}`);
     }
     try {
       const res = await fetch(BASE_URL);
@@ -454,7 +470,22 @@ async function startVite() {
     }
   }
   child.kill("SIGTERM");
-  throw new Error(`vite did not start at ${BASE_URL}:\n${output}`);
+  throw new Error(`vite ${script} did not start at ${BASE_URL}:\n${output}`);
+}
+
+function chooseServerMode() {
+  const requested = process.env.NYCTOS_SCREENSHOT_SERVER;
+  if (requested === "dev" || requested === "preview") return requested;
+  return exists(join(ROOT, "frontend", "dist", "index.html")) ? "preview" : "dev";
+}
+
+function exists(path) {
+  try {
+    statSync(path);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function captureStills(context) {
@@ -470,8 +501,7 @@ async function captureStills(context) {
   await goto(page, `/projects/${PROJECT_ID}/vulnerabilities`);
   await screenshot(page, "verified-vulnerabilities");
 
-  await page.getByText("Checkout total can be lowered", { exact: false }).click();
-  await page.waitForSelector(".vulnerability-detail-modal", { state: "visible" });
+  await openFirstVulnerability(page);
   await screenshot(page, "vulnerability-detail");
   await page.close();
 }
@@ -504,15 +534,25 @@ async function captureGifFrames(context) {
   await goto(page, `/projects/${PROJECT_ID}/vulnerabilities`);
   frames.push(await gifFrame(page, "05-vulnerabilities"));
 
-  await page.getByText("Checkout total can be lowered", { exact: false }).click();
-  await page.waitForSelector(".vulnerability-detail-modal", { state: "visible" });
+  await openFirstVulnerability(page);
   frames.push(await gifFrame(page, "06-detail"));
 
   await page.close();
-  execFileSync("python3", [FRAMER, "--gif", join(OUT_DIR, "demo.gif"), ...frames], {
-    cwd: ROOT,
-    stdio: "inherit",
-  });
+  execFileSync(
+    "python3",
+    [
+      FRAMER,
+      "--gif",
+      "--duration-ms",
+      String(GIF_FRAME_MS),
+      join(OUT_DIR, "demo.gif"),
+      ...frames,
+    ],
+    {
+      cwd: ROOT,
+      stdio: "inherit",
+    },
+  );
 }
 
 async function newMockedPage(context) {
@@ -538,6 +578,15 @@ async function gifFrame(page, name) {
   const path = join(GIF_RAW_DIR, `${name}.png`);
   await page.screenshot({ path, fullPage: false });
   return path;
+}
+
+async function openFirstVulnerability(page) {
+  await Promise.all([
+    page.waitForURL(new RegExp(`/vulnerabilities/${vulnerabilities[0].id}`)),
+    page.getByText("Checkout total can be lowered", { exact: false }).click(),
+  ]);
+  await page.waitForLoadState("networkidle").catch(() => {});
+  await page.waitForTimeout(500);
 }
 
 function frameOutputs() {
@@ -573,11 +622,24 @@ async function routeApi(route) {
   if (path === `/runs/${RUN_ID}/candidates`) return json(route, candidates);
   if (path === `/runs/${RUN_ID}/verification-attempts`) return json(route, attempts);
   if (path === "/vulnerabilities") return json(route, vulnerabilities);
+  const vulnerabilityMatch = path.match(/^\/vulnerabilities\/([^/]+)$/);
+  if (vulnerabilityMatch) {
+    const found = vulnerabilities.find((row) => row.id === decodeURIComponent(vulnerabilityMatch[1]));
+    return found
+      ? json(route, found)
+      : route.fulfill({
+          status: 404,
+          contentType: "application/json",
+          body: JSON.stringify({
+            error: { code: "mock_missing", message: `No vulnerability ${vulnerabilityMatch[1]}` },
+          }),
+        });
+  }
   if (path === `/runs/${RUN_ID}/events.jsonl`) {
     return route.fulfill({
       status: 200,
       contentType: "text/plain",
-      body: "fast-forward demo event log\n",
+      body: "demo event log\n",
     });
   }
 

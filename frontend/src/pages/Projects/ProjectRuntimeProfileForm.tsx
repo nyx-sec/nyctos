@@ -624,9 +624,10 @@ export function ProjectRuntimeProfileForm({ value, onChange, projectId }: Props)
           rows={value.auth_profiles}
           projectId={projectId}
           targetBaseUrl={value.target_base_url}
-          onAuthSetupApplied={(profiles) =>
-            onChange({ ...value, auth_profiles: authDrafts(profiles) })
-          }
+          onAuthSetupApplied={(profile) => {
+            const applied = runtimeProfileToDraft(profile, value.target_base_url);
+            onChange({ ...value, env_vars: applied.env_vars, auth_profiles: applied.auth_profiles });
+          }}
           onChange={(rows) => onChange({ ...value, auth_profiles: rows })}
         />
       </details>
@@ -888,6 +889,19 @@ function EnvRows({
               onChange={(e) => onChange(replaceAt(rows, index, { ...row, name: e.target.value }))}
             />
           </div>
+          <div className="setup-field">
+            <label htmlFor={`runtime-env-value-${index}`}>Value</label>
+            <input
+              id={`runtime-env-value-${index}`}
+              type={row.secret ? "password" : "text"}
+              autoComplete="off"
+              placeholder={row.secret ? "Secret value" : "value"}
+              value={row.value}
+              onChange={(e) =>
+                onChange(replaceAt(rows, index, { ...row, value: e.target.value }))
+              }
+            />
+          </div>
           <label className="runtime-env-row__secret">
             <input
               type="checkbox"
@@ -922,7 +936,7 @@ function AuthProfileRows({
   rows: AuthProfileDraft[];
   projectId?: string;
   targetBaseUrl: string;
-  onAuthSetupApplied: (profiles: ProjectAuthProfile[]) => void;
+  onAuthSetupApplied: (profile: ProjectRuntimeProfile | null | undefined) => void;
   onChange: (rows: AuthProfileDraft[]) => void;
 }) {
   const update = (index: number, patch: Partial<AuthProfileDraft>) =>
@@ -943,7 +957,7 @@ function AuthProfileRows({
       return;
     }
     appliedJobId.current = authSetupJob.id;
-    onAuthSetupApplied(authSetupJob.result.project.runtime_profile?.auth_profiles ?? []);
+    onAuthSetupApplied(authSetupJob.result.project.runtime_profile);
   }, [authSetupJob, onAuthSetupApplied]);
 
   async function runAuthSetup() {

@@ -90,7 +90,7 @@ Use the dashboard when you want to watch a live run, inspect proof, update triag
 
 <p align="center"><img src="assets/screenshots/verified-vulnerabilities.png" alt="Nyctos verified vulnerability list with risk scores, confidence, source location, and triage tabs" width="900"/></p>
 
-<p align="center"><img src="assets/screenshots/vulnerability-detail.png" alt="Nyctos vulnerability detail modal with live evidence, business impact, reproduction steps, and remediation" width="900"/></p>
+<p align="center"><img src="assets/screenshots/vulnerability-detail.png" alt="Nyctos vulnerability detail page with live evidence, business impact, reproduction steps, and remediation" width="900"/></p>
 
 ## Local app setup
 
@@ -142,7 +142,7 @@ npm --prefix frontend run check
 
 ## Screenshot workflow
 
-README screenshots are captured from the current Vite UI with a seeded local pentest. The capture script starts Vite, mocks the daemon API, records a fast-forward demo GIF, and frames the stills:
+README screenshots are captured from the current Vite UI with a seeded local pentest. The capture script serves the release bundle when `frontend/dist` exists, mocks the daemon API, records a paced demo GIF, and frames the stills:
 
 ```bash
 node scripts/capture-screenshots.mjs --all

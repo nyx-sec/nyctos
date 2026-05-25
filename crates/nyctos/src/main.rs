@@ -29,7 +29,7 @@ use nyctos_types::product::{
     canonical_risk_rating, clamp_risk_score, risk_rating_for_score, LaunchHealthCheck, LaunchStep,
     ProjectLaunchProfileInput,
 };
-use nyctos_types::project::{ProjectRuntimeCommand, ProjectRuntimeProfile};
+use nyctos_types::project::{ProjectRuntimeCommand, ProjectRuntimeEnvVar, ProjectRuntimeProfile};
 use regex::Regex;
 use semver::Version;
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -1233,6 +1233,7 @@ async fn drive_scan(
     );
 
     let auth_profiles = pentest_tools::configured_auth_profiles(project.runtime_profile.as_ref());
+    let auth_env_overrides = auth_env_overrides(project.runtime_profile.as_ref());
 
     emit_phase(&events, &run.id, project.id.as_str(), "CandidateSynthesisStarted", true, None);
     let synthesis_summary = match candidate_sources::synthesize_weak_signal_candidates(
@@ -1694,6 +1695,7 @@ async fn drive_scan(
             &state_dir.traces_for_run(&run.id).join("browser_verification"),
             &state_dir.traces_for_run(&run.id).join("exploit_audit"),
             &auth_workspace_paths,
+            &auth_env_overrides,
             events.clone(),
         )
         .await
@@ -3399,6 +3401,22 @@ fn endpoint_path_from_label(endpoint: Option<&str>) -> Option<String> {
     Some(path.trim_end_matches([',', ';']).to_string())
 }
 
+fn auth_env_overrides(profile: Option<&ProjectRuntimeProfile>) -> BTreeMap<String, String> {
+    profile
+        .into_iter()
+        .flat_map(|profile| profile.env_vars.iter())
+        .filter_map(auth_env_override)
+        .collect()
+}
+
+fn auth_env_override(var: &ProjectRuntimeEnvVar) -> Option<(String, String)> {
+    let name = var.name.trim();
+    if name.is_empty() || var.value.is_empty() {
+        return None;
+    }
+    Some((name.to_string(), var.value.clone()))
+}
+
 async fn verify_pentest_candidates(
     ai_config: &AiConfig,
     store: &Store,
@@ -3414,6 +3432,7 @@ async fn verify_pentest_candidates(
     browser_artifact_root: &std::path::Path,
     policy_audit_root: &std::path::Path,
     auth_workspace_paths: &[std::path::PathBuf],
+    auth_env_overrides: &BTreeMap<String, String>,
     events: EventSink,
 ) -> anyhow::Result<CandidateVerificationReport> {
     let candidates = store.pentest_candidates().list_by_run(run_id).await?;
@@ -3428,6 +3447,7 @@ async fn verify_pentest_candidates(
         auth_profiles,
         auth_artifact_dir,
         auth_workspace_paths,
+        auth_env_overrides,
         run_config.browser_checks_enabled,
         &events,
     )
@@ -3473,6 +3493,7 @@ async fn verify_pentest_candidates(
             auth_session_manager: auth_session_manager.clone(),
             auth_artifact_dir: auth_artifact_dir.to_path_buf(),
             auth_workspace_paths: auth_workspace_paths.to_vec(),
+            auth_env_overrides: auth_env_overrides.clone(),
             browser_artifact_dir: Some(browser_artifact_dir),
             browser_checks_enabled: run_config.browser_checks_enabled,
             policy: pentest_tools::ExploitSafetyPolicy::from_run_config(run_config),
@@ -3786,6 +3807,7 @@ async fn preflight_auth_sessions(
     auth_profiles: &[nyctos_types::project::ProjectAuthProfile],
     auth_artifact_dir: &std::path::Path,
     auth_workspace_paths: &[std::path::PathBuf],
+    auth_env_overrides: &BTreeMap<String, String>,
     browser_checks_enabled: bool,
     events: &EventSink,
 ) -> String {
@@ -3816,6 +3838,7 @@ async fn preflight_auth_sessions(
                 &auth_sessions::AuthSessionOptions {
                     browser_checks_enabled,
                     workspace_paths: auth_workspace_paths.to_vec(),
+                    env_overrides: auth_env_overrides.clone(),
                 },
             )
             .await;
@@ -4166,7 +4189,7 @@ fn fallback_verified_risk_score(
     components: &[serde_json::Value],
 ) -> VerifiedRiskScore {
     let confidence = if confidence.is_finite() { confidence.clamp(0.0, 1.0) } else { 0.0 };
-    let (base, min_score, max_score) = severity_score_band(severity);
+    let (base, min_score, max_score) = severity_score_band(severity, live_verified);
     let mut score = base;
     let mut factors = Vec::new();
 
@@ -4219,6 +4242,46 @@ fn fallback_verified_risk_score(
     }
     if text_contains_any(
         &lower,
+        &[
+            "dev-only",
+            "development-only",
+            "local dev",
+            "local development",
+            "test-only",
+            "non-production",
+            "not production",
+            "never in prod",
+            "never in production",
+            "dev mail",
+            "dev-mail",
+            "dev_mail",
+            "/api/dev/mail",
+        ],
+    ) {
+        score -= 2.2;
+        factors.push("development-only exposure".to_string());
+    }
+    if text_contains_any(
+        &lower,
+        &[
+            "event ingestion",
+            "alert ingestion",
+            "alerts",
+            "telemetry",
+            "audit event",
+            "logging endpoint",
+            "noise",
+            "spam",
+        ],
+    ) && !text_contains_any(
+        &lower,
+        &["leak secret", "password", "token", "account takeover", "admin", "privilege", "tenant"],
+    ) {
+        score -= 1.4;
+        factors.push("limited alerting or telemetry impact".to_string());
+    }
+    if text_contains_any(
+        &lower,
         &["needs review", "unverified", "no deterministic", "not confirmed", "source evidence"],
     ) {
         score -= 0.6;
@@ -4242,14 +4305,82 @@ fn fallback_verified_risk_score(
     }
 }
 
-fn severity_score_band(severity: &str) -> (f64, f64, f64) {
+fn severity_score_band(severity: &str, live_verified: bool) -> (f64, f64, f64) {
     match severity.trim().to_ascii_lowercase().as_str() {
-        "critical" => (9.0, 9.0, 10.0),
-        "high" => (7.0, 7.0, 8.9),
+        "critical" if live_verified => (9.0, 8.0, 10.0),
+        "critical" => (8.0, 6.0, 9.4),
+        "high" if live_verified => (7.0, 5.5, 8.9),
+        "high" => (6.2, 3.0, 8.2),
         "medium" | "moderate" => (4.0, 4.0, 6.9),
         "low" => (1.0, 1.0, 3.9),
         "info" | "informational" => (0.0, 0.0, 0.9),
         _ => (0.0, 0.0, 3.9),
+    }
+}
+
+fn review_severity_from_context(
+    vuln_class: &str,
+    title: &str,
+    rationale: &str,
+    path: &str,
+) -> String {
+    let text = format!("{vuln_class} {title} {rationale} {path}").to_ascii_lowercase();
+    if text_contains_any(
+        &text,
+        &[
+            "dev-only",
+            "development-only",
+            "local dev",
+            "local development",
+            "test-only",
+            "non-production",
+            "never in prod",
+            "never in production",
+            "dev mail",
+            "dev-mail",
+            "dev_mail",
+            "/api/dev/mail",
+        ],
+    ) {
+        return "Low".to_string();
+    }
+    if text_contains_any(
+        &text,
+        &[
+            "event ingestion",
+            "alert ingestion",
+            "alerts",
+            "telemetry",
+            "audit event",
+            "logging endpoint",
+        ],
+    ) && !text_contains_any(
+        &text,
+        &["leak secret", "password", "token", "account takeover", "admin", "privilege", "tenant"],
+    ) {
+        return "Low".to_string();
+    }
+    if text_contains_any(
+        &text,
+        &[
+            "account takeover",
+            "admin",
+            "privilege",
+            "tenant",
+            "session",
+            "token",
+            "auth bypass",
+            "access-control",
+            "access control",
+            "idor",
+        ],
+    ) {
+        return "High".to_string();
+    }
+    match vuln_class.trim().to_ascii_uppercase().as_str() {
+        "AUTH_BYPASS" | "IDOR" | "ACCESS_CONTROL" | "SSRF" => "High".to_string(),
+        "DOM_XSS" | "OPEN_REDIRECT" | "DEBUG_EXPOSURE" | "CONFIG_EXPOSURE" => "Medium".to_string(),
+        _ => "Medium".to_string(),
     }
 }
 
@@ -4448,8 +4579,10 @@ fn review_vulnerability_from_ai_candidate(
         "candidate_id": &candidate.id,
         "rule_hint": &candidate.rule_hint,
     })];
+    let severity =
+        review_severity_from_context(&candidate.cap, &title, &rationale, &candidate.path);
     let risk = fallback_verified_risk_score(
-        "High",
+        &severity,
         0.68,
         false,
         &[&rationale, &candidate.cap, &candidate.path, "unverified pending AI candidate"],
@@ -4460,7 +4593,7 @@ fn review_vulnerability_from_ai_candidate(
         run_id: candidate.run_id.clone(),
         project_id: project_id.to_string(),
         title,
-        severity: "High".to_string(),
+        severity,
         confidence: 0.68,
         risk_score: risk.score,
         risk_rating: risk.rating,
@@ -6164,6 +6297,23 @@ mod tests {
         assert!(vuln.risk_score_rationale.contains("unconfirmed evidence"));
         assert!(vuln.verification_attempt_ids.is_empty());
         assert!(vuln.evidence_summary.contains("Needs review"));
+    }
+
+    #[test]
+    fn review_surface_downgrades_low_impact_alert_ingestion_candidates() {
+        let mut candidate = pending_ai_candidate();
+        candidate.cap = "OTHER".to_string();
+        candidate.rule_hint = Some("UNAUTH_EVENT_INGESTION".to_string());
+        candidate.rationale = Some(
+            "Unauthenticated event ingestion can create noisy alerts, but does not expose secrets or grant access."
+                .to_string(),
+        );
+
+        let vuln = review_vulnerability_from_ai_candidate(&candidate, "project-review", 1_000);
+
+        assert_eq!(vuln.severity, "Low");
+        assert_eq!(vuln.risk_rating, "Low");
+        assert!(vuln.risk_score_rationale.contains("limited alerting or telemetry impact"));
     }
 
     #[test]

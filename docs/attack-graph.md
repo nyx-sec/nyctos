@@ -40,9 +40,9 @@ The shipped graph writers can represent these node kinds:
 | `route` | A discovered application path, shared across frontend, backend, and API-client evidence for the same run. |
 | `endpoint` | A method-specific backend route, API client call, or concrete request target. |
 | `form` | A discovered HTML/JSX form, including action, method, and field metadata when available. |
-| `parameter` | Path or body parameter discovered from route models. |
+| `parameter` | Path, query, body, tenant, or owner parameter discovered from route models. |
 | `role` | Auth role or role-like check such as `authenticated`. |
-| `object` | Application resource or source object, including route resources and file locations. |
+| `object` | Application resource, service, model, or source object, including route resources and file locations. |
 | `signal` | Static or scanner signal, including placeholder source nodes for external scanner leads. |
 | `candidate` | Pentest candidate from Nyx signals, optional scanners, or AI candidate finding discovery. |
 | `business_logic_template` | Registered template provenance for template-generated candidates. |
@@ -70,7 +70,11 @@ Graph rows are dual-written by the existing store accessors:
 
 - `RouteModelStore::upsert` records route, endpoint, form, parameter,
   role, and object nodes, then links route-source locations to existing
-  Nyx signal nodes when line information overlaps.
+  Nyx signal nodes when line information overlaps. Semantic App Model v2
+  fields are mirrored into endpoint properties and graph links:
+  framework, handler, middleware/auth checks, role checks, path/query/body
+  fields, tenant and owner fields, service calls, model names, resource
+  names, response hints, and side-effect classifications.
 - `NyxSignalStore::insert` records signal nodes and file object links.
 - `PentestCandidateStore::insert` and `CandidateFindingStore::insert`
   record candidate nodes, source edges, and target/object/role links.

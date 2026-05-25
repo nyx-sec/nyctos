@@ -910,6 +910,7 @@ mod tests {
                 state_changing: false,
                 confidence: 0.8,
                 evidence: Vec::new(),
+                ..RouteModelEndpoint::default()
             }],
             api_client_calls: vec![ApiClientCallModel {
                 method: "GET".to_string(),
@@ -1095,6 +1096,7 @@ mod tests {
             state_changing,
             confidence: 0.82,
             evidence: Vec::new(),
+            ..RouteModelEndpoint::default()
         }
     }
 }

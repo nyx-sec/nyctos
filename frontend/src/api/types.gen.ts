@@ -294,7 +294,7 @@ export type VerifiedVulnerabilityRecord = { id: string, run_id: string, project_
 
 export type RouteEvidence = { path: string, line: number | null, snippet: string, };
 
-export type RouteModelEndpoint = { method: string, path: string, repo?: string, handler_file?: string, line: number | null, params: Array<string>, middleware: Array<string>, auth_checks: Array<string>, role_checks: Array<string>, body_fields: Array<string>, state_changing: boolean, confidence: number, evidence: Array<RouteEvidence>, };
+export type RouteModelEndpoint = { method: string, path: string, framework: string, repo?: string, handler_file?: string, handler_name?: string, line: number | null, params: Array<string>, query_params: Array<string>, middleware: Array<string>, auth_checks: Array<string>, role_checks: Array<string>, body_fields: Array<string>, request_fields: Array<string>, response_hints: Array<string>, service_calls: Array<string>, model_names: Array<string>, resource_names: Array<string>, tenant_fields: Array<string>, owner_fields: Array<string>, side_effects: Array<string>, state_changing: boolean, confidence: number, evidence: Array<RouteEvidence>, };
 
 export type FrontendRouteModel = { path: string, repo?: string, file?: string, line: number | null, confidence: number, evidence: Array<RouteEvidence>, };
 

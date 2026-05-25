@@ -3710,7 +3710,7 @@ async fn persist_attack_agent_vulnerability(
         union_strings(vulnerability.source_candidate_ids.clone(), vec![candidate_id.clone()]);
     let mut source_signal_ids = vulnerability.source_signal_ids.clone();
     let affected_components = attack_components_or_default(&vulnerability);
-    let severity = canonical_severity(&vulnerability.severity);
+    let severity = attack_agent_contextual_severity(&vulnerability);
     let reported_confidence = confidence_fraction(vulnerability.confidence);
     let candidate = match matched_candidate {
         Some(existing) => PentestCandidateRecord {
@@ -3800,7 +3800,9 @@ async fn persist_attack_agent_vulnerability(
         first_seen = existing.first_seen;
     }
     let confidence = reported_confidence.max(candidate.confidence);
-    let risk_score = attack_agent_risk_score(&severity, confidence);
+    let risk_score = attack_agent_risk_score(&severity, confidence, &vulnerability);
+    let risk_score_rationale =
+        attack_agent_risk_rationale(&vulnerability, &severity, confidence, risk_score);
     let vuln = VerifiedVulnerabilityRecord {
         id: vuln_id,
         run_id: bundle.run_id.clone(),
@@ -3811,10 +3813,7 @@ async fn persist_attack_agent_vulnerability(
         risk_score,
         risk_rating: canonical_risk_rating("", risk_score),
         risk_score_source: "unsafe-attack-agent".to_string(),
-        risk_score_rationale: format!(
-            "Unsafe local attack agent reported live proof with {}% confidence.",
-            vulnerability.confidence
-        ),
+        risk_score_rationale,
         vuln_class: vulnerability.vuln_class,
         affected_components,
         business_impact: vulnerability.business_impact,
@@ -3904,7 +3903,52 @@ fn canonical_severity(severity: &str) -> String {
     .to_string()
 }
 
-fn attack_agent_risk_score(severity: &str, confidence: f64) -> f64 {
+fn attack_agent_contextual_severity(vulnerability: &AttackAgentVulnerability) -> String {
+    let text = attack_agent_risk_text(vulnerability);
+    if attack_agent_contains_any(
+        &text,
+        &[
+            "dev-only",
+            "development-only",
+            "local dev",
+            "local development",
+            "test-only",
+            "non-production",
+            "not production",
+            "never in prod",
+            "never in production",
+            "dev mail",
+            "dev-mail",
+            "dev_mail",
+            "/api/dev/mail",
+        ],
+    ) {
+        return "Low".to_string();
+    }
+    if attack_agent_contains_any(
+        &text,
+        &[
+            "event ingestion",
+            "alert ingestion",
+            "alerts",
+            "telemetry",
+            "audit event",
+            "logging endpoint",
+        ],
+    ) && !attack_agent_contains_any(
+        &text,
+        &["leak secret", "password", "token", "account takeover", "admin", "privilege", "tenant"],
+    ) {
+        return "Low".to_string();
+    }
+    canonical_severity(&vulnerability.severity)
+}
+
+fn attack_agent_risk_score(
+    severity: &str,
+    confidence: f64,
+    vulnerability: &AttackAgentVulnerability,
+) -> f64 {
     let base: f64 = match severity {
         "Critical" => 9.2,
         "High" => 7.8,
@@ -3912,7 +3956,124 @@ fn attack_agent_risk_score(severity: &str, confidence: f64) -> f64 {
         "Low" => 3.0,
         _ => 1.5,
     };
-    clamp_risk_score((base * 0.75) + (confidence.clamp(0.0, 1.0) * 2.5))
+    let text = attack_agent_risk_text(vulnerability);
+    let mut score = (base * 0.75) + (confidence.clamp(0.0, 1.0) * 2.5);
+    if attack_agent_contains_any(
+        &text,
+        &[
+            "dev-only",
+            "development-only",
+            "local dev",
+            "local development",
+            "test-only",
+            "non-production",
+            "not production",
+            "never in prod",
+            "never in production",
+            "dev mail",
+            "dev-mail",
+            "dev_mail",
+            "/api/dev/mail",
+        ],
+    ) {
+        score -= 2.4;
+    }
+    if attack_agent_contains_any(
+        &text,
+        &[
+            "event ingestion",
+            "alert ingestion",
+            "alerts",
+            "telemetry",
+            "audit event",
+            "logging endpoint",
+        ],
+    ) && !attack_agent_contains_any(
+        &text,
+        &["leak secret", "password", "token", "account takeover", "admin", "privilege", "tenant"],
+    ) {
+        score -= 1.8;
+    }
+    clamp_risk_score(score)
+}
+
+fn attack_agent_risk_rationale(
+    vulnerability: &AttackAgentVulnerability,
+    severity: &str,
+    confidence: f64,
+    risk_score: f64,
+) -> String {
+    let text = attack_agent_risk_text(vulnerability);
+    let mut factors = vec![format!(
+        "unsafe local attack agent reported live behavior with {}% confidence",
+        (confidence * 100.0).round() as u8
+    )];
+    if canonical_severity(&vulnerability.severity) != severity {
+        factors.push(format!(
+            "severity adjusted from `{}` to `{severity}` after contextual scoring",
+            vulnerability.severity
+        ));
+    }
+    if attack_agent_contains_any(
+        &text,
+        &[
+            "dev-only",
+            "development-only",
+            "local dev",
+            "local development",
+            "test-only",
+            "non-production",
+            "not production",
+            "never in prod",
+            "never in production",
+            "dev mail",
+            "dev-mail",
+            "dev_mail",
+            "/api/dev/mail",
+        ],
+    ) {
+        factors.push("development-only exposure lowers production risk".to_string());
+    }
+    if attack_agent_contains_any(
+        &text,
+        &[
+            "event ingestion",
+            "alert ingestion",
+            "alerts",
+            "telemetry",
+            "audit event",
+            "logging endpoint",
+        ],
+    ) {
+        factors.push(
+            "alerting or telemetry impact is lower than direct data or privilege impact"
+                .to_string(),
+        );
+    }
+    format!("{} Risk score {:.1}.", factors.join("; "), risk_score)
+}
+
+fn attack_agent_risk_text(vulnerability: &AttackAgentVulnerability) -> String {
+    let mut text = format!(
+        "{} {} {} {} {} {} {}",
+        vulnerability.title,
+        vulnerability.vuln_class,
+        vulnerability.severity,
+        vulnerability.business_impact,
+        vulnerability.evidence_summary,
+        vulnerability.repro_steps,
+        vulnerability.remediation
+    )
+    .to_ascii_lowercase();
+    for component in &vulnerability.affected_components {
+        text.push(' ');
+        text.push_str(&component.to_string().to_ascii_lowercase());
+    }
+    text
+}
+
+fn attack_agent_contains_any(haystack: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| haystack.contains(needle))
 }
 
 fn safe_id_fragment(raw: &str) -> String {
@@ -7535,5 +7696,37 @@ mod tests {
             .collect();
         assert_eq!(per_finding_rows.len(), 1);
         assert!(per_finding_rows[0].conversation_jsonl_path.is_none());
+    }
+
+    #[test]
+    fn attack_agent_risk_downgrades_dev_only_mailbox_proof() {
+        let vulnerability = AttackAgentVulnerability {
+            title: "Unauthenticated dev mailbox exposes OTPs and enables account takeover in dev"
+                .to_string(),
+            vuln_class: "DEBUG_EXPOSURE".to_string(),
+            severity: "High".to_string(),
+            confidence: 99,
+            affected_components: vec![serde_json::json!({
+                "service": "dev-mailer",
+                "endpoint": "GET /api/dev/mail",
+            })],
+            business_impact:
+                "Dev-only mailbox can expose local OTPs, but this service is never in production."
+                    .to_string(),
+            evidence_summary: "Live local dev app returned mailbox contents.".to_string(),
+            repro_steps: "curl http://127.0.0.1:3000/api/dev/mail".to_string(),
+            remediation: "Keep the mailbox disabled outside local development.".to_string(),
+            source_candidate_ids: Vec::new(),
+            source_signal_ids: Vec::new(),
+            proof_artifact_paths: Vec::new(),
+        };
+
+        let severity = attack_agent_contextual_severity(&vulnerability);
+        let risk = attack_agent_risk_score(&severity, 0.99, &vulnerability);
+        let rationale = attack_agent_risk_rationale(&vulnerability, &severity, 0.99, risk);
+
+        assert_eq!(severity, "Low");
+        assert!(risk < 4.0);
+        assert!(rationale.contains("development-only exposure lowers production risk"));
     }
 }

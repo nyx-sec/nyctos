@@ -1496,6 +1496,7 @@ mod tests {
             auth_session_manager: AuthSessionManager::default(),
             auth_artifact_dir: std::env::temp_dir().join("nyctos-live-planning-auth-test"),
             auth_workspace_paths: Vec::new(),
+            auth_env_overrides: BTreeMap::new(),
             browser_artifact_dir: None,
             browser_checks_enabled: false,
             policy: ExploitSafetyPolicy {
@@ -1597,6 +1598,7 @@ mod tests {
                     line: Some(9),
                     snippet: "router.get(\"/api/dev/mail\")".to_string(),
                 }],
+                ..RouteModelEndpoint::default()
             }],
             ..RouteModel::default()
         };
@@ -1747,6 +1749,7 @@ mod tests {
                 state_changing: false,
                 confidence: 0.9,
                 evidence: Vec::new(),
+                ..RouteModelEndpoint::default()
             }],
             ..RouteModel::default()
         };
@@ -1823,6 +1826,7 @@ mod tests {
                 state_changing: false,
                 confidence: 0.9,
                 evidence: Vec::new(),
+                ..RouteModelEndpoint::default()
             }],
             ..RouteModel::default()
         };
@@ -1883,6 +1887,7 @@ mod tests {
                 state_changing: false,
                 confidence: 0.9,
                 evidence: Vec::new(),
+                ..RouteModelEndpoint::default()
             }],
             ..RouteModel::default()
         };
@@ -1944,6 +1949,7 @@ mod tests {
                     line: Some(9),
                     snippet: "router.get(\"/api/dev/mail\")".to_string(),
                 }],
+                ..RouteModelEndpoint::default()
             }],
             ..RouteModel::default()
         };

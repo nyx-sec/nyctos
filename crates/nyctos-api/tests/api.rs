@@ -93,8 +93,8 @@ impl AuthSetupAgent for StubAuthSetupAgent {
                     session_import_path: None,
                     login_url: Some("/api/auth/sign-in".to_string()),
                     username: None,
-                    username_env: Some("NYCTOS_MANAGER_USERNAME".to_string()),
-                    login_email_env: None,
+                    username_env: None,
+                    login_email_env: Some("NYCTOS_MANAGER_EMAIL".to_string()),
                     password_env: Some("NYCTOS_MANAGER_PASSWORD".to_string()),
                     password_secret_ref: None,
                     cookie_env: None,
@@ -3381,6 +3381,15 @@ router.get("/api/admin/report", requireAdmin, adminReport);
 "#,
     )
     .expect("write source");
+    std::fs::write(
+        repo_dir.join("src/seed.ts"),
+        r#"export const testUsers = {
+  user_a: { email: "user-a@example.test", password: "user-a-pass" },
+  user_b: { email: "user-b@example.test", password: "user-b-pass" },
+  admin: { email: "admin@example.test", password: "admin-pass" },
+};"#,
+    )
+    .expect("write seed");
     let now = nyctos_core::now_epoch_ms();
     srv.store
         .repos()
@@ -3431,6 +3440,17 @@ router.get("/api/admin/report", requireAdmin, adminReport);
             && profile["password_env"] == "NYCTOS_USER_A_PASSWORD"
     }));
     assert!(profiles.iter().any(|profile| profile["role"] == "admin"));
+    let env_vars = response["project"]["runtime_profile"]["env_vars"].as_array().expect("env vars");
+    assert!(env_vars.iter().any(|var| {
+        var["name"] == "NYCTOS_USER_A_USERNAME"
+            && var["value"] == "user-a@example.test"
+            && var["secret"] == false
+    }));
+    assert!(env_vars.iter().any(|var| {
+        var["name"] == "NYCTOS_USER_A_PASSWORD"
+            && var["value"] == "user-a-pass"
+            && var["secret"] == true
+    }));
     assert!(trigger.calls.lock().await.is_empty(), "auth setup must not trigger a pentest");
 }
 
@@ -3460,6 +3480,11 @@ router.get("/api/workspaces/{id}", requireManager, showWorkspace);
 "#,
     )
     .expect("write source");
+    std::fs::write(
+        repo_dir.join("src/fixtures.ts"),
+        r#"export const manager = { email: "manager@example.test", password: "manager-pass" };"#,
+    )
+    .expect("write fixtures");
     let now = nyctos_core::now_epoch_ms();
     srv.store
         .repos()
@@ -3498,9 +3523,20 @@ router.get("/api/workspaces/{id}", requireManager, showWorkspace);
     assert_eq!(response["roles"], serde_json::json!(["manager"]));
     assert_eq!(response["verification"]["status"], "verified");
     assert_eq!(
-        response["project"]["runtime_profile"]["auth_profiles"][0]["username_env"],
-        "NYCTOS_MANAGER_USERNAME"
+        response["project"]["runtime_profile"]["auth_profiles"][0]["login_email_env"],
+        "NYCTOS_MANAGER_EMAIL"
     );
+    let env_vars = response["project"]["runtime_profile"]["env_vars"].as_array().expect("env vars");
+    assert!(env_vars.iter().any(|var| {
+        var["name"] == "NYCTOS_MANAGER_EMAIL"
+            && var["value"] == "manager@example.test"
+            && var["secret"] == false
+    }));
+    assert!(env_vars.iter().any(|var| {
+        var["name"] == "NYCTOS_MANAGER_PASSWORD"
+            && var["value"] == "manager-pass"
+            && var["secret"] == true
+    }));
     assert_eq!(
         response["project"]["runtime_profile"]["auth_profiles"].as_array().unwrap().len(),
         1

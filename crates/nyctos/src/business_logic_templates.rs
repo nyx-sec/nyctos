@@ -1113,6 +1113,7 @@ mod tests {
             state_changing: !matches!(method, "GET" | "HEAD" | "OPTIONS"),
             confidence: 0.8,
             evidence: Vec::new(),
+            ..RouteModelEndpoint::default()
         }
     }
 
@@ -1163,6 +1164,7 @@ mod tests {
             auth_session_manager: AuthSessionManager::default(),
             auth_artifact_dir: std::env::temp_dir().join("nyctos-business-auth-test"),
             auth_workspace_paths: Vec::new(),
+            auth_env_overrides: std::collections::BTreeMap::new(),
             browser_artifact_dir: None,
             browser_checks_enabled: false,
             policy: ExploitSafetyPolicy {

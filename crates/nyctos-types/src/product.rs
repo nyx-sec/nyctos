@@ -346,20 +346,27 @@ pub struct RouteEvidence {
     pub snippet: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
 pub struct RouteModelEndpoint {
     pub method: String,
     pub path: String,
+    #[serde(default)]
+    pub framework: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub repo: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub handler_file: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub handler_name: Option<String>,
     #[ts(type = "number | null")]
     pub line: Option<i64>,
     #[serde(default)]
     pub params: Vec<String>,
+    #[serde(default)]
+    pub query_params: Vec<String>,
     #[serde(default)]
     pub middleware: Vec<String>,
     #[serde(default)]
@@ -368,6 +375,22 @@ pub struct RouteModelEndpoint {
     pub role_checks: Vec<String>,
     #[serde(default)]
     pub body_fields: Vec<String>,
+    #[serde(default)]
+    pub request_fields: Vec<String>,
+    #[serde(default)]
+    pub response_hints: Vec<String>,
+    #[serde(default)]
+    pub service_calls: Vec<String>,
+    #[serde(default)]
+    pub model_names: Vec<String>,
+    #[serde(default)]
+    pub resource_names: Vec<String>,
+    #[serde(default)]
+    pub tenant_fields: Vec<String>,
+    #[serde(default)]
+    pub owner_fields: Vec<String>,
+    #[serde(default)]
+    pub side_effects: Vec<String>,
     #[serde(default)]
     pub state_changing: bool,
     pub confidence: f64,

@@ -759,14 +759,11 @@ impl<'a> VerifiedVulnerabilityStore<'a> {
             FROM verified_vulnerabilities
             WHERE run_id = ? AND status != 'FalsePositive'
             ORDER BY
-                CASE severity
-                    WHEN 'Critical' THEN 0
-                    WHEN 'High' THEN 1
-                    WHEN 'Medium' THEN 2
-                    WHEN 'Low' THEN 3
-                    ELSE 4
-                END,
-                last_seen DESC
+                risk_score DESC,
+                confidence DESC,
+                last_seen DESC,
+                title COLLATE NOCASE ASC,
+                id ASC
             "#,
         )
         .bind(run_id)
@@ -789,14 +786,11 @@ impl<'a> VerifiedVulnerabilityStore<'a> {
             FROM verified_vulnerabilities
             WHERE run_id = ?
             ORDER BY
-                CASE severity
-                    WHEN 'Critical' THEN 0
-                    WHEN 'High' THEN 1
-                    WHEN 'Medium' THEN 2
-                    WHEN 'Low' THEN 3
-                    ELSE 4
-                END,
-                last_seen DESC
+                risk_score DESC,
+                confidence DESC,
+                last_seen DESC,
+                title COLLATE NOCASE ASC,
+                id ASC
             "#,
         )
         .bind(run_id)
@@ -818,7 +812,7 @@ impl<'a> VerifiedVulnerabilityStore<'a> {
                    verification_attempt_ids_json, chain_id, status, first_seen, last_seen
             FROM verified_vulnerabilities
             WHERE project_id = ? AND status != 'FalsePositive'
-            ORDER BY last_seen DESC
+            ORDER BY risk_score DESC, confidence DESC, last_seen DESC, title COLLATE NOCASE ASC, id ASC
             "#,
         )
         .bind(project_id)
@@ -840,7 +834,7 @@ impl<'a> VerifiedVulnerabilityStore<'a> {
                    verification_attempt_ids_json, chain_id, status, first_seen, last_seen
             FROM verified_vulnerabilities
             WHERE project_id = ?
-            ORDER BY last_seen DESC
+            ORDER BY risk_score DESC, confidence DESC, last_seen DESC, title COLLATE NOCASE ASC, id ASC
             "#,
         )
         .bind(project_id)
@@ -859,7 +853,7 @@ impl<'a> VerifiedVulnerabilityStore<'a> {
                    verification_attempt_ids_json, chain_id, status, first_seen, last_seen
             FROM verified_vulnerabilities
             WHERE status != 'FalsePositive'
-            ORDER BY last_seen DESC
+            ORDER BY risk_score DESC, confidence DESC, last_seen DESC, title COLLATE NOCASE ASC, id ASC
             "#,
         )
         .fetch_all(self.pool)
@@ -878,7 +872,7 @@ impl<'a> VerifiedVulnerabilityStore<'a> {
                    remediation, source_candidate_ids_json, source_signal_ids_json,
                    verification_attempt_ids_json, chain_id, status, first_seen, last_seen
             FROM verified_vulnerabilities
-            ORDER BY last_seen DESC
+            ORDER BY risk_score DESC, confidence DESC, last_seen DESC, title COLLATE NOCASE ASC, id ASC
             "#,
         )
         .fetch_all(self.pool)
@@ -1146,6 +1140,41 @@ mod tests {
     use super::*;
     use crate::store::testutil::{fresh_store, sample_repo_for_project, sample_run};
 
+    fn sample_verified_vulnerability(
+        id: &str,
+        run_id: &str,
+        project_id: &str,
+        risk_score: f64,
+        confidence: f64,
+        last_seen: i64,
+    ) -> VerifiedVulnerabilityRecord {
+        VerifiedVulnerabilityRecord {
+            id: id.to_string(),
+            run_id: run_id.to_string(),
+            project_id: project_id.to_string(),
+            title: format!("{id} vulnerability"),
+            severity: "High".to_string(),
+            confidence,
+            risk_score,
+            risk_rating: canonical_risk_rating("", risk_score),
+            risk_score_source: "test".to_string(),
+            risk_score_rationale: "test score".to_string(),
+            vuln_class: "test".to_string(),
+            affected_components: vec![serde_json::json!({"repo": "web"})],
+            business_impact: "impact".to_string(),
+            evidence_summary: "evidence".to_string(),
+            repro_steps: "repro".to_string(),
+            remediation: "fix".to_string(),
+            source_candidate_ids: Vec::new(),
+            source_signal_ids: Vec::new(),
+            verification_attempt_ids: Vec::new(),
+            chain_id: None,
+            status: "Open".to_string(),
+            first_seen: last_seen,
+            last_seen,
+        }
+    }
+
     #[tokio::test]
     async fn launch_profile_roundtrips_default() {
         let (_tmp, s) = fresh_store().await;
@@ -1225,6 +1254,7 @@ mod tests {
                     state_changing: false,
                     confidence: 0.82,
                     evidence: Vec::new(),
+                    ..nyctos_types::product::RouteModelEndpoint::default()
                 }],
                 ..nyctos_types::product::RouteModel::default()
             },
@@ -1435,6 +1465,40 @@ mod tests {
         assert_eq!(legacy.risk_score, 0.0);
         assert_eq!(legacy.risk_rating, "Info");
         assert_eq!(legacy.risk_score_source, "heuristic");
+    }
+
+    #[tokio::test]
+    async fn vulnerabilities_list_highest_risk_score_first() {
+        let (_tmp, s) = fresh_store().await;
+        s.projects().create("p-1", "acme", None, None, None, 1_000).await.unwrap();
+        let mut run = sample_run("run-1");
+        run.project_id = Some("p-1".to_string());
+        s.runs().insert(&run).await.unwrap();
+
+        let low_newest =
+            sample_verified_vulnerability("vuln-low-newest", "run-1", "p-1", 4.0, 0.99, 5_000);
+        let high_oldest =
+            sample_verified_vulnerability("vuln-high-oldest", "run-1", "p-1", 9.2, 0.70, 1_000);
+        let tied_more_confident =
+            sample_verified_vulnerability("vuln-tied-conf", "run-1", "p-1", 8.1, 0.95, 2_000);
+        let tied_newer =
+            sample_verified_vulnerability("vuln-tied-newer", "run-1", "p-1", 8.1, 0.80, 4_000);
+
+        for vuln in [&low_newest, &tied_newer, &high_oldest, &tied_more_confident] {
+            s.verified_vulnerabilities().upsert(vuln).await.unwrap();
+        }
+
+        let expected =
+            vec!["vuln-high-oldest", "vuln-tied-conf", "vuln-tied-newer", "vuln-low-newest"];
+        let by_run = s.verified_vulnerabilities().list_by_run("run-1").await.unwrap();
+        assert_eq!(by_run.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(), expected);
+
+        let by_project =
+            s.verified_vulnerabilities().list_by_project_including_triaged("p-1").await.unwrap();
+        assert_eq!(by_project.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(), expected);
+
+        let all = s.verified_vulnerabilities().list_all_including_triaged().await.unwrap();
+        assert_eq!(all.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(), expected);
     }
 
     #[tokio::test]

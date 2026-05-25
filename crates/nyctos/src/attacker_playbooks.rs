@@ -1110,6 +1110,7 @@ mod tests {
                 line: Some(10),
                 snippet: format!("router.{}({path})", method.to_ascii_lowercase()),
             }],
+            ..RouteModelEndpoint::default()
         }
     }
 

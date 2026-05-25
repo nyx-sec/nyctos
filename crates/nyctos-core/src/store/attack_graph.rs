@@ -884,12 +884,24 @@ impl<'a> AttackGraphStore<'a> {
                     "repo": route.repo,
                     "method": route.method,
                     "path": route.path,
+                    "framework": route.framework,
                     "handler_file": route.handler_file,
+                    "handler_name": route.handler_name,
                     "line": route.line,
+                    "params": route.params,
+                    "query_params": route.query_params,
                     "middleware": route.middleware,
                     "auth_checks": route.auth_checks,
                     "role_checks": route.role_checks,
                     "body_fields": route.body_fields,
+                    "request_fields": route.request_fields,
+                    "response_hints": route.response_hints,
+                    "service_calls": route.service_calls,
+                    "model_names": route.model_names,
+                    "resource_names": route.resource_names,
+                    "tenant_fields": route.tenant_fields,
+                    "owner_fields": route.owner_fields,
+                    "side_effects": route.side_effects,
                     "state_changing": route.state_changing,
                     "confidence": route.confidence,
                     "evidence": route.evidence,
@@ -915,9 +927,16 @@ impl<'a> AttackGraphStore<'a> {
             &route_node.id,
             &route.path,
             &route.params,
+            &route.query_params,
             &route.body_fields,
+            &route.request_fields,
             &route.auth_checks,
             &route.role_checks,
+            &route.service_calls,
+            &route.model_names,
+            &route.resource_names,
+            &route.tenant_fields,
+            &route.owner_fields,
             now,
         )
         .await?;
@@ -1133,8 +1152,15 @@ impl<'a> AttackGraphStore<'a> {
                 &route_node.id,
                 &form.action,
                 &[],
+                &[],
+                &form.fields,
                 &form.fields,
                 &form.csrf_markers,
+                &[],
+                &[],
+                &[],
+                &[],
+                &[],
                 &[],
                 now,
             )
@@ -1151,13 +1177,32 @@ impl<'a> AttackGraphStore<'a> {
         route_id: &str,
         path: &str,
         params: &[String],
+        query_params: &[String],
         body_fields: &[String],
+        request_fields: &[String],
         auth_checks: &[String],
         role_checks: &[String],
+        service_calls: &[String],
+        model_names: &[String],
+        resource_names: &[String],
+        tenant_fields: &[String],
+        owner_fields: &[String],
         now: i64,
     ) -> Result<(), StoreError> {
         self.record_route_objects(run_id, project_id, route_id, path, now).await?;
         self.record_route_objects(run_id, project_id, endpoint_id, path, now).await?;
+        for object in resource_names {
+            self.record_named_object(run_id, project_id, endpoint_id, "resource", object, now)
+                .await?;
+            self.record_named_object(run_id, project_id, route_id, "resource", object, now).await?;
+        }
+        for service in service_calls {
+            self.record_named_object(run_id, project_id, endpoint_id, "service", service, now)
+                .await?;
+        }
+        for model in model_names {
+            self.record_named_object(run_id, project_id, endpoint_id, "model", model, now).await?;
+        }
         for param in params {
             let node =
                 self.upsert_parameter_node(run_id, project_id, path, "path", param, now).await?;
@@ -1173,9 +1218,28 @@ impl<'a> AttackGraphStore<'a> {
             )
             .await?;
         }
-        for field in body_fields {
+        for param in query_params {
             let node =
-                self.upsert_parameter_node(run_id, project_id, path, "body", field, now).await?;
+                self.upsert_parameter_node(run_id, project_id, path, "query", param, now).await?;
+            self.upsert_edge_by_key(
+                run_id,
+                project_id,
+                EDGE_TARGETS,
+                endpoint_id,
+                &node.id,
+                None,
+                serde_json::json!({"source": "query_param"}),
+                now,
+            )
+            .await?;
+        }
+        let mut fields = body_fields.to_vec();
+        fields.extend_from_slice(request_fields);
+        fields.sort();
+        fields.dedup();
+        for field in fields {
+            let node =
+                self.upsert_parameter_node(run_id, project_id, path, "body", &field, now).await?;
             self.upsert_edge_by_key(
                 run_id,
                 project_id,
@@ -1184,6 +1248,36 @@ impl<'a> AttackGraphStore<'a> {
                 &node.id,
                 None,
                 serde_json::json!({"source": "body_field"}),
+                now,
+            )
+            .await?;
+        }
+        for field in tenant_fields {
+            let node =
+                self.upsert_parameter_node(run_id, project_id, path, "tenant", field, now).await?;
+            self.upsert_edge_by_key(
+                run_id,
+                project_id,
+                EDGE_TARGETS,
+                endpoint_id,
+                &node.id,
+                None,
+                serde_json::json!({"source": "tenant_field"}),
+                now,
+            )
+            .await?;
+        }
+        for field in owner_fields {
+            let node =
+                self.upsert_parameter_node(run_id, project_id, path, "owner", field, now).await?;
+            self.upsert_edge_by_key(
+                run_id,
+                project_id,
+                EDGE_TARGETS,
+                endpoint_id,
+                &node.id,
+                None,
+                serde_json::json!({"source": "owner_field"}),
                 now,
             )
             .await?;
@@ -1227,6 +1321,49 @@ impl<'a> AttackGraphStore<'a> {
             )
             .await?;
         }
+        Ok(())
+    }
+
+    async fn record_named_object(
+        &self,
+        run_id: &str,
+        project_id: &str,
+        from_node_id: &str,
+        object_kind: &str,
+        name: &str,
+        now: i64,
+    ) -> Result<(), StoreError> {
+        if name.trim().is_empty() {
+            return Ok(());
+        }
+        let stable_key = format!("{}:{}", object_kind, name.trim().to_ascii_lowercase());
+        let node = self
+            .upsert_node_by_key(
+                run_id,
+                project_id,
+                NODE_OBJECT,
+                &stable_key,
+                name.trim(),
+                None,
+                serde_json::json!({
+                    "object_kind": object_kind,
+                    "name": name.trim(),
+                    "source": "route_model.semantic",
+                }),
+                now,
+            )
+            .await?;
+        self.upsert_edge_by_key(
+            run_id,
+            project_id,
+            EDGE_TOUCHES_OBJECT,
+            from_node_id,
+            &node.id,
+            None,
+            serde_json::json!({"source": "route_model.semantic", "object_kind": object_kind}),
+            now,
+        )
+        .await?;
         Ok(())
     }
 
@@ -2357,5 +2494,76 @@ mod tests {
             .unwrap();
         assert_eq!(vulns.len(), 1);
         assert_eq!(vulns[0].ref_id.as_deref(), Some("vuln-admin"));
+    }
+
+    #[tokio::test]
+    async fn route_model_dual_write_records_semantic_v2_nodes() {
+        let (_tmp, s) = fresh_store().await;
+        seed_run_project(&s).await;
+        let rec = RouteModelRecord {
+            id: "routes-run-graph".to_string(),
+            run_id: "run-graph".to_string(),
+            project_id: "p-graph".to_string(),
+            model: nyctos_types::product::RouteModel {
+                backend_routes: vec![RouteModelEndpoint {
+                    method: "PATCH".to_string(),
+                    path: "/api/projects/:id".to_string(),
+                    framework: "nest".to_string(),
+                    repo: Some("web".to_string()),
+                    handler_file: Some("src/projects.controller.ts".to_string()),
+                    handler_name: Some("updateProject".to_string()),
+                    line: Some(17),
+                    params: vec!["id".to_string()],
+                    query_params: vec!["include".to_string()],
+                    middleware: vec!["JwtAuthGuard".to_string()],
+                    auth_checks: vec!["jwt".to_string()],
+                    role_checks: vec!["admin".to_string()],
+                    body_fields: vec!["name".to_string()],
+                    request_fields: vec!["name".to_string()],
+                    response_hints: vec!["project".to_string()],
+                    service_calls: vec!["ProjectsService".to_string()],
+                    model_names: vec!["ProjectEntity".to_string()],
+                    resource_names: vec!["project".to_string()],
+                    tenant_fields: vec!["tenant_id".to_string()],
+                    owner_fields: vec!["owner_id".to_string()],
+                    side_effects: vec!["update_resource".to_string()],
+                    state_changing: true,
+                    confidence: 0.92,
+                    evidence: Vec::new(),
+                }],
+                ..nyctos_types::product::RouteModel::default()
+            },
+            created_at: 2_000,
+        };
+        s.route_models().upsert(&rec).await.unwrap();
+
+        let graph = s.attack_graph();
+        let nodes = graph.list_nodes_by_run("run-graph").await.unwrap();
+        assert!(nodes.iter().any(|n| {
+            n.kind == NODE_OBJECT
+                && n.stable_key == "service:projectsservice"
+                && n.properties.get("object_kind").and_then(|v| v.as_str()) == Some("service")
+        }));
+        assert!(nodes
+            .iter()
+            .any(|n| n.kind == NODE_OBJECT && n.stable_key == "model:projectentity"));
+        assert!(nodes
+            .iter()
+            .any(|n| n.kind == NODE_PARAMETER && n.stable_key.contains(":query:include")));
+        assert!(nodes
+            .iter()
+            .any(|n| n.kind == NODE_PARAMETER && n.stable_key.contains(":tenant:tenant-id")));
+        assert!(nodes
+            .iter()
+            .any(|n| n.kind == NODE_PARAMETER && n.stable_key.contains(":owner:owner-id")));
+        let endpoint = nodes
+            .iter()
+            .find(|n| n.kind == NODE_ENDPOINT && n.label == "PATCH /api/projects/:id")
+            .expect("endpoint node");
+        assert_eq!(endpoint.properties.get("framework").and_then(|v| v.as_str()), Some("nest"));
+        assert_eq!(
+            endpoint.properties.get("handler_name").and_then(|v| v.as_str()),
+            Some("updateProject")
+        );
     }
 }

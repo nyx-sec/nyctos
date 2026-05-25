@@ -209,7 +209,10 @@ describe("ProjectRuntimeProfileForm", () => {
           start_commands: [],
           target_base_url: "http://localhost:3000",
           allowed_hosts: [],
-          env_vars: [],
+          env_vars: [
+            { name: "NYCTOS_USER_A_USERNAME", value: "user-a@example.test", secret: false },
+            { name: "NYCTOS_USER_A_PASSWORD", value: "user-a-pass", secret: true },
+          ],
           auth_profiles: [
             {
               role: "user_a",
@@ -289,6 +292,9 @@ describe("ProjectRuntimeProfileForm", () => {
 
     expect(await screen.findByDisplayValue("user_a")).toBeInTheDocument();
     expect(screen.getByDisplayValue("/api/auth/login")).toBeInTheDocument();
+    expect(screen.getAllByDisplayValue("NYCTOS_USER_A_USERNAME").length).toBeGreaterThan(1);
+    expect(screen.getAllByDisplayValue("NYCTOS_USER_A_PASSWORD").length).toBeGreaterThan(1);
+    expect(screen.getByDisplayValue("user-a-pass")).toBeInTheDocument();
     expect(screen.getByDisplayValue("proj-user-a-1")).toBeInTheDocument();
     expect(screen.getAllByText(/Auth setup saved 1 role profile/).length).toBeGreaterThan(0);
     expect(requests[0]).toMatchObject({ target_base_url: "http://localhost:3000" });

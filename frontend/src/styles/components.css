@@ -1398,8 +1398,10 @@
   border: 1px solid var(--border);
   border-radius: 2px;
   cursor: pointer;
+  display: grid;
   height: 18px;
   margin: 0;
+  place-content: center;
   position: relative;
   width: 18px;
 }
@@ -1414,10 +1416,7 @@
   border-right: 2px solid var(--accent-contrast);
   content: "";
   height: 9px;
-  left: 5px;
-  position: absolute;
-  top: 1px;
-  transform: rotate(45deg);
+  transform: translateY(-1px) rotate(45deg);
   width: 5px;
 }
 
@@ -3802,7 +3801,7 @@
   align-items: end;
   display: grid;
   gap: var(--space-3);
-  grid-template-columns: minmax(180px, 1fr) auto auto;
+  grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr) auto auto;
 }
 
 .runtime-env-row__secret {

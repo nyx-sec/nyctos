@@ -66,7 +66,8 @@ use nyctos_types::project::{
     AuthSetupError, AuthSetupJobRecord, AuthSetupPhase, AuthSetupRequest, AuthSetupResponse,
     AuthSetupStartResponse, AuthSetupVerification, AuthSetupVerificationStatus,
     CreateProjectRequest, PatchProjectRequest, ProjectAuthMode, ProjectAuthOwnedObject,
-    ProjectAuthProfile, ProjectRuntimeProfile, TriStateJson, TriStateProjectRuntimeProfile,
+    ProjectAuthProfile, ProjectRuntimeEnvVar, ProjectRuntimeProfile, TriStateJson,
+    TriStateProjectRuntimeProfile,
 };
 use nyctos_types::repo::{CreateRepoRequest, PatchRepoRequest, TestRepoRequest, TestRepoResponse};
 
@@ -1063,7 +1064,7 @@ async fn run_auth_auto_setup_once(
         roles,
         login_paths,
         object_routes,
-        verification,
+        mut verification,
         agent_message,
         profiles_added,
         profiles_updated,
@@ -1107,6 +1108,9 @@ async fn run_auth_auto_setup_once(
             profiles_updated,
         )
     };
+    let auth_env_resolution =
+        apply_discovered_auth_env_values(&mut runtime_profile, &discovery.credentials);
+    apply_auth_env_resolution_to_verification(&mut verification, &auth_env_resolution);
     s.auth_setup_jobs
         .push_phase(
             job_id,
@@ -1145,7 +1149,7 @@ async fn run_auth_auto_setup_once(
         discovery.files_inspected,
         &verification,
         agent_message,
-        None,
+        auth_env_resolution_message(&auth_env_resolution),
     );
     Ok(AuthSetupResponse {
         project,
@@ -1327,8 +1331,42 @@ fn empty_runtime_profile_for_auth_setup(
 struct AuthSetupDiscovery {
     login_paths: Vec<String>,
     object_routes: Vec<String>,
+    credentials: AuthSetupCredentialDiscovery,
     files_inspected: usize,
     admin_signal: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+struct AuthSetupCredentialDiscovery {
+    exact_env: HashMap<String, String>,
+    by_role: HashMap<String, AuthSetupRoleCredentials>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct AuthSetupRoleCredentials {
+    email: Option<String>,
+    username: Option<String>,
+    password: Option<String>,
+    bearer_token: Option<String>,
+    cookie: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct AuthSetupEnvResolution {
+    values_added: usize,
+    values_filled: usize,
+    refs_resolved: Vec<String>,
+    refs_missing: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AuthSetupCredentialKind {
+    Email,
+    Username,
+    Password,
+    BearerToken,
+    Cookie,
+    ExactOnly,
 }
 
 fn auth_setup_workspace_roots(
@@ -1399,10 +1437,7 @@ fn discover_auth_setup_in_root(
             }
             continue;
         }
-        if !meta.is_file()
-            || meta.len() > 256 * 1024
-            || !path.extension().and_then(|e| e.to_str()).is_some_and(is_auth_setup_extension)
-        {
+        if !meta.is_file() || meta.len() > 256 * 1024 || !is_auth_setup_scannable_file(&path) {
             continue;
         }
         let Ok(text) = std::fs::read_to_string(&path) else {
@@ -1426,6 +1461,7 @@ fn discover_auth_setup_in_root(
                 discovery.object_routes.push(path.to_string());
             }
         }
+        discover_auth_setup_credentials_in_text(&text, &mut discovery.credentials);
     }
 }
 
@@ -1458,7 +1494,276 @@ fn is_auth_setup_extension(ext: &str) -> bool {
             | "html"
             | "vue"
             | "svelte"
+            | "json"
+            | "jsonl"
+            | "toml"
+            | "yaml"
+            | "yml"
+            | "env"
     )
+}
+
+fn is_auth_setup_scannable_file(path: &FsPath) -> bool {
+    if path.extension().and_then(|e| e.to_str()).is_some_and(is_auth_setup_extension) {
+        return true;
+    }
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let lower = name.to_ascii_lowercase();
+    lower == ".env"
+        || lower.starts_with(".env.")
+        || lower.ends_with(".env")
+        || matches!(lower.as_str(), "seed" | "seeds" | "fixtures")
+}
+
+fn discover_auth_setup_credentials_in_text(
+    text: &str,
+    credentials: &mut AuthSetupCredentialDiscovery,
+) {
+    let env_re = Regex::new(
+        r#"(?m)(?:^|[\s,{])["']?([A-Z][A-Z0-9_]*(?:EMAIL|USERNAME|PASSWORD|TOKEN|COOKIE)[A-Z0-9_]*)["']?\s*[:=]\s*["']?([^"'\r\n#;,]+)["']?"#,
+    )
+    .expect("auth setup credential env regex");
+    for cap in env_re.captures_iter(text) {
+        let Some(name) = cap.get(1).map(|m| m.as_str().trim()) else {
+            continue;
+        };
+        let Some(raw_value) = cap.get(2).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(kind) = credential_kind_for_env_name(name) else {
+            continue;
+        };
+        let Some(value) = normalize_credential_literal(raw_value, kind) else {
+            continue;
+        };
+        credentials.exact_env.entry(name.to_string()).or_insert_with(|| value.clone());
+        if let Some(role_slug) = role_slug_from_env_name(name) {
+            insert_role_credential(credentials, &role_slug, kind, value);
+        }
+    }
+
+    let keyed_object_re =
+        Regex::new(r#"(?is)([A-Za-z][A-Za-z0-9_-]{1,48})\s*:\s*\{([^{}]{0,1600})\}"#)
+            .expect("auth setup keyed credential object regex");
+    for cap in keyed_object_re.captures_iter(text) {
+        let Some(key) = cap.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(body) = cap.get(2).map(|m| m.as_str()) else {
+            continue;
+        };
+        discover_auth_setup_credentials_in_object(Some(key), body, credentials);
+    }
+
+    let object_re =
+        Regex::new(r#"(?is)\{([^{}]{0,1600})\}"#).expect("auth setup credential object regex");
+    for cap in object_re.captures_iter(text) {
+        let Some(body) = cap.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        discover_auth_setup_credentials_in_object(None, body, credentials);
+    }
+}
+
+fn discover_auth_setup_credentials_in_object(
+    parent_key: Option<&str>,
+    body: &str,
+    credentials: &mut AuthSetupCredentialDiscovery,
+) {
+    let email = extract_literal_field(body, &["email", "email_address", "emailAddress"])
+        .and_then(|v| normalize_credential_literal(&v, AuthSetupCredentialKind::Email));
+    let username = extract_literal_field(body, &["username", "user_name", "login"])
+        .and_then(|v| normalize_credential_literal(&v, AuthSetupCredentialKind::Username));
+    let password = extract_literal_field(body, &["password", "pass", "plainPassword"])
+        .and_then(|v| normalize_credential_literal(&v, AuthSetupCredentialKind::Password));
+    if password.is_none() && email.is_none() && username.is_none() {
+        return;
+    }
+    let role = extract_literal_field(body, &["role", "type", "kind"]);
+    let role_slug = role
+        .as_deref()
+        .and_then(credential_role_slug)
+        .or_else(|| parent_key.and_then(credential_role_slug))
+        .or_else(|| email.as_deref().and_then(role_slug_from_email))
+        .or_else(|| username.as_deref().and_then(credential_role_slug));
+    let Some(role_slug) = role_slug else {
+        return;
+    };
+    if let Some(value) = email {
+        insert_role_credential(credentials, &role_slug, AuthSetupCredentialKind::Email, value);
+    }
+    if let Some(value) = username {
+        insert_role_credential(credentials, &role_slug, AuthSetupCredentialKind::Username, value);
+    }
+    if let Some(value) = password {
+        insert_role_credential(credentials, &role_slug, AuthSetupCredentialKind::Password, value);
+    }
+}
+
+fn extract_literal_field(body: &str, fields: &[&str]) -> Option<String> {
+    for field in fields {
+        let field_re = Regex::new(&format!(
+            r#"(?i)["']?{}["']?\s*[:=]\s*["']([^"'\r\n]+)["']"#,
+            regex::escape(field)
+        ))
+        .ok()?;
+        if let Some(value) =
+            field_re.captures(body).and_then(|cap| cap.get(1).map(|m| m.as_str().trim()))
+        {
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn normalize_credential_literal(value: &str, kind: AuthSetupCredentialKind) -> Option<String> {
+    let value = value.trim().trim_matches(',').trim();
+    if value.is_empty() || value.len() > 512 {
+        return None;
+    }
+    let lower = value.to_ascii_lowercase();
+    if lower.contains("process.env")
+        || lower.contains("import.meta.env")
+        || lower.contains("dotenv")
+        || value.contains("${")
+        || value.contains("{{")
+        || value.contains('<')
+        || value.contains('>')
+        || lower.contains("replace_me")
+        || lower.contains("changeme")
+        || lower.contains("todo")
+    {
+        return None;
+    }
+    if kind == AuthSetupCredentialKind::Email && !value.contains('@') {
+        return None;
+    }
+    if kind == AuthSetupCredentialKind::Password {
+        if lower.contains("bcrypt") || lower.contains("argon2") || value.starts_with("$2") {
+            return None;
+        }
+    }
+    Some(value.to_string())
+}
+
+fn credential_kind_for_env_name(name: &str) -> Option<AuthSetupCredentialKind> {
+    let upper = name.to_ascii_uppercase();
+    if upper.ends_with("_EMAIL") {
+        Some(AuthSetupCredentialKind::Email)
+    } else if upper.ends_with("_USERNAME") || upper.ends_with("_USER") || upper.ends_with("_LOGIN")
+    {
+        Some(AuthSetupCredentialKind::Username)
+    } else if upper.ends_with("_PASSWORD") || upper.ends_with("_PASS") {
+        Some(AuthSetupCredentialKind::Password)
+    } else if upper.ends_with("_TOKEN") || upper.ends_with("_BEARER_TOKEN") {
+        Some(AuthSetupCredentialKind::BearerToken)
+    } else if upper.ends_with("_COOKIE") || upper.ends_with("_SESSION_COOKIE") {
+        Some(AuthSetupCredentialKind::Cookie)
+    } else {
+        None
+    }
+}
+
+fn role_slug_from_env_name(name: &str) -> Option<String> {
+    let mut stem = name.trim().trim_start_matches("NYCTOS_").to_string();
+    for suffix in [
+        "_SESSION_COOKIE",
+        "_BEARER_TOKEN",
+        "_PASSWORD",
+        "_USERNAME",
+        "_COOKIE",
+        "_EMAIL",
+        "_LOGIN",
+        "_TOKEN",
+        "_PASS",
+        "_USER",
+    ] {
+        if stem.to_ascii_uppercase().ends_with(suffix) {
+            let new_len = stem.len().saturating_sub(suffix.len());
+            stem.truncate(new_len);
+            break;
+        }
+    }
+    credential_role_slug(&stem)
+}
+
+fn role_slug_from_email(email: &str) -> Option<String> {
+    let local = email.split('@').next()?.split('+').next().unwrap_or_default();
+    credential_role_slug(local)
+}
+
+fn credential_role_slug(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() || credential_role_slug_is_generic(value) {
+        return None;
+    }
+    let mut out = String::new();
+    let mut prev_lower_or_digit = false;
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() {
+            if ch.is_ascii_uppercase() && prev_lower_or_digit && !out.ends_with('_') {
+                out.push('_');
+            }
+            out.push(ch.to_ascii_uppercase());
+            prev_lower_or_digit = ch.is_ascii_lowercase() || ch.is_ascii_digit();
+        } else {
+            if !out.ends_with('_') {
+                out.push('_');
+            }
+            prev_lower_or_digit = false;
+        }
+    }
+    let out = out.trim_matches('_').to_string();
+    if out.is_empty() || credential_role_slug_is_generic(&out) {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+fn credential_role_slug_is_generic(value: &str) -> bool {
+    matches!(
+        value.to_ascii_lowercase().as_str(),
+        "user"
+            | "users"
+            | "account"
+            | "accounts"
+            | "profile"
+            | "profiles"
+            | "credential"
+            | "credentials"
+            | "auth"
+            | "login"
+            | "data"
+            | "test"
+            | "tests"
+            | "test_user"
+            | "test_users"
+    )
+}
+
+fn insert_role_credential(
+    credentials: &mut AuthSetupCredentialDiscovery,
+    role_slug: &str,
+    kind: AuthSetupCredentialKind,
+    value: String,
+) {
+    let entry = credentials.by_role.entry(role_slug.to_string()).or_default();
+    let slot = match kind {
+        AuthSetupCredentialKind::Email => &mut entry.email,
+        AuthSetupCredentialKind::Username => &mut entry.username,
+        AuthSetupCredentialKind::Password => &mut entry.password,
+        AuthSetupCredentialKind::BearerToken => &mut entry.bearer_token,
+        AuthSetupCredentialKind::Cookie => &mut entry.cookie,
+        AuthSetupCredentialKind::ExactOnly => return,
+    };
+    if slot.as_deref().is_none_or(str::is_empty) {
+        *slot = Some(value);
+    }
 }
 
 fn auth_setup_path_is_login_candidate(path: &str) -> bool {
@@ -1644,6 +1949,230 @@ fn auth_setup_profile_has_secret_ref(profile: &ProjectAuthProfile) -> bool {
         || profile.custom_command.is_some()
 }
 
+fn apply_discovered_auth_env_values(
+    runtime_profile: &mut ProjectRuntimeProfile,
+    credentials: &AuthSetupCredentialDiscovery,
+) -> AuthSetupEnvResolution {
+    let mut report = AuthSetupEnvResolution::default();
+    let auth_profiles = runtime_profile.auth_profiles.clone();
+    for profile in &auth_profiles {
+        let role_slug = env_role_slug(&profile.role);
+        maybe_apply_auth_env_value(
+            &mut runtime_profile.env_vars,
+            profile.username_env.as_deref(),
+            &role_slug,
+            AuthSetupCredentialKind::Username,
+            credentials,
+            &mut report,
+        );
+        maybe_apply_auth_env_value(
+            &mut runtime_profile.env_vars,
+            profile.login_email_env.as_deref(),
+            &role_slug,
+            AuthSetupCredentialKind::Email,
+            credentials,
+            &mut report,
+        );
+        maybe_apply_auth_env_value(
+            &mut runtime_profile.env_vars,
+            profile.password_env.as_deref(),
+            &role_slug,
+            AuthSetupCredentialKind::Password,
+            credentials,
+            &mut report,
+        );
+        maybe_apply_auth_env_value(
+            &mut runtime_profile.env_vars,
+            profile.bearer_token_env.as_deref(),
+            &role_slug,
+            AuthSetupCredentialKind::BearerToken,
+            credentials,
+            &mut report,
+        );
+        maybe_apply_auth_env_value(
+            &mut runtime_profile.env_vars,
+            profile.cookie_env.as_deref(),
+            &role_slug,
+            AuthSetupCredentialKind::Cookie,
+            credentials,
+            &mut report,
+        );
+        for header in &profile.headers {
+            maybe_apply_auth_env_value(
+                &mut runtime_profile.env_vars,
+                header.value_env.as_deref(),
+                &role_slug,
+                AuthSetupCredentialKind::ExactOnly,
+                credentials,
+                &mut report,
+            );
+        }
+        if let Some(source) = &profile.otp_source {
+            maybe_apply_auth_env_value(
+                &mut runtime_profile.env_vars,
+                source.email_env.as_deref(),
+                &role_slug,
+                AuthSetupCredentialKind::Email,
+                credentials,
+                &mut report,
+            );
+        }
+    }
+
+    let resolved_env = runtime_env_values(&runtime_profile.env_vars);
+    let mut seen = BTreeSet::new();
+    for profile in &runtime_profile.auth_profiles {
+        for env in auth_setup_env_refs(profile) {
+            if !seen.insert(env.clone()) {
+                continue;
+            }
+            if resolved_env.get(&env).is_some_and(|value| !value.is_empty())
+                || std::env::var_os(&env).is_some()
+            {
+                report.refs_resolved.push(env);
+            } else {
+                report.refs_missing.push(env);
+            }
+        }
+    }
+    report.refs_resolved.sort();
+    report.refs_missing.sort();
+    report
+}
+
+fn maybe_apply_auth_env_value(
+    env_vars: &mut Vec<ProjectRuntimeEnvVar>,
+    env_name: Option<&str>,
+    role_slug: &str,
+    kind: AuthSetupCredentialKind,
+    credentials: &AuthSetupCredentialDiscovery,
+    report: &mut AuthSetupEnvResolution,
+) {
+    let Some(env_name) = env_name.map(str::trim).filter(|name| !name.is_empty()) else {
+        return;
+    };
+    let Some(value) = credential_value_for_env(env_name, role_slug, kind, credentials) else {
+        return;
+    };
+    let secret = matches!(
+        kind,
+        AuthSetupCredentialKind::Password
+            | AuthSetupCredentialKind::BearerToken
+            | AuthSetupCredentialKind::Cookie
+            | AuthSetupCredentialKind::ExactOnly
+    );
+    upsert_runtime_env_value(env_vars, env_name, &value, secret, report);
+}
+
+fn credential_value_for_env(
+    env_name: &str,
+    role_slug: &str,
+    kind: AuthSetupCredentialKind,
+    credentials: &AuthSetupCredentialDiscovery,
+) -> Option<String> {
+    if let Some(value) = credentials.exact_env.get(env_name).filter(|value| !value.is_empty()) {
+        return Some(value.clone());
+    }
+    let role_credentials = credentials.by_role.get(role_slug)?;
+    match kind {
+        AuthSetupCredentialKind::Email => role_credentials.email.clone(),
+        AuthSetupCredentialKind::Username => {
+            role_credentials.username.clone().or_else(|| role_credentials.email.clone())
+        }
+        AuthSetupCredentialKind::Password => role_credentials.password.clone(),
+        AuthSetupCredentialKind::BearerToken => role_credentials.bearer_token.clone(),
+        AuthSetupCredentialKind::Cookie => role_credentials.cookie.clone(),
+        AuthSetupCredentialKind::ExactOnly => None,
+    }
+}
+
+fn upsert_runtime_env_value(
+    env_vars: &mut Vec<ProjectRuntimeEnvVar>,
+    name: &str,
+    value: &str,
+    secret: bool,
+    report: &mut AuthSetupEnvResolution,
+) {
+    if let Some(existing) = env_vars.iter_mut().find(|var| var.name.trim() == name) {
+        if existing.value.is_empty() {
+            existing.value = value.to_string();
+            existing.secret = existing.secret || secret;
+            report.values_filled += 1;
+        } else if secret && !existing.secret {
+            existing.secret = true;
+        }
+        return;
+    }
+    env_vars.push(ProjectRuntimeEnvVar {
+        name: name.to_string(),
+        value: value.to_string(),
+        secret,
+    });
+    report.values_added += 1;
+}
+
+fn runtime_env_values(env_vars: &[ProjectRuntimeEnvVar]) -> HashMap<String, String> {
+    env_vars
+        .iter()
+        .filter_map(|var| {
+            let name = var.name.trim();
+            if name.is_empty() {
+                None
+            } else {
+                Some((name.to_string(), var.value.clone()))
+            }
+        })
+        .collect()
+}
+
+fn auth_setup_env_refs(profile: &ProjectAuthProfile) -> Vec<String> {
+    let mut refs = Vec::new();
+    refs.extend(profile.username_env.iter().cloned());
+    refs.extend(profile.login_email_env.iter().cloned());
+    refs.extend(profile.password_env.iter().cloned());
+    refs.extend(profile.cookie_env.iter().cloned());
+    refs.extend(profile.bearer_token_env.iter().cloned());
+    refs.extend(profile.headers.iter().filter_map(|header| header.value_env.clone()));
+    if let Some(source) = &profile.otp_source {
+        refs.extend(source.email_env.iter().cloned());
+        refs.extend(source.imap_url_env.iter().cloned());
+        refs.extend(source.imap_username_env.iter().cloned());
+        refs.extend(source.imap_password_env.iter().cloned());
+    }
+    refs.into_iter().map(|env| env.trim().to_string()).filter(|env| !env.is_empty()).collect()
+}
+
+fn apply_auth_env_resolution_to_verification(
+    verification: &mut AuthSetupVerification,
+    report: &AuthSetupEnvResolution,
+) {
+    let saved = report.values_added + report.values_filled;
+    if saved > 0 {
+        verification
+            .checks
+            .push(format!("Saved {saved} auth credential env value(s) from repo-local hints."));
+    }
+    if !report.refs_resolved.is_empty() {
+        verification.checks.push(format!(
+            "Resolved {} auth env ref(s) for generated profiles.",
+            report.refs_resolved.len()
+        ));
+    }
+    if !report.refs_missing.is_empty() {
+        verification
+            .warnings
+            .push(format!("Missing auth env value(s): {}.", report.refs_missing.join(", ")));
+        verification.status = AuthSetupVerificationStatus::NeedsReview;
+    }
+}
+
+fn auth_env_resolution_message(report: &AuthSetupEnvResolution) -> Option<String> {
+    if report.refs_missing.is_empty() {
+        return None;
+    }
+    Some(format!("Auth setup still needs value(s) for {}.", report.refs_missing.join(", ")))
+}
+
 fn static_auth_setup_verification(
     discovery: &AuthSetupDiscovery,
     fallback_warning: Option<String>,
@@ -1697,6 +2226,9 @@ fn auth_setup_response_message(
     fallback_warning: Option<String>,
 ) -> String {
     if let Some(message) = agent_message.filter(|message| !message.trim().is_empty()) {
+        if let Some(warning) = fallback_warning {
+            return format!("{message} {warning}");
+        }
         return message;
     }
     let changed = profiles_added + profiles_updated;

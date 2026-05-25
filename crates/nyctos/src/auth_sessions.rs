@@ -134,6 +134,7 @@ impl AuthSessionResult {
 pub struct AuthSessionOptions {
     pub browser_checks_enabled: bool,
     pub workspace_paths: Vec<PathBuf>,
+    pub env_overrides: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -258,7 +259,7 @@ async fn acquire_uncached_session(
 
     let acquisition = match mode {
         ProjectAuthMode::Anonymous => Ok(()),
-        ProjectAuthMode::HeaderInjection => acquire_header_injection(profile, &mut session),
+        ProjectAuthMode::HeaderInjection => acquire_header_injection(profile, &mut session, options),
         ProjectAuthMode::SessionImport => {
             acquire_session_import(profile, &mut session, target_url, artifact_dir)
         }
@@ -280,7 +281,7 @@ async fn acquire_uncached_session(
             "manual email OTP skipped: interactive OTP entry is not available in this run",
         )),
         ProjectAuthMode::OtpEmailMailbox => {
-            match mailbox_otp_readiness(profile).await {
+            match mailbox_otp_readiness(profile, options).await {
                 Ok(Some(_redacted)) => Err(skip_reason(
                     "email OTP mailbox source is reachable, but browser OTP login capture is not wired in this pass",
                 )),
@@ -348,21 +349,22 @@ async fn acquire_uncached_session(
 fn acquire_header_injection(
     profile: &ProjectAuthProfile,
     session: &mut AuthSession,
+    options: &AuthSessionOptions,
 ) -> Result<(), AcquisitionError> {
     let mut resolved_any = false;
     if let Some(env) = &profile.bearer_token_env {
-        let token = resolve_env(env, &profile.role)?;
+        let token = resolve_env(env, &profile.role, options)?;
         session.headers.insert("Authorization".to_string(), format!("Bearer {token}"));
         resolved_any = true;
     }
     if let Some(env) = &profile.cookie_env {
-        let cookie = resolve_env(env, &profile.role)?;
+        let cookie = resolve_env(env, &profile.role, options)?;
         session.cookie_names.extend(cookie_names_from_header(&cookie));
         session.headers.insert("Cookie".to_string(), cookie);
         resolved_any = true;
     }
     for header in &profile.headers {
-        resolve_header_ref(header, &profile.role, &mut session.headers)?;
+        resolve_header_ref(header, &profile.role, &mut session.headers, options)?;
         resolved_any = true;
     }
     if !resolved_any {
@@ -384,19 +386,19 @@ async fn acquire_ai_auto(
         || profile.cookie_env.is_some()
         || !profile.headers.is_empty()
     {
-        acquire_header_injection(profile, session)?;
+        acquire_header_injection(profile, session, options)?;
         session.acquired_by = "ai_auto_header_injection".to_string();
         return Ok(());
     }
 
-    let username = resolve_login_identifier(profile)?;
+    let username = resolve_login_identifier(profile, options)?;
     let password_env = profile.password_env.as_deref().ok_or_else(|| {
         failure_reason(format!(
             "AI auto auth profile `{}` needs password_env to attempt login safely",
             profile.role
         ))
     })?;
-    let password = resolve_env(password_env, &profile.role)?;
+    let password = resolve_env(password_env, &profile.role, options)?;
 
     let discovery = discover_auth_from_workspaces(&options.workspace_paths);
     if options.workspace_paths.is_empty() && profile.login_url.as_deref().is_none() {
@@ -460,9 +462,12 @@ async fn acquire_ai_auto(
     )))
 }
 
-fn resolve_login_identifier(profile: &ProjectAuthProfile) -> Result<String, AcquisitionError> {
+fn resolve_login_identifier(
+    profile: &ProjectAuthProfile,
+    options: &AuthSessionOptions,
+) -> Result<String, AcquisitionError> {
     if let Some(env) = profile.username_env.as_deref().or(profile.login_email_env.as_deref()) {
-        return resolve_env(env, &profile.role);
+        return resolve_env(env, &profile.role, options);
     }
     profile
         .username
@@ -777,6 +782,7 @@ fn resolve_header_ref(
     header: &ProjectAuthHeaderRef,
     role: &str,
     headers: &mut BTreeMap<String, String>,
+    options: &AuthSessionOptions,
 ) -> Result<(), AcquisitionError> {
     let name = HeaderName::from_bytes(header.name.as_bytes())
         .map_err(|_| failure_reason(format!("auth profile `{role}` has invalid header name")))?;
@@ -789,7 +795,7 @@ fn resolve_header_ref(
         }
         return Ok(());
     };
-    let value = resolve_env(env, role)?;
+    let value = resolve_env(env, role, options)?;
     HeaderValue::from_str(&value)
         .map_err(|_| failure_reason(format!("auth profile `{role}` has invalid header value")))?;
     headers.insert(name.as_str().to_string(), value);
@@ -1146,7 +1152,10 @@ fn cookie_names_from_header(value: &str) -> BTreeSet<String> {
         .collect()
 }
 
-async fn mailbox_otp_readiness(profile: &ProjectAuthProfile) -> Result<Option<String>, String> {
+async fn mailbox_otp_readiness(
+    profile: &ProjectAuthProfile,
+    options: &AuthSessionOptions,
+) -> Result<Option<String>, String> {
     let Some(source) = &profile.otp_source else {
         return Err(format!("auth profile `{}` missing otp_source", profile.role));
     };
@@ -1162,7 +1171,7 @@ async fn mailbox_otp_readiness(profile: &ProjectAuthProfile) -> Result<Option<St
         .as_deref()
         .or(profile.login_email_env.as_deref())
         .ok_or_else(|| format!("auth profile `{}` missing OTP email env ref", profile.role))?;
-    let recipient = resolve_env(email_env, &profile.role).map_err(|e| e.message)?;
+    let recipient = resolve_env(email_env, &profile.role, options).map_err(|e| e.message)?;
     let otp = extract_latest_otp_from_mailbox(
         mailbox_url,
         &recipient,
@@ -1333,7 +1342,14 @@ fn target_origin(url: &str) -> Result<String, String> {
     Ok(origin)
 }
 
-fn resolve_env(env: &str, role: &str) -> Result<String, AcquisitionError> {
+fn resolve_env(
+    env: &str,
+    role: &str,
+    options: &AuthSessionOptions,
+) -> Result<String, AcquisitionError> {
+    if let Some(value) = options.env_overrides.get(env).filter(|value| !value.is_empty()) {
+        return Ok(value.clone());
+    }
     std::env::var(env)
         .map_err(|_| failure_reason(format!("auth profile `{role}` missing env `{env}`")))
 }
@@ -1493,11 +1509,47 @@ mod tests {
                 &[profile],
                 "http://localhost:3000/api/me",
                 Path::new("/tmp"),
-                &AuthSessionOptions { browser_checks_enabled: false, workspace_paths: Vec::new() },
+                &AuthSessionOptions {
+                    browser_checks_enabled: false,
+                    workspace_paths: Vec::new(),
+                    env_overrides: BTreeMap::new(),
+                },
             )
             .await;
         assert_eq!(res.status, AuthSessionStatus::Failed);
         assert!(res.reason.unwrap().contains("NYCTOS_TEST_MISSING_TOKEN"));
+    }
+
+    #[tokio::test]
+    async fn auth_session_uses_runtime_env_overrides() {
+        let manager = AuthSessionManager::default();
+        let profile = ProjectAuthProfile {
+            role: "user_a".to_string(),
+            bearer_token_env: Some("NYCTOS_TEST_USER_A_TOKEN".to_string()),
+            ..empty_profile(ProjectAuthMode::HeaderInjection)
+        };
+        let res = manager
+            .acquire_session(
+                "user_a",
+                &[profile],
+                "http://localhost:3000/api/me",
+                Path::new("/tmp"),
+                &AuthSessionOptions {
+                    browser_checks_enabled: false,
+                    workspace_paths: Vec::new(),
+                    env_overrides: BTreeMap::from([(
+                        "NYCTOS_TEST_USER_A_TOKEN".to_string(),
+                        "runtime-token".to_string(),
+                    )]),
+                },
+            )
+            .await;
+        assert_eq!(res.status, AuthSessionStatus::Acquired);
+        let session = res.session.expect("session");
+        assert_eq!(
+            session.headers.get("Authorization").map(String::as_str),
+            Some("Bearer runtime-token")
+        );
     }
 
     #[tokio::test]
@@ -1513,7 +1565,11 @@ mod tests {
                 &[profile],
                 "http://localhost:3000/",
                 Path::new("/tmp"),
-                &AuthSessionOptions { browser_checks_enabled: false, workspace_paths: Vec::new() },
+                &AuthSessionOptions {
+                    browser_checks_enabled: false,
+                    workspace_paths: Vec::new(),
+                    env_overrides: BTreeMap::new(),
+                },
             )
             .await;
         assert_eq!(res.status, AuthSessionStatus::Skipped);
@@ -1547,7 +1603,11 @@ mod tests {
                 &[profile],
                 "http://localhost:3000/dashboard",
                 Path::new("/tmp"),
-                &AuthSessionOptions { browser_checks_enabled: false, workspace_paths: Vec::new() },
+                &AuthSessionOptions {
+                    browser_checks_enabled: false,
+                    workspace_paths: Vec::new(),
+                    env_overrides: BTreeMap::new(),
+                },
             )
             .await;
         assert_eq!(res.status, AuthSessionStatus::Failed);

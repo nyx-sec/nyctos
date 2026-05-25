@@ -7,7 +7,7 @@ raw captures can stay untouched.
 
 Usage:
     python3 scripts/frame-screenshots.py source.png output.png
-    python3 scripts/frame-screenshots.py --gif output.gif frame-a.png frame-b.png
+    python3 scripts/frame-screenshots.py --gif --duration-ms 1800 output.gif frame-a.png frame-b.png
     python3 scripts/frame-screenshots.py --defaults
 """
 from __future__ import annotations
@@ -127,7 +127,7 @@ def frame(src: Path, dest: Path) -> None:
     print(f"framed {src} -> {dest}")
 
 
-def frame_gif(frame_paths: list[Path], dest: Path) -> None:
+def frame_gif(frame_paths: list[Path], dest: Path, duration_ms: int) -> None:
     frames = [frame_image(path).convert("P", palette=Image.ADAPTIVE) for path in frame_paths]
     if not frames:
         raise SystemExit("no frames passed for gif")
@@ -136,7 +136,7 @@ def frame_gif(frame_paths: list[Path], dest: Path) -> None:
         dest,
         save_all=True,
         append_images=frames[1:],
-        duration=950,
+        duration=duration_ms,
         loop=0,
         disposal=2,
         optimize=False,
@@ -149,6 +149,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("paths", nargs="*")
     parser.add_argument("--defaults", action="store_true")
     parser.add_argument("--gif", action="store_true")
+    parser.add_argument("--duration-ms", type=int, default=1800)
     return parser.parse_args()
 
 
@@ -162,7 +163,7 @@ def main() -> int:
         for src in frame_paths:
             if not src.is_file():
                 raise SystemExit(f"missing source image: {src}")
-        frame_gif(frame_paths, dest)
+        frame_gif(frame_paths, dest, max(args.duration_ms, 100))
         return 0
 
     jobs: list[tuple[Path, Path]] = []

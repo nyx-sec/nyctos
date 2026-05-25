@@ -158,6 +158,7 @@ Two tables touch each run:
 | `runs`         | `finalise_run` (`status`, `finished_at`, `wall_clock_ms`) |
 | `findings`     | `persist_run_results` (one row per static-pass diag) |
 | `business_logic_template_runs` | Business-logic template synthesis counts and skip reasons. |
+| `route_models` | Semantic App Model v2 route discovery output for the run. |
 | `verification_attempts` | Live HTTP/browser verifier rows. Browser attempts attach replay artifact paths. |
 | `verified_vulnerabilities` | User-facing confirmed vulnerabilities promoted from successful live attempts. |
 | `attack_graph_nodes`, `attack_graph_edges` | Store dual-writes for route models, signals, candidates, verification attempts, verified vulnerabilities, and chains. |
@@ -189,6 +190,17 @@ walk from a verified vulnerability back to the evidence that produced
 it, or from a route/object/role to the verified vulnerabilities that
 touch it, without changing the existing finding and report shapes. See
 [`attack-graph.md`](attack-graph.md).
+
+`route_models.model_blob` stores the Semantic App Model v2 JSON. Backend
+endpoints retain the original route fields (`method`, `path`, `params`,
+`middleware`, `auth_checks`, `role_checks`, `body_fields`,
+`state_changing`, `confidence`, and `evidence`) and add semantic fields:
+`framework`, `handler_name`, `query_params`, `request_fields`,
+`response_hints`, `service_calls`, `model_names`, `resource_names`,
+`tenant_fields`, `owner_fields`, and `side_effects`. The extractor has
+framework-aware paths for Express/Nest-style TypeScript and JavaScript,
+FastAPI/Flask-style Python decorators, Rails and Laravel declarations,
+OpenAPI/Swagger specs, plus regex fallbacks for older route-like code.
 
 Browser verification attempts persist replay evidence under
 `<state>/traces/<run-id>/browser_verification/<attempt-id>/` and attach
