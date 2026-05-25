@@ -15,7 +15,6 @@ import {
 import type { AiEvent, RunEvent, SandboxEvent } from "@/api/types.gen";
 import { Badge, type BadgeTone } from "@/components/Badge";
 import { Button } from "@/components/Button";
-import { Card } from "@/components/Card";
 import { PageShell } from "@/components/Page";
 import { Spinner } from "@/components/Spinner";
 
@@ -187,39 +186,54 @@ export function LiveScanView() {
         runId,
       )}`
     : `/vulnerabilities?run_id=${encodeURIComponent(runId)}`;
+  const runStatus = summary.done ? "Finished" : "Running";
+  const runStatusTone: BadgeTone = summary.done ? "success" : "info";
+  const runSubtitle = summary.done
+    ? `Finished in ${summary.wallClockMs ?? "-"}ms · ${summary.succeeded ?? 0} ok / ${
+        summary.inconclusive ?? 0
+      } inconclusive / ${summary.failed ?? 0} failed`
+    : finishedRepos === totalRepos && totalRepos > 0
+      ? `${finishedRepos}/${totalRepos} code sources scanned · AI/live phases still running`
+      : `${finishedRepos}/${totalRepos || "?"} code sources scanned`;
+  const sourceMetricDetail =
+    totalRepos === 1 ? "code source scanned" : totalRepos > 0 ? "code sources scanned" : "pending";
+  const activePhase = orderedPhases.find((phase) => phase.status === "running");
 
   return (
     <PageShell size="wide" className="live-scan">
-      <Card
-        title={`Run ${runId}`}
-        subtitle={
-          summary.done
-            ? `Finished in ${summary.wallClockMs ?? "-"}ms · ${summary.succeeded ?? 0} ok / ${
-                summary.inconclusive ?? 0
-              } inconclusive / ${summary.failed ?? 0} failed`
-            : finishedRepos === totalRepos && totalRepos > 0
-              ? `${finishedRepos}/${totalRepos} code sources scanned · AI/live phases still running`
-              : `${finishedRepos}/${totalRepos || "?"} code sources scanned`
-        }
-        actions={
-          <div className="live-scan__actions">
-            <Button variant="ghost" onClick={() => navigate(vulnerabilityHref)}>
-              View vulnerabilities
-            </Button>
-            <a className="btn btn--ghost" href={runEventLogDownloadUrl(runId)} download>
-              Download log
-            </a>
+      <section className="live-scan__hero">
+        <div className="live-scan__hero-copy">
+          <div className="live-scan__eyebrow-row">
+            <span className="live-scan__eyebrow">Pentest run</span>
+            <Badge tone={runStatusTone}>{runStatus}</Badge>
           </div>
-        }
-      >
-        {!summary.done && totalRepos === 0 && (
-          <div className="live-scan__pending">
-            <Spinner /> Preparing app...
-          </div>
-        )}
+          <h1>Run {runId}</h1>
+          <p>{runSubtitle}</p>
+        </div>
+        <div className="live-scan__actions">
+          <Button variant="ghost" onClick={() => navigate(vulnerabilityHref)}>
+            View vulnerabilities
+          </Button>
+          <a className="btn btn--ghost" href={runEventLogDownloadUrl(runId)} download>
+            Download log
+          </a>
+        </div>
+      </section>
 
-        {showRunProgress && (
-          <div className="live-scan__run-progress">
+      <section className="live-scan__status-panel" aria-label="Run status">
+        <div className="live-scan__progress-area">
+          <div className="live-scan__progress-heading">
+            <div>
+              <span>Run progress</span>
+              <strong>{showRunProgress ? `${runProgress}%` : "Preparing"}</strong>
+            </div>
+            {!summary.done && totalRepos === 0 && (
+              <div className="live-scan__pending">
+                <Spinner /> Preparing app...
+              </div>
+            )}
+          </div>
+          {showRunProgress && (
             <div
               className="live-scan__bar"
               role="progressbar"
@@ -236,103 +250,187 @@ export function LiveScanView() {
                 style={{ width: `${runProgress}%` }}
               />
             </div>
-          </div>
-        )}
-
-        {environmentRuns.data && environmentRuns.data.length > 0 && (
-          <section className="live-scan__environment">
-            <h3 className="live-scan__h3">App</h3>
-            {environmentRuns.data.map((env) => (
-              <div key={env.id} className="live-scan__env-row">
-                <Badge tone={environmentTone(env.status)}>{env.status}</Badge>
-                <span>
-                  {env.target_urls.length > 0 ? env.target_urls.join(", ") : "No target URLs"}
-                </span>
-              </div>
-            ))}
-          </section>
-        )}
-
-        {orderedAuthSessions.length > 0 && (
-          <section className="live-scan__auth">
-            <h3 className="live-scan__h3">Auth sessions</h3>
-            <ul className="live-scan__auth-list">
-              {orderedAuthSessions.map((session) => (
-                <li key={session.role} className="live-scan__auth-row">
-                  <Badge tone={authTone(session.status)}>{session.status}</Badge>
-                  <span className="live-scan__auth-role">{session.role}</span>
-                  <span className="live-scan__auth-method">{session.acquiredBy}</span>
-                  {session.message && <small>{session.message}</small>}
-                </li>
-              ))}
-            </ul>
-          </section>
-        )}
-
-        {orderedRepos.length > 0 && (
-          <ul className="live-scan__repos">
-            {orderedRepos.map((repo) => (
-              <RepoProgressRow key={repo.name} repo={repo} />
-            ))}
-          </ul>
-        )}
-
-        {orderedPhases.length > 0 && (
-          <section className="live-scan__phases">
-            <h3 className="live-scan__h3">Pentest phases</h3>
-            <ol className="live-scan__phase-list">
-              {orderedPhases.map((phase) => (
-                <li
-                  key={phase.phase}
-                  className={`live-scan__phase live-scan__phase--${phase.status}`}
-                >
-                  <Badge tone={phaseTone(phase.status)}>{phase.status}</Badge>
-                  <span>{phase.label}</span>
-                  {phase.message && <small>{phase.message}</small>}
-                </li>
-              ))}
-            </ol>
-          </section>
-        )}
-
-        {liveVerifierRows.length > 0 && (
-          <section className="live-scan__verifier">
-            <h3 className="live-scan__h3">Live verifier</h3>
-            <ol className="live-scan__verifier-list">
-              {liveVerifierRows.map((row) => (
-                <LiveVerifierRow key={row.id} row={row} />
-              ))}
-            </ol>
-          </section>
-        )}
-
-        <section className="live-scan__logs">
-          <h3 className="live-scan__h3">Stream</h3>
-          {logs.length === 0 ? (
-            <p className="live-scan__muted">No log lines yet.</p>
-          ) : (
-            <ol className="live-scan__log">
-              {logs.map((line, idx) => (
-                <li key={idx} className={`live-scan__log-line live-scan__log-line--${line.level}`}>
-                  <time>{new Date(line.ts).toLocaleTimeString()}</time>
-                  <span>{line.text}</span>
-                </li>
-              ))}
-            </ol>
           )}
-        </section>
+        </div>
+        <div className="live-scan__metrics">
+          <RunMetric
+            label="Sources"
+            value={`${finishedRepos}/${totalRepos || "?"}`}
+            detail={sourceMetricDetail}
+          />
+          <RunMetric
+            label="Phase"
+            value={summary.done ? "Complete" : activePhase ? "Active" : "Pending"}
+            detail={summary.done ? "run closed" : activePhase ? "stage running" : "awaiting phase"}
+          />
+          <RunMetric
+            label="Verified"
+            value={String(confirmedVulnerabilityCount)}
+            detail="vulnerabilities"
+            tone={confirmedVulnerabilityCount > 0 ? "danger" : "success"}
+          />
+          <RunMetric
+            label="Review"
+            value={String(needsReviewCount)}
+            detail="needs triage"
+            tone={needsReviewCount > 0 ? "warning" : "neutral"}
+          />
+        </div>
+      </section>
 
-        {summary.done && (
-          <p className="live-scan__cta">
+      <div className="live-scan__workspace">
+        <main className="live-scan__primary">
+          {environmentRuns.data && environmentRuns.data.length > 0 && (
+            <section className="live-scan__panel">
+              <SectionHeader title="Target app" eyebrow="Environment" />
+              <div className="live-scan__env-list">
+                {environmentRuns.data.map((env) => (
+                  <div key={env.id} className="live-scan__env-row">
+                    <Badge tone={environmentTone(env.status)}>{env.status}</Badge>
+                    <span>
+                      {env.target_urls.length > 0 ? env.target_urls.join(", ") : "No target URLs"}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {orderedRepos.length > 0 && (
+            <section className="live-scan__panel">
+              <SectionHeader
+                title="Code sources"
+                eyebrow="Scope"
+                meta={`${finishedRepos}/${totalRepos} complete`}
+              />
+              <ul className="live-scan__repos">
+                {orderedRepos.map((repo) => (
+                  <RepoProgressRow key={repo.name} repo={repo} />
+                ))}
+              </ul>
+            </section>
+          )}
+
+          {liveVerifierRows.length > 0 && (
+            <section className="live-scan__panel">
+              <SectionHeader title="Live verifier" eyebrow="Evidence" meta="latest attempts" />
+              <ol className="live-scan__verifier-list">
+                {liveVerifierRows.map((row) => (
+                  <LiveVerifierRow key={row.id} row={row} />
+                ))}
+              </ol>
+            </section>
+          )}
+
+          <section className="live-scan__panel live-scan__panel--logs">
+            <SectionHeader title="Stream" eyebrow="Events" meta={`${logs.length} lines`} />
+            {logs.length === 0 ? (
+              <p className="live-scan__muted">No log lines yet.</p>
+            ) : (
+              <ol className="live-scan__log">
+                {logs.map((line, idx) => (
+                  <li
+                    key={idx}
+                    className={`live-scan__log-line live-scan__log-line--${line.level}`}
+                  >
+                    <time>{new Date(line.ts).toLocaleTimeString()}</time>
+                    <span>{line.text}</span>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </section>
+        </main>
+
+        <aside className="live-scan__aside">
+          {orderedPhases.length > 0 && (
+            <section className="live-scan__panel">
+              <SectionHeader title="Pentest phases" eyebrow="Timeline" />
+              <ol className="live-scan__phase-list">
+                {orderedPhases.map((phase) => (
+                  <li
+                    key={phase.phase}
+                    className={`live-scan__phase live-scan__phase--${phase.status}`}
+                  >
+                    <span className="live-scan__phase-rail" aria-hidden="true" />
+                    <div className="live-scan__phase-copy">
+                      <span>{phase.label}</span>
+                      {phase.message && <small>{phase.message}</small>}
+                    </div>
+                    <Badge tone={phaseTone(phase.status)}>{phase.status}</Badge>
+                  </li>
+                ))}
+              </ol>
+            </section>
+          )}
+
+          {orderedAuthSessions.length > 0 && (
+            <section className="live-scan__panel">
+              <SectionHeader title="Auth sessions" eyebrow="Identity" />
+              <ul className="live-scan__auth-list">
+                {orderedAuthSessions.map((session) => (
+                  <li key={session.role} className="live-scan__auth-row">
+                    <div className="live-scan__auth-main">
+                      <span className="live-scan__auth-role">{session.role}</span>
+                      <span className="live-scan__auth-method">{session.acquiredBy}</span>
+                    </div>
+                    <Badge tone={authTone(session.status)}>{session.status}</Badge>
+                    {session.message && <small>{session.message}</small>}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+        </aside>
+      </div>
+
+      {summary.done && (
+        <section className="live-scan__finish">
+          <p>
             Run finished with {confirmedVulnerabilityCount} verified vulnerabilities
-            {needsReviewCount > 0 ? ` and ${needsReviewCount} review item(s)` : ""}.{" "}
-            <Link to={`/vulnerabilities?run_id=${encodeURIComponent(runId)}`}>
-              Open vulnerabilities →
-            </Link>
+            {needsReviewCount > 0 ? ` and ${needsReviewCount} review item(s)` : ""}.
           </p>
-        )}
-      </Card>
+          <Link to={`/vulnerabilities?run_id=${encodeURIComponent(runId)}`}>
+            Open vulnerabilities →
+          </Link>
+        </section>
+      )}
     </PageShell>
+  );
+}
+
+interface SectionHeaderProps {
+  eyebrow: string;
+  title: string;
+  meta?: string;
+}
+
+function SectionHeader({ eyebrow, title, meta }: SectionHeaderProps) {
+  return (
+    <header className="live-scan__section-header">
+      <div>
+        <p>{eyebrow}</p>
+        <h2>{title}</h2>
+      </div>
+      {meta && <span>{meta}</span>}
+    </header>
+  );
+}
+
+interface RunMetricProps {
+  label: string;
+  value: string;
+  detail: string;
+  tone?: BadgeTone;
+}
+
+function RunMetric({ label, value, detail, tone = "neutral" }: RunMetricProps) {
+  return (
+    <div className={`live-scan__metric live-scan__metric--${tone}`}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+      <small>{detail}</small>
+    </div>
   );
 }
 
@@ -379,25 +477,28 @@ interface RepoProgressRowProps {
 
 function RepoProgressRow({ repo }: RepoProgressRowProps) {
   return (
-    <li className="live-scan__repo">
-      <div className="live-scan__repo-header">
-        <span className="live-scan__repo-name">{repo.name}</span>
-        <Badge tone={PHASE_TONE[repo.phase]}>{PHASE_LABEL[repo.phase]}</Badge>
-        {repo.outcome && repo.phase !== "failed" && (
-          <Badge tone={repo.outcome === "Success" ? "success" : "warning"}>{repo.outcome}</Badge>
+    <li className={`live-scan__repo live-scan__repo--${repo.phase}`}>
+      <span className="live-scan__repo-rail" aria-hidden="true" />
+      <div className="live-scan__repo-body">
+        <div className="live-scan__repo-header">
+          <span className="live-scan__repo-name">{repo.name}</span>
+          <Badge tone={PHASE_TONE[repo.phase]}>{PHASE_LABEL[repo.phase]}</Badge>
+          {repo.outcome && repo.phase !== "failed" && (
+            <Badge tone={repo.outcome === "Success" ? "success" : "warning"}>{repo.outcome}</Badge>
+          )}
+        </div>
+        {(repo.nDiags !== undefined || repo.elapsedMs !== undefined) && (
+          <div className="live-scan__repo-meta">
+            {repo.nDiags !== undefined && <span>{repo.nDiags} signal(s)</span>}
+            {repo.elapsedMs !== undefined && <span>{repo.elapsedMs}ms</span>}
+          </div>
         )}
-        {repo.nDiags !== undefined && (
-          <span className="live-scan__repo-count">{repo.nDiags} signal(s)</span>
-        )}
-        {repo.elapsedMs !== undefined && (
-          <span className="live-scan__repo-elapsed">{repo.elapsedMs}ms</span>
+        {repo.message && (
+          <p className="live-scan__repo-msg" title={repo.message}>
+            {repo.message}
+          </p>
         )}
       </div>
-      {repo.message && (
-        <p className="live-scan__repo-msg" title={repo.message}>
-          {repo.message}
-        </p>
-      )}
     </li>
   );
 }

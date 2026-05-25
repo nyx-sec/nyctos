@@ -1285,6 +1285,152 @@ interface StartPentestOptions {
   unsafeAttackAgent: boolean;
 }
 
+interface StartPentestModalCopy {
+  confirmLabel: string;
+  note: string;
+}
+
+function startPentestModalCopy({
+  exploitMode,
+  allowStateChanging,
+  browserChecks,
+  researchMode,
+  unsafeAttackAgent,
+}: StartPentestOptions): StartPentestModalCopy {
+  const stateChanging = exploitMode && allowStateChanging;
+
+  if (stateChanging && unsafeAttackAgent && browserChecks && researchMode) {
+    return {
+      confirmLabel: "Start full-depth pentest",
+      note: "Research, browser verification, exploit planning, mutating probes, and the unsafe local agent are all enabled for this disposable run.",
+    };
+  }
+  if (stateChanging && unsafeAttackAgent) {
+    return {
+      confirmLabel: "Start invasive attack run",
+      note: "Nyctos can mutate the disposable app through state-changing probes and the local attack agent; use this only when the target can be reset.",
+    };
+  }
+  if (stateChanging && researchMode && browserChecks) {
+    return {
+      confirmLabel: "Start stateful research pentest",
+      note: "Research mode, browser verification, and state-changing exploit probes are enabled for a resettable target.",
+    };
+  }
+  if (stateChanging && researchMode) {
+    return {
+      confirmLabel: "Start mutating research run",
+      note: "Research mode will deepen hypotheses and state-changing exploit probes may mutate the target.",
+    };
+  }
+  if (stateChanging && browserChecks) {
+    return {
+      confirmLabel: "Start browser mutation run",
+      note: "Browser verification and state-changing probes are enabled, including browser workflows that may mutate data.",
+    };
+  }
+  if (stateChanging) {
+    return {
+      confirmLabel: "Start state-changing run",
+      note: "Exploit mode and state-changing probes are both on, so POST, PUT, PATCH, DELETE, and mutating browser workflows are allowed.",
+    };
+  }
+  if (exploitMode && unsafeAttackAgent && researchMode && browserChecks) {
+    return {
+      confirmLabel: "Start guided exploit attack",
+      note: "Browser evidence, research mode, and exploit planning will guide the unsafe local attack agent; state-changing probes stay blocked.",
+    };
+  }
+  if (exploitMode && unsafeAttackAgent && researchMode) {
+    return {
+      confirmLabel: "Start research exploit attack",
+      note: "Research mode and exploit planning will guide the unsafe local attack agent; state-changing probes stay blocked.",
+    };
+  }
+  if (exploitMode && unsafeAttackAgent && browserChecks) {
+    return {
+      confirmLabel: "Start browser exploit attack",
+      note: "Browser verification and exploit planning are enabled with the unsafe local attack agent; state-changing probes stay blocked.",
+    };
+  }
+  if (exploitMode && unsafeAttackAgent) {
+    return {
+      confirmLabel: "Start exploit attack run",
+      note: "Exploit planning and the unsafe local attack agent are enabled; state-changing probes stay blocked unless you enable the second switch.",
+    };
+  }
+  if (exploitMode && researchMode && browserChecks) {
+    return {
+      confirmLabel: "Start exploit research pentest",
+      note: "Browser verification will gather DOM evidence while research mode deepens exploit hypotheses; mutation gates stay closed.",
+    };
+  }
+  if (exploitMode && researchMode) {
+    return {
+      confirmLabel: "Start exploit research run",
+      note: "Research mode will deepen the hypotheses and exploit mode can evaluate invasive live-verification plans, while mutation gates stay closed.",
+    };
+  }
+  if (exploitMode && browserChecks) {
+    return {
+      confirmLabel: "Start exploit verification",
+      note: "Browser verification and exploit-mode planning are enabled; state-changing requests still require the second switch.",
+    };
+  }
+  if (exploitMode) {
+    return {
+      confirmLabel: "Start exploit run",
+      note: "Nyctos can evaluate invasive live-verification plans, but state-changing probes remain blocked until the second switch is enabled.",
+    };
+  }
+  if (unsafeAttackAgent && researchMode && browserChecks) {
+    return {
+      confirmLabel: "Start guided attack-agent run",
+      note: "Browser evidence and research mode will guide the unsafe local attack agent; exploit-mode probes remain off.",
+    };
+  }
+  if (unsafeAttackAgent && researchMode) {
+    return {
+      confirmLabel: "Start research attack run",
+      note: "Research mode will feed deeper hypotheses to the unsafe local attack agent; exploit-mode probes remain off.",
+    };
+  }
+  if (unsafeAttackAgent && browserChecks) {
+    return {
+      confirmLabel: "Start browser attack run",
+      note: "Browser verification can collect DOM evidence while the unsafe local attack agent runs against the disposable app.",
+    };
+  }
+  if (unsafeAttackAgent) {
+    return {
+      confirmLabel: "Start attack-agent run",
+      note: "The unsafe local attack agent can mutate or break the disposable app; exploit-mode probes remain off.",
+    };
+  }
+  if (researchMode && browserChecks) {
+    return {
+      confirmLabel: "Start browser research pentest",
+      note: "Browser checks and research mode will enrich the evidence and hypotheses while all mutation gates stay closed.",
+    };
+  }
+  if (researchMode) {
+    return {
+      confirmLabel: "Start research pentest",
+      note: "Research mode will generate deeper product-invariant hypotheses without changing any safety gates.",
+    };
+  }
+  if (browserChecks) {
+    return {
+      confirmLabel: "Start browser-verified pentest",
+      note: "Playwright-backed browser verification is enabled for DOM and browser-only workflows; mutation gates stay closed.",
+    };
+  }
+  return {
+    confirmLabel: "Start safe pentest",
+    note: "Safe mode is the default. Enable only the checks you want for this run; state-changing probes require both switches.",
+  };
+}
+
 interface StartPentestModalProps {
   busy: boolean;
   onConfirm: (options: StartPentestOptions) => void;
@@ -1303,10 +1449,18 @@ function StartPentestModal({ busy, onConfirm, onCancel }: StartPentestModalProps
     if (!checked) setAllowStateChanging(false);
   }
 
+  const modalCopy = startPentestModalCopy({
+    exploitMode,
+    allowStateChanging,
+    browserChecks,
+    researchMode,
+    unsafeAttackAgent,
+  });
+
   return (
     <ConfirmModal
       title="Start pentest"
-      confirmLabel={exploitMode ? "Start with exploit mode" : "Start safe pentest"}
+      confirmLabel={modalCopy.confirmLabel}
       busy={busy}
       onConfirm={() =>
         onConfirm({
@@ -1320,10 +1474,7 @@ function StartPentestModal({ busy, onConfirm, onCancel }: StartPentestModalProps
       onCancel={onCancel}
       body={
         <div className="pentest-options">
-          <p className="pentest-options__note">
-            Safe mode is the default. State-changing probes stay blocked unless both switches are
-            enabled for this run.
-          </p>
+          <p className="pentest-options__note">{modalCopy.note}</p>
           <label className="pentest-options__check">
             <input
               type="checkbox"

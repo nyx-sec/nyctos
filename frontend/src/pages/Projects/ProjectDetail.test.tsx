@@ -137,18 +137,21 @@ describe("ProjectDetail", () => {
     const exploitMode = screen.getByLabelText(/Exploit mode/) as HTMLInputElement;
     const browserChecks = screen.getByLabelText(/Browser verification/) as HTMLInputElement;
     const researchMode = screen.getByLabelText(/Vuln research mode/) as HTMLInputElement;
+    const unsafeAttackAgent = screen.getByLabelText(/Unsafe attack agent/) as HTMLInputElement;
     const stateChanging = screen.getByLabelText(/State-changing probes/) as HTMLInputElement;
     expect(exploitMode.checked).toBe(false);
     expect(browserChecks.checked).toBe(false);
     expect(researchMode.checked).toBe(false);
+    expect(unsafeAttackAgent.checked).toBe(false);
     expect(stateChanging).toBeDisabled();
 
     fireEvent.click(browserChecks);
     fireEvent.click(researchMode);
+    fireEvent.click(unsafeAttackAgent);
     fireEvent.click(exploitMode);
     expect(stateChanging).not.toBeDisabled();
     fireEvent.click(stateChanging);
-    fireEvent.click(screen.getByRole("button", { name: "Start with exploit mode" }));
+    fireEvent.click(screen.getByRole("button", { name: "Start full-depth pentest" }));
 
     await waitFor(() =>
       expect(pentestBodies).toEqual([
@@ -157,10 +160,59 @@ describe("ProjectDetail", () => {
           allow_state_changing_live_probes: true,
           browser_checks_enabled: true,
           research_mode_enabled: true,
+          unsafe_attack_agent_enabled: true,
           business_logic_template_ids: [],
         },
       ]),
     );
+  });
+
+  it("updates Start pentest copy as options are selected", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      if (url === "/api/v1/projects/proj-1") return jsonResponse(readyProject());
+      if (url === "/api/v1/projects/proj-1/repos") return jsonResponse(repos());
+      if (url === "/api/v1/projects/proj-1/vulnerabilities") return jsonResponse([]);
+      throw new Error(`unexpected url ${url}`);
+    });
+
+    render(wrap(<ProjectDetail />));
+
+    expect(await screen.findByRole("heading", { name: "Demo App" })).toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole("button", { name: "Start pentest" })[0]);
+
+    expect(screen.getByRole("button", { name: "Start safe pentest" })).toBeInTheDocument();
+    expect(screen.getByText(/Safe mode is the default/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText(/Browser verification/));
+    expect(
+      screen.getByRole("button", { name: "Start browser-verified pentest" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Playwright-backed browser verification is enabled/),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText(/Vuln research mode/));
+    expect(
+      screen.getByRole("button", { name: "Start browser research pentest" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Browser checks and research mode/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText(/Unsafe attack agent/));
+    expect(
+      screen.getByRole("button", { name: "Start guided attack-agent run" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/will guide the unsafe local attack agent/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText(/Exploit mode/));
+    expect(screen.getByRole("button", { name: "Start guided exploit attack" })).toBeInTheDocument();
+    expect(screen.getByText(/state-changing probes stay blocked/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText(/State-changing probes/));
+    expect(screen.getByRole("button", { name: "Start full-depth pentest" })).toBeInTheDocument();
+    expect(
+      screen.getByText(/Research, browser verification, exploit planning/),
+    ).toBeInTheDocument();
   });
 
   it("autosaves environment edits with lifecycle hooks last", async () => {

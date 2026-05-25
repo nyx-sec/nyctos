@@ -493,7 +493,7 @@ async function captureGifFrames(context) {
   await page.getByLabel("State-changing probes", { exact: false }).check();
   frames.push(await gifFrame(page, "02-unsafe"));
 
-  await page.getByRole("button", { name: "Start with exploit mode" }).click();
+  await page.getByRole("button", { name: "Start invasive attack run" }).click();
   await page.waitForURL(`${BASE_URL}/projects/${PROJECT_ID}/runs/${RUN_ID}`);
   await page.waitForTimeout(1600);
   frames.push(await gifFrame(page, "03-live"));
