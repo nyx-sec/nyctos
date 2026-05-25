@@ -1936,6 +1936,7 @@ mod tests {
     fn profile(role: &str) -> ProjectAuthProfile {
         ProjectAuthProfile {
             role: role.to_string(),
+            role_aliases: Vec::new(),
             mode: ProjectAuthMode::Anonymous,
             label: None,
             tenant: None,

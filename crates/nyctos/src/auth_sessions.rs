@@ -14,6 +14,158 @@ use tokio::sync::Mutex;
 
 const DEFAULT_SESSION_TTL_SECONDS: u64 = 15 * 60;
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct AuthSetupError {
+    pub code: String,
+    pub role: String,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing_env_vars: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub missing_capability: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AuthRoleBroker<'a> {
+    profiles: &'a [ProjectAuthProfile],
+}
+
+impl<'a> AuthRoleBroker<'a> {
+    pub fn new(profiles: &'a [ProjectAuthProfile]) -> Self {
+        Self { profiles }
+    }
+
+    pub fn resolve_profile(&self, requested_role: &str) -> Option<&'a ProjectAuthProfile> {
+        let requested = normalize_role_token(requested_role);
+        if requested == "anonymous" {
+            return None;
+        }
+        self.profiles.iter().find(|profile| profile_matches_semantic_role(profile, &requested))
+    }
+
+    pub fn resolve_role(&self, requested_role: &str) -> Option<String> {
+        if normalize_role_token(requested_role) == "anonymous" {
+            return Some("anonymous".to_string());
+        }
+        self.resolve_profile(requested_role).map(|profile| profile.role.clone())
+    }
+
+    pub fn role_pair(
+        &self,
+        owner_semantic: &str,
+        accessor_semantic: &str,
+    ) -> Option<(String, String)> {
+        let owners = self.matching_profiles(owner_semantic);
+        let accessors = self.matching_profiles(accessor_semantic);
+        for owner in owners {
+            if let Some(accessor) = accessors.iter().find(|accessor| accessor.role != owner.role) {
+                return Some((owner.role.clone(), accessor.role.clone()));
+            }
+        }
+        None
+    }
+
+    pub fn usable_role_pairs(&self) -> Vec<(String, String)> {
+        let mut pairs = Vec::new();
+        for (left, right) in [
+            ("user_a", "user_b"),
+            ("owner", "member"),
+            ("creator", "member"),
+            ("creator", "viewer"),
+            ("owner", "viewer"),
+        ] {
+            if let Some(pair) = self.role_pair(left, right) {
+                if !pairs.contains(&pair) {
+                    pairs.push(pair);
+                }
+            }
+        }
+        pairs
+    }
+
+    fn matching_profiles(&self, semantic_role: &str) -> Vec<&'a ProjectAuthProfile> {
+        let semantic = normalize_role_token(semantic_role);
+        self.profiles
+            .iter()
+            .filter(|profile| profile_matches_semantic_role(profile, &semantic))
+            .collect()
+    }
+}
+
+fn profile_matches_semantic_role(profile: &ProjectAuthProfile, semantic_role: &str) -> bool {
+    let names = profile_role_tokens(profile);
+    names.iter().any(|name| name == semantic_role)
+        || semantic_aliases(semantic_role)
+            .iter()
+            .any(|alias| names.iter().any(|name| name == alias))
+        || capability_implies_semantic(profile, semantic_role, &names)
+}
+
+fn profile_role_tokens(profile: &ProjectAuthProfile) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for value in std::iter::once(&profile.role)
+        .chain(profile.role_aliases.iter())
+        .chain(profile.label.iter())
+    {
+        let normalized = normalize_role_token(value);
+        if !normalized.is_empty() {
+            out.insert(normalized.clone());
+            for part in normalized.split('_').filter(|part| !part.is_empty()) {
+                out.insert(part.to_string());
+            }
+        }
+    }
+    out
+}
+
+fn capability_implies_semantic(
+    profile: &ProjectAuthProfile,
+    semantic_role: &str,
+    names: &BTreeSet<String>,
+) -> bool {
+    match semantic_role {
+        "user_a" => {
+            !profile.owned_objects.is_empty()
+                || names.iter().any(|name| matches!(name.as_str(), "owner" | "creator" | "alice"))
+        }
+        "user_b" => names
+            .iter()
+            .any(|name| matches!(name.as_str(), "member" | "viewer" | "reader" | "peer" | "bob")),
+        "owner" | "creator" => !profile.owned_objects.is_empty(),
+        "member" | "viewer" => names.iter().any(|name| matches!(name.as_str(), "user" | "reader")),
+        _ => false,
+    }
+}
+
+fn semantic_aliases(semantic_role: &str) -> &'static [&'static str] {
+    match semantic_role {
+        "user_a" => &["owner", "creator", "member_a", "alice", "primary_user", "user"],
+        "user_b" => &["member", "viewer", "reader", "member_b", "bob", "peer", "other_user"],
+        "owner" => &["creator", "user_a"],
+        "creator" => &["owner", "user_a"],
+        "member" => &["viewer", "reader", "user_b"],
+        "viewer" => &["reader", "member", "user_b"],
+        "admin" => &["owner", "staff", "manager", "superuser"],
+        "anonymous" => &["anon", "public", "guest"],
+        _ => &[],
+    }
+}
+
+fn normalize_role_token(value: &str) -> String {
+    let mut out = String::new();
+    let mut last_was_sep = false;
+    for ch in value.trim().chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+            last_was_sep = false;
+        } else if !last_was_sep {
+            out.push('_');
+            last_was_sep = true;
+        }
+    }
+    out.trim_matches('_').to_string()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthSessionStatus {
@@ -73,6 +225,7 @@ pub struct AuthSession {
     pub artifact_paths: Vec<PathBuf>,
     pub failure_reason: Option<String>,
     pub skip_reason: Option<String>,
+    pub setup_error: Option<AuthSetupError>,
     acquired_at_ms: i64,
     cookie_names: BTreeSet<String>,
 }
@@ -98,6 +251,7 @@ impl AuthSession {
             "artifact_paths": self.artifact_paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
             "failure_reason": self.failure_reason,
             "skip_reason": self.skip_reason,
+            "setup_error": self.setup_error,
         })
     }
 
@@ -185,13 +339,15 @@ impl AuthSessionManager {
                 artifact_paths: Vec::new(),
                 failure_reason: None,
                 skip_reason: None,
+                setup_error: None,
                 acquired_at_ms: nyctos_core::now_epoch_ms(),
                 cookie_names: BTreeSet::new(),
             };
             return result_from_session(AuthSessionStatus::Acquired, session, None);
         }
 
-        let Some(profile) = profiles.iter().find(|p| p.role == normalized_role) else {
+        let broker = AuthRoleBroker::new(profiles);
+        let Some(profile) = broker.resolve_profile(normalized_role) else {
             return result_without_session(
                 normalized_role,
                 AuthSessionStatus::Failed,
@@ -201,8 +357,9 @@ impl AuthSessionManager {
             );
         };
 
+        let resolved_role = profile.role.as_str();
         let ttl = profile.session_cache_ttl_seconds.unwrap_or(DEFAULT_SESSION_TTL_SECONDS);
-        let cache_key = format!("{base_origin}\n{normalized_role}");
+        let cache_key = format!("{base_origin}\n{resolved_role}");
         let now_ms = nyctos_core::now_epoch_ms();
         if let Some(cached) = self.cache.lock().await.sessions.get(&cache_key).cloned() {
             if cached.cache_valid(now_ms, ttl) {
@@ -213,7 +370,7 @@ impl AuthSessionManager {
         }
 
         let acquired = acquire_uncached_session(
-            normalized_role,
+            resolved_role,
             profile,
             target_url,
             &base_origin,
@@ -253,6 +410,7 @@ async fn acquire_uncached_session(
         artifact_paths: Vec::new(),
         failure_reason: None,
         skip_reason: None,
+        setup_error: None,
         acquired_at_ms: nyctos_core::now_epoch_ms(),
         cookie_names: BTreeSet::new(),
     };
@@ -277,16 +435,23 @@ async fn acquire_uncached_session(
         } else {
             "manual SSO skipped: interactive browser capture is not wired in this pass"
         })),
-        ProjectAuthMode::OtpEmailManual => Err(skip_reason(
-            "manual email OTP skipped: interactive OTP entry is not available in this run",
+        ProjectAuthMode::OtpEmailManual => Err(auth_unsupported_reason(
+            &profile.role,
+            "manual email OTP is configured but interactive OTP entry is not wired for this run",
+            "otp_email_manual",
         )),
         ProjectAuthMode::OtpEmailMailbox => {
             match mailbox_otp_readiness(profile, options).await {
-                Ok(Some(_redacted)) => Err(skip_reason(
-                    "email OTP mailbox source is reachable, but browser OTP login capture is not wired in this pass",
+                Ok(Some(_redacted)) => Err(auth_unsupported_reason(
+                    &profile.role,
+                    "email OTP mailbox auth is configured but browser OTP login capture is not wired for this run",
+                    "otp_email_mailbox_capture",
                 )),
-                Ok(None) => Err(skip_reason(
-                    "email OTP mailbox skipped: no matching OTP message was found",
+                Ok(None) => Err(setup_missing_reason(
+                    &profile.role,
+                    "email OTP mailbox auth is configured but no matching OTP message was found",
+                    Vec::new(),
+                    Some("otp_mailbox_message".to_string()),
                 )),
                 Err(reason) => Err(failure_reason(reason)),
             }
@@ -309,6 +474,7 @@ async fn acquire_uncached_session(
         } else {
             session.failure_reason = Some(reason.message.clone());
         }
+        session.setup_error = reason.setup_error.clone();
         return result_from_session(status, session, Some(reason.message));
     }
 
@@ -393,12 +559,17 @@ async fn acquire_ai_auto(
 
     let username = resolve_login_identifier(profile, options)?;
     let password_env = profile.password_env.as_deref().ok_or_else(|| {
-        failure_reason(format!(
-            "AI auto auth profile `{}` needs password_env to attempt login safely",
-            profile.role
-        ))
+        setup_missing_reason(
+            &profile.role,
+            format!(
+                "AI auto auth profile `{}` needs password_env before login route discovery",
+                profile.role
+            ),
+            Vec::new(),
+            Some("password_env".to_string()),
+        )
     })?;
-    let password = resolve_env(password_env, &profile.role, options)?;
+    let password = resolve_env_for_field(password_env, &profile.role, "password_env", options)?;
 
     let discovery = discover_auth_from_workspaces(&options.workspace_paths);
     if options.workspace_paths.is_empty() && profile.login_url.as_deref().is_none() {
@@ -467,7 +638,12 @@ fn resolve_login_identifier(
     options: &AuthSessionOptions,
 ) -> Result<String, AcquisitionError> {
     if let Some(env) = profile.username_env.as_deref().or(profile.login_email_env.as_deref()) {
-        return resolve_env(env, &profile.role, options);
+        let field = if profile.username_env.as_deref() == Some(env) {
+            "username_env"
+        } else {
+            "login_email_env"
+        };
+        return resolve_env_for_field(env, &profile.role, field, options);
     }
     profile
         .username
@@ -476,10 +652,15 @@ fn resolve_login_identifier(
         .filter(|s| !s.is_empty())
         .map(str::to_string)
         .ok_or_else(|| {
-            failure_reason(format!(
-                "AI auto auth profile `{}` needs username_env, login_email_env, or username",
-                profile.role
-            ))
+            setup_missing_reason(
+                &profile.role,
+                format!(
+                    "AI auto auth profile `{}` needs username_env, login_email_env, or username",
+                    profile.role
+                ),
+                Vec::new(),
+                Some("username_env_or_login_email_env".to_string()),
+            )
         })
 }
 
@@ -1347,11 +1528,26 @@ fn resolve_env(
     role: &str,
     options: &AuthSessionOptions,
 ) -> Result<String, AcquisitionError> {
+    resolve_env_for_field(env, role, "env", options)
+}
+
+fn resolve_env_for_field(
+    env: &str,
+    role: &str,
+    field: &str,
+    options: &AuthSessionOptions,
+) -> Result<String, AcquisitionError> {
     if let Some(value) = options.env_overrides.get(env).filter(|value| !value.is_empty()) {
         return Ok(value.clone());
     }
-    std::env::var(env)
-        .map_err(|_| failure_reason(format!("auth profile `{role}` missing env `{env}`")))
+    std::env::var(env).map_err(|_| {
+        setup_missing_reason(
+            role,
+            format!("auth profile `{role}` missing {field} env `{env}`"),
+            vec![env.to_string()],
+            Some(field.to_string()),
+        )
+    })
 }
 
 fn acquired_by(mode: ProjectAuthMode) -> &'static str {
@@ -1390,14 +1586,54 @@ fn safe_filename(value: &str) -> String {
 struct AcquisitionError {
     message: String,
     skipped: bool,
+    setup_error: Option<AuthSetupError>,
 }
 
 fn failure_reason(message: impl Into<String>) -> AcquisitionError {
-    AcquisitionError { message: message.into(), skipped: false }
+    AcquisitionError { message: message.into(), skipped: false, setup_error: None }
 }
 
 fn skip_reason(message: impl Into<String>) -> AcquisitionError {
-    AcquisitionError { message: message.into(), skipped: true }
+    AcquisitionError { message: message.into(), skipped: true, setup_error: None }
+}
+
+fn setup_missing_reason(
+    role: &str,
+    message: impl Into<String>,
+    missing_env_vars: Vec<String>,
+    missing_capability: Option<String>,
+) -> AcquisitionError {
+    let message = message.into();
+    AcquisitionError {
+        message: message.clone(),
+        skipped: false,
+        setup_error: Some(AuthSetupError {
+            code: "setup_missing".to_string(),
+            role: role.to_string(),
+            message,
+            missing_env_vars,
+            missing_capability,
+        }),
+    }
+}
+
+fn auth_unsupported_reason(
+    role: &str,
+    message: impl Into<String>,
+    missing_capability: impl Into<String>,
+) -> AcquisitionError {
+    let message = message.into();
+    AcquisitionError {
+        message: message.clone(),
+        skipped: true,
+        setup_error: Some(AuthSetupError {
+            code: "auth_unsupported".to_string(),
+            role: role.to_string(),
+            message,
+            missing_env_vars: Vec::new(),
+            missing_capability: Some(missing_capability.into()),
+        }),
+    }
 }
 
 fn result_without_session(
@@ -1414,6 +1650,17 @@ fn result_without_session(
         "base_origin": base_origin,
         "failure_reason": if status == AuthSessionStatus::Failed { Some(reason.as_str()) } else { None },
         "skip_reason": if status == AuthSessionStatus::Skipped { Some(reason.as_str()) } else { None },
+        "setup_error": if acquired_by == "missing_profile" {
+            Some(serde_json::json!({
+                "code": "setup_missing",
+                "role": role,
+                "message": reason.as_str(),
+                "missing_env_vars": [],
+                "missing_capability": "auth_profile",
+            }))
+        } else {
+            None
+        },
         "headers": [],
         "cookies": { "values": "[REDACTED]" },
     });
@@ -1444,7 +1691,7 @@ fn result_from_session(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nyctos_types::project::ProjectAuthProfile;
+    use nyctos_types::project::{ProjectAuthOwnedObject, ProjectAuthProfile};
 
     fn storage_state(cookie_value: &str) -> String {
         format!(
@@ -1485,6 +1732,7 @@ mod tests {
             artifact_paths: Vec::new(),
             failure_reason: None,
             skip_reason: None,
+            setup_error: None,
             acquired_at_ms: 1,
             cookie_names: BTreeSet::new(),
         };
@@ -1552,6 +1800,32 @@ mod tests {
         );
     }
 
+    #[test]
+    fn auth_role_broker_maps_semantic_roles_to_configured_aliases() {
+        let owner_object = ProjectAuthOwnedObject {
+            name: "project".to_string(),
+            id: "project-1".to_string(),
+            route: None,
+            marker: None,
+        };
+        let mut creator = empty_profile(ProjectAuthMode::HeaderInjection);
+        creator.role = "creator".to_string();
+        creator.role_aliases = vec!["owner".to_string()];
+        creator.owned_objects = vec![owner_object];
+        let mut member = empty_profile(ProjectAuthMode::HeaderInjection);
+        member.role = "app_member".to_string();
+        member.role_aliases = vec!["member".to_string(), "viewer".to_string()];
+
+        let profiles = vec![creator, member];
+        let broker = AuthRoleBroker::new(&profiles);
+
+        assert_eq!(
+            broker.role_pair("user_a", "user_b"),
+            Some(("creator".to_string(), "app_member".to_string()))
+        );
+        assert_eq!(broker.resolve_role("viewer"), Some("app_member".to_string()));
+    }
+
     #[tokio::test]
     async fn manual_sso_unavailable_is_skipped() {
         let manager = AuthSessionManager::default();
@@ -1614,6 +1888,43 @@ mod tests {
         assert!(res.reason.unwrap().contains("password_env"));
     }
 
+    #[tokio::test]
+    async fn ai_auto_reports_exact_missing_login_email_env() {
+        let profile = ProjectAuthProfile {
+            role: "member".to_string(),
+            login_email_env: Some("NYCTOS_TEST_MISSING_MEMBER_EMAIL".to_string()),
+            password_env: Some("NYCTOS_TEST_MEMBER_PASSWORD".to_string()),
+            ..empty_profile(ProjectAuthMode::AiAuto)
+        };
+
+        let res = AuthSessionManager::default()
+            .acquire_session(
+                "member",
+                &[profile],
+                "http://localhost:3000/dashboard",
+                Path::new("/tmp"),
+                &AuthSessionOptions {
+                    browser_checks_enabled: false,
+                    workspace_paths: Vec::new(),
+                    env_overrides: BTreeMap::from([(
+                        "NYCTOS_TEST_MEMBER_PASSWORD".to_string(),
+                        "secret-password".to_string(),
+                    )]),
+                },
+            )
+            .await;
+
+        assert_eq!(res.status, AuthSessionStatus::Failed);
+        let reason = res.reason.expect("reason");
+        assert!(reason.contains("login_email_env"));
+        assert!(reason.contains("NYCTOS_TEST_MISSING_MEMBER_EMAIL"));
+        assert!(reason.contains("member"));
+        let setup = res.evidence.get("setup_error").expect("setup error");
+        assert_eq!(setup["code"], "setup_missing");
+        assert_eq!(setup["missing_env_vars"][0], "NYCTOS_TEST_MISSING_MEMBER_EMAIL");
+        assert!(!serde_json::to_string(&res.evidence).unwrap().contains("secret-password"));
+    }
+
     #[test]
     fn playwright_storage_state_maps_to_cookie_header_without_logging_secret() {
         let storage: PlaywrightStorageState =
@@ -1646,6 +1957,7 @@ mod tests {
     fn empty_profile(mode: ProjectAuthMode) -> ProjectAuthProfile {
         ProjectAuthProfile {
             role: String::new(),
+            role_aliases: Vec::new(),
             mode,
             label: None,
             tenant: None,

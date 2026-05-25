@@ -25,6 +25,7 @@ fn default_anonymous() -> String {
 pub enum NoPlanReasonCode {
     BadEndpoint,
     AuthMissing,
+    AuthUnsupported,
     SetupMissing,
     WeakOracle,
     BrowserDisabled,
@@ -45,6 +46,7 @@ impl NoPlanReasonCode {
         match self {
             Self::BadEndpoint => "bad_endpoint",
             Self::AuthMissing => "auth_missing",
+            Self::AuthUnsupported => "auth_unsupported",
             Self::SetupMissing => "setup_missing",
             Self::WeakOracle => "weak_oracle",
             Self::BrowserDisabled => "browser_disabled",
@@ -103,6 +105,15 @@ pub struct OwnedObjectCapability {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthRolePairCapability {
+    pub owner_role: String,
+    pub accessor_role: String,
+    pub status: EnvCapabilityStatus,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvCapabilityReport {
     pub target_reachable: EnvCapabilityStatus,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -116,6 +127,8 @@ pub struct EnvCapabilityReport {
     pub dry_run: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub auth_roles: Vec<AuthRoleCapability>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub usable_auth_role_pairs: Vec<AuthRolePairCapability>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub owned_objects: Vec<OwnedObjectCapability>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -145,6 +158,12 @@ impl EnvCapabilityReport {
 
     pub fn has_owned_object_for_role(&self, role: &str) -> bool {
         self.owned_objects.iter().any(|object| object.role == role)
+    }
+
+    pub fn ready_auth_role_pair(&self) -> Option<&AuthRolePairCapability> {
+        self.usable_auth_role_pairs
+            .iter()
+            .find(|pair| matches!(pair.status, EnvCapabilityStatus::Available))
     }
 }
 
@@ -808,6 +827,7 @@ mod tests {
                 missing_artifacts: Vec::new(),
                 notes: vec!["missing env vars: NYCTOS_USER_A_TOKEN".to_string()],
             }],
+            usable_auth_role_pairs: Vec::new(),
             owned_objects: vec![OwnedObjectCapability {
                 role: "user_a".to_string(),
                 name: "project".to_string(),

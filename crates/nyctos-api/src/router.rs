@@ -2290,6 +2290,7 @@ fn auth_setup_profile(
     let role_env = env_role_slug(role);
     ProjectAuthProfile {
         role: role.to_string(),
+        role_aliases: Vec::new(),
         mode: ProjectAuthMode::AiAuto,
         label: Some(format!("AI setup {role}")),
         tenant: None,

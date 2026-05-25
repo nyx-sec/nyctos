@@ -437,6 +437,7 @@ fn auth_profile_from_tool_input(input: &serde_json::Value) -> Option<ProjectAuth
     let mode = parse_field(input, "mode").unwrap_or(ProjectAuthMode::AiAuto);
     Some(ProjectAuthProfile {
         role,
+        role_aliases: string_array(input, "role_aliases"),
         mode,
         label: optional_string(input, "label"),
         tenant: optional_string(input, "tenant"),

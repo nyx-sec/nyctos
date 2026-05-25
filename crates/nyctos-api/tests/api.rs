@@ -87,6 +87,7 @@ impl AuthSetupAgent for StubAuthSetupAgent {
             Ok(AuthSetupAgentOutput {
                 profiles: vec![ProjectAuthProfile {
                     role: "manager".to_string(),
+                    role_aliases: Vec::new(),
                     mode: ProjectAuthMode::AiAuto,
                     label: Some("Repo manager".to_string()),
                     tenant: None,

@@ -462,6 +462,7 @@ mod tests {
         }];
         let profile = ProjectAuthProfile {
             role: "member".to_string(),
+            role_aliases: Vec::new(),
             mode: ProjectAuthMode::AiAuto,
             label: None,
             tenant: None,
