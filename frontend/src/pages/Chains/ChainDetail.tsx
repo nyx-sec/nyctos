@@ -15,6 +15,7 @@ import { EmptyState } from "@/components/EmptyState";
 import { PageHeader, PageShell } from "@/components/Page";
 import { Spinner } from "@/components/Spinner";
 import { extractChainRationale } from "@/pages/Findings/FindingList";
+import { type GraphChainMember, parseChainEvidence } from "./chainEvidence";
 import { shortChainId } from "./ChainList";
 import { parseMemberIds } from "./memberIds";
 
@@ -64,6 +65,8 @@ interface ChainBodyProps {
 function ChainBody({ chain, projectId }: ChainBodyProps) {
   const rationale = extractChainRationale(chain.rationale_blob);
   const members = parseMemberIds(chain.member_ids);
+  const graphEvidence = parseChainEvidence(chain.evidence_blob);
+  const graphMembers = graphEvidence?.members ?? [];
   const signalsQuery = useRunSignals(members.length > 0 ? chain.run_id : undefined);
   const signalsByMemberId = useMemo(
     () => indexSignalsByMemberId(signalsQuery.data ?? []),
@@ -89,6 +92,9 @@ function ChainBody({ chain, projectId }: ChainBodyProps) {
                 · <code>{chain.prompt_version}</code>
               </span>
             )}
+            {typeof graphEvidence?.confidence === "number" && (
+              <span style={{ marginLeft: "0.5rem" }}>· {graphEvidence.confidence}% confidence</span>
+            )}
           </>
         }
       >
@@ -100,6 +106,44 @@ function ChainBody({ chain, projectId }: ChainBodyProps) {
           </p>
         )}
       </Card>
+
+      {graphEvidence && (
+        <Card title="Graph Evidence">
+          {graphMembers.length > 0 && (
+            <ol className="chain-detail__graph-path">
+              {graphMembers.map((member) => (
+                <li key={member.id}>
+                  <GraphMember member={member} />
+                </li>
+              ))}
+            </ol>
+          )}
+          {(graphEvidence.edge_provenance?.length ?? 0) > 0 && (
+            <ul className="chain-detail__evidence-list">
+              {graphEvidence.edge_provenance?.map((edge, index) => (
+                <li key={`${edge.from}-${edge.to}-${index}`}>
+                  <code>{edge.kind}</code> {shortNode(edge.from)} → {shortNode(edge.to)}
+                  {edge.evidence_ref ? (
+                    <>
+                      {" "}
+                      via <code>{edge.evidence_ref}</code>
+                    </>
+                  ) : edge.edge_id ? (
+                    <>
+                      {" "}
+                      via <code>{edge.edge_id}</code>
+                    </>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          )}
+          <EvidenceSection title="Prerequisites" values={graphEvidence.prerequisites} />
+          <EvidenceSection title="Evidence" values={graphEvidence.evidence} />
+          <EvidenceSection title="Blast radius" values={graphEvidence.blast_radius} />
+          <EvidenceSection title="Missing verification" values={graphEvidence.missing_verification_steps} />
+        </Card>
+      )}
 
       <Card title={`Members (${members.length})`}>
         {members.length === 0 ? (
@@ -122,6 +166,41 @@ function ChainBody({ chain, projectId }: ChainBodyProps) {
       </Card>
     </>
   );
+}
+
+function GraphMember({ member }: { member: GraphChainMember }) {
+  const tags = [member.graph_kind, member.severity].filter(Boolean).join(" · ");
+  const context = [...(member.routes ?? []), ...(member.roles ?? []), ...(member.objects ?? [])]
+    .filter(Boolean)
+    .slice(0, 4);
+  return (
+    <div className="chain-detail__graph-member">
+      <div>
+        <span className="chain-detail__graph-title">{member.label || member.ref_id || member.id}</span>
+        {tags && <span className="chain-detail__graph-tags">{tags}</span>}
+      </div>
+      <code>{member.ref_id || member.id}</code>
+      {context.length > 0 && <p>{context.join(" · ")}</p>}
+    </div>
+  );
+}
+
+function EvidenceSection({ title, values }: { title: string; values?: string[] }) {
+  if (!values || values.length === 0) return null;
+  return (
+    <div className="chain-detail__evidence-section">
+      <h3>{title}</h3>
+      <ul>
+        {values.map((value) => (
+          <li key={value}>{value}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function shortNode(id: string): string {
+  return id.length > 16 ? `${id.slice(0, 16)}…` : id;
 }
 
 interface MemberRowProps {

@@ -2,13 +2,16 @@ use std::collections::BTreeMap;
 
 use nyctos_core::store::PentestCandidateRecord;
 use nyctos_types::live_plan::{
-    AuthzObjectOwnershipPlan, AuthzOracle, AuthzOwnedObject, BrowserOracle, BrowserStep,
-    BrowserWorkflowPlan, DifferentialHttpPlan, DifferentialOracle, HttpOracle, LiveHttpRequest,
-    LiveTestPlan, NoPlanReason, NoPlanReasonCode, SingleHttpPlan,
+    AuthRoleCapability, AuthzObjectOwnershipPlan, AuthzOracle, AuthzOwnedObject, BrowserOracle,
+    BrowserStep, BrowserWorkflowPlan, DifferentialHttpPlan, DifferentialOracle,
+    EnvCapabilityReport, EnvCapabilityStatus, HttpOracle, LiveHttpRequest, LiveTestPlan,
+    NoPlanReason, NoPlanReasonCode, OwnedObjectCapability, SingleHttpPlan,
 };
 use nyctos_types::payload::{ContextualPayload, PayloadTransport};
 use nyctos_types::product::{ApiClientCallModel, RouteModel, RouteModelEndpoint};
-use nyctos_types::project::{ProjectAuthOwnedObject, ProjectAuthProfile};
+use nyctos_types::project::{
+    ProjectAuthMode, ProjectAuthOwnedObject, ProjectAuthProfile, ProjectOtpSourceKind,
+};
 use regex::Regex;
 
 use crate::pentest_tools;
@@ -20,6 +23,114 @@ pub struct LiveTestPlanSynthesisContext<'a> {
     pub auth_profiles: &'a [ProjectAuthProfile],
     pub browser_checks_enabled: bool,
     pub allow_state_changing: bool,
+    pub capabilities: Option<&'a EnvCapabilityReport>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EnvCapabilityDiscoveryInput<'a> {
+    pub target_urls: &'a [String],
+    pub auth_profiles: &'a [ProjectAuthProfile],
+    pub auth_env_overrides: &'a BTreeMap<String, String>,
+    pub browser_checks_enabled: bool,
+    pub browser_available: bool,
+    pub seed_supported: bool,
+    pub reset_supported: bool,
+    pub exploit_mode_enabled: bool,
+    pub allow_state_changing: bool,
+    pub dry_run: bool,
+}
+
+pub fn discover_env_capabilities(input: EnvCapabilityDiscoveryInput<'_>) -> EnvCapabilityReport {
+    let browser = if !input.browser_checks_enabled {
+        EnvCapabilityStatus::Disabled
+    } else if input.browser_available {
+        EnvCapabilityStatus::Available
+    } else {
+        EnvCapabilityStatus::Missing
+    };
+    let state_changing = if input.allow_state_changing {
+        EnvCapabilityStatus::Available
+    } else if input.exploit_mode_enabled {
+        EnvCapabilityStatus::Blocked
+    } else {
+        EnvCapabilityStatus::Disabled
+    };
+    let auth_roles = input
+        .auth_profiles
+        .iter()
+        .map(|profile| auth_role_capability(profile, input.auth_env_overrides, &browser))
+        .collect::<Vec<_>>();
+    let owned_objects = input
+        .auth_profiles
+        .iter()
+        .flat_map(|profile| {
+            profile.owned_objects.iter().map(|object| OwnedObjectCapability {
+                role: profile.role.clone(),
+                name: object.name.clone(),
+                id: object.id.clone(),
+                route: object.route.clone(),
+                marker: object.marker.clone(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let mailbox = if input.auth_profiles.iter().any(|profile| {
+        profile
+            .otp_source
+            .as_ref()
+            .is_some_and(|otp| otp.kind == ProjectOtpSourceKind::Mailbox && otp.mailbox_url.is_some())
+    }) {
+        EnvCapabilityStatus::Available
+    } else {
+        EnvCapabilityStatus::Missing
+    };
+    let mut findings = Vec::new();
+    if input.target_urls.is_empty() {
+        findings.push("no target URL configured for live verification".to_string());
+    }
+    for role in &auth_roles {
+        if !role.ready() {
+            findings.push(format!(
+                "auth role `{}` is not ready: {}",
+                role.role,
+                role.notes.first().cloned().unwrap_or_else(|| "setup missing".to_string())
+            ));
+        }
+    }
+    if input.browser_checks_enabled && !input.browser_available {
+        findings.push("browser checks are enabled but Playwright/runtime is unavailable".to_string());
+    }
+    if !input.allow_state_changing {
+        findings.push(
+            "state-changing live probes are blocked unless exploit mode and allow_state_changing_live_probes are both enabled"
+                .to_string(),
+        );
+    }
+    EnvCapabilityReport {
+        target_reachable: if input.target_urls.is_empty() {
+            EnvCapabilityStatus::Missing
+        } else {
+            EnvCapabilityStatus::Available
+        },
+        target_urls: input.target_urls.to_vec(),
+        browser,
+        seed: if input.seed_supported {
+            EnvCapabilityStatus::Available
+        } else {
+            EnvCapabilityStatus::Missing
+        },
+        reset: if input.reset_supported {
+            EnvCapabilityStatus::Available
+        } else {
+            EnvCapabilityStatus::Missing
+        },
+        mailbox,
+        state_changing,
+        exploit_mode_enabled: input.exploit_mode_enabled,
+        dry_run: input.dry_run,
+        auth_roles,
+        owned_objects,
+        findings,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,6 +189,9 @@ impl<'a> LiveTestPlanSynthesizer<'a> {
             );
         }
         let strategy = classify_strategy(candidate);
+        if let Some(plan) = self.no_plan_for_missing_capability(candidate, strategy) {
+            return plan;
+        }
         let endpoints = infer_endpoints(candidate, self.ctx.route_model, self.ctx.target_urls);
         match strategy {
             LivePlanStrategy::TrustedHeaderAuthBypass => {
@@ -128,10 +242,78 @@ impl<'a> LiveTestPlanSynthesizer<'a> {
             ),
             LivePlanStrategy::GenericReviewOnly => self.no_plan(
                 candidate,
-                NoPlanReasonCode::NoExecutablePlan,
+                NoPlanReasonCode::UnsupportedClass,
                 "no route/auth/context-aware live strategy matched this candidate",
             ),
         }
+    }
+
+    fn no_plan_for_missing_capability(
+        &self,
+        candidate: &PentestCandidateRecord,
+        strategy: LivePlanStrategy,
+    ) -> Option<LiveTestPlan> {
+        let capabilities = self.ctx.capabilities?;
+        if matches!(capabilities.target_reachable, EnvCapabilityStatus::Missing) {
+            return Some(self.no_plan(
+                candidate,
+                NoPlanReasonCode::SetupMissing,
+                "live verification target is not configured or reachable; set a target URL or launch profile before verifier execution",
+            ));
+        }
+        if matches!(strategy, LivePlanStrategy::DomXss)
+            && matches!(capabilities.browser, EnvCapabilityStatus::Missing)
+        {
+            return Some(self.no_plan(
+                candidate,
+                NoPlanReasonCode::SetupMissing,
+                "browser verification was requested but the Playwright/browser runtime is unavailable",
+            ));
+        }
+        if matches!(
+            strategy,
+            LivePlanStrategy::FileUploadReviewOnly
+                | LivePlanStrategy::BusinessLogicReviewOnly
+                | LivePlanStrategy::WebhookTrustReviewOnly
+        ) && matches!(capabilities.seed, EnvCapabilityStatus::Missing)
+        {
+            return Some(self.no_plan(
+                candidate,
+                NoPlanReasonCode::SetupMissing,
+                "this candidate needs seeded disposable fixture state before Nyctos can verify it safely",
+            ));
+        }
+        if matches!(strategy, LivePlanStrategy::IdorObjectIsolation) {
+            let missing_roles =
+                capabilities.missing_auth_roles(["user_a", "user_b"].into_iter()).into_iter();
+            let missing = missing_roles
+                .map(|role| {
+                    if role.missing_env_vars.is_empty() {
+                        role.role.clone()
+                    } else {
+                        format!("{} missing env {}", role.role, role.missing_env_vars.join(","))
+                    }
+                })
+                .collect::<Vec<_>>();
+            if !missing.is_empty() {
+                return Some(self.no_plan(
+                    candidate,
+                    NoPlanReasonCode::SetupMissing,
+                    format!(
+                        "IDOR verification needs ready user_a/user_b auth sessions; setup missing for {}",
+                        missing.join("; ")
+                    ),
+                ));
+            }
+            if !capabilities.has_owned_object_for_role("user_a") {
+                return Some(self.no_plan(
+                    candidate,
+                    NoPlanReasonCode::SetupMissing,
+                    "IDOR verification needs a configured object fixture owned by user_a",
+                ));
+            }
+        }
+        None
     }
 
     pub fn replan_after_failure(
@@ -648,7 +830,127 @@ impl<'a> LiveTestPlanSynthesizer<'a> {
         if let Some(path) = candidate_source_path(candidate) {
             reason = reason.with_context("source_path", path);
         }
+        if let Some(capabilities) = self.ctx.capabilities {
+            reason = reason
+                .with_context("target_reachable", format!("{:?}", capabilities.target_reachable))
+                .with_context("browser", format!("{:?}", capabilities.browser))
+                .with_context("seed", format!("{:?}", capabilities.seed))
+                .with_context("reset", format!("{:?}", capabilities.reset))
+                .with_context("state_changing", format!("{:?}", capabilities.state_changing));
+            let missing_auth = capabilities
+                .auth_roles
+                .iter()
+                .filter(|role| !role.ready())
+                .map(|role| role.role.clone())
+                .collect::<Vec<_>>();
+            if !missing_auth.is_empty() {
+                reason = reason.with_context("missing_auth_roles", missing_auth.join(","));
+            }
+        }
         LiveTestPlan::no_plan(reason)
+    }
+}
+
+fn auth_role_capability(
+    profile: &ProjectAuthProfile,
+    env_overrides: &BTreeMap<String, String>,
+    browser: &EnvCapabilityStatus,
+) -> AuthRoleCapability {
+    let mut missing_env_vars = Vec::new();
+    for var in required_env_vars(profile) {
+        if env_overrides.get(&var).is_none_or(|v| v.is_empty()) && std::env::var(&var).is_err() {
+            missing_env_vars.push(var);
+        }
+    }
+    let mut missing_artifacts = Vec::new();
+    if matches!(profile.mode, ProjectAuthMode::SessionImport) {
+        match profile.session_import_path.as_deref().filter(|p| !p.trim().is_empty()) {
+            Some(path) if std::path::Path::new(path).exists() => {}
+            Some(path) => missing_artifacts.push(path.to_string()),
+            None => missing_artifacts.push("session_import_path".to_string()),
+        }
+    }
+    let mut notes = Vec::new();
+    if !missing_env_vars.is_empty() {
+        notes.push(format!("missing env vars: {}", missing_env_vars.join(",")));
+    }
+    if !missing_artifacts.is_empty() {
+        notes.push(format!("missing auth artifacts: {}", missing_artifacts.join(",")));
+    }
+    if matches!(
+        profile.mode,
+        ProjectAuthMode::BrowserLogin | ProjectAuthMode::ManualSso | ProjectAuthMode::OtpEmailManual
+            | ProjectAuthMode::OtpEmailMailbox | ProjectAuthMode::AiAuto | ProjectAuthMode::OidcDevice
+    ) && !matches!(browser, EnvCapabilityStatus::Available)
+    {
+        notes.push("browser runtime unavailable for browser-backed auth".to_string());
+    }
+    if matches!(profile.mode, ProjectAuthMode::OtpEmailMailbox)
+        && profile.otp_source.as_ref().and_then(|otp| otp.mailbox_url.as_ref()).is_none()
+    {
+        notes.push("mailbox OTP source missing mailbox_url".to_string());
+    }
+    let status = if notes.is_empty() {
+        EnvCapabilityStatus::Available
+    } else {
+        EnvCapabilityStatus::Missing
+    };
+    AuthRoleCapability {
+        role: profile.role.clone(),
+        mode: format!("{:?}", profile.mode).to_ascii_snake_case(),
+        status,
+        missing_env_vars,
+        missing_artifacts,
+        notes,
+    }
+}
+
+fn required_env_vars(profile: &ProjectAuthProfile) -> Vec<String> {
+    let mut vars = Vec::new();
+    for value in [
+        profile.username_env.as_ref(),
+        profile.login_email_env.as_ref(),
+        profile.password_env.as_ref(),
+        profile.cookie_env.as_ref(),
+        profile.bearer_token_env.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        vars.push(value.clone());
+    }
+    vars.extend(profile.headers.iter().filter_map(|header| header.value_env.clone()));
+    if let Some(otp) = &profile.otp_source {
+        vars.extend([
+            otp.email_env.clone(),
+            otp.imap_url_env.clone(),
+            otp.imap_username_env.clone(),
+            otp.imap_password_env.clone(),
+        ].into_iter().flatten());
+    }
+    vars.sort();
+    vars.dedup();
+    vars
+}
+
+trait AsciiSnakeCase {
+    fn to_ascii_snake_case(&self) -> String;
+}
+
+impl AsciiSnakeCase for str {
+    fn to_ascii_snake_case(&self) -> String {
+        let mut out = String::new();
+        for (idx, ch) in self.chars().enumerate() {
+            if ch.is_ascii_uppercase() {
+                if idx > 0 {
+                    out.push('_');
+                }
+                out.push(ch.to_ascii_lowercase());
+            } else {
+                out.push(ch);
+            }
+        }
+        out
     }
 }
 
@@ -1515,6 +1817,7 @@ mod tests {
             role: role.to_string(),
             mode: nyctos_types::project::ProjectAuthMode::HeaderInjection,
             label: None,
+            tenant: None,
             session_cache_ttl_seconds: None,
             session_import_path: None,
             login_url: None,
@@ -1544,6 +1847,7 @@ mod tests {
             auth_profiles: &auth,
             browser_checks_enabled: false,
             allow_state_changing: false,
+            capabilities: None,
         });
         let plan = synth.synthesize(&candidate(
             "DEBUG_ENDPOINT",
@@ -1571,6 +1875,7 @@ mod tests {
             auth_profiles: &auth,
             browser_checks_enabled: false,
             allow_state_changing: false,
+            capabilities: None,
         });
         let plan =
             synth.synthesize(&candidate("DOM_XSS", "src/app/search.tsx", "DOM XSS via innerHTML"));
@@ -1610,6 +1915,7 @@ mod tests {
             auth_profiles: &auth,
             browser_checks_enabled: false,
             allow_state_changing: false,
+            capabilities: None,
         });
         let plan = synth.synthesize(&candidate(
             "SENSITIVE_DATA_EXPOSURE",
@@ -1635,6 +1941,7 @@ mod tests {
             auth_profiles: &auth,
             browser_checks_enabled: false,
             allow_state_changing: false,
+            capabilities: None,
         });
         let mut candidate =
             candidate("OPEN_REDIRECT", "src/auth/callback.ts", "Potential open redirect from Nyx");
@@ -1678,6 +1985,7 @@ mod tests {
             auth_profiles: &auth,
             browser_checks_enabled: false,
             allow_state_changing: false,
+            capabilities: None,
         });
         let mut candidate = candidate(
             "CONFIG_EXPOSURE",
@@ -1716,6 +2024,7 @@ mod tests {
             auth_profiles: &auth,
             browser_checks_enabled: false,
             allow_state_changing: false,
+            capabilities: None,
         });
         let mut candidate =
             candidate("AUTH_BYPASS", "src/routes/admin.ts", "Potential auth bypass");
@@ -1761,6 +2070,7 @@ mod tests {
             auth_profiles: &auth,
             browser_checks_enabled: false,
             allow_state_changing: false,
+            capabilities: None,
         });
         let mut candidate = candidate(
             "AUTH_BYPASS",
@@ -1797,6 +2107,7 @@ mod tests {
             auth_profiles: &auth,
             browser_checks_enabled: false,
             allow_state_changing: false,
+            capabilities: None,
         });
         let candidate = candidate(
             "CONFIG_EXPOSURE",
@@ -1847,6 +2158,7 @@ mod tests {
             auth_profiles: &auth,
             browser_checks_enabled: false,
             allow_state_changing: false,
+            capabilities: None,
         });
         let candidate = candidate(
             "IDOR",
@@ -1868,6 +2180,68 @@ mod tests {
             }
             other => panic!("expected authz object ownership plan, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn capability_report_turns_missing_auth_env_into_setup_missing_no_plan() {
+        let model = RouteModel {
+            backend_routes: vec![RouteModelEndpoint {
+                method: "GET".to_string(),
+                path: "/api/projects/{id}".to_string(),
+                repo: Some("app".to_string()),
+                handler_file: Some("src/routes/projects.rs".to_string()),
+                line: Some(42),
+                params: vec!["id".to_string()],
+                state_changing: false,
+                confidence: 0.9,
+                ..RouteModelEndpoint::default()
+            }],
+            ..RouteModel::default()
+        };
+        let targets = vec!["http://localhost:3000".to_string()];
+        let owner_object = ProjectAuthOwnedObject {
+            name: "project".to_string(),
+            id: "proj-user-a-1".to_string(),
+            route: Some("/api/projects/{id}".to_string()),
+            marker: Some("nyctos-owned-project".to_string()),
+        };
+        let mut user_a = auth_profile_with_object("user_a", Some(owner_object));
+        user_a.bearer_token_env = Some("NYCTOS_TEST_MISSING_USER_A_TOKEN".to_string());
+        let auth = vec![user_a, auth_profile_with_object("user_b", None)];
+        let env = discover_env_capabilities(EnvCapabilityDiscoveryInput {
+            target_urls: &targets,
+            auth_profiles: &auth,
+            auth_env_overrides: &BTreeMap::new(),
+            browser_checks_enabled: false,
+            browser_available: false,
+            seed_supported: true,
+            reset_supported: true,
+            exploit_mode_enabled: false,
+            allow_state_changing: false,
+            dry_run: false,
+        });
+        let synth = LiveTestPlanSynthesizer::new(LiveTestPlanSynthesisContext {
+            route_model: Some(&model),
+            target_urls: &targets,
+            auth_profiles: &auth,
+            browser_checks_enabled: false,
+            allow_state_changing: false,
+            capabilities: Some(&env),
+        });
+
+        let plan = synth.synthesize(&candidate(
+            "IDOR",
+            "src/routes/projects.rs",
+            "Project detail route may not enforce object ownership",
+        ));
+
+        let reason = plan.no_plan_reason().expect("setup no-plan");
+        assert_eq!(reason.code, NoPlanReasonCode::SetupMissing);
+        assert!(reason.message.contains("missing env"));
+        assert_eq!(
+            reason.context.get("missing_auth_roles").map(String::as_str),
+            Some("user_a")
+        );
     }
 
     #[test]
@@ -1899,6 +2273,7 @@ mod tests {
             auth_profiles: &auth,
             browser_checks_enabled: false,
             allow_state_changing: false,
+            capabilities: None,
         });
         let candidate = candidate(
             "SENSITIVE_DATA_EXPOSURE",
@@ -1961,6 +2336,7 @@ mod tests {
             auth_profiles: &auth,
             browser_checks_enabled: false,
             allow_state_changing: false,
+            capabilities: None,
         });
         let candidate = candidate(
             "SENSITIVE_DATA_EXPOSURE",

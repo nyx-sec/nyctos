@@ -18,8 +18,10 @@ pub const NODE_SIGNAL: &str = "signal";
 pub const NODE_CANDIDATE: &str = "candidate";
 pub const NODE_BUSINESS_LOGIC_TEMPLATE: &str = "business_logic_template";
 pub const NODE_VERIFICATION_ATTEMPT: &str = "verification_attempt";
+pub const NODE_AUTHZ_MATRIX_ENTRY: &str = "authz_matrix_entry";
 pub const NODE_VERIFIED_VULNERABILITY: &str = "verified_vulnerability";
 pub const NODE_CHAIN: &str = "chain";
+pub const NODE_EXPLORATION_MEMORY: &str = "exploration_memory";
 
 pub const EDGE_DISCOVERED_FROM: &str = "discovered_from";
 pub const EDGE_TARGETS: &str = "targets";
@@ -27,7 +29,9 @@ pub const EDGE_USES_ROLE: &str = "uses_role";
 pub const EDGE_TOUCHES_OBJECT: &str = "touches_object";
 pub const EDGE_DERIVED_CANDIDATE: &str = "derived_candidate";
 pub const EDGE_VERIFIED_AS: &str = "verified_as";
+pub const EDGE_OBSERVED_ACCESS: &str = "observed_access";
 pub const EDGE_CHAINED_WITH: &str = "chained_with";
+pub const EDGE_LEARNED_FROM: &str = "learned_from";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct AttackGraphNodeRecord {

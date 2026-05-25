@@ -316,6 +316,7 @@ target_base_url = "http://localhost:3000"
 role = "user_a"
 mode = "header_injection"
 bearer_token_env = "NYCTOS_USER_A_TOKEN"
+tenant = "tenant-a"
 
   [[project.runtime_profile.auth_profiles.owned_objects]]
   name = "project"
@@ -327,6 +328,7 @@ bearer_token_env = "NYCTOS_USER_A_TOKEN"
 role = "user_b"
 mode = "header_injection"
 bearer_token_env = "NYCTOS_USER_B_TOKEN"
+tenant = "tenant-b"
 
 [[project.runtime_profile.auth_profiles]]
 role = "admin"
@@ -338,6 +340,13 @@ session_import_path = "sessions/admin-storage-state.json"
 authorization checks. Nyctos treats the id and marker as positive live
 evidence markers: `user_b` must receive the same marker from `user_a`'s
 object before an IDOR-style vulnerability can verify.
+
+`tenant` is optional metadata used in the Authorization Matrix. When a
+role comparison or object ownership check runs, Nyctos records one row
+for the allowed control and one row for the challenged access with the
+role, tenant, resource/object, owner role, action, endpoint, expected
+decision, observed HTTP/marker result, confidence, candidate id,
+verification attempt id, and run id.
 
 The local UI exposes an `AI setup` action in the auth profiles panel for
 projects with local repos. Clicking it inspects the checked-out source

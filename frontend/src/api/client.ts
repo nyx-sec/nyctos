@@ -10,6 +10,7 @@ import { useEffect, useRef, useState } from "react";
 import type {
   AgentEvent,
   AgentTraceRow,
+  AuthzMatrixEntryRecord,
   AuthSetupJobRecord,
   AuthSetupRequest,
   AuthSetupResponse,
@@ -23,6 +24,7 @@ import type {
   DoctorRequest,
   DoctorResponse,
   EnvironmentRunRecord,
+  ExplorationMemoryRecord,
   FindingDiffStatus,
   FindingRecord,
   FindingWithDiff,
@@ -70,6 +72,7 @@ import type {
 
 export type {
   AgentTraceRow,
+  AuthzMatrixEntryRecord,
   AuthSetupJobRecord,
   AuthSetupRequest,
   AuthSetupResponse,
@@ -83,6 +86,7 @@ export type {
   DoctorRequest,
   DoctorResponse,
   EnvironmentRunRecord,
+  ExplorationMemoryRecord,
   FindingDiffStatus,
   FindingRecord,
   FindingWithDiff,
@@ -261,6 +265,8 @@ export const qk = {
   run: (id: string) => ["runs", id] as const,
   runEnvironment: (id: string) => ["runs", id, "environment-runs"] as const,
   runVerificationAttempts: (id: string) => ["runs", id, "verification-attempts"] as const,
+  runAuthzMatrix: (id: string) => ["runs", id, "authz-matrix"] as const,
+  runExplorationMemory: (id: string) => ["runs", id, "exploration-memory"] as const,
   runVulnerabilities: (id: string) => ["runs", id, "vulnerabilities"] as const,
   runRouteModel: (id: string) => ["runs", id, "route-model"] as const,
   runCandidates: (id: string) => ["runs", id, "candidates"] as const,
@@ -681,6 +687,24 @@ export function useRunVerificationAttempts(id: string | undefined) {
       request<VerificationAttemptRecord[]>(
         `/runs/${encodeURIComponent(id!)}/verification-attempts`,
       ),
+    enabled: Boolean(id),
+  });
+}
+
+export function useRunAuthzMatrix(id: string | undefined) {
+  return useQuery({
+    queryKey: id ? qk.runAuthzMatrix(id) : ["runs", "_disabled", "authz-matrix"],
+    queryFn: () =>
+      request<AuthzMatrixEntryRecord[]>(`/runs/${encodeURIComponent(id!)}/authz-matrix`),
+    enabled: Boolean(id),
+  });
+}
+
+export function useRunExplorationMemory(id: string | undefined) {
+  return useQuery({
+    queryKey: id ? qk.runExplorationMemory(id) : ["runs", "_disabled", "exploration-memory"],
+    queryFn: () =>
+      request<ExplorationMemoryRecord[]>(`/runs/${encodeURIComponent(id!)}/exploration-memory`),
     enabled: Boolean(id),
   });
 }

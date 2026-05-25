@@ -55,6 +55,15 @@ request caps, rate limiting, dry-run mode, target URL scope checks,
 auth-session acquisition, and environment reset after state-changing
 actions.
 
+Authorization templates and research candidates that use role
+comparison or object ownership also populate the Authorization Matrix.
+Each live verification attempt writes an allowed-control row and a
+challenged-access row with expected and observed decisions, endpoint,
+resource/object id, owner role, tenant metadata when configured, body
+marker result, confidence, candidate id, verification attempt id, and
+evidence. The run detail UI groups these rows by endpoint/resource, and
+`GET /api/v1/runs/:id/authz-matrix` exposes the same data.
+
 ## Configuration
 
 Business-logic template synthesis is enabled by default. Disable it
@@ -71,7 +80,8 @@ Select a subset by id:
 [run]
 business_logic_template_ids = [
   "tenant_object_isolation",
-  "webhook_callback_trust_boundary",
+  "webhook_replay_freshness",
+  "invite_accept_reuse",
 ]
 ```
 
@@ -82,8 +92,9 @@ nyctos scan \
   --exploit-mode \
   --allow-state-changing-live-probes \
   --research-mode \
-  --business-template tenant_object_isolation \
-  --business-template webhook_callback_trust_boundary
+  --business-template invite_accept_reuse \
+  --business-template password_reset_token_replay \
+  --business-template webhook_replay_freshness
 ```
 
 Dry-run keeps candidate synthesis visible while the verifier policy
@@ -300,6 +311,17 @@ unique marker only when hidden system/developer instructions are
 exposed. Confirmation requires both the marker and `system prompt`
 evidence in the live response.
 
+### AI / Chatbot Indirect Action Abuse
+
+Looks for the same AI/chat/assistant surfaces, especially agent/tool or
+action-oriented routes. Required role: one configured role if available;
+otherwise anonymous.
+
+The template asks the assistant to perform a harmless indirect action,
+such as creating a labelled test draft/note, using a unique marker.
+Confirmation requires both the marker and explicit action-execution
+evidence in the live response.
+
 ### File Access After Permission Change
 
 Looks for a `POST` file/document collection route, a `GET` detail
@@ -320,13 +342,150 @@ when the route has no auth checks, otherwise one configured role.
 The template submits an unsigned event marker. Confirmation requires a
 2xx live response that reflects the marker.
 
-## Metadata-Only Templates
+### Webhook Replay / Freshness
 
-Invite acceptance / privilege escalation and password reset token
-misuse are registered as metadata-only templates. Current route/auth
-models do not expose safe application-issued invite or reset-token
-seed data, so Nyctos records skip reasons instead of emitting weak
-executable plans.
+Looks for webhook/callback routes with event id, timestamp, signature,
+payload, or callback-like fields. Required role: anonymous when the
+route has no auth checks, otherwise one configured role.
+
+The template sends the same stale event id and timestamp twice.
+Confirmation requires the replay response to return 2xx and reflect the
+unique marker. This catches handlers that do not enforce freshness,
+signature timestamp windows, or idempotency.
+
+```json
+{
+  "kind": "http_workflow",
+  "required_roles": ["anonymous"],
+  "seed_data": {
+    "event_marker": "nyctos-webhook-replay-freshness-1234abcd",
+    "timestamp": "2000-01-01T00:00:00Z",
+    "role": "anonymous"
+  },
+  "steps": [
+    {
+      "as": "anonymous",
+      "method": "POST",
+      "path": "/webhooks/stripe",
+      "json": {
+        "event_id": "nyctos-webhook-replay-freshness-1234abcd",
+        "timestamp": "2000-01-01T00:00:00Z",
+        "signature": "unsigned"
+      },
+      "destructive": true
+    },
+    {
+      "as": "anonymous",
+      "method": "POST",
+      "path": "/webhooks/stripe",
+      "json": {
+        "event_id": "nyctos-webhook-replay-freshness-1234abcd",
+        "timestamp": "2000-01-01T00:00:00Z",
+        "signature": "unsigned"
+      },
+      "destructive": true
+    }
+  ],
+  "oracle": {
+    "step": 1,
+    "status_range": "2xx",
+    "body_contains": "nyctos-webhook-replay-freshness-1234abcd"
+  }
+}
+```
+
+### Invite Accept / Reuse
+
+Looks for an invite creation route paired with an invite accept/join
+route. Required roles: two configured non-anonymous roles, such as
+`owner` and `invitee`.
+
+The template creates an invite, captures an invite token/id from the
+creation response, accepts it, then replays the same acceptance.
+Confirmation requires the replay response to reflect the invite marker.
+If no accept route or no second role is configured, Nyctos records a
+skip reason instead of emitting a weak plan.
+
+### Password Reset Token Replay
+
+Looks for password-reset request and reset-confirmation routes.
+Required roles: disposable victim and attacker/test accounts.
+
+The template requests a reset for a disposable marker email, captures a
+reset token/code from the response in test harnesses, submits the reset,
+then replays the same token. Confirmation requires the replay reset to
+reflect the marker. If the route model does not expose a request and
+confirmation pair, or the project lacks the required test accounts,
+Nyctos records a skip reason.
+
+### Email Change Without Reauth
+
+Looks for account/profile/settings email-change routes with email-like
+fields and no current-password, old-password, reauth, or MFA fields.
+Required role: one configured non-anonymous role.
+
+The template submits a disposable email marker. Confirmation requires a
+2xx response that reflects the new email marker, indicating the route
+accepted a sensitive account change without a reauth challenge.
+
+### Subscription Downgrade / Feature Retention
+
+Looks for subscription, billing, plan, tier, downgrade, cancel, or
+change routes paired with premium feature/export/report/API routes.
+Required role: one configured non-anonymous role.
+
+The template downgrades a disposable subscription marker and then calls
+the premium feature route. Confirmation requires the post-downgrade
+feature response to reflect the marker.
+
+### Refund / Replay
+
+Looks for refund, return, reversal, chargeback, credit, payment id,
+order id, and amount routes. Required role: one configured
+non-anonymous role.
+
+The template submits the same refund marker twice with the same
+idempotency key. Confirmation requires the replay response to reflect
+the marker, which indicates replay/idempotency handling needs review.
+
+### OAuth Callback State Confusion
+
+Looks for OAuth/OIDC/SSO callback or redirect routes with `state`,
+`code`, or `redirect_uri` fields. Required role: one configured role if
+available; otherwise anonymous.
+
+The template calls the callback with mismatched `state` and `code`
+markers and no prior browser session seed. Confirmation requires the
+callback response to reflect the mismatched state marker.
+
+### Credit Exhaustion Bypass
+
+Looks for credit, quota, usage, metering, token, or generation routes.
+Required role: one configured non-anonymous role.
+
+The template replays a credit-consuming request with the same
+idempotency marker and zero-credit/quota hints. Confirmation requires
+the replay response to reflect the marker after the credit-exhaustion
+shape.
+
+## Safe Skips
+
+All shipped business-logic templates are executable, but only when the
+safety gates and enough route/auth/seed context are present. Missing
+gates produce the standard state-changing skip:
+
+```text
+state-changing workflow requires exploit mode and allow_state_changing_live_probes
+```
+
+Missing roles or route pairs produce template-specific reasons, for
+example:
+
+```text
+invite_accept_reuse: required auth profiles are missing for roles ["inviter_role", "invitee_role"]
+password_reset_token_replay: needs password reset request and confirmation routes with a reset token/code seed
+subscription_downgrade_feature_retention: needs a downgrade route paired with a premium feature route
+```
 
 ## Provenance
 

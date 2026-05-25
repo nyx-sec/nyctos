@@ -346,6 +346,32 @@ CREATE TABLE verification_attempts (
     FOREIGN KEY (chain_id)           REFERENCES chains(id)              ON DELETE SET NULL
 );
 
+CREATE TABLE authz_matrix_entries (
+    id                       TEXT    PRIMARY KEY,
+    run_id                   TEXT    NOT NULL,
+    project_id               TEXT    NOT NULL,
+    candidate_id             TEXT,
+    verification_attempt_id  TEXT    NOT NULL,
+    probe_kind               TEXT    NOT NULL,
+    role                     TEXT    NOT NULL,
+    owner_role               TEXT,
+    tenant                   TEXT,
+    resource                 TEXT    NOT NULL,
+    object_id                TEXT,
+    action                   TEXT    NOT NULL,
+    endpoint                 TEXT    NOT NULL,
+    expected_decision        TEXT    NOT NULL,
+    observed_decision        TEXT    NOT NULL,
+    observed_status          INTEGER,
+    body_marker_result       TEXT    NOT NULL,
+    confidence               REAL    NOT NULL,
+    evidence_json            TEXT    NOT NULL DEFAULT '{}',
+    created_at               INTEGER NOT NULL,
+    FOREIGN KEY (run_id)                  REFERENCES runs(id)                  ON DELETE CASCADE,
+    FOREIGN KEY (project_id)              REFERENCES projects(id)              ON DELETE CASCADE,
+    FOREIGN KEY (verification_attempt_id) REFERENCES verification_attempts(id) ON DELETE CASCADE
+);
+
 CREATE TABLE verified_vulnerabilities (
     id                                TEXT    PRIMARY KEY,
     run_id                            TEXT    NOT NULL,
@@ -373,6 +399,34 @@ CREATE TABLE verified_vulnerabilities (
     FOREIGN KEY (run_id)     REFERENCES runs(id)     ON DELETE CASCADE,
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
     FOREIGN KEY (chain_id)   REFERENCES chains(id)   ON DELETE SET NULL
+);
+
+CREATE TABLE exploration_memory (
+    id                       TEXT    PRIMARY KEY,
+    project_id               TEXT    NOT NULL,
+    repo                     TEXT    NOT NULL,
+    run_id                   TEXT    NOT NULL,
+    source                   TEXT    NOT NULL,
+    hypothesis               TEXT    NOT NULL,
+    endpoint                 TEXT,
+    role_context             TEXT,
+    object_context           TEXT,
+    result                   TEXT    NOT NULL,
+    reason                   TEXT    NOT NULL,
+    useful_markers_json      TEXT    NOT NULL DEFAULT '[]',
+    auth_session_notes       TEXT,
+    follow_up_ideas_json     TEXT    NOT NULL DEFAULT '[]',
+    candidate_id             TEXT,
+    verification_attempt_id  TEXT,
+    trace_id                 TEXT,
+    memory_key               TEXT    NOT NULL,
+    created_at               INTEGER NOT NULL,
+    updated_at               INTEGER NOT NULL,
+    FOREIGN KEY (project_id)              REFERENCES projects(id)              ON DELETE CASCADE,
+    FOREIGN KEY (run_id)                  REFERENCES runs(id)                  ON DELETE CASCADE,
+    FOREIGN KEY (candidate_id)            REFERENCES pentest_candidates(id)    ON DELETE SET NULL,
+    FOREIGN KEY (verification_attempt_id) REFERENCES verification_attempts(id) ON DELETE SET NULL,
+    FOREIGN KEY (trace_id)                REFERENCES agent_traces(id)          ON DELETE SET NULL
 );
 
 CREATE TABLE route_models (
@@ -550,10 +604,28 @@ CREATE INDEX idx_verification_attempts_run_id       ON verification_attempts(run
 CREATE INDEX idx_verification_attempts_candidate_id ON verification_attempts(candidate_id);
 CREATE INDEX idx_verification_attempts_status       ON verification_attempts(status);
 
+CREATE INDEX idx_authz_matrix_run_endpoint
+    ON authz_matrix_entries(run_id, endpoint, resource);
+CREATE INDEX idx_authz_matrix_attempt
+    ON authz_matrix_entries(verification_attempt_id);
+CREATE INDEX idx_authz_matrix_candidate
+    ON authz_matrix_entries(candidate_id);
+CREATE INDEX idx_authz_matrix_role
+    ON authz_matrix_entries(run_id, role);
+
 CREATE INDEX idx_verified_vulnerabilities_run_id     ON verified_vulnerabilities(run_id);
 CREATE INDEX idx_verified_vulnerabilities_project_id ON verified_vulnerabilities(project_id);
 CREATE INDEX idx_verified_vulnerabilities_status     ON verified_vulnerabilities(status);
 CREATE INDEX idx_verified_vulnerabilities_severity   ON verified_vulnerabilities(severity);
+
+CREATE UNIQUE INDEX idx_exploration_memory_dedupe
+    ON exploration_memory(project_id, repo, memory_key);
+CREATE INDEX idx_exploration_memory_project_repo
+    ON exploration_memory(project_id, repo, updated_at DESC);
+CREATE INDEX idx_exploration_memory_run
+    ON exploration_memory(run_id, updated_at DESC);
+CREATE INDEX idx_exploration_memory_result
+    ON exploration_memory(result);
 
 CREATE INDEX idx_route_models_run_id             ON route_models(run_id);
 CREATE INDEX idx_route_models_project_id         ON route_models(project_id);

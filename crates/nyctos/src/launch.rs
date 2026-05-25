@@ -29,6 +29,7 @@ pub struct RunningProjectEnvironment {
     pub target_urls: Vec<String>,
     mode: RunningMode,
     stop_steps: Vec<LaunchStep>,
+    seed_steps: Vec<LaunchStep>,
     reset_steps: Vec<LaunchStep>,
     env_refs: Vec<LaunchEnvRef>,
     logs_dir: PathBuf,
@@ -122,6 +123,7 @@ async fn start_launch_profile(ctx: LaunchContext<'_>) -> anyhow::Result<RunningP
                 target_urls,
                 mode,
                 stop_steps: ctx.profile.stop_steps.clone(),
+                seed_steps: ctx.profile.seed_steps.clone(),
                 reset_steps: ctx.profile.reset_steps.clone(),
                 env_refs: ctx.profile.env_refs.clone(),
                 logs_dir,
@@ -296,6 +298,14 @@ async fn start_compose(
 }
 
 impl RunningProjectEnvironment {
+    pub fn seed_supported(&self) -> bool {
+        !self.seed_steps.is_empty() || !matches!(self.mode, RunningMode::None)
+    }
+
+    pub fn reset_supported(&self) -> bool {
+        !self.reset_steps.is_empty() || matches!(self.mode, RunningMode::Compose { .. })
+    }
+
     pub async fn reset_after_state_change(&mut self) -> anyhow::Result<bool> {
         emit_env(
             &self.events,

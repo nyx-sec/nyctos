@@ -25,6 +25,7 @@ fn default_anonymous() -> String {
 pub enum NoPlanReasonCode {
     BadEndpoint,
     AuthMissing,
+    SetupMissing,
     WeakOracle,
     BrowserDisabled,
     RuntimeUnavailable,
@@ -44,6 +45,7 @@ impl NoPlanReasonCode {
         match self {
             Self::BadEndpoint => "bad_endpoint",
             Self::AuthMissing => "auth_missing",
+            Self::SetupMissing => "setup_missing",
             Self::WeakOracle => "weak_oracle",
             Self::BrowserDisabled => "browser_disabled",
             Self::RuntimeUnavailable => "runtime_unavailable",
@@ -57,6 +59,92 @@ impl NoPlanReasonCode {
             Self::RouteNotInferred => "route_not_inferred",
             Self::Other => "other",
         }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnvCapabilityStatus {
+    Available,
+    Missing,
+    Disabled,
+    Blocked,
+    Unknown,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthRoleCapability {
+    pub role: String,
+    pub mode: String,
+    pub status: EnvCapabilityStatus,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing_env_vars: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing_artifacts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+}
+
+impl AuthRoleCapability {
+    pub fn ready(&self) -> bool {
+        matches!(self.status, EnvCapabilityStatus::Available)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OwnedObjectCapability {
+    pub role: String,
+    pub name: String,
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marker: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvCapabilityReport {
+    pub target_reachable: EnvCapabilityStatus,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub target_urls: Vec<String>,
+    pub browser: EnvCapabilityStatus,
+    pub seed: EnvCapabilityStatus,
+    pub reset: EnvCapabilityStatus,
+    pub mailbox: EnvCapabilityStatus,
+    pub state_changing: EnvCapabilityStatus,
+    pub exploit_mode_enabled: bool,
+    pub dry_run: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub auth_roles: Vec<AuthRoleCapability>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub owned_objects: Vec<OwnedObjectCapability>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub findings: Vec<String>,
+}
+
+impl EnvCapabilityReport {
+    pub fn auth_role(&self, role: &str) -> Option<&AuthRoleCapability> {
+        self.auth_roles.iter().find(|cap| cap.role == role)
+    }
+
+    pub fn auth_role_ready(&self, role: &str) -> bool {
+        role == "anonymous" || self.auth_role(role).is_some_and(AuthRoleCapability::ready)
+    }
+
+    pub fn missing_auth_roles<'a>(
+        &'a self,
+        roles: impl IntoIterator<Item = &'a str>,
+    ) -> Vec<&'a AuthRoleCapability> {
+        roles
+            .into_iter()
+            .filter(|role| *role != "anonymous")
+            .filter_map(|role| self.auth_role(role))
+            .filter(|cap| !cap.ready())
+            .collect()
+    }
+
+    pub fn has_owned_object_for_role(&self, role: &str) -> bool {
+        self.owned_objects.iter().any(|object| object.role == role)
     }
 }
 
@@ -698,6 +786,42 @@ mod tests {
         );
         plan.validate().unwrap();
         assert_eq!(plan.no_plan_reason().unwrap().code.as_str(), "route_not_inferred");
+    }
+
+    #[test]
+    fn env_capability_report_tracks_auth_and_fixture_readiness() {
+        let report = EnvCapabilityReport {
+            target_reachable: EnvCapabilityStatus::Available,
+            target_urls: vec!["http://localhost:3000".to_string()],
+            browser: EnvCapabilityStatus::Missing,
+            seed: EnvCapabilityStatus::Available,
+            reset: EnvCapabilityStatus::Missing,
+            mailbox: EnvCapabilityStatus::Missing,
+            state_changing: EnvCapabilityStatus::Disabled,
+            exploit_mode_enabled: false,
+            dry_run: false,
+            auth_roles: vec![AuthRoleCapability {
+                role: "user_a".to_string(),
+                mode: "header_injection".to_string(),
+                status: EnvCapabilityStatus::Missing,
+                missing_env_vars: vec!["NYCTOS_USER_A_TOKEN".to_string()],
+                missing_artifacts: Vec::new(),
+                notes: vec!["missing env vars: NYCTOS_USER_A_TOKEN".to_string()],
+            }],
+            owned_objects: vec![OwnedObjectCapability {
+                role: "user_a".to_string(),
+                name: "project".to_string(),
+                id: "proj-1".to_string(),
+                route: Some("/api/projects/{id}".to_string()),
+                marker: None,
+            }],
+            findings: Vec::new(),
+        };
+
+        assert!(!report.auth_role_ready("user_a"));
+        assert!(report.auth_role_ready("anonymous"));
+        assert!(report.has_owned_object_for_role("user_a"));
+        assert_eq!(report.missing_auth_roles(["user_a"].into_iter()).len(), 1);
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -12,9 +12,10 @@ use nyctos_api::{
     ScanTriggerSource, ServerState, SetupContext, WebhookConfig, WebhookSecretResolver,
 };
 use nyctos_core::store::{
-    finding_id_hash, CandidateFindingRecord, FindingRecord, NyxSignalRecord,
-    PentestCandidateRecord, ProjectRecord, RepoOutcomeLabel, RepoRecord, RouteModelRecord,
-    RunRecord, RunRepoOutcomeRecord, VerificationAttemptRecord, VerifiedVulnerabilityRecord,
+    finding_id_hash, AuthzMatrixEntryRecord, CandidateFindingRecord, ExplorationMemoryInput,
+    FindingRecord, NyxSignalRecord, PentestCandidateRecord, ProjectRecord, RepoOutcomeLabel,
+    RepoRecord, RouteModelRecord, RunRecord, RunRepoOutcomeRecord, VerificationAttemptRecord,
+    VerifiedVulnerabilityRecord,
 };
 use nyctos_core::{
     ingest, now_epoch_ms, repo_from_config, AiConfig, Config, InconclusiveReason, IngestError,
@@ -29,7 +30,9 @@ use nyctos_types::product::{
     canonical_risk_rating, clamp_risk_score, risk_rating_for_score, LaunchHealthCheck, LaunchStep,
     ProjectLaunchProfileInput,
 };
-use nyctos_types::project::{ProjectRuntimeCommand, ProjectRuntimeEnvVar, ProjectRuntimeProfile};
+use nyctos_types::project::{
+    ProjectAuthProfile, ProjectRuntimeCommand, ProjectRuntimeEnvVar, ProjectRuntimeProfile,
+};
 use regex::Regex;
 use semver::Version;
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -3438,6 +3441,29 @@ async fn verify_pentest_candidates(
     let candidates = store.pentest_candidates().list_by_run(run_id).await?;
     let mut report = CandidateVerificationReport::default();
     let auth_session_manager = auth_sessions::AuthSessionManager::default();
+    let capability_report = live_planning::discover_env_capabilities(
+        live_planning::EnvCapabilityDiscoveryInput {
+            target_urls,
+            auth_profiles,
+            auth_env_overrides,
+            browser_checks_enabled: run_config.browser_checks_enabled,
+            browser_available: run_config.browser_checks_enabled
+                && node_runtime::playwright_available(auth_workspace_paths),
+            seed_supported: environment.seed_supported(),
+            reset_supported: environment.reset_supported(),
+            exploit_mode_enabled: run_config.exploit_mode_enabled,
+            allow_state_changing: run_config.state_changing_live_probes_allowed(),
+            dry_run: run_config.exploit_dry_run,
+        },
+    );
+    let _ = events.send(AgentEvent::Run {
+        data: RunEvent::LiveVerificationCapabilities {
+            run_id: run_id.to_string(),
+            project_id: project_id.to_string(),
+            report: serde_json::to_value(&capability_report).unwrap_or_default(),
+            ts_ms: now_epoch_ms(),
+        },
+    });
     emit_phase(&events, run_id, project_id, "AuthSessionAcquisitionStarted", true, None);
     let auth_message = preflight_auth_sessions(
         &auth_session_manager,
@@ -3481,6 +3507,38 @@ async fn verify_pentest_candidates(
                 .pentest_candidates()
                 .set_status(&candidate.id, "NeedsReview", Some(&reason), now_epoch_ms())
                 .await?;
+            write_candidate_exploration_memory(
+                store,
+                &candidate,
+                "live_no_plan",
+                "blocked",
+                &reason,
+                None,
+                None,
+                now_epoch_ms(),
+            )
+            .await;
+            continue;
+        }
+        if let Some(reason) =
+            executable_plan_capability_gap(&candidate.test_plan, target_urls, &capability_report)
+        {
+            report.skipped_no_plan += 1;
+            store
+                .pentest_candidates()
+                .set_status(&candidate.id, "NeedsReview", Some(&reason), now_epoch_ms())
+                .await?;
+            write_candidate_exploration_memory(
+                store,
+                &candidate,
+                "live_capability_preflight",
+                "blocked",
+                &reason,
+                None,
+                None,
+                now_epoch_ms(),
+            )
+            .await;
             continue;
         }
         let started = now_epoch_ms();
@@ -3510,6 +3568,7 @@ async fn verify_pentest_candidates(
                         auth_profiles,
                         browser_checks_enabled: run_config.browser_checks_enabled,
                         allow_state_changing: run_config.state_changing_live_probes_allowed(),
+                        capabilities: Some(&capability_report),
                     },
                 );
                 if let Some(replan) =
@@ -3724,6 +3783,20 @@ async fn verify_pentest_candidates(
             replay_stable: None,
         };
         store.verification_attempts().insert(&attempt).await?;
+        let authz_rows =
+            authz_matrix_rows_from_attempt(&attempt, &candidate, auth_profiles, finished);
+        store.authz_matrix().upsert_many(&authz_rows).await?;
+        write_candidate_exploration_memory(
+            store,
+            &candidate,
+            "live_verifier",
+            memory_result_from_attempt_status(status),
+            error.as_deref().unwrap_or_else(|| memory_reason_from_attempt_status(status)),
+            Some(&attempt),
+            None,
+            finished,
+        )
+        .await;
         match status {
             "Confirmed" => {
                 store
@@ -3797,6 +3870,182 @@ async fn mark_source_review_items_verified(
         }
     }
     Ok(())
+}
+
+async fn write_candidate_exploration_memory(
+    store: &Store,
+    candidate: &PentestCandidateRecord,
+    source: &str,
+    result: &str,
+    reason: &str,
+    attempt: Option<&VerificationAttemptRecord>,
+    trace_id: Option<&str>,
+    now_ms: i64,
+) {
+    let input = ExplorationMemoryInput {
+        project_id: candidate.project_id.clone(),
+        repo: candidate_memory_repo(candidate),
+        run_id: candidate.run_id.clone(),
+        source: source.to_string(),
+        hypothesis: candidate.hypothesis.clone(),
+        endpoint: candidate_memory_endpoint(candidate, attempt),
+        role_context: candidate_memory_role(candidate),
+        object_context: candidate_memory_object(candidate),
+        result: result.to_string(),
+        reason: reason.to_string(),
+        useful_markers: candidate_memory_markers(candidate, attempt),
+        auth_session_notes: candidate_memory_auth_notes(attempt),
+        follow_up_ideas: candidate_memory_followups(result, reason),
+        candidate_id: Some(candidate.id.clone()),
+        verification_attempt_id: attempt.map(|a| a.id.clone()),
+        trace_id: trace_id.map(str::to_string).or_else(|| candidate.trace_id.clone()),
+        created_at: now_ms,
+    };
+    if let Err(err) = store.exploration_memory().upsert(&input).await {
+        tracing::warn!(
+            candidate_id = %candidate.id,
+            error = %err,
+            "failed to persist exploration memory"
+        );
+    }
+}
+
+fn memory_result_from_attempt_status(status: &str) -> &'static str {
+    match status {
+        "Confirmed" => "confirmed",
+        "Rejected" => "rejected",
+        "Blocked" => "blocked",
+        "Inconclusive" | "Errored" => "inconclusive",
+        _ => "inconclusive",
+    }
+}
+
+fn memory_reason_from_attempt_status(status: &str) -> &'static str {
+    match status {
+        "Confirmed" => "live verifier confirmed the hypothesis",
+        "Rejected" => "live verifier rejected the hypothesis",
+        "Blocked" => "live verifier was blocked by safety, auth, or environment limits",
+        "Inconclusive" => "live verifier could not reach dispositive evidence",
+        "Errored" => "live verifier errored before dispositive evidence",
+        _ => "live verifier completed without a recognized result",
+    }
+}
+
+fn candidate_memory_repo(candidate: &PentestCandidateRecord) -> String {
+    candidate
+        .affected_components
+        .iter()
+        .find_map(|c| c.get("repo").and_then(|v| v.as_str()))
+        .unwrap_or("unknown")
+        .to_string()
+}
+
+fn candidate_memory_endpoint(
+    candidate: &PentestCandidateRecord,
+    attempt: Option<&VerificationAttemptRecord>,
+) -> Option<String> {
+    attempt
+        .and_then(|a| {
+            a.request.as_ref().and_then(|r| {
+                r.get("url")
+                    .or_else(|| r.get("endpoint"))
+                    .or_else(|| r.get("path"))
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+            })
+        })
+        .or_else(|| {
+            candidate.affected_components.iter().find_map(|c| {
+                c.get("endpoint")
+                    .or_else(|| c.get("route"))
+                    .or_else(|| c.get("url"))
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+            })
+        })
+}
+
+fn candidate_memory_role(candidate: &PentestCandidateRecord) -> Option<String> {
+    candidate.affected_components.iter().find_map(|c| {
+        c.get("role")
+            .or_else(|| c.get("auth_role"))
+            .or_else(|| c.get("needed_role"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    })
+}
+
+fn candidate_memory_object(candidate: &PentestCandidateRecord) -> Option<String> {
+    candidate.affected_components.iter().find_map(|c| {
+        c.get("object")
+            .or_else(|| c.get("resource"))
+            .or_else(|| c.get("model"))
+            .or_else(|| c.get("path"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    })
+}
+
+fn candidate_memory_markers(
+    candidate: &PentestCandidateRecord,
+    attempt: Option<&VerificationAttemptRecord>,
+) -> Vec<String> {
+    let mut markers = candidate.source_ids.clone();
+    if let Some(attempt) = attempt {
+        if let Some(oracle) = &attempt.oracle {
+            collect_json_string_field(oracle, "failure_code", &mut markers);
+            collect_json_string_field(oracle, "marker", &mut markers);
+            collect_json_string_field(oracle, "operator_reason", &mut markers);
+        }
+        if let Some(error) = &attempt.error {
+            markers.push(error.clone());
+        }
+    }
+    markers.sort();
+    markers.dedup();
+    markers.truncate(8);
+    markers
+}
+
+fn candidate_memory_auth_notes(attempt: Option<&VerificationAttemptRecord>) -> Option<String> {
+    let request = attempt?.request.as_ref()?;
+    request.get("auth").or_else(|| request.get("role")).or_else(|| request.get("session")).map(
+        |v| {
+            v.as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| serde_json::to_string(v).unwrap_or_default())
+        },
+    )
+}
+
+fn candidate_memory_followups(result: &str, reason: &str) -> Vec<String> {
+    match result {
+        "confirmed" => vec!["look for adjacent roles, object ids, and chained impact".to_string()],
+        "rejected" => {
+            vec!["avoid repeating the same probe unless route/auth context changed".to_string()]
+        }
+        "blocked" => vec![format!("unblock before retrying: {reason}")],
+        _ => vec!["try a narrower marker or alternate authenticated role".to_string()],
+    }
+}
+
+fn collect_json_string_field(value: &serde_json::Value, key: &str, out: &mut Vec<String>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            if let Some(s) = map.get(key).and_then(|v| v.as_str()) {
+                out.push(s.to_string());
+            }
+            for child in map.values() {
+                collect_json_string_field(child, key, out);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for child in items {
+                collect_json_string_field(child, key, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 async fn preflight_auth_sessions(
@@ -3891,6 +4140,113 @@ async fn execute_candidate_test_plan(
     })
 }
 
+fn executable_plan_capability_gap(
+    raw_plan: &str,
+    target_urls: &[String],
+    capabilities: &nyctos_types::live_plan::EnvCapabilityReport,
+) -> Option<String> {
+    let plan = pentest_tools::normalise_live_test_plan_typed(raw_plan, target_urls).ok()??;
+    let mut roles = BTreeSet::new();
+    let mut browser_needed = false;
+    let mut state_changing = false;
+    collect_plan_capability_needs(&plan, &mut roles, &mut browser_needed, &mut state_changing);
+    let missing_roles = roles
+        .iter()
+        .filter(|role| !capabilities.auth_role_ready(role))
+        .map(|role| match capabilities.auth_role(role) {
+            Some(cap) if !cap.missing_env_vars.is_empty() => {
+                format!("{role} missing env {}", cap.missing_env_vars.join(","))
+            }
+            Some(cap) if !cap.notes.is_empty() => format!("{role} {}", cap.notes.join("; ")),
+            Some(_) => format!("{role} unavailable"),
+            None => format!("{role} auth profile missing"),
+        })
+        .collect::<Vec<_>>();
+    if !missing_roles.is_empty() {
+        return Some(format!(
+            "live verification setup missing: {}",
+            missing_roles.join("; ")
+        ));
+    }
+    if browser_needed && !matches!(capabilities.browser, nyctos_types::live_plan::EnvCapabilityStatus::Available) {
+        return Some("live verification setup missing: browser runtime unavailable".to_string());
+    }
+    if state_changing
+        && !matches!(
+            capabilities.state_changing,
+            nyctos_types::live_plan::EnvCapabilityStatus::Available
+        )
+    {
+        return Some(
+            "live verification unsafe without opt-in: state-changing probes require exploit_mode_enabled and allow_state_changing_live_probes"
+                .to_string(),
+        );
+    }
+    None
+}
+
+fn collect_plan_capability_needs(
+    plan: &nyctos_types::live_plan::LiveTestPlan,
+    roles: &mut BTreeSet<String>,
+    browser_needed: &mut bool,
+    state_changing: &mut bool,
+) {
+    use nyctos_types::live_plan::LiveTestPlan;
+    match plan {
+        LiveTestPlan::SingleHttp(plan) => {
+            collect_request_need(&plan.request, roles, state_changing);
+            if let Some(req) = &plan.baseline {
+                collect_request_need(req, roles, state_changing);
+            }
+            if let Some(req) = &plan.benign {
+                collect_request_need(req, roles, state_changing);
+            }
+        }
+        LiveTestPlan::HttpWorkflow(plan) => {
+            for req in plan.steps.iter().chain(plan.benign_steps.iter()) {
+                collect_request_need(req, roles, state_changing);
+            }
+        }
+        LiveTestPlan::DifferentialHttp(plan) => {
+            for req in plan.steps.iter().chain(plan.benign_steps.iter()) {
+                collect_request_need(req, roles, state_changing);
+            }
+        }
+        LiveTestPlan::AuthzRoleComparison(plan) => {
+            roles.insert(plan.allowed_role.clone());
+            roles.insert(plan.challenged_role.clone());
+            collect_request_need(&plan.request, roles, state_changing);
+        }
+        LiveTestPlan::AuthzObjectOwnership(plan) => {
+            roles.insert(plan.object.owner_role.clone());
+            roles.insert(plan.accessor_role.clone());
+            collect_request_need(&plan.owner_request, roles, state_changing);
+            collect_request_need(&plan.accessor_request, roles, state_changing);
+        }
+        LiveTestPlan::AuthzBrowserRoleComparison(plan) => {
+            *browser_needed = true;
+            roles.insert(plan.allowed_role.clone());
+            roles.insert(plan.challenged_role.clone());
+        }
+        LiveTestPlan::BrowserWorkflow(plan) => {
+            *browser_needed = true;
+            roles.insert(plan.role.clone());
+            *state_changing |= plan.state_changing;
+        }
+        LiveTestPlan::NoPlan(_) => {}
+    }
+}
+
+fn collect_request_need(
+    request: &nyctos_types::live_plan::LiveHttpRequest,
+    roles: &mut BTreeSet<String>,
+    state_changing: &mut bool,
+) {
+    roles.insert(request.role.clone());
+    *state_changing |= request.destructive
+        || !matches!(request.method.as_str(), "GET" | "HEAD" | "OPTIONS");
+}
+
 fn outcome_failure_code(outcome: Option<&VerificationOutcome>) -> Option<String> {
     match outcome? {
         VerificationOutcome::Confirmed { .. } => None,
@@ -3931,6 +4287,8 @@ fn classify_failure_reason_text(reason: &str) -> Option<String> {
         Some("runtime_unavailable".to_string())
     } else if lower.contains("auth") {
         Some("auth_missing".to_string())
+    } else if lower.contains("setup missing") {
+        Some("setup_missing".to_string())
     } else if lower.contains("no explicit oracle") || lower.contains("weak") {
         Some("weak_oracle".to_string())
     } else if lower.contains("404") || lower.contains("bad endpoint") {
@@ -3950,6 +4308,7 @@ fn non_dispositive_rejection_reason(oracle: Option<&serde_json::Value>) -> Optio
             | "runtime_unavailable"
             | "browser_disabled"
             | "auth_missing"
+            | "setup_missing"
             | "missing_seed_data"
             | "route_not_inferred"
             | "target_out_of_scope"
@@ -4021,6 +4380,257 @@ fn verification_attempt_method(request: Option<&serde_json::Value>) -> String {
         Some(other) => other.to_string(),
         None => "http".to_string(),
     }
+}
+
+fn authz_matrix_rows_from_attempt(
+    attempt: &VerificationAttemptRecord,
+    candidate: &PentestCandidateRecord,
+    auth_profiles: &[ProjectAuthProfile],
+    created_at: i64,
+) -> Vec<AuthzMatrixEntryRecord> {
+    if !matches!(attempt.method.as_str(), "authz_role_comparison" | "authz_object_ownership") {
+        return Vec::new();
+    }
+    let Some(request) = attempt.request.as_ref().and_then(|v| v.as_object()) else {
+        return Vec::new();
+    };
+    let Some(_response) = attempt.response.as_ref().and_then(|v| v.as_object()) else {
+        return Vec::new();
+    };
+    let Some(oracle) = attempt.oracle.as_ref().and_then(|v| v.as_object()) else {
+        return Vec::new();
+    };
+
+    let authz = request.get("authz").and_then(|v| v.as_object());
+    let probe_kind =
+        request.get("kind").and_then(|v| v.as_str()).unwrap_or(&attempt.method).to_string();
+    let owner_role = authz
+        .and_then(|v| v.get("owner_role").or_else(|| v.get("allowed_role")))
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let challenged_role = authz
+        .and_then(|v| v.get("accessor_role").or_else(|| v.get("challenged_role")))
+        .and_then(|v| v.as_str())
+        .unwrap_or("challenged");
+    let allowed_role = owner_role.as_deref().unwrap_or("allowed");
+    let object = authz.and_then(|v| v.get("object")).and_then(|v| v.as_object());
+    let resource = object
+        .and_then(|v| v.get("name"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| endpoint_resource(request, attempt.method.as_str()));
+    let object_id = object.and_then(|v| v.get("id")).and_then(|v| v.as_str()).map(str::to_string);
+
+    let allowed_status = oracle.get("allowed_status").and_then(|v| v.as_i64());
+    let challenged_status = oracle.get("challenged_status").and_then(|v| v.as_i64());
+    let allowed_marker_hits = oracle_array_len(oracle, "allowed_markers_found");
+    let challenged_marker_hits = oracle_array_len(oracle, "markers_found");
+    let allowed_observed = observed_decision(
+        allowed_status,
+        oracle.get("allowed_status_ok").and_then(|v| v.as_bool()).unwrap_or(false),
+        allowed_marker_hits > 0,
+    );
+    let challenged_observed =
+        if oracle.get("challenged_blocked").and_then(|v| v.as_bool()).unwrap_or(false) {
+            "deny"
+        } else {
+            observed_decision(
+                challenged_status,
+                oracle.get("challenged_status_ok").and_then(|v| v.as_bool()).unwrap_or(false),
+                challenged_marker_hits > 0,
+            )
+        };
+
+    let allowed_request = request.get("allowed_request").or_else(|| request.get("owner_request"));
+    let challenged_request =
+        request.get("challenged_request").or_else(|| request.get("accessor_request"));
+    let allowed_endpoint = request_endpoint(allowed_request).unwrap_or_else(|| "unknown".into());
+    let challenged_endpoint =
+        request_endpoint(challenged_request).unwrap_or_else(|| allowed_endpoint.clone());
+    let allowed_action = request_action(allowed_request).unwrap_or_else(|| "GET".into());
+    let challenged_action =
+        request_action(challenged_request).unwrap_or_else(|| allowed_action.clone());
+
+    vec![
+        authz_matrix_row(
+            attempt,
+            candidate,
+            auth_profiles,
+            created_at,
+            &probe_kind,
+            allowed_role,
+            owner_role.as_deref(),
+            &resource,
+            object_id.as_deref(),
+            &allowed_action,
+            &allowed_endpoint,
+            "allow",
+            allowed_observed,
+            allowed_status,
+            marker_result(allowed_marker_hits),
+            oracle,
+        ),
+        authz_matrix_row(
+            attempt,
+            candidate,
+            auth_profiles,
+            created_at,
+            &probe_kind,
+            challenged_role,
+            owner_role.as_deref(),
+            &resource,
+            object_id.as_deref(),
+            &challenged_action,
+            &challenged_endpoint,
+            "deny",
+            challenged_observed,
+            challenged_status,
+            marker_result(challenged_marker_hits),
+            oracle,
+        ),
+    ]
+}
+
+fn authz_matrix_row(
+    attempt: &VerificationAttemptRecord,
+    candidate: &PentestCandidateRecord,
+    auth_profiles: &[ProjectAuthProfile],
+    created_at: i64,
+    probe_kind: &str,
+    role: &str,
+    owner_role: Option<&str>,
+    resource: &str,
+    object_id: Option<&str>,
+    action: &str,
+    endpoint: &str,
+    expected_decision: &str,
+    observed_decision: &str,
+    observed_status: Option<i64>,
+    body_marker_result: &str,
+    oracle: &serde_json::Map<String, serde_json::Value>,
+) -> AuthzMatrixEntryRecord {
+    let stable = format!(
+        "{}-{}-{}-{}-{}-{}",
+        attempt.id,
+        role,
+        expected_decision,
+        action,
+        endpoint,
+        object_id.unwrap_or("")
+    );
+    AuthzMatrixEntryRecord {
+        id: format!("am-{}", authz_matrix_id_hash(&stable)),
+        run_id: attempt.run_id.clone(),
+        project_id: attempt.project_id.clone(),
+        candidate_id: Some(candidate.id.clone()),
+        verification_attempt_id: attempt.id.clone(),
+        probe_kind: probe_kind.to_string(),
+        role: role.to_string(),
+        owner_role: owner_role.map(str::to_string),
+        tenant: auth_profiles
+            .iter()
+            .find(|profile| profile.role == role)
+            .and_then(|profile| profile.tenant.clone()),
+        resource: resource.to_string(),
+        object_id: object_id.map(str::to_string),
+        action: action.to_string(),
+        endpoint: endpoint.to_string(),
+        expected_decision: expected_decision.to_string(),
+        observed_decision: observed_decision.to_string(),
+        observed_status,
+        body_marker_result: body_marker_result.to_string(),
+        confidence: authz_matrix_confidence(
+            expected_decision,
+            observed_decision,
+            body_marker_result,
+        ),
+        evidence: serde_json::json!({
+            "candidate_title": candidate.title,
+            "candidate_confidence": candidate.confidence,
+            "oracle_type": oracle.get("oracle_type"),
+            "positive_markers": oracle.get("positive_markers"),
+            "success": oracle.get("success"),
+            "explanation": oracle.get("explanation"),
+        }),
+        created_at,
+    }
+}
+
+fn observed_decision(status: Option<i64>, status_ok: bool, marker_hit: bool) -> &'static str {
+    if matches!(status, Some(401 | 403 | 404)) {
+        "deny"
+    } else if status_ok && marker_hit {
+        "allow"
+    } else {
+        "unknown"
+    }
+}
+
+fn marker_result(count: usize) -> &'static str {
+    if count > 0 {
+        "matched"
+    } else {
+        "not_matched"
+    }
+}
+
+fn authz_matrix_confidence(expected: &str, observed: &str, marker_result: &str) -> f64 {
+    if observed == "unknown" {
+        0.35
+    } else if marker_result == "matched" {
+        0.9
+    } else if expected == observed {
+        0.75
+    } else {
+        0.85
+    }
+}
+
+fn authz_matrix_id_hash(value: &str) -> String {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in value.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
+}
+
+fn oracle_array_len(oracle: &serde_json::Map<String, serde_json::Value>, key: &str) -> usize {
+    oracle.get(key).and_then(|v| v.as_array()).map(Vec::len).unwrap_or(0)
+}
+
+fn request_endpoint(request: Option<&serde_json::Value>) -> Option<String> {
+    let obj = request.and_then(|v| v.as_object())?;
+    obj.get("url")
+        .and_then(|v| v.as_str())
+        .or_else(|| obj.get("path").and_then(|v| v.as_str()))
+        .map(str::to_string)
+}
+
+fn request_action(request: Option<&serde_json::Value>) -> Option<String> {
+    request
+        .and_then(|v| v.as_object())
+        .and_then(|obj| obj.get("method"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
+fn endpoint_resource(
+    request: &serde_json::Map<String, serde_json::Value>,
+    fallback: &str,
+) -> String {
+    request
+        .get("allowed_request")
+        .or_else(|| request.get("owner_request"))
+        .and_then(|value| request_endpoint(Some(value)))
+        .and_then(|endpoint| {
+            endpoint
+                .split('/')
+                .filter(|part| !part.is_empty() && !part.starts_with(':') && !part.starts_with('{'))
+                .next_back()
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| fallback.to_string())
 }
 
 fn business_logic_provenance_from_candidate(
@@ -4310,7 +4920,7 @@ fn severity_score_band(severity: &str, live_verified: bool) -> (f64, f64, f64) {
         "critical" if live_verified => (9.0, 8.0, 10.0),
         "critical" => (8.0, 6.0, 9.4),
         "high" if live_verified => (7.0, 5.5, 8.9),
-        "high" => (6.2, 3.0, 8.2),
+        "high" => (7.3, 3.0, 8.2),
         "medium" | "moderate" => (4.0, 4.0, 6.9),
         "low" => (1.0, 1.0, 3.9),
         "info" | "informational" => (0.0, 0.0, 0.9),
@@ -4761,6 +5371,7 @@ fn event_run_id(ev: &AgentEvent) -> Option<&str> {
             | RunEvent::PhaseFinished { run_id, .. }
             | RunEvent::EnvironmentStatus { run_id, .. }
             | RunEvent::AuthSessionStatus { run_id, .. }
+            | RunEvent::LiveVerificationCapabilities { run_id, .. }
             | RunEvent::RepoStarted { run_id, .. }
             | RunEvent::RepoStaticDone { run_id, .. }
             | RunEvent::RepoDynamicDone { run_id, .. }
@@ -6247,6 +6858,72 @@ mod tests {
             created_at: 1,
             updated_at: 1,
         }
+    }
+
+    #[test]
+    fn authz_matrix_rows_capture_allowed_and_challenged_access() {
+        let candidate = review_candidate("AUTHZ_BYPASS");
+        let attempt = VerificationAttemptRecord {
+            id: "va-authz".to_string(),
+            run_id: "run-review".to_string(),
+            project_id: "project-review".to_string(),
+            environment_run_id: "env-1".to_string(),
+            candidate_id: Some(candidate.id.clone()),
+            chain_id: None,
+            method: "authz_object_ownership".to_string(),
+            status: "Confirmed".to_string(),
+            started_at: 10,
+            finished_at: Some(20),
+            duration_ms: Some(10),
+            request: Some(serde_json::json!({
+                "kind": "authz_object_ownership",
+                "authz": {
+                    "probe": "object_ownership",
+                    "owner_role": "user_a",
+                    "accessor_role": "user_b",
+                    "object": {"name": "invoice", "id": "inv-1"}
+                },
+                "owner_request": {"method": "GET", "url": "http://localhost:3000/invoices/inv-1"},
+                "accessor_request": {"method": "GET", "url": "http://localhost:3000/invoices/inv-1"}
+            })),
+            response: Some(serde_json::json!({
+                "owner": {"status": 200},
+                "accessor": {"status": 200}
+            })),
+            oracle: Some(serde_json::json!({
+                "type": "authz_object_ownership",
+                "oracle_type": "object_ownership_break",
+                "positive_markers": ["inv-1"],
+                "allowed_status": 200,
+                "challenged_status": 200,
+                "allowed_status_ok": true,
+                "challenged_status_ok": true,
+                "challenged_blocked": false,
+                "allowed_markers_found": ["inv-1"],
+                "markers_found": ["inv-1"],
+                "success": true
+            })),
+            artifact_paths: Vec::new(),
+            error: None,
+            replay_stable: None,
+        };
+        let profiles: Vec<ProjectAuthProfile> = serde_json::from_value(serde_json::json!([
+            {"role":"user_a","tenant":"tenant-a"},
+            {"role":"user_b","tenant":"tenant-b"}
+        ]))
+        .unwrap();
+
+        let rows = authz_matrix_rows_from_attempt(&attempt, &candidate, &profiles, 25);
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].role, "user_a");
+        assert_eq!(rows[0].expected_decision, "allow");
+        assert_eq!(rows[0].observed_decision, "allow");
+        assert_eq!(rows[0].tenant.as_deref(), Some("tenant-a"));
+        assert_eq!(rows[1].role, "user_b");
+        assert_eq!(rows[1].expected_decision, "deny");
+        assert_eq!(rows[1].observed_decision, "allow");
+        assert_eq!(rows[1].object_id.as_deref(), Some("inv-1"));
     }
 
     fn pending_ai_candidate() -> CandidateFindingRecord {

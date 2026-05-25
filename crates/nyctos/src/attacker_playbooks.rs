@@ -1227,6 +1227,7 @@ mod tests {
             auth_profiles: &auth,
             browser_checks_enabled: false,
             allow_state_changing: false,
+            capabilities: None,
         });
 
         let redirect = candidates.iter().find(|c| c.vuln_class == "OPEN_REDIRECT").unwrap();
@@ -1262,6 +1263,7 @@ mod tests {
             auth_profiles: &auth,
             browser_checks_enabled: false,
             allow_state_changing: false,
+            capabilities: None,
         });
 
         for (class, expected_code) in [

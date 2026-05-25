@@ -235,56 +235,198 @@ pub const WEBHOOK_CALLBACK_TRUST_BOUNDARY_TEMPLATE: BusinessLogicTemplateDescrip
         metadata_only_reason: None,
     };
 
-pub const INVITE_PRIVILEGE_ESCALATION_TEMPLATE: BusinessLogicTemplateDescriptor =
+pub const INVITE_ACCEPT_REUSE_TEMPLATE: BusinessLogicTemplateDescriptor =
     BusinessLogicTemplateDescriptor {
-        id: "invite_privilege_escalation",
+        id: "invite_accept_reuse",
         version: "1",
-        title: "Invite acceptance privilege escalation",
+        title: "Invite accept/reuse",
         category: "account_lifecycle",
         mutability: BusinessLogicTemplateMutability::StateChanging,
         required_roles: &["inviter_role", "invitee_role"],
         seed_data_description:
-            "Requires an application-issued invite token or deterministic invite seed before acceptance can be verified safely.",
-        supported_route_patterns: &["invite creation and invite acceptance routes"],
+            "Create an invite with a unique marker, capture the issued invite token/id, accept it, then replay acceptance with the same token.",
+        supported_route_patterns: &["invite creation route paired with invite accept/join route"],
         oracle_description:
-            "Would require a live role/permission oracle after invite acceptance.",
-        default_vuln_class: "BUSINESS_LOGIC_INVITE_PRIVILEGE_ESCALATION",
+            "Confirmed only when the replay acceptance returns 2xx and reflects the invite marker.",
+        default_vuln_class: "BUSINESS_LOGIC_INVITE_REUSE",
         default_severity: "High",
-        availability: BusinessLogicTemplateAvailability::MetadataOnly,
-        metadata_only_reason: Some(
-            "current route/auth model does not expose a safe application-issued invite token seed",
-        ),
+        availability: BusinessLogicTemplateAvailability::Executable,
+        metadata_only_reason: None,
     };
 
-pub const PASSWORD_RESET_TOKEN_MISUSE_TEMPLATE: BusinessLogicTemplateDescriptor =
+pub const PASSWORD_RESET_TOKEN_REPLAY_TEMPLATE: BusinessLogicTemplateDescriptor =
     BusinessLogicTemplateDescriptor {
-        id: "password_reset_token_misuse",
+        id: "password_reset_token_replay",
         version: "1",
-        title: "Password reset token misuse",
+        title: "Password reset token replay",
         category: "account_lifecycle",
         mutability: BusinessLogicTemplateMutability::StateChanging,
         required_roles: &["victim_account", "attacker_account"],
         seed_data_description:
-            "Requires a safe password-reset token capture or test inbox integration before misuse can be verified.",
+            "Request a reset for a disposable victim marker, capture a reset token from the test response, submit a reset, then replay the same token.",
         supported_route_patterns: &["password reset request and reset confirmation routes"],
         oracle_description:
-            "Would require a login/session oracle proving token confusion or reuse.",
-        default_vuln_class: "BUSINESS_LOGIC_PASSWORD_RESET_TOKEN_MISUSE",
+            "Confirmed only when the replay reset returns 2xx and reflects the reset marker.",
+        default_vuln_class: "BUSINESS_LOGIC_PASSWORD_RESET_TOKEN_REPLAY",
         default_severity: "High",
-        availability: BusinessLogicTemplateAvailability::MetadataOnly,
-        metadata_only_reason: Some(
-            "current route/auth model does not expose reset-token seed data or a safe inbox capture path",
-        ),
+        availability: BusinessLogicTemplateAvailability::Executable,
+        metadata_only_reason: None,
+    };
+
+pub const EMAIL_CHANGE_WITHOUT_REAUTH_TEMPLATE: BusinessLogicTemplateDescriptor =
+    BusinessLogicTemplateDescriptor {
+        id: "email_change_without_reauth",
+        version: "1",
+        title: "Email change without reauthentication",
+        category: "account_lifecycle",
+        mutability: BusinessLogicTemplateMutability::StateChanging,
+        required_roles: &["one_configured_role"],
+        seed_data_description:
+            "Submit a unique disposable email marker to an account/profile email-change route without a password/current-password field.",
+        supported_route_patterns: &["state-changing account/profile/settings email route"],
+        oracle_description:
+            "Confirmed only when the response is 2xx and reflects the new email marker without reauth evidence.",
+        default_vuln_class: "BUSINESS_LOGIC_EMAIL_CHANGE_WITHOUT_REAUTH",
+        default_severity: "High",
+        availability: BusinessLogicTemplateAvailability::Executable,
+        metadata_only_reason: None,
+    };
+
+pub const SUBSCRIPTION_DOWNGRADE_FEATURE_RETENTION_TEMPLATE: BusinessLogicTemplateDescriptor =
+    BusinessLogicTemplateDescriptor {
+        id: "subscription_downgrade_feature_retention",
+        version: "1",
+        title: "Subscription downgrade feature retention",
+        category: "entitlements",
+        mutability: BusinessLogicTemplateMutability::StateChanging,
+        required_roles: &["one_configured_role"],
+        seed_data_description:
+            "Downgrade a disposable subscription marker, then call a premium/feature route that should no longer be entitled.",
+        supported_route_patterns: &[
+            "state-changing subscription/plan/billing downgrade route paired with premium/feature/export/API route",
+        ],
+        oracle_description:
+            "Confirmed only when the post-downgrade feature response is 2xx and reflects the downgrade marker.",
+        default_vuln_class: "BUSINESS_LOGIC_ENTITLEMENT_RETENTION",
+        default_severity: "High",
+        availability: BusinessLogicTemplateAvailability::Executable,
+        metadata_only_reason: None,
+    };
+
+pub const REFUND_REPLAY_TEMPLATE: BusinessLogicTemplateDescriptor =
+    BusinessLogicTemplateDescriptor {
+        id: "refund_replay",
+        version: "1",
+        title: "Refund/replay",
+        category: "payments",
+        mutability: BusinessLogicTemplateMutability::StateChanging,
+        required_roles: &["one_configured_role"],
+        seed_data_description:
+            "Submit a refund marker once, capture a refund/order id when available, then replay the same refund request.",
+        supported_route_patterns: &["state-changing refund, return, reversal, chargeback, or credit route"],
+        oracle_description:
+            "Confirmed only when the replay response is 2xx and reflects the refund marker.",
+        default_vuln_class: "BUSINESS_LOGIC_REFUND_REPLAY",
+        default_severity: "High",
+        availability: BusinessLogicTemplateAvailability::Executable,
+        metadata_only_reason: None,
+    };
+
+pub const WEBHOOK_REPLAY_FRESHNESS_TEMPLATE: BusinessLogicTemplateDescriptor =
+    BusinessLogicTemplateDescriptor {
+        id: "webhook_replay_freshness",
+        version: "1",
+        title: "Webhook replay/freshness",
+        category: "integration_trust",
+        mutability: BusinessLogicTemplateMutability::StateChanging,
+        required_roles: &["anonymous_or_configured_role"],
+        seed_data_description:
+            "Send the same webhook event id and stale timestamp twice with a unique marker.",
+        supported_route_patterns: &[
+            "state-changing webhook, callback, receiver, integration, event, or notify route with event id/timestamp/signature fields",
+        ],
+        oracle_description:
+            "Confirmed only when the replay response is 2xx and reflects the replay marker.",
+        default_vuln_class: "BUSINESS_LOGIC_WEBHOOK_REPLAY_FRESHNESS",
+        default_severity: "High",
+        availability: BusinessLogicTemplateAvailability::Executable,
+        metadata_only_reason: None,
+    };
+
+pub const OAUTH_CALLBACK_STATE_CONFUSION_TEMPLATE: BusinessLogicTemplateDescriptor =
+    BusinessLogicTemplateDescriptor {
+        id: "oauth_callback_state_confusion",
+        version: "1",
+        title: "OAuth callback state confusion",
+        category: "account_lifecycle",
+        mutability: BusinessLogicTemplateMutability::StateChanging,
+        required_roles: &["one_configured_role_or_anonymous"],
+        seed_data_description:
+            "Call an OAuth/OIDC callback route with mismatched state/code markers and no prior browser session seed.",
+        supported_route_patterns: &["OAuth/OIDC callback, redirect_uri, authorize callback, or SSO callback route"],
+        oracle_description:
+            "Confirmed only when the callback returns 2xx and reflects the mismatched state marker.",
+        default_vuln_class: "BUSINESS_LOGIC_OAUTH_STATE_CONFUSION",
+        default_severity: "High",
+        availability: BusinessLogicTemplateAvailability::Executable,
+        metadata_only_reason: None,
+    };
+
+pub const CREDIT_EXHAUSTION_BYPASS_TEMPLATE: BusinessLogicTemplateDescriptor =
+    BusinessLogicTemplateDescriptor {
+        id: "credit_exhaustion_bypass",
+        version: "1",
+        title: "Credit exhaustion bypass",
+        category: "quota",
+        mutability: BusinessLogicTemplateMutability::StateChanging,
+        required_roles: &["one_configured_role"],
+        seed_data_description:
+            "Submit repeated credit/quota-consuming requests with the same idempotency marker and low/zero credit hints.",
+        supported_route_patterns: &["state-changing credit, quota, usage, token, generation, API, or metering route"],
+        oracle_description:
+            "Confirmed only when the post-exhaustion replay returns 2xx and reflects the credit marker.",
+        default_vuln_class: "BUSINESS_LOGIC_CREDIT_EXHAUSTION_BYPASS",
+        default_severity: "High",
+        availability: BusinessLogicTemplateAvailability::Executable,
+        metadata_only_reason: None,
+    };
+
+pub const AI_CHATBOT_INDIRECT_ACTION_ABUSE_TEMPLATE: BusinessLogicTemplateDescriptor =
+    BusinessLogicTemplateDescriptor {
+        id: "ai_chatbot_indirect_action_abuse",
+        version: "1",
+        title: "AI/chatbot indirect action abuse",
+        category: "ai",
+        mutability: BusinessLogicTemplateMutability::StateChanging,
+        required_roles: &["one_configured_role_or_anonymous"],
+        seed_data_description:
+            "Send a prompt that asks the assistant to perform a harmless indirect action with a unique marker.",
+        supported_route_patterns: &[
+            "state-changing AI, chat, assistant, bot, LLM, copilot, agent, tool, action, message, question, input, or query route",
+        ],
+        oracle_description:
+            "Confirmed only when the response indicates an indirect action/tool execution and reflects the marker.",
+        default_vuln_class: "AI_CHATBOT_INDIRECT_ACTION_ABUSE",
+        default_severity: "High",
+        availability: BusinessLogicTemplateAvailability::Executable,
+        metadata_only_reason: None,
     };
 
 pub const BUSINESS_LOGIC_TEMPLATE_REGISTRY: &[BusinessLogicTemplateDescriptor] = &[
     TENANT_OBJECT_ISOLATION_TEMPLATE,
     COUPON_PRICE_MANIPULATION_TEMPLATE,
     AI_CHATBOT_EXPLOITABILITY_TEMPLATE,
+    AI_CHATBOT_INDIRECT_ACTION_ABUSE_TEMPLATE,
     FILE_PERMISSION_REVALIDATION_TEMPLATE,
     WEBHOOK_CALLBACK_TRUST_BOUNDARY_TEMPLATE,
-    INVITE_PRIVILEGE_ESCALATION_TEMPLATE,
-    PASSWORD_RESET_TOKEN_MISUSE_TEMPLATE,
+    WEBHOOK_REPLAY_FRESHNESS_TEMPLATE,
+    INVITE_ACCEPT_REUSE_TEMPLATE,
+    PASSWORD_RESET_TOKEN_REPLAY_TEMPLATE,
+    EMAIL_CHANGE_WITHOUT_REAUTH_TEMPLATE,
+    SUBSCRIPTION_DOWNGRADE_FEATURE_RETENTION_TEMPLATE,
+    REFUND_REPLAY_TEMPLATE,
+    OAUTH_CALLBACK_STATE_CONFUSION_TEMPLATE,
+    CREDIT_EXHAUSTION_BYPASS_TEMPLATE,
 ];
 
 pub fn business_logic_template_metadata() -> Vec<BusinessLogicTemplateMetadata> {

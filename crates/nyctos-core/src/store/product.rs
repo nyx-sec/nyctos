@@ -4,10 +4,10 @@ use sqlx::{Row, SqlitePool};
 
 pub use nyctos_types::business_logic::BusinessLogicTemplateRunRecord;
 pub use nyctos_types::product::{
-    canonical_risk_rating, clamp_risk_score, EnvironmentRunRecord, LaunchEnvRef, LaunchHealthCheck,
-    LaunchStep, LaunchWorkingDir, NyxSignalRecord, PentestCandidateRecord, ProjectLaunchProfile,
-    ProjectLaunchProfileInput, RouteModelRecord, VerificationAttemptRecord,
-    VerifiedVulnerabilityRecord,
+    canonical_risk_rating, clamp_risk_score, AuthzMatrixEntryRecord, EnvironmentRunRecord,
+    LaunchEnvRef, LaunchHealthCheck, LaunchStep, LaunchWorkingDir, NyxSignalRecord,
+    PentestCandidateRecord, ProjectLaunchProfile, ProjectLaunchProfileInput, RouteModelRecord,
+    VerificationAttemptRecord, VerifiedVulnerabilityRecord,
 };
 
 use crate::store::StoreError;
@@ -642,6 +642,98 @@ impl<'a> VerificationAttemptStore<'a> {
     }
 }
 
+pub struct AuthzMatrixStore<'a> {
+    pool: &'a SqlitePool,
+}
+
+impl<'a> AuthzMatrixStore<'a> {
+    pub fn new(pool: &'a SqlitePool) -> Self {
+        Self { pool }
+    }
+
+    pub async fn upsert(&self, rec: &AuthzMatrixEntryRecord) -> Result<(), StoreError> {
+        sqlx::query(
+            r#"
+            INSERT INTO authz_matrix_entries (
+                id, run_id, project_id, candidate_id, verification_attempt_id, probe_kind,
+                role, owner_role, tenant, resource, object_id, action, endpoint,
+                expected_decision, observed_decision, observed_status, body_marker_result,
+                confidence, evidence_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                candidate_id = excluded.candidate_id,
+                probe_kind = excluded.probe_kind,
+                role = excluded.role,
+                owner_role = excluded.owner_role,
+                tenant = excluded.tenant,
+                resource = excluded.resource,
+                object_id = excluded.object_id,
+                action = excluded.action,
+                endpoint = excluded.endpoint,
+                expected_decision = excluded.expected_decision,
+                observed_decision = excluded.observed_decision,
+                observed_status = excluded.observed_status,
+                body_marker_result = excluded.body_marker_result,
+                confidence = excluded.confidence,
+                evidence_json = excluded.evidence_json,
+                created_at = excluded.created_at
+            "#,
+        )
+        .bind(&rec.id)
+        .bind(&rec.run_id)
+        .bind(&rec.project_id)
+        .bind(&rec.candidate_id)
+        .bind(&rec.verification_attempt_id)
+        .bind(&rec.probe_kind)
+        .bind(&rec.role)
+        .bind(&rec.owner_role)
+        .bind(&rec.tenant)
+        .bind(&rec.resource)
+        .bind(&rec.object_id)
+        .bind(&rec.action)
+        .bind(&rec.endpoint)
+        .bind(&rec.expected_decision)
+        .bind(&rec.observed_decision)
+        .bind(rec.observed_status)
+        .bind(&rec.body_marker_result)
+        .bind(rec.confidence)
+        .bind(serde_json::to_string(&rec.evidence)?)
+        .bind(rec.created_at)
+        .execute(self.pool)
+        .await?;
+        AttackGraphStore::new(self.pool).record_authz_matrix_entry(rec).await?;
+        Ok(())
+    }
+
+    pub async fn upsert_many(&self, rows: &[AuthzMatrixEntryRecord]) -> Result<(), StoreError> {
+        for row in rows {
+            self.upsert(row).await?;
+        }
+        Ok(())
+    }
+
+    pub async fn list_by_run(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<AuthzMatrixEntryRecord>, StoreError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, run_id, project_id, candidate_id, verification_attempt_id, probe_kind,
+                   role, owner_role, tenant, resource, object_id, action, endpoint,
+                   expected_decision, observed_decision, observed_status, body_marker_result,
+                   confidence, evidence_json, created_at
+            FROM authz_matrix_entries
+            WHERE run_id = ?
+            ORDER BY endpoint, resource, created_at DESC, role
+            "#,
+        )
+        .bind(run_id)
+        .fetch_all(self.pool)
+        .await?;
+        rows.into_iter().map(row_to_authz_matrix_entry).collect()
+    }
+}
+
 pub struct VerifiedVulnerabilityStore<'a> {
     pool: &'a SqlitePool,
 }
@@ -1061,6 +1153,33 @@ fn row_to_attempt(row: sqlx::sqlite::SqliteRow) -> Result<VerificationAttemptRec
     })
 }
 
+fn row_to_authz_matrix_entry(
+    row: sqlx::sqlite::SqliteRow,
+) -> Result<AuthzMatrixEntryRecord, StoreError> {
+    Ok(AuthzMatrixEntryRecord {
+        id: row.try_get("id")?,
+        run_id: row.try_get("run_id")?,
+        project_id: row.try_get("project_id")?,
+        candidate_id: row.try_get("candidate_id")?,
+        verification_attempt_id: row.try_get("verification_attempt_id")?,
+        probe_kind: row.try_get("probe_kind")?,
+        role: row.try_get("role")?,
+        owner_role: row.try_get("owner_role")?,
+        tenant: row.try_get("tenant")?,
+        resource: row.try_get("resource")?,
+        object_id: row.try_get("object_id")?,
+        action: row.try_get("action")?,
+        endpoint: row.try_get("endpoint")?,
+        expected_decision: row.try_get("expected_decision")?,
+        observed_decision: row.try_get("observed_decision")?,
+        observed_status: row.try_get("observed_status")?,
+        body_marker_result: row.try_get("body_marker_result")?,
+        confidence: row.try_get("confidence")?,
+        evidence: parse_json(row.try_get::<String, _>("evidence_json")?)?,
+        created_at: row.try_get("created_at")?,
+    })
+}
+
 fn row_to_vulnerability(
     row: sqlx::sqlite::SqliteRow,
 ) -> Result<VerifiedVulnerabilityRecord, StoreError> {
@@ -1379,6 +1498,38 @@ mod tests {
         };
         s.verification_attempts().insert(&attempt).await.unwrap();
         assert_eq!(s.verification_attempts().list_by_run("run-1").await.unwrap()[0].id, "va-1");
+
+        let matrix = AuthzMatrixEntryRecord {
+            id: "am-1".to_string(),
+            run_id: "run-1".to_string(),
+            project_id: "p-1".to_string(),
+            candidate_id: Some("pc-1".to_string()),
+            verification_attempt_id: "va-1".to_string(),
+            probe_kind: "authz_role_comparison".to_string(),
+            role: "user".to_string(),
+            owner_role: Some("admin".to_string()),
+            tenant: Some("tenant-a".to_string()),
+            resource: "report".to_string(),
+            object_id: Some("rpt-1".to_string()),
+            action: "GET".to_string(),
+            endpoint: "http://localhost:3000/admin/report/rpt-1".to_string(),
+            expected_decision: "deny".to_string(),
+            observed_decision: "allow".to_string(),
+            observed_status: Some(200),
+            body_marker_result: "matched".to_string(),
+            confidence: 0.9,
+            evidence: serde_json::json!({"marker":"admin-report"}),
+            created_at: 3_451,
+        };
+        s.authz_matrix().upsert(&matrix).await.unwrap();
+        let matrix_rows = s.authz_matrix().list_by_run("run-1").await.unwrap();
+        assert_eq!(matrix_rows, vec![matrix]);
+        assert!(s
+            .attack_graph()
+            .get_node_by_ref("run-1", nyctos_types::attack_graph::NODE_AUTHZ_MATRIX_ENTRY, "am-1")
+            .await
+            .unwrap()
+            .is_some());
 
         let vuln = VerifiedVulnerabilityRecord {
             id: "vuln-1".to_string(),

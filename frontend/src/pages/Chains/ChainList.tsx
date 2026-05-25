@@ -7,6 +7,7 @@ import { EmptyState } from "@/components/EmptyState";
 import { PageHeader, PageShell } from "@/components/Page";
 import { Spinner } from "@/components/Spinner";
 import { extractChainRationale } from "@/pages/Findings/FindingList";
+import { parseChainEvidence } from "./chainEvidence";
 import { parseMemberIds } from "./memberIds";
 
 const RATIONALE_PREVIEW_CHARS = 160;
@@ -134,6 +135,8 @@ function ChainTable({ chains, projectId }: ChainTableProps) {
             <th scope="col">Chain</th>
             <th scope="col">Scope</th>
             <th scope="col">Members</th>
+            <th scope="col">Confidence</th>
+            <th scope="col">Proof gaps</th>
             <th scope="col">Rationale</th>
           </tr>
         </thead>
@@ -141,6 +144,8 @@ function ChainTable({ chains, projectId }: ChainTableProps) {
           {chains.map((chain) => {
             const rationale = extractChainRationale(chain.rationale_blob);
             const members = parseMemberIds(chain.member_ids);
+            const evidence = parseChainEvidence(chain.evidence_blob);
+            const proofGaps = evidence?.missing_verification_steps ?? [];
             return (
               <tr key={chain.id}>
                 <td className="findings-table__repo">
@@ -154,6 +159,8 @@ function ChainTable({ chains, projectId }: ChainTableProps) {
                   )}
                 </td>
                 <td>{members.length}</td>
+                <td>{typeof evidence?.confidence === "number" ? `${evidence.confidence}%` : "—"}</td>
+                <td>{proofGaps.length > 0 ? proofGaps.length : "—"}</td>
                 <td className="findings-table__rule" title={rationale ?? ""}>
                   {previewRationale(rationale)}
                 </td>

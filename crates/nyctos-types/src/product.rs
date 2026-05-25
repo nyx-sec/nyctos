@@ -299,6 +299,84 @@ pub struct VerificationAttemptRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+pub struct AuthzMatrixEntryRecord {
+    pub id: String,
+    pub run_id: String,
+    pub project_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub candidate_id: Option<String>,
+    pub verification_attempt_id: String,
+    pub probe_kind: String,
+    pub role: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub owner_role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub tenant: Option<String>,
+    pub resource: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub object_id: Option<String>,
+    pub action: String,
+    pub endpoint: String,
+    pub expected_decision: String,
+    pub observed_decision: String,
+    #[ts(type = "number | null")]
+    pub observed_status: Option<i64>,
+    pub body_marker_result: String,
+    pub confidence: f64,
+    #[serde(default)]
+    #[ts(type = "unknown")]
+    pub evidence: serde_json::Value,
+    #[ts(type = "number")]
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+pub struct ExplorationMemoryRecord {
+    pub id: String,
+    pub project_id: String,
+    pub repo: String,
+    pub run_id: String,
+    pub source: String,
+    pub hypothesis: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub endpoint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub role_context: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub object_context: Option<String>,
+    pub result: String,
+    pub reason: String,
+    #[serde(default)]
+    pub useful_markers: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub auth_session_notes: Option<String>,
+    #[serde(default)]
+    pub follow_up_ideas: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub candidate_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub verification_attempt_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub trace_id: Option<String>,
+    pub memory_key: String,
+    #[ts(type = "number")]
+    pub created_at: i64,
+    #[ts(type = "number")]
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct VerifiedVulnerabilityRecord {
     pub id: String,
     pub run_id: String,

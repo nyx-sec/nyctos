@@ -37,10 +37,11 @@ use nyctos_ai::{
     DEFAULT_EXPLORATION_SOFT_CAP_USD_MICROS,
 };
 use nyctos_core::store::{
-    canonical_risk_rating, clamp_risk_score, finding_id_hash, AgentTraceRecord,
-    CandidateFindingRecord, CandidateStatus, ChainRecord, FindingOrigin, FindingRecord,
-    HarnessSpecRecord, PayloadRecord, PentestCandidateRecord, Store, TaskKind,
-    VerificationAttemptRecord, VerifiedVulnerabilityRecord,
+    canonical_risk_rating, clamp_risk_score, compact_memory_for_prompt, finding_id_hash,
+    AgentTraceRecord, CandidateFindingRecord, CandidateStatus, ChainRecord, ExplorationMemoryInput,
+    ExplorationMemoryRecord, FindingOrigin, FindingRecord, HarnessSpecRecord, PayloadRecord,
+    PentestCandidateRecord, Store, TaskKind, VerificationAttemptRecord,
+    VerifiedVulnerabilityRecord,
 };
 use nyctos_core::{
     ids::short_token, now_epoch_ms, AiConfig, AiRuntime as ConfigAiRuntime, RepoOutcome, RunBundle,
@@ -51,10 +52,11 @@ use nyctos_sandbox::payload_runner::{HarnessSource, HarnessSpecInput, PayloadRun
 use nyctos_sandbox::BackendKind;
 use nyctos_types::agent::{AgentTraceMetrics, AiError, Budget, BudgetKind, Prompt};
 use nyctos_types::chain::{
-    ChainReasoningEdge, ChainReasoningInput, ChainReasoningNode, CHAIN_REASONING_DEFAULT_MAX,
-    CHAIN_REASONING_PROMPT_VERSION, NODE_KIND_ENTRY, NODE_KIND_FRAMEWORK, NODE_KIND_SINK,
+    ChainCandidate, ChainReasoningEdge, ChainReasoningInput, ChainReasoningNode,
+    CHAIN_REASONING_DEFAULT_MAX, CHAIN_REASONING_PROMPT_VERSION, NODE_KIND_ENTRY,
+    NODE_KIND_FRAMEWORK, NODE_KIND_SINK,
 };
-use nyctos_types::event::{AgentEvent, EventSink, SandboxEvent};
+use nyctos_types::event::{AgentEvent, EventSink, RunEvent, SandboxEvent};
 use nyctos_types::novel::{
     FileForReview, NovelFindingDiscoveryInput, PriorFinding, DEFAULT_FILES_PER_BATCH,
     DEFAULT_NOVEL_DISCOVERY_RUN_CAP_USD_MICROS, NOVEL_FINDING_DISCOVERY_PROMPT_VERSION,
@@ -948,6 +950,30 @@ pub async fn run_live_test_plan_synthesis_pass(
     }
     report.candidates_seen = candidates.len() as u32;
 
+    let empty_auth_env_overrides = std::collections::BTreeMap::new();
+    let capability_report = live_planning::discover_env_capabilities(
+        live_planning::EnvCapabilityDiscoveryInput {
+            target_urls,
+            auth_profiles,
+            auth_env_overrides: &empty_auth_env_overrides,
+            browser_checks_enabled,
+            browser_available: browser_checks_enabled
+                && crate::node_runtime::playwright_available(&[]),
+            seed_supported: false,
+            reset_supported: false,
+            exploit_mode_enabled: allow_state_changing,
+            allow_state_changing,
+            dry_run: false,
+        },
+    );
+    let _ = events.send(AgentEvent::Run {
+        data: RunEvent::LiveVerificationCapabilities {
+            run_id: bundle.run_id.clone(),
+            project_id: bundle.project_id.clone(),
+            report: serde_json::to_value(&capability_report).unwrap_or_default(),
+            ts_ms: now_epoch_ms(),
+        },
+    });
     let synthesizer =
         live_planning::LiveTestPlanSynthesizer::new(live_planning::LiveTestPlanSynthesisContext {
             route_model,
@@ -955,6 +981,7 @@ pub async fn run_live_test_plan_synthesis_pass(
             auth_profiles,
             browser_checks_enabled,
             allow_state_changing,
+            capabilities: Some(&capability_report),
         });
     let mut ai_candidates = Vec::new();
     for candidate in candidates {
@@ -973,6 +1000,7 @@ pub async fn run_live_test_plan_synthesis_pass(
                     .pentest_candidates()
                     .set_status(&candidate.id, "NeedsReview", Some(&reason), finished_at)
                     .await?;
+                persist_no_plan_memory(store, &candidate, &reason, finished_at).await;
                 report.no_plan += 1;
             }
             executable => {
@@ -1313,6 +1341,82 @@ fn candidate_source_excerpt(
         }
     }
     None
+}
+
+async fn persist_no_plan_memory(
+    store: &Store,
+    candidate: &PentestCandidateRecord,
+    reason: &str,
+    now_ms: i64,
+) {
+    let input = ExplorationMemoryInput {
+        project_id: candidate.project_id.clone(),
+        repo: candidate_repo_hint(candidate),
+        run_id: candidate.run_id.clone(),
+        source: "live_plan_no_plan".to_string(),
+        hypothesis: candidate.hypothesis.clone(),
+        endpoint: candidate_endpoint_hint(candidate),
+        role_context: candidate_role_hint(candidate),
+        object_context: candidate_object_hint(candidate),
+        result: "blocked".to_string(),
+        reason: reason.to_string(),
+        useful_markers: candidate.source_ids.clone(),
+        auth_session_notes: None,
+        follow_up_ideas: vec![
+            "derive missing auth/session/object context before retrying".to_string()
+        ],
+        candidate_id: Some(candidate.id.clone()),
+        verification_attempt_id: None,
+        trace_id: candidate.trace_id.clone(),
+        created_at: now_ms,
+    };
+    if let Err(err) = store.exploration_memory().upsert(&input).await {
+        tracing::warn!(
+            candidate_id = %candidate.id,
+            error = %err,
+            "failed to persist no-plan exploration memory"
+        );
+    }
+}
+
+fn candidate_repo_hint(candidate: &PentestCandidateRecord) -> String {
+    candidate
+        .affected_components
+        .iter()
+        .find_map(|c| c.get("repo").and_then(|v| v.as_str()))
+        .unwrap_or("unknown")
+        .to_string()
+}
+
+fn candidate_endpoint_hint(candidate: &PentestCandidateRecord) -> Option<String> {
+    candidate.affected_components.iter().find_map(|c| {
+        c.get("endpoint")
+            .or_else(|| c.get("route"))
+            .or_else(|| c.get("url"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    })
+}
+
+fn candidate_role_hint(candidate: &PentestCandidateRecord) -> Option<String> {
+    candidate.affected_components.iter().find_map(|c| {
+        c.get("role")
+            .or_else(|| c.get("auth_role"))
+            .or_else(|| c.get("needed_role"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    })
+}
+
+fn candidate_object_hint(candidate: &PentestCandidateRecord) -> Option<String> {
+    candidate.affected_components.iter().find_map(|c| {
+        c.get("object")
+            .or_else(|| c.get("resource"))
+            .or_else(|| c.get("model"))
+            .or_else(|| c.get("path"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    })
 }
 
 fn candidate_has_executable_live_plan(
@@ -1712,8 +1816,13 @@ pub async fn run_chain_reasoning_pass(
     workspaces: &HashMap<String, WorkspaceHandle>,
     events: EventSink,
 ) -> anyhow::Result<ChainReasoningPassReport> {
-    let _ = workspaces; // workspaces unused: the graph is built from bundle metadata only.
-    let input = match build_chain_input(bundle) {
+    let _ = workspaces; // ChainReasoning reads the persisted attack graph first.
+    let input = match store
+        .attack_graph()
+        .chain_planning_input(&bundle.run_id, CHAIN_REASONING_DEFAULT_MAX)
+        .await?
+        .or_else(|| build_chain_input(bundle))
+    {
         Some(i) => i,
         None => return Ok(ChainReasoningPassReport::default()),
     };
@@ -1801,6 +1910,9 @@ pub fn build_chain_input(bundle: &RunBundle<Diag>) -> Option<ChainReasoningInput
                 .insert((repo_bundle.repo.clone(), diag.path.clone(), diag.line), id.clone());
             nodes.push(ChainReasoningNode {
                 id,
+                graph_kind: None,
+                label: None,
+                ref_id: None,
                 repo: repo_bundle.repo.clone(),
                 path: diag.path.clone(),
                 line: Some(diag.line),
@@ -1808,6 +1920,10 @@ pub fn build_chain_input(bundle: &RunBundle<Diag>) -> Option<ChainReasoningInput
                 rule: diag.rule.clone(),
                 severity: diag.severity.clone(),
                 kind: kind.to_string(),
+                routes: Vec::new(),
+                roles: Vec::new(),
+                objects: Vec::new(),
+                evidence_refs: Vec::new(),
             });
         }
     }
@@ -1886,6 +2002,9 @@ fn push_edge(
             to: to.to_string(),
             label: "Reaches".to_string(),
             cross_repo,
+            edge_id: None,
+            evidence_ref: None,
+            source: None,
         });
     }
 }
@@ -1983,6 +2102,14 @@ async fn apply_chain_outcome(
                     "rationale": chain.rationale,
                 })
                 .to_string();
+                let evidence_blob = build_chain_evidence_blob(input, chain);
+                let severity = chain
+                    .member_ids
+                    .iter()
+                    .filter_map(|id| input.nodes.iter().find(|n| &n.id == id))
+                    .map(|n| n.severity.as_str())
+                    .max_by_key(|severity| chain_severity_rank(severity))
+                    .map(str::to_string);
                 let chain_id = format!("chain-{run_id}-{rank:02}-{created_at:x}-{}", short_token());
                 let rec = ChainRecord {
                     id: chain_id.clone(),
@@ -1994,8 +2121,8 @@ async fn apply_chain_outcome(
                     prompt_version: Some(prompt_version.clone()),
                     status: "Proposed".to_string(),
                     verification_attempt_id: None,
-                    evidence_blob: None,
-                    severity: None,
+                    evidence_blob: Some(evidence_blob),
+                    severity,
                 };
                 store.chains().insert(&rec).await?;
                 report.chains_persisted += 1;
@@ -2040,6 +2167,94 @@ async fn apply_chain_outcome(
         }
     }
     Ok(())
+}
+
+fn build_chain_evidence_blob(input: &ChainReasoningInput, chain: &ChainCandidate) -> String {
+    let nodes_by_id: HashMap<&str, &ChainReasoningNode> =
+        input.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    let mut edge_records = Vec::new();
+    let mut missing_gaps = chain.missing_verification_steps.clone();
+    for pair in chain.member_ids.windows(2) {
+        let edge = input.edges.iter().find(|e| e.from == pair[0] && e.to == pair[1]);
+        if let Some(edge) = edge {
+            edge_records.push(serde_json::json!({
+                "from": edge.from,
+                "to": edge.to,
+                "kind": edge.label,
+                "edge_id": edge.edge_id,
+                "evidence_ref": edge.evidence_ref,
+                "source": edge.source,
+                "cross_repo": edge.cross_repo,
+            }));
+        } else {
+            missing_gaps.push(format!("No graph edge proves {} -> {}", pair[0], pair[1]));
+        }
+    }
+    let has_live_proof =
+        chain.member_ids.iter().filter_map(|id| nodes_by_id.get(id.as_str())).any(|n| {
+            matches!(
+                n.graph_kind.as_deref(),
+                Some("verification_attempt") | Some("verified_vulnerability")
+            )
+        });
+    if !has_live_proof {
+        missing_gaps.push(
+            "Live verification attempt or confirmed vulnerability not yet attached".to_string(),
+        );
+    }
+    missing_gaps.sort();
+    missing_gaps.dedup();
+
+    let members = chain
+        .member_ids
+        .iter()
+        .filter_map(|id| {
+            nodes_by_id.get(id.as_str()).map(|n| {
+                serde_json::json!({
+                    "id": n.id,
+                    "graph_kind": n.graph_kind,
+                    "label": n.label,
+                    "ref_id": n.ref_id,
+                    "repo": n.repo,
+                    "path": n.path,
+                    "line": n.line,
+                    "cap": n.cap,
+                    "rule": n.rule,
+                    "severity": n.severity,
+                    "routes": n.routes,
+                    "roles": n.roles,
+                    "objects": n.objects,
+                    "evidence_refs": n.evidence_refs,
+                })
+            })
+        })
+        .collect::<Vec<_>>();
+
+    serde_json::json!({
+        "schema_version": 1,
+        "graph_backed": true,
+        "member_ids": chain.member_ids,
+        "members": members,
+        "edge_provenance": edge_records,
+        "model_edge_provenance": chain.edge_provenance,
+        "prerequisites": chain.prerequisites,
+        "evidence": chain.evidence,
+        "blast_radius": chain.blast_radius,
+        "confidence": chain.confidence,
+        "missing_verification_steps": missing_gaps,
+    })
+    .to_string()
+}
+
+fn chain_severity_rank(severity: &str) -> u8 {
+    match severity.to_ascii_lowercase().as_str() {
+        "critical" => 5,
+        "high" => 4,
+        "medium" => 3,
+        "low" => 2,
+        "info" | "informational" => 1,
+        _ => 0,
+    }
 }
 
 // ----- NovelFindingDiscovery ----------------------------------------------
@@ -2955,7 +3170,56 @@ async fn drive_verify_for_candidate(
         Some(&result),
     )
     .await;
+    persist_candidate_finding_verifier_memory(store, candidate, &result, now_ms).await;
     Ok(VerifyOutcome::Verdict(result.verdict))
+}
+
+async fn persist_candidate_finding_verifier_memory(
+    store: &Store,
+    candidate: &CandidateFindingRecord,
+    result: &VerifyResult,
+    now_ms: i64,
+) {
+    let Some(project_id) =
+        store.runs().get(&candidate.run_id).await.ok().flatten().and_then(|run| run.project_id)
+    else {
+        return;
+    };
+    let memory_result = match result.verdict {
+        VerifyVerdict::Confirmed => "confirmed",
+        VerifyVerdict::NotConfirmed => "rejected",
+        VerifyVerdict::Errored => "inconclusive",
+    };
+    let input = ExplorationMemoryInput {
+        project_id,
+        repo: candidate.repo.clone(),
+        run_id: candidate.run_id.clone(),
+        source: "candidate_finding_verifier".to_string(),
+        hypothesis: candidate.rationale.clone().unwrap_or_else(|| candidate.cap.clone()),
+        endpoint: None,
+        role_context: None,
+        object_context: Some(candidate.path.clone()),
+        result: memory_result.to_string(),
+        reason: format!("candidate verifier returned {}", result.verdict.as_str()),
+        useful_markers: candidate.suggested_payload_hint.clone().into_iter().collect(),
+        auth_session_notes: None,
+        follow_up_ideas: if matches!(result.verdict, VerifyVerdict::Confirmed) {
+            vec!["look for adjacent source paths with the same vulnerable pattern".to_string()]
+        } else {
+            vec!["do not retry this payload/spec pair without changing the harness".to_string()]
+        },
+        candidate_id: None,
+        verification_attempt_id: None,
+        trace_id: candidate.trace_id.clone(),
+        created_at: now_ms,
+    };
+    if let Err(err) = store.exploration_memory().upsert(&input).await {
+        tracing::warn!(
+            candidate_id = %candidate.id,
+            error = %err,
+            "failed to persist candidate verifier exploration memory"
+        );
+    }
 }
 
 /// Built-in per-cap shell/python harness templates the candidate
@@ -3452,18 +3716,42 @@ pub(crate) async fn drive_ai_exploration_pass<R: AiRuntime + ?Sized>(
         let Some(workspace) = workspaces.get(&repo_bundle.repo) else {
             continue;
         };
-        let known_leads = exploration_known_leads_for_repo(
+        let memory_hints = candidate_memory_hints_for_repo(&candidate_leads, &repo_bundle.repo);
+        let prior_memory_rows = match store
+            .exploration_memory()
+            .relevant_for_repo(
+                &bundle.project_id,
+                &repo_bundle.repo,
+                EXPLORATION_KNOWN_LEADS_MAX,
+                &memory_hints,
+            )
+            .await
+        {
+            Ok(rows) => rows,
+            Err(err) => {
+                tracing::warn!(
+                    repo = %repo_bundle.repo,
+                    error = %err,
+                    "ai exploration: failed to load prior exploration memory"
+                );
+                Vec::new()
+            }
+        };
+        let known_leads = exploration_known_leads_for_repo_with_memory(
             &candidate_leads,
             &repo_bundle.repo,
             EXPLORATION_KNOWN_LEADS_MAX,
             research_mode_enabled,
+            &prior_memory_rows,
         );
+        let prior_memory = compact_memory_for_prompt(&prior_memory_rows, 12);
         let scope = build_exploration_scope(
             &bundle.run_id,
             &repo_bundle.repo,
             workspace.workspace(),
             target_urls,
             known_leads,
+            prior_memory,
             soft_cap_usd_micros,
             run_cap_usd_micros,
             research_mode_enabled,
@@ -3490,6 +3778,7 @@ pub(crate) async fn drive_ai_exploration_pass<R: AiRuntime + ?Sized>(
             &bundle.run_id,
             &repo_bundle.repo,
             &scope.task_id,
+            &scope.research_focus,
             outcome,
             &mut report,
             runtime_name,
@@ -4095,15 +4384,15 @@ fn build_exploration_scope(
     workspace_root: &std::path::Path,
     target_urls: &[String],
     known_leads: Vec<ExplorationKnownLead>,
+    prior_memory: Vec<String>,
     soft_cap_usd_micros: i64,
     run_cap_usd_micros: i64,
     research_mode_enabled: bool,
 ) -> ExplorationScope {
-    let research_focus = if research_mode_enabled {
-        research_focus_from_known_leads(&known_leads)
-    } else {
-        Vec::new()
-    };
+    let mut research_focus = prior_memory;
+    if research_mode_enabled {
+        research_focus.extend(research_focus_from_known_leads(&known_leads));
+    }
     let mut scope = ExplorationScope::new(run_id, format!("expl-{repo}"));
     scope.workspace_root = Some(workspace_root.to_string_lossy().to_string());
     scope.allowed_hosts = target_urls.iter().filter_map(|url| host_from_url(url)).collect();
@@ -4126,11 +4415,12 @@ fn build_exploration_scope(
     scope
 }
 
-fn exploration_known_leads_for_repo(
+fn exploration_known_leads_for_repo_with_memory(
     candidates: &[PentestCandidateRecord],
     repo: &str,
     limit: usize,
     research_mode_enabled: bool,
+    memory: &[ExplorationMemoryRecord],
 ) -> Vec<ExplorationKnownLead> {
     let mut candidates = candidates
         .iter()
@@ -4138,8 +4428,8 @@ fn exploration_known_leads_for_repo(
         .filter(|c| candidate_applies_to_repo(c, repo))
         .collect::<Vec<_>>();
     candidates.sort_by(|a, b| {
-        research_candidate_rank(b, research_mode_enabled)
-            .cmp(&research_candidate_rank(a, research_mode_enabled))
+        memory_adjusted_candidate_rank(b, research_mode_enabled, memory)
+            .cmp(&memory_adjusted_candidate_rank(a, research_mode_enabled, memory))
             .then_with(|| severity_rank(&b.severity_guess).cmp(&severity_rank(&a.severity_guess)))
             .then_with(|| {
                 b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal)
@@ -4148,6 +4438,64 @@ fn exploration_known_leads_for_repo(
             .then_with(|| a.id.cmp(&b.id))
     });
     candidates.into_iter().take(limit).map(candidate_to_exploration_known_lead).collect()
+}
+
+fn candidate_memory_hints_for_repo(
+    candidates: &[PentestCandidateRecord],
+    repo: &str,
+) -> Vec<String> {
+    candidates
+        .iter()
+        .filter(|candidate| candidate_applies_to_repo(candidate, repo))
+        .flat_map(|candidate| {
+            [
+                candidate.vuln_class.clone(),
+                candidate.hypothesis.clone(),
+                candidate_location(candidate).unwrap_or_default(),
+            ]
+        })
+        .collect()
+}
+
+fn memory_adjusted_candidate_rank(
+    candidate: &PentestCandidateRecord,
+    research_mode_enabled: bool,
+    memory: &[ExplorationMemoryRecord],
+) -> i16 {
+    let mut rank = i16::from(research_candidate_rank(candidate, research_mode_enabled)) * 100;
+    rank += i16::from(severity_rank(&candidate.severity_guess)) * 4;
+    for entry in memory.iter().filter(|entry| memory_matches_candidate(entry, candidate)) {
+        rank += match entry.result.as_str() {
+            "confirmed" => 45,
+            "inconclusive" => 18,
+            "blocked" => -28,
+            "rejected" => -45,
+            _ => 0,
+        };
+    }
+    rank
+}
+
+fn memory_matches_candidate(
+    memory: &ExplorationMemoryRecord,
+    candidate: &PentestCandidateRecord,
+) -> bool {
+    if memory.candidate_id.as_deref() == Some(candidate.id.as_str()) {
+        return true;
+    }
+    let haystack = format!(
+        "{} {} {} {}",
+        candidate.hypothesis,
+        candidate.vuln_class,
+        candidate.title,
+        candidate_location(candidate).unwrap_or_default()
+    )
+    .to_ascii_lowercase();
+    let endpoint = memory.endpoint.as_deref().unwrap_or("");
+    [&memory.hypothesis.as_str(), endpoint]
+        .iter()
+        .map(|s| s.split_whitespace().take(8).collect::<Vec<_>>().join(" ").to_ascii_lowercase())
+        .any(|needle| needle.len() >= 12 && haystack.contains(&needle))
 }
 
 fn research_focus_from_known_leads(leads: &[ExplorationKnownLead]) -> Vec<String> {
@@ -4269,6 +4617,7 @@ async fn apply_exploration_outcome(
     run_id: &str,
     repo: &str,
     task_id: &str,
+    prompt_memory: &[String],
     outcome: ExplorationOutcome,
     report: &mut AiExplorationPassReport,
     runtime_name: &str,
@@ -4392,6 +4741,16 @@ async fn apply_exploration_outcome(
                 Some(&metrics),
             );
             parent_trace.conversation_jsonl_path = audit_path;
+            if !prompt_memory.is_empty() {
+                parent_trace.verifier_blob = Some(
+                    serde_json::json!({
+                        "kind": "ExplorationPromptContext",
+                        "learned_from_prior_runs": prompt_memory,
+                    })
+                    .to_string(),
+                );
+            }
+            persist_exploration_audit_memory(store, run_id, repo, &audit, now_ms).await;
             persist_trace_row(store, parent_trace).await;
             for (finding_id, cost) in successful.into_iter().zip(per_finding_costs) {
                 let per_trace = build_trace_row(
@@ -4436,6 +4795,72 @@ fn write_exploration_audit_jsonl(
     }
     file.flush()?;
     Ok(path)
+}
+
+async fn persist_exploration_audit_memory(
+    store: &Store,
+    run_id: &str,
+    repo: &str,
+    audit: &[ExplorationAuditEntry],
+    now_ms: i64,
+) {
+    let Some(project_id) = store.runs().get(run_id).await.ok().flatten().and_then(|r| r.project_id)
+    else {
+        return;
+    };
+    for entry in audit.iter().filter(|entry| entry.action != "record_exploration_finding") {
+        let input = ExplorationMemoryInput {
+            project_id: project_id.clone(),
+            repo: repo.to_string(),
+            run_id: run_id.to_string(),
+            source: "ai_exploration_audit".to_string(),
+            hypothesis: entry.summary.clone(),
+            endpoint: extract_endpoint_like(&entry.summary),
+            role_context: extract_labeled_value(&entry.summary, "role"),
+            object_context: extract_labeled_value(&entry.summary, "object"),
+            result: "inconclusive".to_string(),
+            reason: format!(
+                "AI exploration audit action `{}` did not produce a confirmed finding",
+                entry.action
+            ),
+            useful_markers: Vec::new(),
+            auth_session_notes: extract_labeled_value(&entry.summary, "auth"),
+            follow_up_ideas: vec![
+                "resume from this audit observation if related leads recur".to_string()
+            ],
+            candidate_id: None,
+            verification_attempt_id: None,
+            trace_id: None,
+            created_at: now_ms,
+        };
+        if let Err(err) = store.exploration_memory().upsert(&input).await {
+            tracing::warn!(
+                run_id = %run_id,
+                repo = %repo,
+                error = %err,
+                "failed to persist exploration audit memory"
+            );
+        }
+    }
+}
+
+fn extract_endpoint_like(raw: &str) -> Option<String> {
+    raw.split_whitespace()
+        .find(|part| {
+            part.starts_with("http://")
+                || part.starts_with("https://")
+                || part.starts_with('/')
+                || matches!(*part, "GET" | "POST" | "PUT" | "PATCH" | "DELETE")
+        })
+        .map(|s| s.trim_matches(|c: char| c == ',' || c == ';').to_string())
+}
+
+fn extract_labeled_value(raw: &str, label: &str) -> Option<String> {
+    let prefix = format!("{label}=");
+    raw.split_whitespace()
+        .find_map(|part| part.strip_prefix(&prefix))
+        .map(|s| s.trim_matches(|c: char| c == ',' || c == ';').to_string())
+        .filter(|s| !s.is_empty())
 }
 
 async fn persist_exploration_finding(
@@ -4493,6 +4918,31 @@ async fn persist_exploration_finding(
         spec_id: None,
     };
     store.findings().upsert(&rec).await?;
+    if let Some(project_id) = store.runs().get(run_id).await?.and_then(|run| run.project_id) {
+        let memory = ExplorationMemoryInput {
+            project_id,
+            repo: repo.to_string(),
+            run_id: run_id.to_string(),
+            source: "ai_exploration_finding".to_string(),
+            hypothesis: finding.rationale.clone(),
+            endpoint: finding.endpoint.clone(),
+            role_context: None,
+            object_context: Some(finding.path.clone()),
+            result: "inconclusive".to_string(),
+            reason: "AI exploration proposed a finding that still needs deterministic confirmation"
+                .to_string(),
+            useful_markers: finding.suggested_payload_hint.clone().into_iter().collect(),
+            auth_session_notes: None,
+            follow_up_ideas: vec![
+                "derive and run a deterministic live verification plan".to_string()
+            ],
+            candidate_id: None,
+            verification_attempt_id: None,
+            trace_id: None,
+            created_at: now_ms,
+        };
+        store.exploration_memory().upsert(&memory).await?;
+    }
     Ok(id)
 }
 
@@ -5625,6 +6075,12 @@ mod tests {
             chains: vec![nyctos_types::chain::ChainCandidate {
                 member_ids: vec![entry_node.id.clone(), sink_node.id.clone()],
                 rationale: "controller in repo-A reaches SQL sink in repo-B".to_string(),
+                prerequisites: Vec::new(),
+                evidence: Vec::new(),
+                blast_radius: Vec::new(),
+                confidence: 82,
+                missing_verification_steps: Vec::new(),
+                edge_provenance: Vec::new(),
             }],
         };
         let outcome = ChainReasoningOutcome::Ranked {
@@ -5658,6 +6114,17 @@ mod tests {
         assert!(rationale.contains("controller in repo-A"), "rationale: {rationale}");
         let members: Vec<String> = serde_json::from_str(&c.member_ids).unwrap();
         assert_eq!(members, vec![entry_node.id.clone(), sink_node.id.clone()]);
+        let evidence: serde_json::Value =
+            serde_json::from_str(c.evidence_blob.as_deref().expect("evidence blob")).unwrap();
+        assert_eq!(evidence.get("graph_backed").and_then(|v| v.as_bool()), Some(true));
+        assert!(evidence
+            .get("edge_provenance")
+            .and_then(|v| v.as_array())
+            .is_some_and(|edges| !edges.is_empty()));
+        assert!(evidence
+            .get("missing_verification_steps")
+            .and_then(|v| v.as_array())
+            .is_some_and(|gaps| !gaps.is_empty()));
 
         // Both findings have chain_id back-link stamped.
         let entry_row = store.findings().get(&entry_node.id).await.unwrap().unwrap();
@@ -7097,7 +7564,8 @@ mod tests {
             ),
         ];
 
-        let leads = exploration_known_leads_for_repo(&candidates, "repo-a", 8, false);
+        let leads =
+            exploration_known_leads_for_repo_with_memory(&candidates, "repo-a", 8, false, &[]);
         assert_eq!(
             leads.len(),
             3,
@@ -7111,6 +7579,74 @@ mod tests {
         assert_eq!(leads[2].location.as_deref(), Some("GET http://localhost:3000/login"));
         assert!(leads.iter().all(|lead| lead.id != "pc-nyx-b"));
         assert!(leads.iter().all(|lead| lead.id != "pc-rejected"));
+    }
+
+    #[test]
+    fn exploration_scope_includes_prior_memory_in_prompt_focus() {
+        let scope = build_exploration_scope(
+            "run-memory",
+            "repo-a",
+            std::path::Path::new("/tmp/repo-a"),
+            &["http://localhost:3000".to_string()],
+            Vec::new(),
+            vec!["prior rejected: admin export [GET /admin/export] - 403 blocked".to_string()],
+            100_000,
+            1_000_000,
+            false,
+        );
+        assert!(scope
+            .research_focus
+            .iter()
+            .any(|line| line.contains("prior rejected: admin export")));
+    }
+
+    #[test]
+    fn exploration_known_leads_rank_uses_prior_memory() {
+        let rejected = pentest_candidate(
+            "pc-rejected-memory",
+            "NyxSignal",
+            "Critical",
+            "NeedsLiveTest",
+            serde_json::json!({"repo": "repo-a", "path": "src/admin.ts"}),
+        );
+        let mut promising = pentest_candidate(
+            "pc-promising-memory",
+            "NyxSignal",
+            "Medium",
+            "NeedsLiveTest",
+            serde_json::json!({"repo": "repo-a", "path": "src/billing.ts"}),
+        );
+        promising.hypothesis = "billing export leaks invoices".to_string();
+        let memory = vec![ExplorationMemoryRecord {
+            id: "mem-1".to_string(),
+            project_id: "project".to_string(),
+            repo: "repo-a".to_string(),
+            run_id: "old-run".to_string(),
+            source: "live_verifier".to_string(),
+            hypothesis: rejected.hypothesis.clone(),
+            endpoint: None,
+            role_context: None,
+            object_context: None,
+            result: "rejected".to_string(),
+            reason: "prior verifier rejected the same probe".to_string(),
+            useful_markers: Vec::new(),
+            auth_session_notes: None,
+            follow_up_ideas: Vec::new(),
+            candidate_id: None,
+            verification_attempt_id: None,
+            trace_id: None,
+            memory_key: "key".to_string(),
+            created_at: 1,
+            updated_at: 1,
+        }];
+        let leads = exploration_known_leads_for_repo_with_memory(
+            &[rejected, promising],
+            "repo-a",
+            8,
+            false,
+            &memory,
+        );
+        assert_eq!(leads[0].id, "pc-promising-memory");
     }
 
     #[test]

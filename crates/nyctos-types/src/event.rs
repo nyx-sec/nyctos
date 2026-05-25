@@ -85,6 +85,14 @@ pub enum RunEvent {
         #[ts(type = "number")]
         ts_ms: i64,
     },
+    LiveVerificationCapabilities {
+        run_id: String,
+        project_id: String,
+        #[ts(type = "unknown")]
+        report: serde_json::Value,
+        #[ts(type = "number")]
+        ts_ms: i64,
+    },
     /// Per-repo lifecycle: a rayon job picked up `repo` and the static
     /// pass is running.
     RepoStarted {

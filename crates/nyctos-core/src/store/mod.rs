@@ -21,6 +21,7 @@ pub mod attack_graph;
 pub mod budget;
 pub mod candidate;
 pub mod chain;
+pub mod exploration_memory;
 pub mod feedback;
 pub mod finding;
 pub mod integration;
@@ -44,6 +45,10 @@ pub use attack_graph::{attack_graph_edge_id, attack_graph_node_id, AttackGraphSt
 pub use budget::{BudgetKind, BudgetRecord, BudgetStore};
 pub use candidate::{CandidateFindingRecord, CandidateFindingStore, CandidateStatus};
 pub use chain::{ChainRecord, ChainStore};
+pub use exploration_memory::{
+    compact_memory_for_prompt, ExplorationMemoryInput, ExplorationMemoryRecord,
+    ExplorationMemoryStore,
+};
 pub use feedback::{FeedbackRecord, FeedbackStore, OperatorVerdict};
 pub use finding::{
     finding_id_hash, FindingFilter, FindingOrigin, FindingRecord, FindingStatus, FindingStore,
@@ -56,12 +61,12 @@ pub use integration::{
 };
 pub use payload::{PayloadRecord, PayloadStore};
 pub use product::{
-    canonical_risk_rating, clamp_risk_score, BusinessLogicTemplateRunRecord,
-    BusinessLogicTemplateRunStore, EnvironmentRunRecord, EnvironmentRunStore, LaunchProfileStore,
-    NyxSignalRecord, NyxSignalStore, PentestCandidateRecord, PentestCandidateStore,
-    ProjectLaunchProfile, ProjectLaunchProfileInput, RouteModelRecord, RouteModelStore,
-    VerificationAttemptRecord, VerificationAttemptStore, VerifiedVulnerabilityRecord,
-    VerifiedVulnerabilityStore,
+    canonical_risk_rating, clamp_risk_score, AuthzMatrixEntryRecord, AuthzMatrixStore,
+    BusinessLogicTemplateRunRecord, BusinessLogicTemplateRunStore, EnvironmentRunRecord,
+    EnvironmentRunStore, LaunchProfileStore, NyxSignalRecord, NyxSignalStore,
+    PentestCandidateRecord, PentestCandidateStore, ProjectLaunchProfile, ProjectLaunchProfileInput,
+    RouteModelRecord, RouteModelStore, VerificationAttemptRecord, VerificationAttemptStore,
+    VerifiedVulnerabilityRecord, VerifiedVulnerabilityStore,
 };
 pub use project::{
     ProjectPatch, ProjectPatchOption, ProjectRecord, ProjectRuntimeProfile, ProjectStore,
@@ -247,6 +252,9 @@ impl Store {
     pub fn attack_graph(&self) -> AttackGraphStore<'_> {
         AttackGraphStore::new(&self.pool)
     }
+    pub fn exploration_memory(&self) -> ExplorationMemoryStore<'_> {
+        ExplorationMemoryStore::new(&self.pool)
+    }
     pub fn run_repo_outcomes(&self) -> RunRepoOutcomeStore<'_> {
         RunRepoOutcomeStore::new(&self.pool)
     }
@@ -279,6 +287,9 @@ impl Store {
     }
     pub fn verification_attempts(&self) -> VerificationAttemptStore<'_> {
         VerificationAttemptStore::new(&self.pool)
+    }
+    pub fn authz_matrix(&self) -> AuthzMatrixStore<'_> {
+        AuthzMatrixStore::new(&self.pool)
     }
     pub fn verified_vulnerabilities(&self) -> VerifiedVulnerabilityStore<'_> {
         VerifiedVulnerabilityStore::new(&self.pool)

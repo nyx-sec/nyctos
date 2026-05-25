@@ -134,6 +134,8 @@ pub fn build_router(state: ServerState) -> Router {
         .route("/api/v1/runs/{id}/environment-runs", get(environment_runs_for_run))
         .route("/api/v1/runs/{id}/events.jsonl", get(run_event_log))
         .route("/api/v1/runs/{id}/verification-attempts", get(verification_attempts_for_run))
+        .route("/api/v1/runs/{id}/authz-matrix", get(authz_matrix_for_run))
+        .route("/api/v1/runs/{id}/exploration-memory", get(exploration_memory_for_run))
         .route("/api/v1/runs/{id}/vulnerabilities", get(run_vulnerabilities))
         .route("/api/v1/runs/{id}/summary", get(run_summary))
         .route("/api/v1/runs/{id}/business-logic", get(run_business_logic))
@@ -2290,6 +2292,7 @@ fn auth_setup_profile(
         role: role.to_string(),
         mode: ProjectAuthMode::AiAuto,
         label: Some(format!("AI setup {role}")),
+        tenant: None,
         session_cache_ttl_seconds: None,
         session_import_path: None,
         login_url: login_path.map(str::to_string),
@@ -3289,6 +3292,22 @@ async fn verification_attempts_for_run(
     Ok(Json(s.store.verification_attempts().list_by_run(&id).await?))
 }
 
+async fn authz_matrix_for_run(
+    State(s): State<ServerState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<nyctos_types::product::AuthzMatrixEntryRecord>>, ApiError> {
+    require_run(&s, &id).await?;
+    Ok(Json(s.store.authz_matrix().list_by_run(&id).await?))
+}
+
+async fn exploration_memory_for_run(
+    State(s): State<ServerState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<nyctos_types::product::ExplorationMemoryRecord>>, ApiError> {
+    require_run(&s, &id).await?;
+    Ok(Json(s.store.exploration_memory().list_by_run(&id).await?))
+}
+
 #[derive(Debug, Deserialize)]
 struct SignalsQuery {
     #[serde(default)]
@@ -4138,6 +4157,7 @@ fn run_matches(ev: &AgentEvent, run_filter: Option<&str>) -> bool {
                 | RunEvent::PhaseFinished { run_id, .. }
                 | RunEvent::EnvironmentStatus { run_id, .. }
                 | RunEvent::AuthSessionStatus { run_id, .. }
+                | RunEvent::LiveVerificationCapabilities { run_id, .. }
                 | RunEvent::RepoStarted { run_id, .. }
                 | RunEvent::RepoStaticDone { run_id, .. }
                 | RunEvent::RepoDynamicDone { run_id, .. }

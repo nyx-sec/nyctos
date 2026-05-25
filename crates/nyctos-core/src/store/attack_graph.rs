@@ -12,16 +12,20 @@ use sqlx::{Row, SqlitePool};
 
 use nyctos_types::attack_graph::{
     AttackGraphEdgeRecord, AttackGraphEvidenceTrail, AttackGraphNodeRecord, EDGE_CHAINED_WITH,
-    EDGE_DERIVED_CANDIDATE, EDGE_TARGETS, EDGE_TOUCHES_OBJECT, EDGE_USES_ROLE, EDGE_VERIFIED_AS,
+    EDGE_DERIVED_CANDIDATE, EDGE_LEARNED_FROM, EDGE_OBSERVED_ACCESS, EDGE_TARGETS,
+    EDGE_TOUCHES_OBJECT, EDGE_USES_ROLE, EDGE_VERIFIED_AS, NODE_AUTHZ_MATRIX_ENTRY,
     NODE_BUSINESS_LOGIC_TEMPLATE, NODE_CANDIDATE, NODE_CHAIN, NODE_ENDPOINT, NODE_FORM,
     NODE_OBJECT, NODE_PARAMETER, NODE_ROLE, NODE_ROUTE, NODE_SIGNAL, NODE_VERIFICATION_ATTEMPT,
     NODE_VERIFIED_VULNERABILITY,
 };
-use nyctos_types::chain::ChainRecord;
+use nyctos_types::chain::{
+    ChainReasoningEdge, ChainReasoningInput, ChainReasoningNode, ChainRecord,
+    CHAIN_REASONING_DEFAULT_MAX, NODE_KIND_ENTRY, NODE_KIND_OTHER, NODE_KIND_SINK,
+};
 use nyctos_types::product::{
-    canonical_risk_rating, clamp_risk_score, ApiClientCallModel, FormModel, FrontendRouteModel,
-    NyxSignalRecord, PentestCandidateRecord, RouteModelEndpoint, RouteModelRecord,
-    VerificationAttemptRecord, VerifiedVulnerabilityRecord,
+    canonical_risk_rating, clamp_risk_score, ApiClientCallModel, AuthzMatrixEntryRecord, FormModel,
+    FrontendRouteModel, NyxSignalRecord, PentestCandidateRecord, RouteModelEndpoint,
+    RouteModelRecord, VerificationAttemptRecord, VerifiedVulnerabilityRecord,
 };
 
 use super::candidate::CandidateFindingRecord;
@@ -413,6 +417,198 @@ impl<'a> AttackGraphStore<'a> {
         Ok(out)
     }
 
+    pub async fn candidate_to_route(
+        &self,
+        run_id: &str,
+        candidate_id: &str,
+    ) -> Result<Option<AttackGraphEvidenceTrail>, StoreError> {
+        let Some(focus) = self.get_node_by_ref(run_id, NODE_CANDIDATE, candidate_id).await? else {
+            return Ok(None);
+        };
+        self.context_trail_from_focus(
+            focus,
+            &[
+                EDGE_DERIVED_CANDIDATE,
+                EDGE_TARGETS,
+                EDGE_USES_ROLE,
+                EDGE_TOUCHES_OBJECT,
+                EDGE_VERIFIED_AS,
+            ],
+            3,
+        )
+        .await
+        .map(Some)
+    }
+
+    pub async fn route_to_role_object(
+        &self,
+        run_id: &str,
+        route_stable_key: &str,
+    ) -> Result<Option<AttackGraphEvidenceTrail>, StoreError> {
+        let Some(focus) = self.get_node_by_stable_key(run_id, NODE_ROUTE, route_stable_key).await?
+        else {
+            return Ok(None);
+        };
+        self.context_trail_from_focus(
+            focus,
+            &[EDGE_TARGETS, EDGE_USES_ROLE, EDGE_TOUCHES_OBJECT, EDGE_OBSERVED_ACCESS],
+            2,
+        )
+        .await
+        .map(Some)
+    }
+
+    pub async fn vuln_to_object_role(
+        &self,
+        run_id: &str,
+        vulnerability_id: &str,
+    ) -> Result<Option<AttackGraphEvidenceTrail>, StoreError> {
+        let Some(focus) =
+            self.get_node_by_ref(run_id, NODE_VERIFIED_VULNERABILITY, vulnerability_id).await?
+        else {
+            return Ok(None);
+        };
+        self.context_trail_from_focus(
+            focus,
+            &[
+                EDGE_TARGETS,
+                EDGE_USES_ROLE,
+                EDGE_TOUCHES_OBJECT,
+                EDGE_VERIFIED_AS,
+                EDGE_CHAINED_WITH,
+            ],
+            3,
+        )
+        .await
+        .map(Some)
+    }
+
+    pub async fn cross_repo_service_edges(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<AttackGraphEdgeRecord>, StoreError> {
+        let nodes = self.list_nodes_by_run(run_id).await?;
+        let node_by_id: HashMap<String, AttackGraphNodeRecord> =
+            nodes.into_iter().map(|n| (n.id.clone(), n)).collect();
+        let mut out = Vec::new();
+        for edge in self.list_edges_by_run(run_id).await? {
+            if edge.kind != EDGE_TOUCHES_OBJECT && edge.kind != EDGE_TARGETS {
+                continue;
+            }
+            let Some(from) = node_by_id.get(&edge.from_node_id) else { continue };
+            let Some(to) = node_by_id.get(&edge.to_node_id) else { continue };
+            let from_repo = graph_repo(from);
+            let to_repo = graph_repo(to);
+            let service_like = graph_object_kind(from).as_deref() == Some("service")
+                || graph_object_kind(to).as_deref() == Some("service")
+                || from.properties.get("service_calls").is_some()
+                || to.properties.get("service_calls").is_some();
+            if service_like
+                && from_repo.is_some()
+                && to_repo.is_some()
+                && from_repo.as_deref() != to_repo.as_deref()
+            {
+                out.push(edge);
+            }
+        }
+        out.sort_by(|a, b| {
+            (&a.kind, &a.from_node_id, &a.to_node_id).cmp(&(
+                &b.kind,
+                &b.from_node_id,
+                &b.to_node_id,
+            ))
+        });
+        Ok(out)
+    }
+
+    pub async fn chain_planning_input(
+        &self,
+        run_id: &str,
+        max_chains: u32,
+    ) -> Result<Option<ChainReasoningInput>, StoreError> {
+        let nodes = self.list_nodes_by_run(run_id).await?;
+        let mut selected = HashMap::new();
+        for node in nodes {
+            if is_chain_planning_node(&node) {
+                selected.insert(node.id.clone(), node);
+            }
+        }
+        if selected.len() < 2 {
+            return Ok(None);
+        }
+
+        let mut graph_edges = Vec::new();
+        let mut edge_ref_by_pair: HashMap<(String, String), Vec<String>> = HashMap::new();
+        for edge in self.list_edges_by_run(run_id).await? {
+            if !is_chain_planning_edge(&edge.kind) {
+                continue;
+            }
+            if !selected.contains_key(&edge.from_node_id)
+                || !selected.contains_key(&edge.to_node_id)
+            {
+                continue;
+            }
+            edge_ref_by_pair
+                .entry((edge.from_node_id.clone(), edge.to_node_id.clone()))
+                .or_default()
+                .push(edge.evidence_ref.clone().unwrap_or_else(|| edge.id.clone()));
+            graph_edges.push(edge);
+        }
+        if graph_edges.is_empty() {
+            return Ok(None);
+        }
+
+        let mut repos = selected.values().filter_map(graph_repo).collect::<Vec<_>>();
+        repos.sort();
+        repos.dedup();
+
+        let mut reasoning_nodes = Vec::new();
+        for node in selected.values() {
+            reasoning_nodes.push(graph_node_to_chain_node(node, &graph_edges, &selected));
+        }
+        reasoning_nodes.sort_by(|a, b| {
+            chain_node_rank(a)
+                .cmp(&chain_node_rank(b))
+                .then_with(|| severity_value(&b.severity).cmp(&severity_value(&a.severity)))
+                .then_with(|| a.label.cmp(&b.label))
+                .then_with(|| a.id.cmp(&b.id))
+        });
+
+        let mut reasoning_edges = graph_edges
+            .iter()
+            .map(|edge| {
+                let from_repo = selected.get(&edge.from_node_id).and_then(graph_repo);
+                let to_repo = selected.get(&edge.to_node_id).and_then(graph_repo);
+                ChainReasoningEdge {
+                    from: edge.from_node_id.clone(),
+                    to: edge.to_node_id.clone(),
+                    label: edge.kind.clone(),
+                    cross_repo: from_repo.is_some()
+                        && to_repo.is_some()
+                        && from_repo.as_deref() != to_repo.as_deref(),
+                    edge_id: Some(edge.id.clone()),
+                    evidence_ref: edge.evidence_ref.clone(),
+                    source: edge
+                        .properties
+                        .get("source")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
+                }
+            })
+            .collect::<Vec<_>>();
+        reasoning_edges.sort_by(|a, b| {
+            (&a.from, &a.to, &a.label, &a.edge_id).cmp(&(&b.from, &b.to, &b.label, &b.edge_id))
+        });
+
+        Ok(Some(ChainReasoningInput {
+            run_id: run_id.to_string(),
+            repos,
+            nodes: reasoning_nodes,
+            edges: reasoning_edges,
+            max_chains: if max_chains == 0 { CHAIN_REASONING_DEFAULT_MAX } else { max_chains },
+        }))
+    }
+
     pub async fn record_route_model(&self, rec: &RouteModelRecord) -> Result<(), StoreError> {
         let now = rec.created_at;
         for route in &rec.model.backend_routes {
@@ -697,6 +893,116 @@ impl<'a> AttackGraphStore<'a> {
             &node.id,
             &request_components,
             Some(&rec.id),
+            now,
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn record_authz_matrix_entry(
+        &self,
+        rec: &AuthzMatrixEntryRecord,
+    ) -> Result<(), StoreError> {
+        let now = rec.created_at;
+        let node = self
+            .upsert_node_by_key(
+                &rec.run_id,
+                &rec.project_id,
+                NODE_AUTHZ_MATRIX_ENTRY,
+                &format!("authz-matrix:{}", rec.id),
+                &format!("{} {} {}", rec.role, rec.action, rec.resource),
+                Some(&rec.id),
+                serde_json::json!({
+                    "candidate_id": rec.candidate_id,
+                    "verification_attempt_id": rec.verification_attempt_id,
+                    "probe_kind": rec.probe_kind,
+                    "role": rec.role,
+                    "owner_role": rec.owner_role,
+                    "tenant": rec.tenant,
+                    "resource": rec.resource,
+                    "object_id": rec.object_id,
+                    "action": rec.action,
+                    "endpoint": rec.endpoint,
+                    "expected_decision": rec.expected_decision,
+                    "observed_decision": rec.observed_decision,
+                    "observed_status": rec.observed_status,
+                    "body_marker_result": rec.body_marker_result,
+                    "confidence": rec.confidence,
+                    "evidence": rec.evidence,
+                }),
+                now,
+            )
+            .await?;
+        let attempt = self
+            .ensure_verification_attempt_node(
+                &rec.run_id,
+                &rec.project_id,
+                &rec.verification_attempt_id,
+                now,
+            )
+            .await?;
+        self.upsert_edge_by_key(
+            &rec.run_id,
+            &rec.project_id,
+            EDGE_OBSERVED_ACCESS,
+            &attempt.id,
+            &node.id,
+            Some(&rec.verification_attempt_id),
+            serde_json::json!({"source": "authz_matrix"}),
+            now,
+        )
+        .await?;
+        let role = self.upsert_role_node(&rec.run_id, &rec.project_id, &rec.role, now).await?;
+        self.upsert_edge_by_key(
+            &rec.run_id,
+            &rec.project_id,
+            EDGE_USES_ROLE,
+            &node.id,
+            &role.id,
+            Some(&rec.id),
+            serde_json::json!({"source": "authz_matrix.role"}),
+            now,
+        )
+        .await?;
+        if let Some(owner_role) = rec.owner_role.as_deref().filter(|s| !s.trim().is_empty()) {
+            let owner =
+                self.upsert_role_node(&rec.run_id, &rec.project_id, owner_role, now).await?;
+            self.upsert_edge_by_key(
+                &rec.run_id,
+                &rec.project_id,
+                EDGE_USES_ROLE,
+                &node.id,
+                &owner.id,
+                Some(&rec.id),
+                serde_json::json!({"source": "authz_matrix.owner_role"}),
+                now,
+            )
+            .await?;
+        }
+        let endpoint =
+            self.upsert_endpoint_node(&rec.run_id, &rec.project_id, &rec.endpoint, now).await?;
+        self.upsert_edge_by_key(
+            &rec.run_id,
+            &rec.project_id,
+            EDGE_TARGETS,
+            &node.id,
+            &endpoint.id,
+            Some(&rec.id),
+            serde_json::json!({"source": "authz_matrix.endpoint"}),
+            now,
+        )
+        .await?;
+        let object_label = rec.object_id.as_deref().unwrap_or(&rec.resource);
+        let object =
+            self.upsert_resource_object(&rec.run_id, &rec.project_id, object_label, now).await?;
+        self.upsert_edge_by_key(
+            &rec.run_id,
+            &rec.project_id,
+            EDGE_TOUCHES_OBJECT,
+            &node.id,
+            &object.id,
+            Some(&rec.id),
+            serde_json::json!({"source": "authz_matrix.resource"}),
             now,
         )
         .await?;
@@ -1561,6 +1867,26 @@ impl<'a> AttackGraphStore<'a> {
         .await
     }
 
+    async fn upsert_endpoint_node(
+        &self,
+        run_id: &str,
+        project_id: &str,
+        endpoint: &str,
+        now: i64,
+    ) -> Result<AttackGraphNodeRecord, StoreError> {
+        self.upsert_node_by_key(
+            run_id,
+            project_id,
+            NODE_ENDPOINT,
+            &format!("endpoint:authz-matrix:{}", normalise_key(endpoint)),
+            endpoint,
+            None,
+            serde_json::json!({"source": "authz_matrix", "endpoint": endpoint}),
+            now,
+        )
+        .await
+    }
+
     async fn upsert_resource_object(
         &self,
         run_id: &str,
@@ -1841,6 +2167,51 @@ impl<'a> AttackGraphStore<'a> {
         Ok(row
             .and_then(|r| r.try_get::<Option<String>, _>("project_id").ok().flatten())
             .unwrap_or_else(|| DEFAULT_PROJECT_ID.to_string()))
+    }
+
+    async fn context_trail_from_focus(
+        &self,
+        focus: AttackGraphNodeRecord,
+        edge_kinds: &[&str],
+        max_depth: usize,
+    ) -> Result<AttackGraphEvidenceTrail, StoreError> {
+        let allowed: HashSet<&str> = edge_kinds.iter().copied().collect();
+        let mut nodes: HashMap<String, AttackGraphNodeRecord> =
+            HashMap::from([(focus.id.clone(), focus.clone())]);
+        let mut edges: HashMap<String, AttackGraphEdgeRecord> = HashMap::new();
+        let mut visited: HashSet<String> = HashSet::from([focus.id.clone()]);
+        let mut frontier = vec![focus.id.clone()];
+        for _ in 0..max_depth {
+            let mut next = Vec::new();
+            for current in frontier {
+                for edge in self.list_incident_edges(&current).await? {
+                    if !allowed.contains(edge.kind.as_str()) {
+                        continue;
+                    }
+                    let other_id = if edge.from_node_id == current {
+                        edge.to_node_id.clone()
+                    } else {
+                        edge.from_node_id.clone()
+                    };
+                    edges.insert(edge.id.clone(), edge);
+                    if visited.insert(other_id.clone()) {
+                        if let Some(node) = self.get_node(&other_id).await? {
+                            next.push(node.id.clone());
+                            nodes.insert(node.id.clone(), node);
+                        }
+                    }
+                }
+            }
+            if next.is_empty() {
+                break;
+            }
+            frontier = next;
+        }
+        Ok(AttackGraphEvidenceTrail {
+            focus,
+            nodes: sorted_nodes(nodes),
+            edges: sorted_edges(edges),
+        })
     }
 
     async fn node_by_kind_ref_any_run(
@@ -2283,6 +2654,164 @@ fn severity_rank(properties: &serde_json::Value) -> u8 {
     }
 }
 
+fn is_chain_planning_node(node: &AttackGraphNodeRecord) -> bool {
+    matches!(
+        node.kind.as_str(),
+        NODE_CANDIDATE
+            | NODE_SIGNAL
+            | NODE_VERIFIED_VULNERABILITY
+            | NODE_VERIFICATION_ATTEMPT
+            | NODE_ROUTE
+            | NODE_ENDPOINT
+            | NODE_FORM
+            | NODE_PARAMETER
+            | NODE_ROLE
+            | NODE_OBJECT
+            | NODE_AUTHZ_MATRIX_ENTRY
+            | NODE_BUSINESS_LOGIC_TEMPLATE
+    )
+}
+
+fn is_chain_planning_edge(kind: &str) -> bool {
+    matches!(
+        kind,
+        EDGE_TARGETS
+            | EDGE_USES_ROLE
+            | EDGE_TOUCHES_OBJECT
+            | EDGE_DERIVED_CANDIDATE
+            | EDGE_VERIFIED_AS
+            | EDGE_OBSERVED_ACCESS
+            | EDGE_LEARNED_FROM
+    )
+}
+
+fn graph_node_to_chain_node(
+    node: &AttackGraphNodeRecord,
+    edges: &[AttackGraphEdgeRecord],
+    nodes: &HashMap<String, AttackGraphNodeRecord>,
+) -> ChainReasoningNode {
+    let repo = graph_repo(node).unwrap_or_else(|| "*".to_string());
+    let path = node
+        .properties
+        .get("path")
+        .or_else(|| node.properties.get("handler_file"))
+        .and_then(|v| v.as_str())
+        .unwrap_or(&node.stable_key)
+        .to_string();
+    let line =
+        node.properties.get("line").and_then(|v| v.as_i64()).and_then(|v| u32::try_from(v).ok());
+    let cap = node
+        .properties
+        .get("cap")
+        .or_else(|| node.properties.get("vuln_class"))
+        .or_else(|| node.properties.get("object_kind"))
+        .and_then(|v| v.as_str())
+        .unwrap_or(&node.kind)
+        .to_string();
+    let rule = node
+        .properties
+        .get("rule")
+        .or_else(|| node.properties.get("source"))
+        .and_then(|v| v.as_str())
+        .unwrap_or(&node.kind)
+        .to_string();
+    let severity =
+        node.properties.get("severity").and_then(|v| v.as_str()).unwrap_or("Info").to_string();
+    let mut routes = Vec::new();
+    let mut roles = Vec::new();
+    let mut objects = Vec::new();
+    let mut evidence_refs = Vec::new();
+    for edge in edges {
+        if edge.from_node_id != node.id && edge.to_node_id != node.id {
+            continue;
+        }
+        if let Some(evidence_ref) = &edge.evidence_ref {
+            push_unique(&mut evidence_refs, evidence_ref.clone());
+        }
+        let other_id =
+            if edge.from_node_id == node.id { &edge.to_node_id } else { &edge.from_node_id };
+        let Some(other) = nodes.get(other_id) else { continue };
+        match other.kind.as_str() {
+            NODE_ROUTE | NODE_ENDPOINT | NODE_FORM => push_unique(&mut routes, other.label.clone()),
+            NODE_ROLE => push_unique(&mut roles, other.label.clone()),
+            NODE_OBJECT => push_unique(&mut objects, other.label.clone()),
+            _ => {}
+        }
+    }
+    ChainReasoningNode {
+        id: node.id.clone(),
+        graph_kind: Some(node.kind.clone()),
+        label: Some(node.label.clone()),
+        ref_id: node.ref_id.clone(),
+        repo,
+        path,
+        line,
+        cap,
+        rule,
+        severity,
+        kind: graph_chain_kind(node).to_string(),
+        routes,
+        roles,
+        objects,
+        evidence_refs,
+    }
+}
+
+fn graph_chain_kind(node: &AttackGraphNodeRecord) -> &'static str {
+    match node.kind.as_str() {
+        NODE_SIGNAL | NODE_CANDIDATE | NODE_ROUTE | NODE_ENDPOINT | NODE_FORM => NODE_KIND_ENTRY,
+        NODE_VERIFIED_VULNERABILITY | NODE_VERIFICATION_ATTEMPT => NODE_KIND_SINK,
+        NODE_ROLE | NODE_OBJECT | NODE_PARAMETER | NODE_AUTHZ_MATRIX_ENTRY => NODE_KIND_OTHER,
+        _ => NODE_KIND_OTHER,
+    }
+}
+
+fn chain_node_rank(node: &ChainReasoningNode) -> u8 {
+    match node.graph_kind.as_deref() {
+        Some(NODE_CANDIDATE) => 0,
+        Some(NODE_SIGNAL) => 1,
+        Some(NODE_VERIFIED_VULNERABILITY) => 2,
+        Some(NODE_VERIFICATION_ATTEMPT) => 3,
+        Some(NODE_ROUTE) | Some(NODE_ENDPOINT) | Some(NODE_FORM) => 4,
+        Some(NODE_ROLE) | Some(NODE_OBJECT) | Some(NODE_PARAMETER) => 5,
+        _ => 9,
+    }
+}
+
+fn graph_repo(node: &AttackGraphNodeRecord) -> Option<String> {
+    node.properties
+        .get("repo")
+        .or_else(|| node.properties.get("repo_id"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+fn graph_object_kind(node: &AttackGraphNodeRecord) -> Option<String> {
+    node.properties
+        .get("object_kind")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+fn severity_value(severity: &str) -> u8 {
+    match severity.to_ascii_lowercase().as_str() {
+        "critical" => 5,
+        "high" => 4,
+        "medium" => 3,
+        "low" => 2,
+        "info" | "informational" => 1,
+        _ => 0,
+    }
+}
+
+fn push_unique(values: &mut Vec<String>, value: String) {
+    if !value.is_empty() && !values.iter().any(|v| v == &value) {
+        values.push(value);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2565,5 +3094,92 @@ mod tests {
             endpoint.properties.get("handler_name").and_then(|v| v.as_str()),
             Some("updateProject")
         );
+    }
+
+    #[tokio::test]
+    async fn graph_chain_planning_input_ranks_graph_backed_candidate_path() {
+        let (_tmp, s) = fresh_store().await;
+        seed_run_project(&s).await;
+        let graph = s.attack_graph();
+        let now = 3_000;
+        let candidate = graph
+            .upsert_node_by_key(
+                "run-graph",
+                "p-graph",
+                NODE_CANDIDATE,
+                &candidate_key("cand-1"),
+                "Weak IDOR lead",
+                Some("cand-1"),
+                serde_json::json!({"severity": "High", "confidence": 0.71, "vuln_class": "IDOR"}),
+                now,
+            )
+            .await
+            .unwrap();
+        let route = graph
+            .upsert_route_node("run-graph", "p-graph", "/api/projects/:id", "test", now)
+            .await
+            .unwrap();
+        let role =
+            graph.upsert_role_node("run-graph", "p-graph", "authenticated", now).await.unwrap();
+        let object =
+            graph.upsert_resource_object("run-graph", "p-graph", "project", now).await.unwrap();
+        graph
+            .upsert_edge_by_key(
+                "run-graph",
+                "p-graph",
+                EDGE_TARGETS,
+                &candidate.id,
+                &route.id,
+                Some("cand-1"),
+                serde_json::json!({"source": "fixture"}),
+                now,
+            )
+            .await
+            .unwrap();
+        graph
+            .upsert_edge_by_key(
+                "run-graph",
+                "p-graph",
+                EDGE_USES_ROLE,
+                &route.id,
+                &role.id,
+                None,
+                serde_json::json!({"source": "fixture"}),
+                now,
+            )
+            .await
+            .unwrap();
+        graph
+            .upsert_edge_by_key(
+                "run-graph",
+                "p-graph",
+                EDGE_TOUCHES_OBJECT,
+                &route.id,
+                &object.id,
+                None,
+                serde_json::json!({"source": "fixture"}),
+                now,
+            )
+            .await
+            .unwrap();
+
+        let trail = graph.candidate_to_route("run-graph", "cand-1").await.unwrap().unwrap();
+        assert!(trail.nodes.iter().any(|n| n.kind == NODE_ROUTE && n.label == "/api/projects/:id"));
+        assert!(trail
+            .edges
+            .iter()
+            .any(|e| e.kind == EDGE_TARGETS && e.evidence_ref.as_deref() == Some("cand-1")));
+
+        let input = graph.chain_planning_input("run-graph", 10).await.unwrap().expect("input");
+        assert_eq!(input.nodes[0].id, candidate.id);
+        let candidate_input = input.nodes.iter().find(|n| n.id == candidate.id).unwrap();
+        assert!(candidate_input.routes.iter().any(|r| r == "/api/projects/:id"));
+        assert!(candidate_input.evidence_refs.iter().any(|r| r == "cand-1"));
+        assert!(input.edges.iter().any(|e| {
+            e.from == candidate.id
+                && e.to == route.id
+                && e.label == EDGE_TARGETS
+                && e.evidence_ref.as_deref() == Some("cand-1")
+        }));
     }
 }

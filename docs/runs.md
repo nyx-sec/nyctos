@@ -160,8 +160,10 @@ Two tables touch each run:
 | `business_logic_template_runs` | Business-logic template synthesis counts and skip reasons. |
 | `route_models` | Semantic App Model v2 route discovery output for the run. |
 | `verification_attempts` | Live HTTP/browser verifier rows. Browser attempts attach replay artifact paths. |
+| `authz_matrix_entries` | Expected-vs-observed authorization decisions from role comparison and object ownership verification. |
 | `verified_vulnerabilities` | User-facing confirmed vulnerabilities promoted from successful live attempts. |
-| `attack_graph_nodes`, `attack_graph_edges` | Store dual-writes for route models, signals, candidates, verification attempts, verified vulnerabilities, and chains. |
+| `exploration_memory` | Durable lessons from live verification, AI exploration audit, NoPlan outcomes, and rejected confirmations. |
+| `attack_graph_nodes`, `attack_graph_edges` | Store dual-writes for route models, signals, candidates, verification attempts, authorization matrix entries, verified vulnerabilities, and chains. |
 
 The `runs` row schema (see
 `crates/nyctos-core/src/store/run.rs:50`):
@@ -191,6 +193,15 @@ it, or from a route/object/role to the verified vulnerabilities that
 touch it, without changing the existing finding and report shapes. See
 [`attack-graph.md`](attack-graph.md).
 
+Authorization matrix rows are also run-scoped. For every successful
+role-comparison or object-ownership verification attempt, the verifier
+stores the allowed control and challenged access as separate rows. Each
+row captures role, optional tenant, resource/object id, owner role,
+action, endpoint, expected decision, observed decision, HTTP status,
+body-marker result, confidence, candidate id, verification attempt id,
+and evidence JSON. `GET /api/v1/runs/:id/authz-matrix` returns these
+rows for the run detail UI.
+
 `route_models.model_blob` stores the Semantic App Model v2 JSON. Backend
 endpoints retain the original route fields (`method`, `path`, `params`,
 `middleware`, `auth_checks`, `role_checks`, `body_fields`,
@@ -208,6 +219,17 @@ those paths to the attempt row. Reports and the SPA surface those paths
 through the vulnerability's `verification_attempt_ids`, so a human can
 inspect screenshots, redacted DOM/console/timeline captures, and the
 deterministic replay JSON/script for the proof.
+
+`exploration_memory` is not a JSON log. Each row is queryable by
+project, repo, run, result, and dedupe key. It stores the attempted
+hypothesis, endpoint, role/object context, confirmed/rejected/
+inconclusive/blocked result, reason, useful markers, auth/session
+notes, follow-up ideas, and optional links to the candidate,
+verification attempt, or AI trace that produced the lesson. Future AI
+exploration loads the most relevant rows for the repo, compacts them
+into the prompt as "learned from prior runs," and records that prompt
+context on the Exploration trace. The SPA exposes the same rows on the
+run detail view via `GET /api/v1/runs/:id/exploration-memory`.
 
 ## Stability across runs
 

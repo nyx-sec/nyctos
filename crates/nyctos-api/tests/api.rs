@@ -89,6 +89,7 @@ impl AuthSetupAgent for StubAuthSetupAgent {
                     role: "manager".to_string(),
                     mode: ProjectAuthMode::AiAuto,
                     label: Some("Repo manager".to_string()),
+                    tenant: None,
                     session_cache_ttl_seconds: None,
                     session_import_path: None,
                     login_url: Some("/api/auth/sign-in".to_string()),
@@ -644,8 +645,10 @@ async fn business_logic_templates_endpoint_lists_registry() {
             && template["mutability"] == "state_changing"
     }));
     assert!(templates.iter().any(|template| {
-        template["id"] == "password_reset_token_misuse"
-            && template["availability"] == "metadata_only"
+        template["id"] == "password_reset_token_replay" && template["availability"] == "executable"
+    }));
+    assert!(templates.iter().any(|template| {
+        template["id"] == "invite_accept_reuse" && template["availability"] == "executable"
     }));
 }
 

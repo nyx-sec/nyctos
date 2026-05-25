@@ -140,16 +140,6 @@ npm --prefix frontend run check
 - [Product store](docs/product-store.md)
 - [SQLx setup](docs/dev/sqlx.md)
 
-## Screenshot workflow
-
-README screenshots are captured from the current Vite UI with a seeded local pentest. The capture script serves the release bundle when `frontend/dist` exists, mocks the daemon API, records a paced demo GIF, and frames the stills:
-
-```bash
-node scripts/capture-screenshots.mjs --all
-```
-
-Raw captures are kept under `assets/screenshots/raw/`. Framed README assets are written next to them in `assets/screenshots/`.
-
 ## License
 
 Nyctos is source-available under PolyForm Small Business License 1.0.0. See [LICENSE.md](LICENSE.md). The upstream `nyx` scanner is a separate GPL-3.0-or-later project.

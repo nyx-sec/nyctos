@@ -480,4 +480,75 @@ describe("LiveScanView", () => {
     ).toBeInTheDocument();
     expect(screen.queryByText(/token|cookie|otp/i)).not.toBeInTheDocument();
   });
+
+  it("renders authorization matrix rows grouped by endpoint and resource", async () => {
+    const originalFetch = window.fetch;
+    window.fetch = (async (input: RequestInfo | URL) => {
+      const url = input.toString();
+      const body = url.endsWith("/authz-matrix")
+        ? [
+            {
+              id: "am-owner",
+              run_id: "run-1",
+              project_id: "p-1",
+              candidate_id: "pc-1",
+              verification_attempt_id: "va-1",
+              probe_kind: "authz_object_ownership",
+              role: "user_a",
+              owner_role: "user_a",
+              tenant: "tenant-a",
+              resource: "invoice",
+              object_id: "inv-1",
+              action: "GET",
+              endpoint: "http://localhost:3000/invoices/inv-1",
+              expected_decision: "allow",
+              observed_decision: "allow",
+              observed_status: 200,
+              body_marker_result: "matched",
+              confidence: 0.9,
+              evidence: {},
+              created_at: 20,
+            },
+            {
+              id: "am-accessor",
+              run_id: "run-1",
+              project_id: "p-1",
+              candidate_id: "pc-1",
+              verification_attempt_id: "va-1",
+              probe_kind: "authz_object_ownership",
+              role: "user_b",
+              owner_role: "user_a",
+              tenant: "tenant-b",
+              resource: "invoice",
+              object_id: "inv-1",
+              action: "GET",
+              endpoint: "http://localhost:3000/invoices/inv-1",
+              expected_decision: "deny",
+              observed_decision: "allow",
+              observed_status: 200,
+              body_marker_result: "matched",
+              confidence: 0.9,
+              evidence: {},
+              created_at: 21,
+            },
+          ]
+        : [];
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    try {
+      render(wrap(<LiveScanView />));
+      expect(await screen.findByText("Authorization matrix")).toBeInTheDocument();
+      expect(screen.getByText("invoice inv-1")).toBeInTheDocument();
+      expect(screen.getByText("http://localhost:3000/invoices/inv-1")).toBeInTheDocument();
+      expect(screen.getByText("tenant-a")).toBeInTheDocument();
+      expect(screen.getByText("tenant-b")).toBeInTheDocument();
+      expect(screen.getAllByText("GET HTTP 200 · matched · 90%")).toHaveLength(2);
+    } finally {
+      window.fetch = originalFetch;
+    }
+  });
 });

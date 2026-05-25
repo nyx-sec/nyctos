@@ -1648,6 +1648,7 @@ mod tests {
             role: String::new(),
             mode,
             label: None,
+            tenant: None,
             session_cache_ttl_seconds: None,
             session_import_path: None,
             login_url: None,

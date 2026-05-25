@@ -34,6 +34,12 @@ pub const NODE_KIND_OTHER: &str = "other";
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChainReasoningNode {
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ref_id: Option<String>,
     pub repo: String,
     pub path: String,
     #[serde(default)]
@@ -42,6 +48,14 @@ pub struct ChainReasoningNode {
     pub rule: String,
     pub severity: String,
     pub kind: String,
+    #[serde(default)]
+    pub routes: Vec<String>,
+    #[serde(default)]
+    pub roles: Vec<String>,
+    #[serde(default)]
+    pub objects: Vec<String>,
+    #[serde(default)]
+    pub evidence_refs: Vec<String>,
 }
 
 /// One directed edge in the finding graph. `label` is typically
@@ -56,6 +70,12 @@ pub struct ChainReasoningEdge {
     pub label: String,
     #[serde(default)]
     pub cross_repo: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edge_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 /// Input envelope for the ChainReasoning task. The agent never reaches
@@ -85,6 +105,18 @@ pub struct ChainReasoningInput {
 pub struct ChainCandidate {
     pub member_ids: Vec<String>,
     pub rationale: String,
+    #[serde(default)]
+    pub prerequisites: Vec<String>,
+    #[serde(default)]
+    pub evidence: Vec<String>,
+    #[serde(default)]
+    pub blast_radius: Vec<String>,
+    #[serde(default)]
+    pub confidence: u8,
+    #[serde(default)]
+    pub missing_verification_steps: Vec<String>,
+    #[serde(default)]
+    pub edge_provenance: Vec<String>,
 }
 
 /// Structured output the model is asked to produce. Plain `chains`
@@ -137,6 +169,9 @@ mod tests {
             nodes: vec![
                 ChainReasoningNode {
                     id: "abc123".into(),
+                    graph_kind: None,
+                    label: None,
+                    ref_id: None,
                     repo: "repo-A".into(),
                     path: "src/router.py".into(),
                     line: Some(7),
@@ -144,9 +179,16 @@ mod tests {
                     rule: "py.taint.flow".into(),
                     severity: "High".into(),
                     kind: NODE_KIND_ENTRY.into(),
+                    routes: Vec::new(),
+                    roles: Vec::new(),
+                    objects: Vec::new(),
+                    evidence_refs: Vec::new(),
                 },
                 ChainReasoningNode {
                     id: "def456".into(),
+                    graph_kind: None,
+                    label: None,
+                    ref_id: None,
                     repo: "repo-B".into(),
                     path: "src/handlers.py".into(),
                     line: Some(19),
@@ -154,6 +196,10 @@ mod tests {
                     rule: "py.sql.exec".into(),
                     severity: "Critical".into(),
                     kind: NODE_KIND_SINK.into(),
+                    routes: Vec::new(),
+                    roles: Vec::new(),
+                    objects: Vec::new(),
+                    evidence_refs: Vec::new(),
                 },
             ],
             edges: vec![ChainReasoningEdge {
@@ -161,6 +207,9 @@ mod tests {
                 to: "def456".into(),
                 label: "Reaches".into(),
                 cross_repo: true,
+                edge_id: None,
+                evidence_ref: None,
+                source: None,
             }],
             max_chains: CHAIN_REASONING_DEFAULT_MAX,
         };
@@ -175,6 +224,12 @@ mod tests {
             chains: vec![ChainCandidate {
                 member_ids: vec!["abc123".into(), "def456".into()],
                 rationale: "controller in A reaches sink in B".into(),
+                prerequisites: Vec::new(),
+                evidence: Vec::new(),
+                blast_radius: Vec::new(),
+                confidence: 0,
+                missing_verification_steps: Vec::new(),
+                edge_provenance: Vec::new(),
             }],
         };
         let s = serde_json::to_string(&out).unwrap();

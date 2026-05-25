@@ -4,7 +4,8 @@ Nyctos stores an attack graph as a run-scoped index over the artifacts
 the scanner and agent pipeline already persist. It does not replace the
 source tables; `nyx_signals`, `pentest_candidates`,
 `verification_attempts`, `verified_vulnerabilities`, `chains`,
-`route_models`, and `business_logic_template_runs` remain
+`route_models`, `business_logic_template_runs`, and
+`exploration_memory` remain
 authoritative. The graph gives those records a
 common set of nodes and edges so later UI and report surfaces can answer
 provenance and blast-radius questions without hand-joining every table.
@@ -49,6 +50,7 @@ The shipped graph writers can represent these node kinds:
 | `verification_attempt` | Live verification attempt that exercised a candidate or chain. |
 | `verified_vulnerability` | Confirmed vulnerability row. |
 | `chain` | Chain reasoning row and its members. |
+| `exploration_memory` | Durable lesson from a prior exploration or verifier result. |
 
 ## Edge Kinds
 
@@ -63,6 +65,7 @@ The graph keeps edge labels intentionally small:
 | `derived_candidate` | Signal/source node produced a candidate. |
 | `verified_as` | Candidate or verification attempt led to a verified vulnerability. |
 | `chained_with` | Chain relates to member signals or vulnerabilities. |
+| `learned_from` | Exploration memory points back to the candidate or verification attempt that produced the lesson. |
 
 ## Population
 
@@ -88,6 +91,11 @@ Graph rows are dual-written by the existing store accessors:
   attempts, chains, and affected components.
 - `ChainStore::insert` records chain nodes and `chained_with` edges to
   member nodes when possible.
+- `ExplorationMemoryStore::upsert` records memory nodes, links them to
+  candidate and verification-attempt provenance when available, and
+  mirrors endpoint, role, and object context as graph links. These rows
+  are durable across runs and are consumed by future AI exploration
+  prompts and relevance ranking.
 
 Because the graph is derivative, reports remain compatible with older
 consumers. Existing `report.json`, run cards, vulnerabilities, findings,
@@ -95,7 +103,8 @@ and chains keep their current shapes.
 
 ## Queries
 
-`Store::attack_graph()` exposes the first two graph queries:
+`Store::attack_graph()` exposes graph queries for vulnerability evidence,
+blast-radius lookup, and chain planning:
 
 - `evidence_for_vulnerability(vulnerability_id)` walks inbound graph
   edges from a verified vulnerability and includes directly connected
@@ -105,9 +114,59 @@ and chains keep their current shapes.
   route, object, role, or other graph node and walks connected graph
   edges to verified vulnerabilities. This answers "what vulns touch this
   route/object/role?"
+- `candidate_to_route(run_id, candidate_id)` returns the candidate's
+  graph-backed route, endpoint, parameter, role, object, source-signal,
+  and verification context.
+- `route_to_role_object(run_id, route_stable_key)` returns the route's
+  endpoint/form context plus role and object edges. This is the compact
+  "what does this route require and touch?" query.
+- `vuln_to_object_role(run_id, vulnerability_id)` returns a confirmed
+  vulnerability's target, role, object, candidate, verification, and
+  chain context.
+- `cross_repo_service_edges(run_id)` returns service-like target/object
+  edges that cross repository boundaries when both sides carry repo
+  metadata.
+- `chain_planning_input(run_id, max_chains)` builds the compact
+  ChainReasoning input from graph nodes and edges. It includes candidates,
+  signals, routes, endpoints, forms, parameters, roles, objects,
+  verification attempts, verified vulnerabilities, and business-logic
+  template provenance.
 
-The intended next UI use is a vulnerability evidence panel that shows
-the signal -> candidate -> verification attempt -> vulnerability path,
-plus any route, object, role, and chain context. The intended report use
-is an optional graph appendix or PR-comment detail section that can be
-added without changing the existing report schema.
+## Chain Planning
+
+ChainReasoning is now graph-native. The planner consumes the attack graph
+neighborhood instead of only static finding-flow summaries. Graph nodes
+are passed with stable graph ids, artifact `ref_id`s when present, route,
+role, object, and evidence-ref context. Graph edges are passed with edge
+ids, labels, evidence refs, source tags, and cross-repo flags.
+
+The model contract ranks chains with:
+
+| Field | Meaning |
+|---|---|
+| `member_ids` | Ordered graph node ids. Every adjacent pair must be connected by an input graph edge. |
+| `rationale` | Human-readable exploitability rationale. |
+| `prerequisites` | Required attacker state, roles, tenant/object state, or route reachability. |
+| `evidence` | Specific graph-backed facts supporting the chain. |
+| `blast_radius` | Affected routes, roles, objects, services, repos, or tenant boundaries. |
+| `confidence` | Integer confidence from 0 to 100. |
+| `missing_verification_steps` | Proof still needed before the chain is confirmed. |
+| `edge_provenance` | Edge ids or evidence refs supporting the member-to-member links. |
+
+The AI task validates that every member id exists and that every adjacent
+member pair is backed by an input edge. This prevents weak leads from
+being promoted into serious chains unless the graph contains route,
+object, role, signal, candidate, verification, or service evidence for
+the link.
+
+Persisted `chains.member_ids` remains the ordered member id list for
+compatibility. The structured graph proof is persisted in
+`chains.evidence_blob` with `schema_version = 1`, including member
+metadata, edge provenance, prerequisites, evidence, blast radius,
+confidence, and missing verification steps. `ChainStore::insert` still
+dual-writes the chain node and `chained_with` member edges into the graph.
+
+The chain UI reads the structured `evidence_blob` to show graph-backed
+paths, edge evidence, confidence, blast radius, and missing proof gaps.
+Older chains without this blob still render their rationale and member
+ids.

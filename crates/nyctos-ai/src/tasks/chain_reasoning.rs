@@ -76,12 +76,14 @@ pub async fn run<R: AiRuntime + ?Sized>(
         || Budget { run_id: input.run_id.clone(), kind: BudgetKind::OneShot, cap_usd_micros };
 
     let node_ids: HashSet<String> = input.nodes.iter().map(|n| n.id.clone()).collect();
+    let edge_pairs: HashSet<(String, String)> =
+        input.edges.iter().map(|e| (e.from.clone(), e.to.clone())).collect();
 
     let prompt = build_prompt(SYSTEM_PROMPT_V1, &task_id, input);
     let resp1: Response = runtime.one_shot(prompt, budget(), sink.clone()).await?;
     let cost1 = resp1.cost_usd_micros;
     let metrics1 = AgentTraceMetrics::from_response(&resp1);
-    let first_err = match parse_and_validate(&resp1.content, &node_ids) {
+    let first_err = match parse_and_validate(&resp1.content, &node_ids, &edge_pairs) {
         Ok(output) => {
             return Ok(ChainReasoningOutcome::Ranked {
                 run_id: input.run_id.clone(),
@@ -99,7 +101,7 @@ pub async fn run<R: AiRuntime + ?Sized>(
     let resp2: Response = runtime.one_shot(prompt2, budget(), sink).await?;
     let total_cost = cost1 + resp2.cost_usd_micros;
     let metrics_total = metrics1.merge(AgentTraceMetrics::from_response(&resp2));
-    match parse_and_validate(&resp2.content, &node_ids) {
+    match parse_and_validate(&resp2.content, &node_ids, &edge_pairs) {
         Ok(output) => Ok(ChainReasoningOutcome::Ranked {
             run_id: input.run_id.clone(),
             output,
@@ -151,8 +153,21 @@ fn render_user_message(input: &ChainReasoningInput) -> String {
     for n in &input.nodes {
         let line_str = n.line.map(|l| format!(" L{l}")).unwrap_or_default();
         out.push_str(&format!(
-            "- id={} repo={} kind={} cap={} rule={} sev={} path={}{}\n",
-            n.id, n.repo, n.kind, n.cap, n.rule, n.severity, n.path, line_str,
+            "- id={} graph_kind={} repo={} kind={} cap={} rule={} sev={} label={} path={}{} routes=[{}] roles=[{}] objects=[{}] evidence_refs=[{}]\n",
+            n.id,
+            n.graph_kind.as_deref().unwrap_or("finding"),
+            n.repo,
+            n.kind,
+            n.cap,
+            n.rule,
+            n.severity,
+            n.label.as_deref().unwrap_or(""),
+            n.path,
+            line_str,
+            n.routes.join(","),
+            n.roles.join(","),
+            n.objects.join(","),
+            n.evidence_refs.join(","),
         ));
     }
     out.push('\n');
@@ -163,7 +178,13 @@ fn render_user_message(input: &ChainReasoningInput) -> String {
     } else {
         for e in &input.edges {
             let cross = if e.cross_repo { " cross_repo" } else { "" };
-            out.push_str(&format!("- {} --[{}]--> {}{}\n", e.from, e.label, e.to, cross));
+            let edge_id = e.edge_id.as_deref().unwrap_or("");
+            let evidence_ref = e.evidence_ref.as_deref().unwrap_or("");
+            let source = e.source.as_deref().unwrap_or("");
+            out.push_str(&format!(
+                "- {} --[{} id={} evidence_ref={} source={}]--> {}{}\n",
+                e.from, e.label, edge_id, evidence_ref, source, e.to, cross
+            ));
         }
     }
     out
@@ -172,6 +193,7 @@ fn render_user_message(input: &ChainReasoningInput) -> String {
 fn parse_and_validate(
     raw: &str,
     node_ids: &HashSet<String>,
+    edge_pairs: &HashSet<(String, String)>,
 ) -> Result<ChainReasoningOutput, String> {
     let body = strip_code_fence(raw.trim());
     let out: ChainReasoningOutput =
@@ -179,11 +201,15 @@ fn parse_and_validate(
     if out.chains.is_empty() {
         return Err("chains array was empty".into());
     }
-    validate_chains(&out.chains, node_ids)?;
+    validate_chains(&out.chains, node_ids, edge_pairs)?;
     Ok(out)
 }
 
-fn validate_chains(chains: &[ChainCandidate], node_ids: &HashSet<String>) -> Result<(), String> {
+fn validate_chains(
+    chains: &[ChainCandidate],
+    node_ids: &HashSet<String>,
+    edge_pairs: &HashSet<(String, String)>,
+) -> Result<(), String> {
     for (i, c) in chains.iter().enumerate() {
         if c.member_ids.len() < 2 {
             return Err(format!("chain {i}: member_ids must contain at least 2 entries"));
@@ -203,6 +229,15 @@ fn validate_chains(chains: &[ChainCandidate], node_ids: &HashSet<String>) -> Res
             if w[0] == w[1] {
                 return Err(format!("chain {i}: member_ids has consecutive duplicate {:?}", w[0]));
             }
+            if !edge_pairs.contains(&(w[0].clone(), w[1].clone())) {
+                return Err(format!(
+                    "chain {i}: adjacent members {:?} -> {:?} are not connected by an input graph edge",
+                    w[0], w[1]
+                ));
+            }
+        }
+        if c.confidence > 100 {
+            return Err(format!("chain {i}: confidence must be between 0 and 100"));
         }
     }
     Ok(())
@@ -334,6 +369,9 @@ mod tests {
             nodes: vec![
                 ChainReasoningNode {
                     id: "a-entry".to_string(),
+                    graph_kind: None,
+                    label: None,
+                    ref_id: None,
                     repo: "repo-A".to_string(),
                     path: "controller.py".to_string(),
                     line: Some(5),
@@ -341,9 +379,16 @@ mod tests {
                     rule: "py.taint.flow".to_string(),
                     severity: "High".to_string(),
                     kind: NODE_KIND_ENTRY.to_string(),
+                    routes: Vec::new(),
+                    roles: Vec::new(),
+                    objects: Vec::new(),
+                    evidence_refs: Vec::new(),
                 },
                 ChainReasoningNode {
                     id: "b-sink".to_string(),
+                    graph_kind: None,
+                    label: None,
+                    ref_id: None,
                     repo: "repo-B".to_string(),
                     path: "db.py".to_string(),
                     line: Some(42),
@@ -351,6 +396,10 @@ mod tests {
                     rule: "py.sql.exec".to_string(),
                     severity: "Critical".to_string(),
                     kind: NODE_KIND_SINK.to_string(),
+                    routes: Vec::new(),
+                    roles: Vec::new(),
+                    objects: Vec::new(),
+                    evidence_refs: Vec::new(),
                 },
             ],
             edges: vec![ChainReasoningEdge {
@@ -358,6 +407,9 @@ mod tests {
                 to: "b-sink".to_string(),
                 label: "Reaches".to_string(),
                 cross_repo: true,
+                edge_id: None,
+                evidence_ref: None,
+                source: None,
             }],
             max_chains: 10,
         }

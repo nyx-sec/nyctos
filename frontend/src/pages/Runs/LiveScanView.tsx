@@ -2,12 +2,15 @@ import { useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   type AgentEventLike,
+  type AuthzMatrixEntryRecord,
   type PentestCandidateRecord,
   runEventLogDownloadUrl,
   useAgentEvents,
   useRun,
+  useRunAuthzMatrix,
   useRunCandidates,
   useRunEnvironmentRuns,
+  useRunExplorationMemory,
   useRunVerificationAttempts,
   useRunVulnerabilities,
   type VerificationAttemptRecord,
@@ -91,6 +94,13 @@ interface LiveVerifierRowInfo {
   updatedAt: number;
 }
 
+interface AuthzMatrixGroupInfo {
+  key: string;
+  endpoint: string;
+  resource: string;
+  rows: AuthzMatrixEntryRecord[];
+}
+
 const PHASE_LABEL: Record<RepoPhase, string> = {
   queued: "Queued",
   static: "Static",
@@ -141,6 +151,8 @@ export function LiveScanView() {
   const vulnerabilities = useRunVulnerabilities(runId);
   const candidates = useRunCandidates(runId);
   const verificationAttempts = useRunVerificationAttempts(runId);
+  const authzMatrix = useRunAuthzMatrix(runId);
+  const explorationMemory = useRunExplorationMemory(runId);
 
   useAgentEvents({
     runId,
@@ -173,6 +185,10 @@ export function LiveScanView() {
   const liveVerifierRows = useMemo(
     () => buildLiveVerifierRows(candidates.data ?? [], verificationAttempts.data ?? []),
     [candidates.data, verificationAttempts.data],
+  );
+  const authzMatrixGroups = useMemo(
+    () => groupAuthzMatrixRows(authzMatrix.data ?? []),
+    [authzMatrix.data],
   );
   const confirmedVulnerabilityCount =
     vulnerabilities.data?.filter((vulnerability) => vulnerability.status !== "NeedsReview")
@@ -317,6 +333,50 @@ export function LiveScanView() {
               <ol className="live-scan__verifier-list">
                 {liveVerifierRows.map((row) => (
                   <LiveVerifierRow key={row.id} row={row} />
+                ))}
+              </ol>
+            </section>
+          )}
+
+          {authzMatrixGroups.length > 0 && (
+            <section className="live-scan__panel">
+              <SectionHeader
+                title="Authorization matrix"
+                eyebrow="Access"
+                meta={`${authzMatrix.data?.length ?? 0} decision(s)`}
+              />
+              <div className="live-scan__authz-groups">
+                {authzMatrixGroups.map((group) => (
+                  <AuthzMatrixGroup key={group.key} group={group} />
+                ))}
+              </div>
+            </section>
+          )}
+
+          {(explorationMemory.data?.length ?? 0) > 0 && (
+            <section className="live-scan__panel">
+              <SectionHeader
+                title="Learned from prior runs"
+                eyebrow="Memory"
+                meta={`${explorationMemory.data?.length ?? 0} entries`}
+              />
+              <ol className="live-scan__memory-list">
+                {(explorationMemory.data ?? []).slice(0, 8).map((memory) => (
+                  <li key={memory.id} className="live-scan__memory-row">
+                    <div className="live-scan__memory-main">
+                      <Badge tone={memoryTone(memory.result)}>{memory.result}</Badge>
+                      <span title={memory.hypothesis}>{memory.hypothesis}</span>
+                    </div>
+                    <div className="live-scan__memory-meta">
+                      <span>{memory.endpoint ?? memory.object_context ?? memory.repo}</span>
+                      <span>{memory.reason}</span>
+                    </div>
+                    {memory.follow_up_ideas.length > 0 && (
+                      <p className="live-scan__memory-followup">
+                        {memory.follow_up_ideas.slice(0, 2).join("; ")}
+                      </p>
+                    )}
+                  </li>
                 ))}
               </ol>
             </section>
@@ -471,6 +531,50 @@ function LiveVerifierRow({ row }: LiveVerifierRowProps) {
   );
 }
 
+interface AuthzMatrixGroupProps {
+  group: AuthzMatrixGroupInfo;
+}
+
+function AuthzMatrixGroup({ group }: AuthzMatrixGroupProps) {
+  return (
+    <div className="live-scan__authz-group">
+      <div className="live-scan__authz-heading">
+        <div>
+          <span>{group.resource}</span>
+          <small>{group.endpoint}</small>
+        </div>
+        <Badge tone="neutral">{group.rows.length} checks</Badge>
+      </div>
+      <div className="live-scan__authz-table" role="table" aria-label={`${group.resource} access`}>
+        <div className="live-scan__authz-table-head" role="row">
+          <span role="columnheader">Role</span>
+          <span role="columnheader">Expected</span>
+          <span role="columnheader">Observed</span>
+          <span role="columnheader">Evidence</span>
+        </div>
+        {group.rows.map((row) => (
+          <div key={row.id} className="live-scan__authz-row" role="row">
+            <span role="cell">
+              {row.role}
+              {row.tenant ? <small>{row.tenant}</small> : null}
+            </span>
+            <span role="cell">{row.expected_decision}</span>
+            <span role="cell">
+              <Badge tone={authzDecisionTone(row.expected_decision, row.observed_decision)}>
+                {row.observed_decision}
+              </Badge>
+            </span>
+            <span role="cell">
+              {row.action} {row.observed_status ? `HTTP ${row.observed_status}` : "no status"} ·{" "}
+              {row.body_marker_result} · {Math.round(row.confidence * 100)}%
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 interface RepoProgressRowProps {
   repo: RepoProgress;
 }
@@ -549,6 +653,32 @@ function buildLiveVerifierRows(
   }
 
   return rows.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 10);
+}
+
+function groupAuthzMatrixRows(rows: AuthzMatrixEntryRecord[]): AuthzMatrixGroupInfo[] {
+  const groups = new Map<string, AuthzMatrixGroupInfo>();
+  for (const row of rows) {
+    const key = `${row.endpoint}::${row.resource}`;
+    const group = groups.get(key) ?? {
+      key,
+      endpoint: row.endpoint,
+      resource: row.object_id ? `${row.resource} ${row.object_id}` : row.resource,
+      rows: [],
+    };
+    group.rows.push(row);
+    groups.set(key, group);
+  }
+  return Array.from(groups.values())
+    .map((group) => ({
+      ...group,
+      rows: group.rows.sort((a, b) => {
+        if (a.expected_decision !== b.expected_decision) {
+          return a.expected_decision === "allow" ? -1 : 1;
+        }
+        return a.role.localeCompare(b.role);
+      }),
+    }))
+    .sort((a, b) => a.endpoint.localeCompare(b.endpoint));
 }
 
 function planInfo(candidate: PentestCandidateRecord): LivePlanInfo {
@@ -710,6 +840,24 @@ function verificationTone(status: string): BadgeTone {
   if (["Errored", "Failed", "Blocked"].includes(status)) return "danger";
   if (["NeedsLiveTest", "Proposed", "Pending"].includes(status)) return "info";
   return "neutral";
+}
+
+function authzDecisionTone(expected: string, observed: string): BadgeTone {
+  if (observed === "unknown") return "warning";
+  return expected === observed ? "success" : "danger";
+}
+
+function memoryTone(result: string): BadgeTone {
+  switch (result.toLowerCase()) {
+    case "confirmed":
+      return "success";
+    case "blocked":
+      return "warning";
+    case "rejected":
+      return "danger";
+    default:
+      return "neutral";
+  }
 }
 
 function sourceScanProgress(phase: RepoPhase): number {

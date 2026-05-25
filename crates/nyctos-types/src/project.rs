@@ -200,11 +200,18 @@ pub struct ProjectAuthProfile {
     /// Stable role name used by live plans, e.g. `anonymous`, `user`,
     /// `admin`, `user_a`, or `user_b`.
     pub role: String,
+    /// Optional semantic aliases understood by live verification planning,
+    /// e.g. `owner`, `creator`, `member`, `viewer`, or `admin`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub role_aliases: Vec<String>,
     #[serde(default)]
     pub mode: ProjectAuthMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub tenant: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "number")]
     pub session_cache_ttl_seconds: Option<u64>,
@@ -599,8 +606,10 @@ mod tests {
     fn auth_profile_serializes_explicit_modes_and_assertions() {
         let profile = ProjectAuthProfile {
             role: "user_a".to_string(),
+            role_aliases: Vec::new(),
             mode: ProjectAuthMode::SessionImport,
             label: None,
+            tenant: None,
             session_cache_ttl_seconds: Some(600),
             session_import_path: Some("sessions/user_a.json".to_string()),
             login_url: None,

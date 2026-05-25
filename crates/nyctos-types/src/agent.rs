@@ -439,6 +439,7 @@ fn auth_profile_from_tool_input(input: &serde_json::Value) -> Option<ProjectAuth
         role,
         mode,
         label: optional_string(input, "label"),
+        tenant: optional_string(input, "tenant"),
         session_cache_ttl_seconds: input.get("session_cache_ttl_seconds").and_then(|v| v.as_u64()),
         session_import_path: optional_string(input, "session_import_path"),
         login_url: optional_string(input, "login_url"),
