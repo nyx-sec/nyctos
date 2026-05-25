@@ -287,6 +287,10 @@ pub enum ExtractedAgentResult {
     /// generated profiles back to the repository's auth routes and
     /// session flow.
     AuthSetupVerification { status: String, checks: Vec<String>, warnings: Vec<String> },
+    /// Auth session output: an agent completed login and saved a
+    /// Playwright storageState file that the host can import without
+    /// logging raw cookies or bearer tokens.
+    AuthSessionAcquired { storage_state_path: String, summary: String },
 }
 
 /// Classify a tool-use block emitted by an agent-loop adapter into a
@@ -402,6 +406,12 @@ pub fn classify_tool_use(name: &str, input: &serde_json::Value) -> Option<Extrac
             let checks = string_array(input, "checks");
             let warnings = string_array(input, "warnings");
             Some(ExtractedAgentResult::AuthSetupVerification { status, checks, warnings })
+        }
+        "record_auth_session" => {
+            let storage_state_path = optional_string(input, "storage_state_path")?;
+            let summary =
+                optional_string(input, "summary").unwrap_or_else(|| "session captured".to_string());
+            Some(ExtractedAgentResult::AuthSessionAcquired { storage_state_path, summary })
         }
         _ => Some(ExtractedAgentResult::ExplorationEvent {
             message: format!("tool {name} input={input}"),

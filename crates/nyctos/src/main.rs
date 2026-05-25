@@ -2,9 +2,10 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::hash::{Hash, Hasher};
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::process::ExitCode;
+use std::process::{Command as ProcessCommand, ExitCode};
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
@@ -54,6 +55,7 @@ mod pentest_tools;
 mod route_model;
 mod scheduler;
 
+use anyhow::Context;
 use banner::print_startup_banner;
 use launch::{ConservativeLaunchProfileRunner, LaunchContext, LaunchProfileRunner};
 
@@ -134,6 +136,16 @@ enum BusinessLogicAction {
         /// Emit JSON instead of the operator-friendly table.
         #[arg(long)]
         json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ResetAction {
+    /// Delete the local SQLite database and WAL/SHM sidecar files.
+    Db {
+        /// Skip the interactive confirmation prompt.
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 }
 
@@ -255,6 +267,11 @@ enum Command {
     BusinessLogic {
         #[command(subcommand)]
         action: BusinessLogicAction,
+    },
+    /// Reset local Nyctos state artifacts.
+    Reset {
+        #[command(subcommand)]
+        action: ResetAction,
     },
     /// Manage `Project` rows in the agent's state DB. Projects own
     /// repos; the daemon's scan/run pipeline operates per project.
@@ -459,6 +476,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             .await
         }
         Command::BusinessLogic { action } => business_logic_command(action),
+        Command::Reset { action } => reset_command(&state_dir, action).await,
         Command::Project { action } => {
             nyctos_core::init_logging(&log_cfg)?;
             project_command(&state_dir, action).await
@@ -495,6 +513,106 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             nyctos_core::init_logging(&log_cfg)?;
             todo!("subcommand wiring lands in a later phase")
         }
+    }
+}
+
+async fn reset_command(state_dir: &StateDir, action: ResetAction) -> anyhow::Result<ExitCode> {
+    match action {
+        ResetAction::Db { yes } => reset_database(state_dir, yes),
+    }
+}
+
+fn reset_database(state_dir: &StateDir, yes: bool) -> anyhow::Result<ExitCode> {
+    reset_database_with_open_check(state_dir, yes, database_open_files)
+}
+
+fn reset_database_with_open_check<F>(
+    state_dir: &StateDir,
+    yes: bool,
+    open_check: F,
+) -> anyhow::Result<ExitCode>
+where
+    F: Fn(&[PathBuf]) -> anyhow::Result<Option<String>>,
+{
+    let db_files = state_database_files(state_dir);
+    if let Some(open_files) = open_check(&db_files)? {
+        eprintln!("reset db: refused; the database is currently open:");
+        for line in open_files.lines().filter(|line| !line.trim().is_empty()) {
+            eprintln!("  {line}");
+        }
+        eprintln!("stop the running nyctos process, then retry.");
+        return Ok(ExitCode::from(1));
+    }
+
+    let existing: Vec<_> = db_files.iter().filter(|path| path.exists()).cloned().collect();
+    if existing.is_empty() {
+        println!("reset db: no local database files found under {}", state_dir.root().display());
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    if !yes && !confirm_database_reset(state_dir.root())? {
+        eprintln!("reset db: aborted");
+        return Ok(ExitCode::from(1));
+    }
+
+    let mut removed = Vec::new();
+    for path in existing {
+        match std::fs::remove_file(&path) {
+            Ok(()) => removed.push(path),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err).with_context(|| format!("remove {}", path.display())),
+        }
+    }
+
+    for path in &removed {
+        println!("removed {}", path.display());
+    }
+    println!("reset db: removed {} file(s)", removed.len());
+    Ok(ExitCode::SUCCESS)
+}
+
+fn state_database_files(state_dir: &StateDir) -> [PathBuf; 3] {
+    [
+        state_dir.root().join("state.db"),
+        state_dir.root().join("state.db-wal"),
+        state_dir.root().join("state.db-shm"),
+    ]
+}
+
+fn confirm_database_reset(state_root: &std::path::Path) -> anyhow::Result<bool> {
+    eprintln!("This will delete the Nyctos SQLite database under {}.", state_root.display());
+    eprint!("Type `reset` to continue: ");
+    io::stderr().flush()?;
+
+    let mut line = String::new();
+    io::stdin().read_line(&mut line)?;
+    Ok(line.trim() == "reset")
+}
+
+fn database_open_files(paths: &[PathBuf]) -> anyhow::Result<Option<String>> {
+    let existing: Vec<_> = paths.iter().filter(|path| path.exists()).collect();
+    if existing.is_empty() {
+        return Ok(None);
+    }
+
+    let output = match ProcessCommand::new("lsof").args(existing).output() {
+        Ok(output) => output,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err).context("run lsof to check whether the database is open"),
+    };
+
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut lines = stdout.lines();
+        let _header = lines.next();
+        let body = lines.collect::<Vec<_>>().join("\n");
+        if body.trim().is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(body))
+        }
+    } else {
+        Ok(None)
     }
 }
 
@@ -1384,43 +1502,6 @@ async fn drive_scan(
         }
     }
 
-    // Rank cross-repo exploitable chains across the run's finding
-    // graph. Single-call pass; shares the run's budget bucket with
-    // payload + spec passes. No-op when the selected runtime is
-    // unavailable or fewer than two findings landed in the bundle.
-    match ai_pipeline::run_chain_reasoning_pass(
-        &config.ai,
-        store,
-        &secrets,
-        &bundle,
-        &workspaces_for_ai,
-        events.clone(),
-    )
-    .await
-    {
-        Ok(report) => {
-            agent_review_notes.push(format!(
-                "chain reasoning: {} chain(s), {} failed",
-                report.chains_persisted, report.failed
-            ));
-            if verbose && (report.chains_persisted > 0 || report.failed > 0) {
-                println!(
-                    "scan: chain reasoning - {} chains ({} cross-repo), {} members stamped, {} failed ({} attempts, ${:.6})",
-                    report.chains_persisted,
-                    report.cross_repo_chains,
-                    report.members_stamped,
-                    report.failed,
-                    report.attempts,
-                    report.spend_usd_micros as f64 / 1_000_000.0,
-                );
-            }
-        }
-        Err(err) => {
-            agent_review_notes.push(format!("chain reasoning failed: {err}"));
-            tracing::warn!(error = %err, "chain reasoning pass failed");
-        }
-    }
-
     // Scan repo source for candidate vulnerabilities the static pass
     // missed. Most-expensive pass; each batch is gated on a per-run
     // cap ($5 default), and every emitted CandidateFinding lands in
@@ -1833,6 +1914,70 @@ async fn drive_scan(
                 "UnsafeAttackAgentStarted",
                 false,
                 Some(message),
+            );
+        }
+    }
+    emit_phase(&events, &run.id, project.id.as_str(), "ChainSynthesisStarted", true, None);
+    match ai_pipeline::run_chain_reasoning_pass(
+        &config.ai,
+        store,
+        &secrets,
+        &bundle,
+        &workspaces_for_ai,
+        events.clone(),
+    )
+    .await
+    {
+        Ok(report) => {
+            verification_notes.push(format!(
+                "chain synthesis: {} chains ({} verified, {} needing verification), {} chain vulnerabilities recorded, {} failed",
+                report.chains_persisted,
+                report.chains_verified,
+                report.chains_needing_verification,
+                report.vulnerabilities_recorded,
+                report.failed
+            ));
+            if verbose
+                && (report.chains_persisted > 0
+                    || report.vulnerabilities_recorded > 0
+                    || report.failed > 0)
+            {
+                println!(
+                    "scan: chain synthesis - {} chains ({} verified, {} needs verification, {} cross-repo), {} vulnerabilities recorded, {} failed ({} attempts, ${:.6})",
+                    report.chains_persisted,
+                    report.chains_verified,
+                    report.chains_needing_verification,
+                    report.cross_repo_chains,
+                    report.vulnerabilities_recorded,
+                    report.failed,
+                    report.attempts,
+                    report.spend_usd_micros as f64 / 1_000_000.0,
+                );
+            }
+            emit_phase(
+                &events,
+                &run.id,
+                project.id.as_str(),
+                "ChainSynthesisStarted",
+                false,
+                Some(format!(
+                    "{} chains, {} verified, {} chain vulnerabilities recorded",
+                    report.chains_persisted,
+                    report.chains_verified,
+                    report.vulnerabilities_recorded
+                )),
+            );
+        }
+        Err(err) => {
+            verification_notes.push(format!("chain synthesis failed: {err}"));
+            tracing::warn!(error = %err, "post-live chain reasoning pass failed");
+            emit_phase(
+                &events,
+                &run.id,
+                project.id.as_str(),
+                "ChainSynthesisStarted",
+                false,
+                Some(format!("chain synthesis failed: {err}")),
             );
         }
     }
@@ -3465,6 +3610,13 @@ async fn verify_pentest_candidates(
             ts_ms: now_epoch_ms(),
         },
     });
+    let auth_ai_runtime = match auth_setup_ai::build_agent_runtime_from_ai_config(ai_config).await {
+        Ok(runtime) => Some(runtime),
+        Err(err) => {
+            tracing::debug!(error = %err, "adaptive auth agent runtime unavailable");
+            None
+        }
+    };
     emit_phase(&events, run_id, project_id, "AuthSessionAcquisitionStarted", true, None);
     let auth_message = preflight_auth_sessions(
         &auth_session_manager,
@@ -3476,6 +3628,7 @@ async fn verify_pentest_candidates(
         auth_workspace_paths,
         auth_env_overrides,
         run_config.browser_checks_enabled,
+        auth_ai_runtime.clone(),
         &events,
     )
     .await;
@@ -3553,6 +3706,10 @@ async fn verify_pentest_candidates(
             auth_artifact_dir: auth_artifact_dir.to_path_buf(),
             auth_workspace_paths: auth_workspace_paths.to_vec(),
             auth_env_overrides: auth_env_overrides.clone(),
+            auth_ai_runtime: auth_ai_runtime.clone(),
+            auth_events: events.clone(),
+            run_id: run_id.to_string(),
+            project_id: project_id.to_string(),
             browser_artifact_dir: Some(browser_artifact_dir),
             browser_checks_enabled: run_config.browser_checks_enabled,
             policy: pentest_tools::ExploitSafetyPolicy::from_run_config(run_config),
@@ -4097,6 +4254,7 @@ async fn preflight_auth_sessions(
     auth_workspace_paths: &[std::path::PathBuf],
     auth_env_overrides: &BTreeMap<String, String>,
     browser_checks_enabled: bool,
+    auth_ai_runtime: Option<Arc<dyn nyctos_ai::AiRuntime>>,
     events: &EventSink,
 ) -> String {
     let Some(target_url) = target_urls.first() else {
@@ -4127,6 +4285,10 @@ async fn preflight_auth_sessions(
                     browser_checks_enabled,
                     workspace_paths: auth_workspace_paths.to_vec(),
                     env_overrides: auth_env_overrides.clone(),
+                    ai_runtime: auth_ai_runtime.clone(),
+                    ai_events: Some(events.clone()),
+                    run_id: Some(run_id.to_string()),
+                    project_id: Some(project_id.to_string()),
                 },
             )
             .await;
@@ -7785,6 +7947,49 @@ mod tests {
         }
 
         store.close().await;
+        Ok(())
+    }
+
+    #[test]
+    fn reset_database_removes_sqlite_files_only() -> anyhow::Result<()> {
+        let state = tempfile::tempdir()?;
+        let state_dir = StateDir::at(state.path());
+        state_dir.ensure()?;
+
+        let db = state.path().join("state.db");
+        let wal = state.path().join("state.db-wal");
+        let shm = state.path().join("state.db-shm");
+        let auth = state.path().join("auth_token");
+        std::fs::write(&db, b"db")?;
+        std::fs::write(&wal, b"wal")?;
+        std::fs::write(&shm, b"shm")?;
+        std::fs::write(&auth, b"token")?;
+
+        let code = reset_database_with_open_check(&state_dir, true, |_| Ok(None))?;
+
+        assert_eq!(code, ExitCode::SUCCESS);
+        assert!(!db.exists(), "state.db should be removed");
+        assert!(!wal.exists(), "state.db-wal should be removed");
+        assert!(!shm.exists(), "state.db-shm should be removed");
+        assert!(auth.exists(), "reset db should leave auth_token intact");
+        Ok(())
+    }
+
+    #[test]
+    fn reset_database_refuses_open_database() -> anyhow::Result<()> {
+        let state = tempfile::tempdir()?;
+        let state_dir = StateDir::at(state.path());
+        state_dir.ensure()?;
+
+        let db = state.path().join("state.db");
+        std::fs::write(&db, b"db")?;
+
+        let code = reset_database_with_open_check(&state_dir, true, |_| {
+            Ok(Some("nyctos 123 user 10u REG state.db".to_string()))
+        })?;
+
+        assert_eq!(code, ExitCode::from(1));
+        assert!(db.exists(), "state.db should be preserved when it is open");
         Ok(())
     }
 }

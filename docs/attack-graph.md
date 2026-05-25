@@ -134,11 +134,21 @@ blast-radius lookup, and chain planning:
 
 ## Chain Planning
 
-ChainReasoning is now graph-native. The planner consumes the attack graph
+ChainReasoning is graph-native and runs after individual candidate/live
+verification has had a chance to add `verification_attempt` and
+`verified_vulnerability` nodes. The planner consumes the attack graph
 neighborhood instead of only static finding-flow summaries. Graph nodes
 are passed with stable graph ids, artifact `ref_id`s when present, route,
 role, object, and evidence-ref context. Graph edges are passed with edge
 ids, labels, evidence refs, source tags, and cross-repo flags.
+
+When the selected runtime supports agent loops (Claude Code or Codex),
+ChainReasoning runs in source-aware mode: the task receives repository
+workspace roots and can use read/search/shell inspection tools to look
+around the code before producing chain JSON. One-shot-only runtimes
+fall back to the compact graph-only prompt. Both modes pass through the
+same validation gate: every returned member id must exist in the graph
+and every adjacent pair must be backed by a graph edge.
 
 The model contract ranks chains with:
 
@@ -163,8 +173,14 @@ Persisted `chains.member_ids` remains the ordered member id list for
 compatibility. The structured graph proof is persisted in
 `chains.evidence_blob` with `schema_version = 1`, including member
 metadata, edge provenance, prerequisites, evidence, blast radius,
-confidence, and missing verification steps. `ChainStore::insert` still
-dual-writes the chain node and `chained_with` member edges into the graph.
+confidence, terminal live-proof state, and missing verification steps.
+Chains that terminate in a live verification attempt or verified
+vulnerability, with no model-declared proof gaps, are stored as
+`Verified` and materialized into `verified_vulnerabilities` with
+`chain_id` set. Chains without terminal live proof are stored as
+`NeedsChainVerification` and keep the missing proof steps in
+`evidence_blob`. `ChainStore::insert` still dual-writes the chain node
+and `chained_with` member edges into the graph.
 
 The chain UI reads the structured `evidence_blob` to show graph-backed
 paths, edge evidence, confidence, blast radius, and missing proof gaps.

@@ -66,8 +66,8 @@ use nyctos_types::project::{
     AuthSetupError, AuthSetupJobRecord, AuthSetupPhase, AuthSetupRequest, AuthSetupResponse,
     AuthSetupStartResponse, AuthSetupVerification, AuthSetupVerificationStatus,
     CreateProjectRequest, PatchProjectRequest, ProjectAuthMode, ProjectAuthOwnedObject,
-    ProjectAuthProfile, ProjectRuntimeEnvVar, ProjectRuntimeProfile, TriStateJson,
-    TriStateProjectRuntimeProfile,
+    ProjectAuthProfile, ProjectOtpSourceConfig, ProjectOtpSourceKind, ProjectRuntimeEnvVar,
+    ProjectRuntimeProfile, TriStateJson, TriStateProjectRuntimeProfile,
 };
 use nyctos_types::repo::{CreateRepoRequest, PatchRepoRequest, TestRepoRequest, TestRepoResponse};
 
@@ -1110,6 +1110,7 @@ async fn run_auth_auto_setup_once(
             profiles_updated,
         )
     };
+    apply_discovered_otp_hints(&mut runtime_profile, target_base_url.as_deref(), &discovery);
     let auth_env_resolution =
         apply_discovered_auth_env_values(&mut runtime_profile, &discovery.credentials);
     apply_auth_env_resolution_to_verification(&mut verification, &auth_env_resolution);
@@ -1333,9 +1334,11 @@ fn empty_runtime_profile_for_auth_setup(
 struct AuthSetupDiscovery {
     login_paths: Vec<String>,
     object_routes: Vec<String>,
+    dev_mail_paths: Vec<String>,
     credentials: AuthSetupCredentialDiscovery,
     files_inspected: usize,
     admin_signal: bool,
+    otp_signal: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1403,11 +1406,15 @@ fn discover_auth_setup(workspace_paths: &[PathBuf]) -> AuthSetupDiscovery {
         r#"(?i)["'`](/[^"'`\s]*(?:projects|invoices|accounts|documents|orders|users|tenants|orgs)[^"'`\s]*/(?::[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\}|[0-9A-Fa-f-]{4,})[^"'`\s]*)["'`]"#,
     )
     .expect("auth setup object-route regex");
+    let dev_mail_re =
+        Regex::new(r#"(?i)["'`](/[^"'`\s]*(?:dev[-_]mail|mailpit|mailhog|mailbox)[^"'`\s]*)["'`]"#)
+            .expect("auth setup dev-mail path regex");
     for root in workspace_paths {
-        discover_auth_setup_in_root(root, &path_re, &object_re, &mut discovery);
+        discover_auth_setup_in_root(root, &path_re, &object_re, &dev_mail_re, &mut discovery);
     }
     discovery.login_paths = dedupe_setup_paths(discovery.login_paths);
     discovery.object_routes = dedupe_setup_paths(discovery.object_routes);
+    discovery.dev_mail_paths = dedupe_setup_paths(discovery.dev_mail_paths);
     discovery
 }
 
@@ -1415,6 +1422,7 @@ fn discover_auth_setup_in_root(
     root: &FsPath,
     path_re: &Regex,
     object_re: &Regex,
+    dev_mail_re: &Regex,
     discovery: &mut AuthSetupDiscovery,
 ) {
     let mut stack = vec![(root.to_path_buf(), 0usize)];
@@ -1451,11 +1459,29 @@ fn discover_auth_setup_in_root(
         {
             discovery.admin_signal = true;
         }
+        if lower.contains("otp")
+            || lower.contains("one-time")
+            || lower.contains("one time")
+            || lower.contains("login code")
+            || lower.contains("magic code")
+            || lower.contains("verification code")
+            || lower.contains("dev-mail")
+            || lower.contains("dev_mail")
+            || lower.contains("mailpit")
+            || lower.contains("mailhog")
+        {
+            discovery.otp_signal = true;
+        }
         for cap in path_re.captures_iter(&text) {
             if let Some(path) = cap.get(1).map(|m| m.as_str()) {
                 if auth_setup_path_is_login_candidate(path) {
                     discovery.login_paths.push(path.to_string());
                 }
+            }
+        }
+        for cap in dev_mail_re.captures_iter(&text) {
+            if let Some(path) = cap.get(1).map(|m| m.as_str()) {
+                discovery.dev_mail_paths.push(path.to_string());
             }
         }
         for cap in object_re.captures_iter(&text) {
@@ -1881,6 +1907,8 @@ fn finalize_auth_setup_candidate(
     seeded_objects: &[ProjectAuthOwnedObject],
 ) -> Option<ProjectAuthProfile> {
     profile.role = normalize_role_name(&profile.role)?;
+    normalize_auth_setup_identity_refs(&mut profile);
+    normalize_auth_setup_otp_mode(&mut profile);
     if profile.mode == ProjectAuthMode::Anonymous {
         profile.mode = ProjectAuthMode::AiAuto;
     }
@@ -1899,6 +1927,29 @@ fn finalize_auth_setup_candidate(
         profile.owned_objects = seeded_objects.to_vec();
     }
     Some(profile)
+}
+
+fn normalize_auth_setup_identity_refs(profile: &mut ProjectAuthProfile) {
+    let Some(username_env) = profile.username_env.as_deref().map(str::trim) else {
+        return;
+    };
+    if !profile.login_email_env.as_deref().is_none_or(|v| v.trim().is_empty()) {
+        return;
+    }
+    if credential_kind_for_env_name(username_env) == Some(AuthSetupCredentialKind::Email) {
+        profile.login_email_env = Some(username_env.to_string());
+        profile.username_env = None;
+    }
+}
+
+fn normalize_auth_setup_otp_mode(profile: &mut ProjectAuthProfile) {
+    if profile
+        .otp_source
+        .as_ref()
+        .is_some_and(|source| source.kind == ProjectOtpSourceKind::Mailbox)
+    {
+        profile.mode = ProjectAuthMode::OtpEmailMailbox;
+    }
 }
 
 fn merge_auth_setup_candidate(
@@ -1949,6 +2000,70 @@ fn auth_setup_profile_has_secret_ref(profile: &ProjectAuthProfile) -> bool {
         || profile.bearer_token_env.is_some()
         || !profile.headers.is_empty()
         || profile.custom_command.is_some()
+}
+
+fn apply_discovered_otp_hints(
+    runtime_profile: &mut ProjectRuntimeProfile,
+    target_base_url: Option<&str>,
+    discovery: &AuthSetupDiscovery,
+) {
+    if !discovery.otp_signal && discovery.dev_mail_paths.is_empty() {
+        return;
+    }
+    let mailbox_url =
+        discovery.dev_mail_paths.first().and_then(|path| absolute_local_url(target_base_url, path));
+    for profile in &mut runtime_profile.auth_profiles {
+        if profile.mode != ProjectAuthMode::AiAuto
+            && profile.mode != ProjectAuthMode::OtpEmailMailbox
+        {
+            continue;
+        }
+        if mailbox_url.is_some() {
+            profile.mode = ProjectAuthMode::OtpEmailMailbox;
+            let email_env = profile
+                .login_email_env
+                .clone()
+                .or_else(|| profile.username_env.clone())
+                .or_else(|| Some(format!("NYCTOS_{}_EMAIL", env_role_slug(&profile.role))));
+            let source = profile.otp_source.get_or_insert_with(|| ProjectOtpSourceConfig {
+                kind: ProjectOtpSourceKind::Mailbox,
+                mailbox_url: None,
+                email_env: None,
+                subject_contains: Some("code".to_string()),
+                body_regex: Some(r"\b(\d{4,8})\b".to_string()),
+                imap_url_env: None,
+                imap_username_env: None,
+                imap_password_env: None,
+            });
+            source.kind = ProjectOtpSourceKind::Mailbox;
+            if source.mailbox_url.as_deref().is_none_or(|url| url.trim().is_empty()) {
+                source.mailbox_url = mailbox_url.clone();
+            }
+            if source.email_env.as_deref().is_none_or(|env| env.trim().is_empty()) {
+                source.email_env = email_env;
+            }
+            if source.subject_contains.as_deref().is_none_or(|value| value.trim().is_empty()) {
+                source.subject_contains = Some("code".to_string());
+            }
+            if source.body_regex.as_deref().is_none_or(|value| value.trim().is_empty()) {
+                source.body_regex = Some(r"\b(\d{4,8})\b".to_string());
+            }
+        }
+    }
+}
+
+fn absolute_local_url(target_base_url: Option<&str>, path: &str) -> Option<String> {
+    let path = path.trim();
+    if path.starts_with("http://") || path.starts_with("https://") {
+        return Some(path.to_string());
+    }
+    let target = reqwest::Url::parse(target_base_url?).ok()?;
+    let mut url = target.join(path).ok()?;
+    if !url.path().ends_with('/') {
+        let next = format!("{}/", url.path());
+        url.set_path(&next);
+    }
+    Some(url.to_string())
 }
 
 fn apply_discovered_auth_env_values(
@@ -2201,6 +2316,18 @@ fn static_auth_setup_verification(
             "Discovered {} object ownership route hint(s).",
             discovery.object_routes.len()
         ));
+    }
+    if !discovery.dev_mail_paths.is_empty() {
+        checks.push(format!("Discovered dev-mail route {}.", discovery.dev_mail_paths[0]));
+        warnings.push(
+            "Detected OTP/dev-mail auth; profile setup recorded a mailbox OTP source, but live OTP browser capture is not implemented yet."
+                .to_string(),
+        );
+    } else if discovery.otp_signal {
+        warnings.push(
+            "Detected OTP-like auth code hints, but no local dev-mail mailbox route was discovered."
+                .to_string(),
+        );
     }
     if let Some(warning) = fallback_warning {
         warnings.push(warning);

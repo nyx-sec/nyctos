@@ -9,6 +9,7 @@ use nyctos_api::{
     AuthSetupAgent, AuthSetupAgentError, AuthSetupAgentFuture, AuthSetupAgentOutput,
     AuthSetupAgentRequest,
 };
+use nyctos_core::config::AiConfig;
 use nyctos_core::{AiRuntime as ConfigAiRuntime, Config};
 use nyctos_types::event::EventSink;
 use tokio::sync::RwLock;
@@ -59,16 +60,22 @@ impl AuthSetupAgent for ConfiguredAuthSetupAgent {
     }
 }
 
-async fn build_agent_runtime(
+pub async fn build_agent_runtime(
     config: &Config,
 ) -> Result<Arc<dyn nyctos_ai::AiRuntime>, AuthSetupAgentError> {
+    build_agent_runtime_from_ai_config(&config.ai).await
+}
+
+pub async fn build_agent_runtime_from_ai_config(
+    ai: &AiConfig,
+) -> Result<Arc<dyn nyctos_ai::AiRuntime>, AuthSetupAgentError> {
     let tracker = Arc::new(InMemoryBudgetTracker::new());
-    match config.ai.runtime {
+    match ai.runtime {
         ConfigAiRuntime::ClaudeCode => {
             let mut adapter = ClaudeCodeAdapter::discover(tracker)
                 .await
                 .map_err(|err| AuthSetupAgentError::Unavailable(err.to_string()))?;
-            if let Some(model) = &config.ai.model {
+            if let Some(model) = &ai.model {
                 adapter = adapter.with_default_model(model.clone());
             }
             Ok(Arc::new(adapter))
@@ -77,7 +84,7 @@ async fn build_agent_runtime(
             let mut adapter = CodexCliAdapter::discover(tracker)
                 .await
                 .map_err(|err| AuthSetupAgentError::Unavailable(err.to_string()))?;
-            if let Some(model) = &config.ai.model {
+            if let Some(model) = &ai.model {
                 adapter = adapter.with_default_model(model.clone());
             }
             Ok(Arc::new(adapter))

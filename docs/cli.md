@@ -1,6 +1,6 @@
 # CLI reference
 
-`nyctos` is a single binary with nine subcommands. This page
+`nyctos` is a single binary with ten subcommands. This page
 documents every subcommand that currently ships, the flags it accepts,
 and the exit codes it returns. Subcommands the binary advertises in
 `--help` but that are not yet wired (`reverify`, `budget`) are called
@@ -24,10 +24,9 @@ default `serve`). Pass them before the subcommand name, e.g.
 When no subcommand is given, `nyctos` runs `serve` with no flags.
 That is the documented "double-click the binary" path.
 
-The subcommand wiring lives in
-`crates/nyctos/src/main.rs:209` (`match cli.command.unwrap_or(...)`).
-Read that block alongside this page if you need to confirm which
-subcommand a flag attaches to.
+The subcommand wiring lives in `crates/nyctos/src/main.rs`
+(`match cli.command.unwrap_or(...)`). Read that block alongside this
+page if you need to confirm which subcommand a flag attaches to.
 
 ## `serve`
 
@@ -66,6 +65,32 @@ SQLite store closes.
 
 **Exit codes.** `0` on clean shutdown. `1` on bind failure or any
 unrecoverable HTTP server error.
+
+## `reset db`
+
+Delete the local SQLite store for the resolved state directory.
+
+```bash
+nyctos reset db
+nyctos reset db --yes
+```
+
+`reset db` removes `state.db`, `state.db-wal`, and `state.db-shm`.
+It leaves the rest of the state directory alone, including
+`auth_token`, logs, traces, bundles, ingested repos, and project
+workspaces.
+
+Before deleting files, the command checks whether `lsof` reports the
+database as open and refuses to continue when a running `nyctos`
+process still holds it. Without `--yes`, it prompts for `reset` on
+stdin.
+
+| Flag | Default | Effect |
+|---|---|---|
+| `--yes`, `-y` | off | Skip the interactive confirmation prompt. |
+
+**Exit codes.** `0` when the files were removed or no database files
+existed. `1` when the database is open or confirmation fails.
 
 ## `scan`
 

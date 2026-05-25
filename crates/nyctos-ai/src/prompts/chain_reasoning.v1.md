@@ -20,6 +20,13 @@ are especially valuable, but only connect weak leads into serious paths
 when route/object/role/signal/candidate/verification edges support the
 link.
 
+This worker runs after individual AI candidates and live probes may
+have produced verification_attempt and verified_vulnerability nodes.
+Treat those nodes as the strongest terminal evidence. Use low-severity
+signals and unverified candidates as chain setup only when they bridge
+to a live-proven impact or when you can name the exact missing proof
+needed before promotion.
+
 CONTRACT
 Reply with exactly one JSON object and nothing else. No prose. No code
 fences. No additional fields. Schema:
@@ -51,3 +58,9 @@ RULES
 - `confidence` MUST be an integer from 0 to 100.
 - `edge_provenance` SHOULD name the edge ids or evidence refs that make
   the chain graph-backed.
+- If the chain does not terminate in a live verification attempt or a
+  verified vulnerability, `missing_verification_steps` MUST describe
+  the terminal proof required before this can be reported as critical.
+- Do not inflate severity solely because several weak findings are
+  adjacent. The chain is critical only when the terminal impact is
+  live-proven or the missing terminal proof is concrete and feasible.

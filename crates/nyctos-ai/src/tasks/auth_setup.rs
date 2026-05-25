@@ -133,13 +133,17 @@ fn build_agent_task(scope: &AuthSetupScope) -> AgentTask {
          \n\
          Work:\n\
          1. Inspect source files for auth routes, login forms, session middleware, role checks, \
-         seeded/test users, and object ownership routes.\n\
+         seeded/test users, OTP/login-code flows, local dev-mail/mailbox routes, and object \
+         ownership routes.\n\
          2. Emit one `record_auth_profile` JSON line for each useful role. Use the app's own role \
          names when they are visible. Use `user_a`/`user_b` only when the repo shows a same-role \
          ownership/IDOR workflow that needs two accounts.\n\
          3. Each profile should include `role`, `mode`, `label`, a repo-backed `login_url` or \
-         other session source, env refs such as `username_env`/`password_env`, any \
-         `post_login_assertions`, and `owned_objects` when object routes are visible.\n\
+         other session source, env refs such as `login_email_env`, `username_env`, or \
+         `password_env`, any `post_login_assertions`, and `owned_objects` when object routes are \
+         visible. If the app uses email OTP/login codes and exposes a local dev-mail/mailbox UI \
+         or API, use `mode\":\"otp_email_mailbox\"` and include an `otp_source` with \
+         `kind\":\"mailbox\"`, `mailbox_url`, `email_env`, and a code `body_regex`.\n\
          4. Emit one `record_auth_verification` JSON line with `status` (`verified` or \
          `needs_review`), `checks`, and `warnings`, explaining how the profiles map back to code \
          and what still needs operator input.\n\

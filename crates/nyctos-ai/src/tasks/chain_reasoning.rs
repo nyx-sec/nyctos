@@ -16,7 +16,9 @@
 
 use std::collections::HashSet;
 
-use nyctos_types::agent::{AgentTraceMetrics, AiError, Budget, BudgetKind, Prompt, Response};
+use nyctos_types::agent::{
+    AgentResult, AgentTask, AgentTraceMetrics, AiError, Budget, BudgetKind, Prompt, Response,
+};
 use nyctos_types::chain::{
     ChainCandidate, ChainReasoningInput, ChainReasoningOutput, CHAIN_REASONING_PROMPT_VERSION,
 };
@@ -58,6 +60,13 @@ pub enum ChainReasoningOutcome {
         attempts: u32,
         metrics: AgentTraceMetrics,
     },
+}
+
+/// Repository workspace the agentic ChainReasoning mode may inspect.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChainReasoningWorkspace {
+    pub repo: String,
+    pub root: String,
 }
 
 /// Drive one ChainReasoning call for `input`.
@@ -118,6 +127,54 @@ pub async fn run<R: AiRuntime + ?Sized>(
             spent_usd_micros: total_cost,
             attempts: 2,
             metrics: metrics_total,
+        }),
+    }
+}
+
+/// Stronger ChainReasoning mode for CLI-backed runtimes.
+///
+/// The agent receives the same graph contract as the deterministic
+/// one-shot worker, plus workspace roots it can inspect with native
+/// file/search tools before returning the strict JSON object. The same
+/// validation gate is applied afterward so the agent can roam through
+/// code, but it cannot persist a chain unless every adjacent member is
+/// still backed by the input graph.
+pub async fn run_agentic<R: AiRuntime + ?Sized>(
+    runtime: &R,
+    input: &ChainReasoningInput,
+    workspaces: &[ChainReasoningWorkspace],
+    sink: EventSink,
+    cap_usd_micros: i64,
+) -> Result<ChainReasoningOutcome, AiError> {
+    if !runtime.supports_agent_loop() {
+        return run(runtime, input, sink, cap_usd_micros).await;
+    }
+
+    let task_id = format!("chain-agentic-{}", input.run_id);
+    let node_ids: HashSet<String> = input.nodes.iter().map(|n| n.id.clone()).collect();
+    let edge_pairs: HashSet<(String, String)> =
+        input.edges.iter().map(|e| (e.from.clone(), e.to.clone())).collect();
+    let task = build_agent_task(&task_id, input, workspaces);
+    let budget =
+        Budget { run_id: input.run_id.clone(), kind: BudgetKind::AgentLoop, cap_usd_micros };
+    let result: AgentResult = runtime.agent_loop(task, budget, sink).await?;
+    let spent_usd_micros = result.cost_usd_micros;
+    let metrics = AgentTraceMetrics::from_agent_result(&result);
+    match parse_and_validate(&result.final_message, &node_ids, &edge_pairs) {
+        Ok(output) => Ok(ChainReasoningOutcome::Ranked {
+            run_id: input.run_id.clone(),
+            output,
+            prompt_version: result.prompt_version,
+            spent_usd_micros,
+            attempts: 1,
+            metrics,
+        }),
+        Err(err) => Ok(ChainReasoningOutcome::NoChains {
+            run_id: input.run_id.clone(),
+            reason: format!("agentic chain reasoning did not return valid chains: {err}"),
+            spent_usd_micros,
+            attempts: 1,
+            metrics,
         }),
     }
 }
@@ -186,6 +243,55 @@ fn render_user_message(input: &ChainReasoningInput) -> String {
                 e.from, e.label, edge_id, evidence_ref, source, e.to, cross
             ));
         }
+    }
+    out
+}
+
+fn build_agent_task(
+    task_id: &str,
+    input: &ChainReasoningInput,
+    workspaces: &[ChainReasoningWorkspace],
+) -> AgentTask {
+    let objective = format!(
+        "{}\n\n{}\n\n{}",
+        agentic_objective_header(input),
+        render_workspace_section(workspaces),
+        render_user_message(input)
+    );
+    AgentTask {
+        prompt_version: format!("{CHAIN_REASONING_PROMPT_VERSION}.agentic"),
+        task_id: task_id.to_string(),
+        system: include_str!("../prompts/chain_reasoning.v1.md").to_string(),
+        objective,
+        tools: vec!["Read".to_string(), "Grep".to_string(), "Bash".to_string()],
+        working_directory: workspaces.first().map(|w| w.root.clone()),
+        max_turns: 40,
+    }
+}
+
+fn agentic_objective_header(input: &ChainReasoningInput) -> String {
+    format!(
+        r#"You may inspect the repository workspaces before proposing chains.
+
+Use the graph as the source of truth for valid member ids and valid adjacent links, but use code reading/search to find the strongest exploit story:
+- inspect source around important node paths/lines;
+- search handlers, auth checks, route definitions, model/service calls, and tests;
+- look for preconditions that turn low/medium leads into a serious terminal impact;
+- prefer chains that end in verification_attempt or verified_vulnerability nodes;
+- keep unverified chains explicit by filling missing_verification_steps.
+
+You MUST finish with exactly one JSON object matching the ChainReasoning schema. No markdown, no commentary, no code fences. Emit at most {} chains."#,
+        input.max_chains
+    )
+}
+
+fn render_workspace_section(workspaces: &[ChainReasoningWorkspace]) -> String {
+    if workspaces.is_empty() {
+        return "workspaces:\n- (none supplied; reason only from graph context)".to_string();
+    }
+    let mut out = String::from("workspaces:\n");
+    for ws in workspaces {
+        out.push_str(&format!("- repo={} root={}\n", ws.repo, ws.root));
     }
     out
 }
@@ -306,6 +412,23 @@ mod tests {
         }
     }
 
+    struct ScriptedAgentRuntime {
+        final_message: String,
+        task_seen: Mutex<Option<AgentTask>>,
+        tracker: Arc<dyn BudgetTracker>,
+        cost_per_call: i64,
+    }
+
+    impl ScriptedAgentRuntime {
+        fn new(final_message: String, tracker: Arc<dyn BudgetTracker>, cost_per_call: i64) -> Self {
+            Self { final_message, task_seen: Mutex::new(None), tracker, cost_per_call }
+        }
+
+        fn task(&self) -> AgentTask {
+            self.task_seen.lock().unwrap().clone().expect("agent task captured")
+        }
+    }
+
     #[async_trait]
     impl AiRuntime for ScriptedRuntime {
         fn name(&self) -> &'static str {
@@ -355,6 +478,59 @@ mod tests {
             _sink: EventSink,
         ) -> Result<AgentResult, AiError> {
             Err(AiError::UnsupportedMode("agent_loop"))
+        }
+
+        fn cost_estimate(&self, _prompt: &Prompt) -> Option<CostEstimate> {
+            Some(CostEstimate { min_usd_micros: 0, max_usd_micros: self.cost_per_call })
+        }
+    }
+
+    #[async_trait]
+    impl AiRuntime for ScriptedAgentRuntime {
+        fn name(&self) -> &'static str {
+            "scripted-agent"
+        }
+        fn default_model(&self) -> &str {
+            "scripted-agent-model"
+        }
+        fn supports_agent_loop(&self) -> bool {
+            true
+        }
+        fn supports_prompt_cache(&self) -> bool {
+            false
+        }
+        fn supports_deterministic_sampling(&self) -> bool {
+            false
+        }
+
+        async fn one_shot(
+            &self,
+            _prompt: Prompt,
+            _budget: Budget,
+            _sink: EventSink,
+        ) -> Result<Response, AiError> {
+            Err(AiError::UnsupportedMode("one_shot"))
+        }
+
+        async fn agent_loop(
+            &self,
+            task: AgentTask,
+            budget: Budget,
+            _sink: EventSink,
+        ) -> Result<AgentResult, AiError> {
+            *self.task_seen.lock().unwrap() = Some(task.clone());
+            self.tracker.add_spend(&budget.run_id, budget.kind, self.cost_per_call).await?;
+            Ok(AgentResult {
+                prompt_version: task.prompt_version,
+                task_id: task.task_id,
+                model: "scripted-agent-model".to_string(),
+                final_message: self.final_message.clone(),
+                turns: 3,
+                usage: TokenUsage { input_tokens: 800, output_tokens: 120 },
+                cache: Some(CacheStats::default()),
+                cost_usd_micros: self.cost_per_call,
+                extracted: Vec::new(),
+            })
         }
 
         fn cost_estimate(&self, _prompt: &Prompt) -> Option<CostEstimate> {
@@ -477,6 +653,50 @@ mod tests {
         assert!(user.contains("cross_repo"), "user message must surface cross_repo edges: {user}");
         assert!(user.contains("repo-A"));
         assert!(user.contains("repo-B"));
+    }
+
+    #[tokio::test]
+    async fn agentic_chain_reasoning_gets_workspace_roots_and_tools() {
+        let tracker = Arc::new(InMemoryBudgetTracker::new());
+        tracker.set_cap("run-1", BudgetKind::AgentLoop, 1_000_000);
+        let body = serde_json::json!({
+            "chains": [{
+                "member_ids": ["a-entry", "b-sink"],
+                "rationale": "reading controller.py and db.py showed the entry flows to the sink",
+                "prerequisites": ["authenticated user"],
+                "evidence": ["repo-A/controller.py:5", "repo-B/db.py:42"],
+                "blast_radius": ["repo-B SQL sink"],
+                "confidence": 88,
+                "missing_verification_steps": [],
+                "edge_provenance": ["a-entry->b-sink"]
+            }]
+        })
+        .to_string();
+        let rt = ScriptedAgentRuntime::new(body, tracker, 2_000);
+        let (tx, _rx) = broadcast::channel::<AgentEvent>(4);
+        let workspaces = vec![
+            ChainReasoningWorkspace { repo: "repo-A".to_string(), root: "/tmp/repo-A".to_string() },
+            ChainReasoningWorkspace { repo: "repo-B".to_string(), root: "/tmp/repo-B".to_string() },
+        ];
+
+        let out = run_agentic(&rt, &two_repo_input(), &workspaces, tx, 1_000_000)
+            .await
+            .expect("agentic run ok");
+
+        let ChainReasoningOutcome::Ranked { output, attempts, spent_usd_micros, .. } = out else {
+            panic!("expected ranked output");
+        };
+        assert_eq!(attempts, 1);
+        assert_eq!(spent_usd_micros, 2_000);
+        assert_eq!(output.chains[0].member_ids, vec!["a-entry", "b-sink"]);
+
+        let task = rt.task();
+        assert!(task.tools.contains(&"Read".to_string()));
+        assert!(task.tools.contains(&"Grep".to_string()));
+        assert!(task.tools.contains(&"Bash".to_string()));
+        assert_eq!(task.working_directory.as_deref(), Some("/tmp/repo-A"));
+        assert!(task.objective.contains("repo=repo-A root=/tmp/repo-A"));
+        assert!(task.objective.contains("repo=repo-B root=/tmp/repo-B"));
     }
 
     #[tokio::test]

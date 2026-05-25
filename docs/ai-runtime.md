@@ -257,7 +257,10 @@ sees the per-run accumulated total separately.
 Four `one_shot` tasks share a single
 `(run_id, BudgetKind::OneShot)` bucket: PayloadSynthesis,
 SpecDerivation, ChainReasoning, and NovelFindingDiscovery. The
-binary drives them in that fixed order (see the `scan_loop`
+binary drives PayloadSynthesis and SpecDerivation before deeper
+candidate work, then runs NovelFindingDiscovery and finally
+post-live ChainReasoning after candidate/live verification has
+populated graph proof nodes (see the `scan_loop`
 function in `crates/nyctos/src/main.rs`), so earlier-pass spend
 reduces the budget every later pass sees through the same tracker.
 Each pass also carries its own per-call cap on the wire
@@ -270,16 +273,22 @@ single call below the shared per-run bucket and falls back to
 
 The invariant the binary commits to is: PayloadSynthesis and
 SpecDerivation get the full per-run cap to drive their fan-outs;
-ChainReasoning fires a single call against whatever budget
-remains after those passes finish; NovelFindingDiscovery runs
-last and drains the remainder one batch at a time. The order is
-intentional. The static-pass refusals that PayloadSynthesis and
-SpecDerivation address are the most actionable signal in a run,
-so they get first refusal on the budget; chain reasoning and
-novel-discovery enrichments degrade gracefully when an earlier
-pass exhausted the cap (the adapter pre-call check refuses, the
-pass logs and continues). Operators who want chain reasoning or
-novel-discovery to see a larger headroom should raise
+NovelFindingDiscovery can spend on missed candidates, and
+ChainReasoning fires a single post-live call against whatever
+budget remains. For CLI-backed runtimes that support agent loops
+(Claude Code or Codex), that call is source-aware: the task is
+given repository workspace roots and can read/search code before
+returning the strict chain JSON. One-shot-only runtimes use the
+same graph input without repository tool access. The order is intentional. The static-pass
+refusals that PayloadSynthesis and SpecDerivation address are
+the most actionable signal in a run; novel discovery benefits
+from source context before live planning; chain reasoning is most
+valuable after candidate tests have created verification_attempt
+and verified_vulnerability graph nodes. These enrichments degrade
+gracefully when an earlier pass exhausted the cap (the adapter
+pre-call check refuses, the pass logs and continues). Operators
+who want chain reasoning or novel-discovery to see a larger
+headroom should raise
 `default_run_budget_usd_micros` rather than try to slice the
 shared pool. The `BudgetKind` enum does not sub-bucket today, and
 splitting `OneShot` into `OneShot.payload` / `OneShot.spec` /

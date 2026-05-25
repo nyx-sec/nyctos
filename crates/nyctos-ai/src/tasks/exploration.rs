@@ -590,6 +590,12 @@ fn lift_extracted(result: &AgentResult) -> (Vec<ExplorationFinding>, Vec<AuditEn
                     ),
                 });
             }
+            ExtractedAgentResult::AuthSessionAcquired { summary, .. } => {
+                audit.push(AuditEntry {
+                    action: "record_auth_session".to_string(),
+                    summary: summary.clone(),
+                });
+            }
         }
     }
     (findings, audit)

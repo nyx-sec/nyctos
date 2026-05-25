@@ -24,7 +24,10 @@ pub use auth_setup::{
     run as run_auth_setup, AuthSetupOutcome, AuthSetupScope, AUTH_SETUP_PROMPT_VERSION,
     DEFAULT_AUTH_SETUP_RUN_CAP_USD_MICROS,
 };
-pub use chain_reasoning::{run as run_chain_reasoning, ChainReasoningOutcome};
+pub use chain_reasoning::{
+    run as run_chain_reasoning, run_agentic as run_agentic_chain_reasoning, ChainReasoningOutcome,
+    ChainReasoningWorkspace,
+};
 pub use exploration::{
     run as run_exploration, AuditEntry as ExplorationAuditEntry, EscapeSuiteGate,
     EscapeSuiteVerdict, ExplorationEndpoint, ExplorationFinding, ExplorationHaltReason,

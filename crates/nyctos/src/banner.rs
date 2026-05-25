@@ -12,7 +12,7 @@ const NYCTOS_TAGLINE: &str = "            automated pentesting, refined";
 const COMMUNITY_EDITION_NOTICE_LINES: [&str; 3] = [
     "Community Edition",
     "License required: organizations over 100 employees or $1M annual revenue.",
-    "Premium features and integrations: nyctos.dev/pricing",
+    "Commercial licensing: nyctos.dev/pricing",
 ];
 
 const NYCTOS_BANNER: [(&str, &str); 6] = [
@@ -91,7 +91,7 @@ fn push_colored_community_notice(out: &mut String) {
     out.push_str(ANSI_RESET);
     out.push('\n');
     out.push_str(ANSI_NYCTOS_MUTED);
-    out.push_str("Premium features and integrations: ");
+    out.push_str("Commercial licensing: ");
     out.push_str(ANSI_RESET);
     out.push_str(ANSI_NYCTOS_GREEN);
     out.push_str("nyctos.dev/pricing");

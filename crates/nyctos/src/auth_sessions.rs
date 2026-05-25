@@ -3,6 +3,9 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use nyctos_ai::AiRuntime;
+use nyctos_types::agent::{AgentTask, Budget, BudgetKind, ExtractedAgentResult};
+use nyctos_types::event::EventSink;
 use nyctos_types::project::{
     ProjectAuthAssertion, ProjectAuthAssertionKind, ProjectAuthHeaderRef, ProjectAuthMode,
     ProjectAuthProfile, ProjectOtpSourceKind,
@@ -284,11 +287,29 @@ impl AuthSessionResult {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AuthSessionOptions {
     pub browser_checks_enabled: bool,
     pub workspace_paths: Vec<PathBuf>,
     pub env_overrides: BTreeMap<String, String>,
+    pub ai_runtime: Option<Arc<dyn AiRuntime>>,
+    pub ai_events: Option<EventSink>,
+    pub run_id: Option<String>,
+    pub project_id: Option<String>,
+}
+
+impl Default for AuthSessionOptions {
+    fn default() -> Self {
+        Self {
+            browser_checks_enabled: false,
+            workspace_paths: Vec::new(),
+            env_overrides: BTreeMap::new(),
+            ai_runtime: None,
+            ai_events: None,
+            run_id: None,
+            project_id: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -441,22 +462,33 @@ async fn acquire_uncached_session(
             "otp_email_manual",
         )),
         ProjectAuthMode::OtpEmailMailbox => {
-            match mailbox_otp_readiness(profile, options).await {
-                Ok(Some(_redacted)) => Err(auth_unsupported_reason(
-                    &profile.role,
-                    "email OTP mailbox auth is configured but browser OTP login capture is not wired for this run",
-                    "otp_email_mailbox_capture",
-                )),
-                Ok(None) => Err(setup_missing_reason(
-                    &profile.role,
-                    "email OTP mailbox auth is configured but no matching OTP message was found",
-                    Vec::new(),
-                    Some("otp_mailbox_message".to_string()),
-                )),
-                Err(reason) => Err(failure_reason(reason)),
+            acquire_agent_login(profile, &mut session, target_url, artifact_dir, options)
+                .await
+                .or_else(|err| {
+                    if options.ai_runtime.is_some() {
+                        Err(err)
+                    } else {
+                        Err(skip_reason(
+                            "email OTP mailbox auth skipped: no Codex/Claude agent runtime is configured for adaptive login",
+                        ))
+                    }
+                })
+        }
+        ProjectAuthMode::AiAuto => {
+            match acquire_agent_login(profile, &mut session, target_url, artifact_dir, options).await
+            {
+                Ok(()) => Ok(()),
+                Err(agent_err) if options.ai_runtime.is_some() => {
+                    tracing::warn!(
+                        role = %profile.role,
+                        reason = %agent_err.message,
+                        "agentic auth login failed; falling back to deterministic HTTP login"
+                    );
+                    acquire_ai_auto(profile, &mut session, target_url, artifact_dir, options).await
+                }
+                Err(_) => acquire_ai_auto(profile, &mut session, target_url, artifact_dir, options).await,
             }
         }
-        ProjectAuthMode::AiAuto => acquire_ai_auto(profile, &mut session, target_url, options).await,
         ProjectAuthMode::OidcDevice => Err(skip_reason(
             "OIDC device auth skipped: device-flow session capture is not implemented in this pass",
         )),
@@ -542,10 +574,221 @@ fn acquire_header_injection(
     Ok(())
 }
 
+async fn acquire_agent_login(
+    profile: &ProjectAuthProfile,
+    session: &mut AuthSession,
+    target_url: &str,
+    artifact_dir: &Path,
+    options: &AuthSessionOptions,
+) -> Result<(), AcquisitionError> {
+    let Some(runtime) = options.ai_runtime.as_ref() else {
+        return Err(skip_reason("agentic auth skipped: no AI runtime configured"));
+    };
+    if !browser_runtime_available(&options.workspace_paths) {
+        return Err(skip_reason("agentic auth skipped: Playwright runtime unavailable"));
+    }
+
+    std::fs::create_dir_all(artifact_dir).map_err(|e| {
+        failure_reason(format!("agentic auth could not prepare artifact directory: {e}"))
+    })?;
+    let role_segment = safe_filename(&profile.role);
+    let storage_state_path = artifact_dir.join(format!("{role_segment}-agent-storage-state.json"));
+    let credential_path = artifact_dir.join(format!("{role_segment}-agent-credentials.json"));
+    let credentials = agent_credentials(profile, options)?;
+    let credential_json = serde_json::to_vec_pretty(&credentials).map_err(|e| {
+        failure_reason(format!("agentic auth could not serialize credentials: {e}"))
+    })?;
+    std::fs::write(&credential_path, credential_json).map_err(|e| {
+        failure_reason(format!("agentic auth could not write credential handoff file: {e}"))
+    })?;
+    protect_secret_file(&credential_path);
+
+    let profile_json = redacted_profile_json(profile);
+    let otp = profile.otp_source.as_ref().map(redacted_otp_source_json);
+    let project_id = options.project_id.as_deref().unwrap_or("(unknown)");
+    let workspace_roots = if options.workspace_paths.is_empty() {
+        "(none)".to_string()
+    } else {
+        options
+            .workspace_paths
+            .iter()
+            .map(|path| format!("- {}", path.display()))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let task_id = format!("auth-session-{}-{}", profile.role, nyctos_core::now_epoch_ms());
+    let system = "You are Nyctos's adaptive auth session agent. Inspect the repository and running local app to log in as the requested role. Use browser automation or HTTP only against the configured local target. Do not print raw passwords, cookies, bearer tokens, OTP codes, or credential file contents. Save the authenticated Playwright storageState JSON to the exact output path requested, then emit record_auth_session.".to_string();
+    let objective = format!(
+        "Project id: {project_id}\n\
+         Target URL: {target_url}\n\
+         Role: {role}\n\
+         Workspace roots:\n{workspace_roots}\n\
+         Redacted auth profile JSON:\n{profile_json}\n\
+         Redacted OTP source JSON:\n{otp_json}\n\
+         Credential handoff JSON path: {credential_path}\n\
+         Required storageState output path: {storage_state_path}\n\
+         \n\
+         Work:\n\
+         1. Inspect the repo to understand this app's actual login flow, including OTP/login-code or dev-mail flows.\n\
+         2. Read the credential handoff JSON locally. Use the values only for login; never echo them.\n\
+         3. Use Playwright from the repo or installed Node runtime when possible. If the app uses dev-mail, open/read the local dev-mail route or mailbox API to obtain the OTP code.\n\
+         4. Complete login as the requested role and save Playwright storageState JSON at the required output path.\n\
+         5. Emit exactly one JSON line like {{\"tool\":\"record_auth_session\",\"input\":{{\"storage_state_path\":\"{storage_state_path}\",\"summary\":\"logged in and saved storage state\"}}}}.\n",
+        role = profile.role,
+        project_id = project_id,
+        otp_json = otp.unwrap_or_else(|| "null".to_string()),
+        credential_path = credential_path.display(),
+        storage_state_path = storage_state_path.display(),
+    );
+    let task = AgentTask {
+        prompt_version: "phase24.auth_session_agent.v1".to_string(),
+        task_id: task_id.clone(),
+        system,
+        objective,
+        tools: vec![
+            "Read".to_string(),
+            "Grep".to_string(),
+            "Bash".to_string(),
+            "record_auth_session".to_string(),
+        ],
+        working_directory: options
+            .workspace_paths
+            .first()
+            .map(|path| path.to_string_lossy().to_string()),
+        max_turns: 24,
+    };
+    let budget = Budget {
+        run_id: options.run_id.clone().unwrap_or_else(|| task_id.clone()),
+        kind: BudgetKind::AgentLoop,
+        cap_usd_micros: 2_000_000,
+    };
+    let sink = options.ai_events.clone().unwrap_or_else(dummy_event_sink);
+    let agent_result = runtime.agent_loop(task, budget, sink).await;
+    let _ = std::fs::remove_file(&credential_path);
+    let result =
+        agent_result.map_err(|e| failure_reason(format!("agentic auth login failed: {e}")))?;
+    let recorded_storage_path = result.extracted.iter().find_map(|item| match item {
+        ExtractedAgentResult::AuthSessionAcquired { storage_state_path, .. } => {
+            Some(PathBuf::from(storage_state_path))
+        }
+        _ => None,
+    });
+    let storage_path = recorded_storage_path.unwrap_or(storage_state_path);
+    let bytes = std::fs::read(&storage_path).map_err(|_| {
+        failure_reason(format!(
+            "agentic auth login did not create storageState at {}",
+            storage_path.display()
+        ))
+    })?;
+    let storage: PlaywrightStorageState = serde_json::from_slice(&bytes)
+        .map_err(|_| failure_reason("agentic auth storageState JSON was invalid"))?;
+    let imported = session_from_playwright_storage(&storage, target_url)?;
+    session.headers.extend(imported.headers);
+    session.cookie_names.extend(imported.cookie_names);
+    session.expires_at_ms = imported.expires_at_ms;
+    session.acquired_by = "agentic_ai_login".to_string();
+    session.storage_state_path = Some(storage_path.clone());
+    session.artifact_paths.push(storage_path);
+    Ok(())
+}
+
+fn agent_credentials(
+    profile: &ProjectAuthProfile,
+    options: &AuthSessionOptions,
+) -> Result<serde_json::Value, AcquisitionError> {
+    let mut env = BTreeMap::new();
+    for name in auth_profile_env_refs(profile) {
+        if let Some(value) = options.env_overrides.get(&name).filter(|value| !value.is_empty()) {
+            env.insert(name, value.clone());
+        } else if let Ok(value) = std::env::var(&name) {
+            if !value.is_empty() {
+                env.insert(name, value);
+            }
+        }
+    }
+    Ok(serde_json::json!({
+        "role": profile.role,
+        "username": profile.username,
+        "env": env,
+    }))
+}
+
+fn auth_profile_env_refs(profile: &ProjectAuthProfile) -> Vec<String> {
+    let mut refs = Vec::new();
+    refs.extend(profile.username_env.iter().cloned());
+    refs.extend(profile.login_email_env.iter().cloned());
+    refs.extend(profile.password_env.iter().cloned());
+    refs.extend(profile.cookie_env.iter().cloned());
+    refs.extend(profile.bearer_token_env.iter().cloned());
+    refs.extend(profile.headers.iter().filter_map(|header| header.value_env.clone()));
+    if let Some(source) = &profile.otp_source {
+        refs.extend(source.email_env.iter().cloned());
+        refs.extend(source.imap_url_env.iter().cloned());
+        refs.extend(source.imap_username_env.iter().cloned());
+        refs.extend(source.imap_password_env.iter().cloned());
+    }
+    let mut seen = BTreeSet::new();
+    refs.into_iter()
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty() && seen.insert(name.clone()))
+        .collect()
+}
+
+fn redacted_profile_json(profile: &ProjectAuthProfile) -> String {
+    let value = serde_json::json!({
+        "role": profile.role,
+        "mode": profile.mode,
+        "login_url": profile.login_url,
+        "username_present": profile.username.as_deref().is_some_and(|value| !value.trim().is_empty()),
+        "username_env": profile.username_env,
+        "login_email_env": profile.login_email_env,
+        "password_env": profile.password_env,
+        "cookie_env": profile.cookie_env,
+        "bearer_token_env": profile.bearer_token_env,
+        "headers": profile.headers.iter().map(|header| {
+            serde_json::json!({"name": header.name, "value_env": header.value_env})
+        }).collect::<Vec<_>>(),
+        "post_login_assertions": profile.post_login_assertions,
+        "owned_objects": profile.owned_objects,
+    });
+    serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".to_string())
+}
+
+fn redacted_otp_source_json(source: &nyctos_types::project::ProjectOtpSourceConfig) -> String {
+    let value = serde_json::json!({
+        "kind": source.kind,
+        "mailbox_url": source.mailbox_url,
+        "email_env": source.email_env,
+        "subject_contains": source.subject_contains,
+        "body_regex": source.body_regex,
+        "imap_url_env": source.imap_url_env,
+        "imap_username_env": source.imap_username_env,
+        "imap_password_env": source.imap_password_env,
+    });
+    serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".to_string())
+}
+
+fn dummy_event_sink() -> EventSink {
+    let (tx, _rx) = tokio::sync::broadcast::channel(1);
+    tx
+}
+
+fn protect_secret_file(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(mut permissions) = std::fs::metadata(path).map(|meta| meta.permissions()) {
+            permissions.set_mode(0o600);
+            let _ = std::fs::set_permissions(path, permissions);
+        }
+    }
+}
+
 async fn acquire_ai_auto(
     profile: &ProjectAuthProfile,
     session: &mut AuthSession,
     target_url: &str,
+    _artifact_dir: &Path,
     options: &AuthSessionOptions,
 ) -> Result<(), AcquisitionError> {
     if profile.bearer_token_env.is_some()
@@ -1333,6 +1576,7 @@ fn cookie_names_from_header(value: &str) -> BTreeSet<String> {
         .collect()
 }
 
+#[allow(dead_code)]
 async fn mailbox_otp_readiness(
     profile: &ProjectAuthProfile,
     options: &AuthSessionOptions,
@@ -1363,6 +1607,7 @@ async fn mailbox_otp_readiness(
     Ok(otp.map(|_| "[REDACTED]".to_string()))
 }
 
+#[allow(dead_code)]
 pub async fn extract_latest_otp_from_mailbox(
     mailbox_url: &str,
     recipient: &str,
@@ -1761,6 +2006,7 @@ mod tests {
                     browser_checks_enabled: false,
                     workspace_paths: Vec::new(),
                     env_overrides: BTreeMap::new(),
+                    ..AuthSessionOptions::default()
                 },
             )
             .await;
@@ -1789,6 +2035,7 @@ mod tests {
                         "NYCTOS_TEST_USER_A_TOKEN".to_string(),
                         "runtime-token".to_string(),
                     )]),
+                    ..AuthSessionOptions::default()
                 },
             )
             .await;
@@ -1843,6 +2090,7 @@ mod tests {
                     browser_checks_enabled: false,
                     workspace_paths: Vec::new(),
                     env_overrides: BTreeMap::new(),
+                    ..AuthSessionOptions::default()
                 },
             )
             .await;
@@ -1881,6 +2129,7 @@ mod tests {
                     browser_checks_enabled: false,
                     workspace_paths: Vec::new(),
                     env_overrides: BTreeMap::new(),
+                    ..AuthSessionOptions::default()
                 },
             )
             .await;
@@ -1910,6 +2159,7 @@ mod tests {
                         "NYCTOS_TEST_MEMBER_PASSWORD".to_string(),
                         "secret-password".to_string(),
                     )]),
+                    ..AuthSessionOptions::default()
                 },
             )
             .await;

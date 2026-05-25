@@ -79,6 +79,55 @@ impl<'a> ChainStore<'a> {
         .await?;
         rows.into_iter().map(row_to_chain_record).collect()
     }
+
+    pub async fn list_by_run_and_status(
+        &self,
+        run_id: &str,
+        status: &str,
+    ) -> Result<Vec<ChainRecord>, StoreError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, run_id, cross_repo, member_ids,
+                   rationale_blob, attack_provenance, prompt_version,
+                   status, verification_attempt_id, evidence_blob, severity
+            FROM chains WHERE run_id = ? AND status = ?
+            ORDER BY id
+            "#,
+        )
+        .bind(run_id)
+        .bind(status)
+        .fetch_all(self.pool)
+        .await?;
+        rows.into_iter().map(row_to_chain_record).collect()
+    }
+
+    pub async fn update_verification_state(
+        &self,
+        id: &str,
+        status: &str,
+        verification_attempt_id: Option<&str>,
+        evidence_blob: Option<&str>,
+        severity: Option<&str>,
+    ) -> Result<Option<ChainRecord>, StoreError> {
+        sqlx::query(
+            r#"
+            UPDATE chains SET
+                status = ?,
+                verification_attempt_id = COALESCE(?, verification_attempt_id),
+                evidence_blob = COALESCE(?, evidence_blob),
+                severity = COALESCE(?, severity)
+            WHERE id = ?
+            "#,
+        )
+        .bind(status)
+        .bind(verification_attempt_id)
+        .bind(evidence_blob)
+        .bind(severity)
+        .bind(id)
+        .execute(self.pool)
+        .await?;
+        self.get(id).await
+    }
 }
 
 fn row_to_chain_record(row: sqlx::sqlite::SqliteRow) -> Result<ChainRecord, StoreError> {

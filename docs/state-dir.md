@@ -100,6 +100,16 @@ opens the file), the older binary refuses to start with `failed to
 apply migrations: ...`. Reverting to a newer binary fixes it; there
 is no down-migration story.
 
+Reset the database without touching other artifacts:
+
+```bash
+nyctos reset db
+```
+
+That command removes `state.db`, `state.db-wal`, and `state.db-shm`
+after checking that no running `nyctos` process has the database open.
+Use `nyctos reset db --yes` in scripts.
+
 ### `auth_token`
 
 64 hex characters (32 random bytes). The HTTP + WebSocket server

@@ -2357,6 +2357,10 @@ mod tests {
             auth_artifact_dir: std::env::temp_dir().join("nyctos-live-planning-auth-test"),
             auth_workspace_paths: Vec::new(),
             auth_env_overrides: BTreeMap::new(),
+            auth_ai_runtime: None,
+            auth_events: dummy_test_event_sink(),
+            run_id: "run-test".to_string(),
+            project_id: "project-test".to_string(),
             browser_artifact_dir: None,
             browser_checks_enabled: false,
             policy: ExploitSafetyPolicy {
@@ -2365,6 +2369,11 @@ mod tests {
             },
             audit_log: ExploitAuditLog::default(),
         }
+    }
+
+    fn dummy_test_event_sink() -> nyctos_types::event::EventSink {
+        let (tx, _rx) = tokio::sync::broadcast::channel(1);
+        tx
     }
 
     fn auth_profile_with_object(

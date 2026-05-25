@@ -24,16 +24,16 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use nyctos_ai::{
-    read_spec_excerpt, run_attack_agent, run_chain_reasoning, run_exploration,
-    run_live_evidence_review, run_novel_findings, run_payload_synthesis, run_spec_derivation,
-    AiRuntime, AnthropicSdkAdapter, AttackAgentKnownLead, AttackAgentOutcome, AttackAgentScope,
-    AttackAgentVulnerability, AttackWorkspace, BudgetTracker, ChainReasoningOutcome,
-    ClaudeCodeAdapter, CodexCliAdapter, EscapeSuiteGate, EscapeSuiteVerdict,
-    ExistingVulnerabilitySummary, ExplorationAuditEntry, ExplorationEndpoint, ExplorationFinding,
-    ExplorationHaltReason, ExplorationKnownLead, ExplorationOutcome, ExplorationScope,
-    LiveEvidenceReviewInput, LiveEvidenceReviewOutput, NovelFindingDiscoveryOutcome,
-    PayloadSynthesisOutcome, Pricing, SharedBudgetTracker, SpecDerivationOutcome,
-    DEFAULT_ATTACK_AGENT_MAX_TURNS, DEFAULT_EXPLORATION_RUN_CAP_USD_MICROS,
+    read_spec_excerpt, run_agentic_chain_reasoning, run_attack_agent, run_chain_reasoning,
+    run_exploration, run_live_evidence_review, run_novel_findings, run_payload_synthesis,
+    run_spec_derivation, AiRuntime, AnthropicSdkAdapter, AttackAgentKnownLead, AttackAgentOutcome,
+    AttackAgentScope, AttackAgentVulnerability, AttackWorkspace, BudgetTracker,
+    ChainReasoningOutcome, ChainReasoningWorkspace, ClaudeCodeAdapter, CodexCliAdapter,
+    EscapeSuiteGate, EscapeSuiteVerdict, ExistingVulnerabilitySummary, ExplorationAuditEntry,
+    ExplorationEndpoint, ExplorationFinding, ExplorationHaltReason, ExplorationKnownLead,
+    ExplorationOutcome, ExplorationScope, LiveEvidenceReviewInput, LiveEvidenceReviewOutput,
+    NovelFindingDiscoveryOutcome, PayloadSynthesisOutcome, Pricing, SharedBudgetTracker,
+    SpecDerivationOutcome, DEFAULT_ATTACK_AGENT_MAX_TURNS, DEFAULT_EXPLORATION_RUN_CAP_USD_MICROS,
     DEFAULT_EXPLORATION_SOFT_CAP_USD_MICROS,
 };
 use nyctos_core::store::{
@@ -51,6 +51,9 @@ use nyctos_nyx::Diag;
 use nyctos_sandbox::payload_runner::{HarnessSource, HarnessSpecInput, PayloadRun, PayloadRunner};
 use nyctos_sandbox::BackendKind;
 use nyctos_types::agent::{AgentTraceMetrics, AiError, Budget, BudgetKind, Prompt};
+use nyctos_types::attack_graph::{
+    NODE_CANDIDATE, NODE_SIGNAL, NODE_VERIFICATION_ATTEMPT, NODE_VERIFIED_VULNERABILITY,
+};
 use nyctos_types::chain::{
     ChainCandidate, ChainReasoningEdge, ChainReasoningInput, ChainReasoningNode,
     CHAIN_REASONING_DEFAULT_MAX, CHAIN_REASONING_PROMPT_VERSION, NODE_KIND_ENTRY,
@@ -1796,6 +1799,9 @@ const FRAMEWORK_PATH_FRAGMENTS: &[&str] = &[
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ChainReasoningPassReport {
     pub chains_persisted: u32,
+    pub chains_verified: u32,
+    pub chains_needing_verification: u32,
+    pub vulnerabilities_recorded: u32,
     pub cross_repo_chains: u32,
     pub members_stamped: u32,
     pub spend_usd_micros: i64,
@@ -1815,7 +1821,6 @@ pub async fn run_chain_reasoning_pass(
     workspaces: &HashMap<String, WorkspaceHandle>,
     events: EventSink,
 ) -> anyhow::Result<ChainReasoningPassReport> {
-    let _ = workspaces; // ChainReasoning reads the persisted attack graph first.
     let input = match store
         .attack_graph()
         .chain_planning_input(&bundle.run_id, CHAIN_REASONING_DEFAULT_MAX)
@@ -1825,18 +1830,6 @@ pub async fn run_chain_reasoning_pass(
         Some(i) => i,
         None => return Ok(ChainReasoningPassReport::default()),
     };
-    let adapter = match selected_one_shot_runtime(
-        config,
-        store,
-        secrets,
-        config.default_run_budget_usd_micros_resolved(),
-        "chain reasoning",
-    )
-    .await?
-    {
-        Some(adapter) => adapter,
-        None => return Ok(ChainReasoningPassReport::default()),
-    };
     tracing::info!(
         nodes = input.nodes.len(),
         edges = input.edges.len(),
@@ -1844,23 +1837,60 @@ pub async fn run_chain_reasoning_pass(
         "chain reasoning: dispatching"
     );
 
-    let runtime_name = adapter.name();
-    let runtime_model = adapter.default_model().to_string();
-
     let started_at = now_epoch_ms();
-    let outcome = match run_chain_reasoning(
-        adapter.as_ref(),
-        &input,
-        events,
-        config.chain_reasoning_per_call_cap_usd_micros_resolved(),
-    )
-    .await
+    let (outcome, runtime_name, runtime_model) = if let Some(agent_adapter) =
+        selected_agent_loop_runtime(config, store, config.default_run_budget_usd_micros_resolved())
+            .await
     {
-        Ok(o) => o,
-        Err(err) => {
-            tracing::warn!(error = %err, "chain reasoning call failed");
-            return Ok(ChainReasoningPassReport { failed: 1, ..Default::default() });
-        }
+        let workspace_roots = chain_reasoning_workspaces(workspaces);
+        let runtime_name = agent_adapter.name();
+        let runtime_model = agent_adapter.default_model().to_string();
+        let outcome = match run_agentic_chain_reasoning(
+            agent_adapter.as_ref(),
+            &input,
+            &workspace_roots,
+            events,
+            config.chain_reasoning_per_call_cap_usd_micros_resolved(),
+        )
+        .await
+        {
+            Ok(o) => o,
+            Err(err) => {
+                tracing::warn!(error = %err, "agentic chain reasoning call failed");
+                return Ok(ChainReasoningPassReport { failed: 1, ..Default::default() });
+            }
+        };
+        (outcome, runtime_name, runtime_model)
+    } else {
+        let adapter = match selected_one_shot_runtime(
+            config,
+            store,
+            secrets,
+            config.default_run_budget_usd_micros_resolved(),
+            "chain reasoning",
+        )
+        .await?
+        {
+            Some(adapter) => adapter,
+            None => return Ok(ChainReasoningPassReport::default()),
+        };
+        let runtime_name = adapter.name();
+        let runtime_model = adapter.default_model().to_string();
+        let outcome = match run_chain_reasoning(
+            adapter.as_ref(),
+            &input,
+            events,
+            config.chain_reasoning_per_call_cap_usd_micros_resolved(),
+        )
+        .await
+        {
+            Ok(o) => o,
+            Err(err) => {
+                tracing::warn!(error = %err, "chain reasoning call failed");
+                return Ok(ChainReasoningPassReport { failed: 1, ..Default::default() });
+            }
+        };
+        (outcome, runtime_name, runtime_model)
     };
 
     let mut report = ChainReasoningPassReport::default();
@@ -1869,12 +1899,27 @@ pub async fn run_chain_reasoning_pass(
         &input,
         outcome,
         &mut report,
+        bundle.project_id.as_str(),
         runtime_name,
         &runtime_model,
         started_at,
     )
     .await?;
     Ok(report)
+}
+
+fn chain_reasoning_workspaces(
+    workspaces: &HashMap<String, WorkspaceHandle>,
+) -> Vec<ChainReasoningWorkspace> {
+    let mut out = workspaces
+        .iter()
+        .map(|(repo, workspace)| ChainReasoningWorkspace {
+            repo: repo.clone(),
+            root: workspace.workspace().display().to_string(),
+        })
+        .collect::<Vec<_>>();
+    out.sort_by(|a, b| a.repo.cmp(&b.repo));
+    out
 }
 
 /// Walk `bundle` and turn each diag into a `ChainReasoningNode`. Edges
@@ -2050,6 +2095,7 @@ async fn apply_chain_outcome(
     input: &ChainReasoningInput,
     outcome: ChainReasoningOutcome,
     report: &mut ChainReasoningPassReport,
+    project_id: &str,
     runtime_name: &str,
     runtime_model: &str,
     started_at_ms: i64,
@@ -2110,6 +2156,15 @@ async fn apply_chain_outcome(
                     .max_by_key(|severity| chain_severity_rank(severity))
                     .map(str::to_string);
                 let chain_id = format!("chain-{run_id}-{rank:02}-{created_at:x}-{}", short_token());
+                let proof = chain_terminal_live_proof(input, chain);
+                let chain_status = if proof.terminal_live_proof
+                    && chain.missing_verification_steps.is_empty()
+                    && chain.confidence >= 60
+                {
+                    "Verified"
+                } else {
+                    "NeedsChainVerification"
+                };
                 let rec = ChainRecord {
                     id: chain_id.clone(),
                     run_id: run_id.clone(),
@@ -2118,13 +2173,28 @@ async fn apply_chain_outcome(
                     rationale_blob: Some(rationale_blob),
                     attack_provenance: Some(provenance.clone()),
                     prompt_version: Some(prompt_version.clone()),
-                    status: "Proposed".to_string(),
-                    verification_attempt_id: None,
+                    status: chain_status.to_string(),
+                    verification_attempt_id: proof.verification_attempt_id.clone(),
                     evidence_blob: Some(evidence_blob),
-                    severity,
+                    severity: severity.clone(),
                 };
                 store.chains().insert(&rec).await?;
                 report.chains_persisted += 1;
+                if chain_status == "Verified" {
+                    report.chains_verified += 1;
+                    let vuln = verified_vulnerability_from_chain(
+                        input,
+                        chain,
+                        &rec,
+                        project_id,
+                        proof.verification_attempt_id.as_deref(),
+                        created_at,
+                    );
+                    store.verified_vulnerabilities().upsert(&vuln).await?;
+                    report.vulnerabilities_recorded += 1;
+                } else {
+                    report.chains_needing_verification += 1;
+                }
                 if cross_repo {
                     report.cross_repo_chains += 1;
                 }
@@ -2189,6 +2259,7 @@ fn build_chain_evidence_blob(input: &ChainReasoningInput, chain: &ChainCandidate
             missing_gaps.push(format!("No graph edge proves {} -> {}", pair[0], pair[1]));
         }
     }
+    let proof = chain_terminal_live_proof(input, chain);
     let has_live_proof =
         chain.member_ids.iter().filter_map(|id| nodes_by_id.get(id.as_str())).any(|n| {
             matches!(
@@ -2199,6 +2270,12 @@ fn build_chain_evidence_blob(input: &ChainReasoningInput, chain: &ChainCandidate
     if !has_live_proof {
         missing_gaps.push(
             "Live verification attempt or confirmed vulnerability not yet attached".to_string(),
+        );
+    }
+    if has_live_proof && !proof.terminal_live_proof {
+        missing_gaps.push(
+            "Live proof is present but not at the terminal impact node; replay the full chain to terminal impact"
+                .to_string(),
         );
     }
     missing_gaps.sort();
@@ -2240,9 +2317,177 @@ fn build_chain_evidence_blob(input: &ChainReasoningInput, chain: &ChainCandidate
         "evidence": chain.evidence,
         "blast_radius": chain.blast_radius,
         "confidence": chain.confidence,
+        "terminal_live_proof": proof.terminal_live_proof,
         "missing_verification_steps": missing_gaps,
     })
     .to_string()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ChainLiveProof {
+    terminal_live_proof: bool,
+    verification_attempt_id: Option<String>,
+}
+
+fn chain_terminal_live_proof(
+    input: &ChainReasoningInput,
+    chain: &ChainCandidate,
+) -> ChainLiveProof {
+    let nodes_by_id: HashMap<&str, &ChainReasoningNode> =
+        input.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    let verification_attempt_id =
+        chain.member_ids.iter().filter_map(|id| nodes_by_id.get(id.as_str())).find_map(|n| {
+            if n.graph_kind.as_deref() == Some(NODE_VERIFICATION_ATTEMPT) {
+                n.ref_id.clone()
+            } else {
+                None
+            }
+        });
+    let terminal_live_proof =
+        chain.member_ids.last().and_then(|id| nodes_by_id.get(id.as_str())).is_some_and(|n| {
+            matches!(
+                n.graph_kind.as_deref(),
+                Some(NODE_VERIFICATION_ATTEMPT) | Some(NODE_VERIFIED_VULNERABILITY)
+            )
+        });
+    ChainLiveProof { terminal_live_proof, verification_attempt_id }
+}
+
+fn verified_vulnerability_from_chain(
+    input: &ChainReasoningInput,
+    chain: &ChainCandidate,
+    rec: &ChainRecord,
+    project_id: &str,
+    verification_attempt_id: Option<&str>,
+    now_ms: i64,
+) -> VerifiedVulnerabilityRecord {
+    let nodes_by_id: HashMap<&str, &ChainReasoningNode> =
+        input.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    let members = chain
+        .member_ids
+        .iter()
+        .filter_map(|id| nodes_by_id.get(id.as_str()).copied())
+        .collect::<Vec<_>>();
+    let source_candidate_ids = members
+        .iter()
+        .filter(|n| n.graph_kind.as_deref() == Some(NODE_CANDIDATE))
+        .filter_map(|n| n.ref_id.clone())
+        .collect::<Vec<_>>();
+    let source_signal_ids = members
+        .iter()
+        .filter(|n| n.graph_kind.as_deref() == Some(NODE_SIGNAL))
+        .filter_map(|n| n.ref_id.clone())
+        .collect::<Vec<_>>();
+    let affected_components = members
+        .iter()
+        .map(|n| {
+            serde_json::json!({
+                "kind": "chain_member",
+                "graph_kind": n.graph_kind,
+                "id": n.id,
+                "ref_id": n.ref_id,
+                "repo": n.repo,
+                "path": n.path,
+                "line": n.line,
+                "routes": n.routes,
+                "roles": n.roles,
+                "objects": n.objects,
+            })
+        })
+        .collect::<Vec<_>>();
+    let base_severity = rec.severity.as_deref().unwrap_or("High");
+    let severity = chain_report_severity(base_severity, rec.cross_repo, members.len());
+    let confidence = f64::from(chain.confidence).clamp(0.0, 100.0) / 100.0;
+    let risk_score = chain_risk_score(&severity, confidence, rec.cross_repo, members.len());
+    let proof_note = verification_attempt_id
+        .map(|id| format!(" Terminal live proof is attached to verification attempt `{id}`."))
+        .unwrap_or_else(|| {
+            " Terminal live proof is attached to a verified vulnerability node.".to_string()
+        });
+    VerifiedVulnerabilityRecord {
+        id: format!("vuln-{}", rec.id),
+        run_id: rec.run_id.clone(),
+        project_id: project_id.to_string(),
+        title: chain_title(rec.cross_repo, members.len()),
+        severity: severity.clone(),
+        confidence,
+        risk_score,
+        risk_rating: canonical_risk_rating("", risk_score),
+        risk_score_source: "chain-reasoning".to_string(),
+        risk_score_rationale: format!(
+            "Verified chain reasoning: terminal live proof plus {} member(s), cross-repo = {}.",
+            members.len(),
+            rec.cross_repo
+        ),
+        vuln_class: "ExploitChain".to_string(),
+        affected_components,
+        business_impact: chain.blast_radius.join("; "),
+        evidence_summary: format!("{}{}", chain.rationale, proof_note),
+        repro_steps: chain_repro_steps(chain),
+        remediation: "Fix the terminal impact and every upstream precondition in the chain; then rerun chain verification before closing.".to_string(),
+        source_candidate_ids,
+        source_signal_ids,
+        verification_attempt_ids: verification_attempt_id.map(|id| vec![id.to_string()]).unwrap_or_default(),
+        chain_id: Some(rec.id.clone()),
+        status: "Open".to_string(),
+        first_seen: now_ms,
+        last_seen: now_ms,
+    }
+}
+
+fn chain_report_severity(base: &str, cross_repo: bool, members: usize) -> String {
+    if cross_repo || members >= 3 || chain_severity_rank(base) >= chain_severity_rank("High") {
+        "Critical".to_string()
+    } else {
+        base.to_string()
+    }
+}
+
+fn chain_risk_score(severity: &str, confidence: f64, cross_repo: bool, members: usize) -> f64 {
+    let mut score: f64 = match severity.to_ascii_lowercase().as_str() {
+        "critical" => 9.2,
+        "high" => 7.8,
+        "medium" => 5.4,
+        "low" => 2.4,
+        _ => 1.0,
+    };
+    if confidence >= 0.85 {
+        score += 0.4;
+    }
+    if cross_repo {
+        score += 0.3;
+    }
+    if members >= 3 {
+        score += 0.2;
+    }
+    clamp_risk_score(score)
+}
+
+fn chain_title(cross_repo: bool, members: usize) -> String {
+    if cross_repo {
+        format!("Verified cross-repo exploit chain across {members} graph nodes")
+    } else {
+        format!("Verified exploit chain across {members} graph nodes")
+    }
+}
+
+fn chain_repro_steps(chain: &ChainCandidate) -> String {
+    let mut steps = Vec::new();
+    if !chain.prerequisites.is_empty() {
+        steps.push(format!("Prerequisites: {}", chain.prerequisites.join("; ")));
+    }
+    if !chain.edge_provenance.is_empty() {
+        steps.push(format!("Graph edges: {}", chain.edge_provenance.join(", ")));
+    }
+    if !chain.evidence.is_empty() {
+        steps.push(format!("Evidence: {}", chain.evidence.join("; ")));
+    }
+    if steps.is_empty() {
+        "Replay the chain in member order and confirm the terminal live proof still fires."
+            .to_string()
+    } else {
+        steps.join("\n")
+    }
 }
 
 fn chain_severity_rank(severity: &str) -> u8 {
@@ -6507,9 +6752,18 @@ mod tests {
             metrics: AgentTraceMetrics::default(),
         };
         let mut report = ChainReasoningPassReport::default();
-        apply_chain_outcome(&store, &input, outcome, &mut report, "test-runtime", "test-model", 0)
-            .await
-            .unwrap();
+        apply_chain_outcome(
+            &store,
+            &input,
+            outcome,
+            &mut report,
+            "project-test",
+            "test-runtime",
+            "test-model",
+            0,
+        )
+        .await
+        .unwrap();
         assert_eq!(report.chains_persisted, 1);
         assert_eq!(report.cross_repo_chains, 1);
         assert_eq!(report.members_stamped, 2);
@@ -6549,6 +6803,122 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn apply_chain_outcome_promotes_terminal_live_chain_to_vulnerability() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).await.unwrap();
+        store
+            .projects()
+            .create("project-test", "Project Test", None, None, None, 1_000)
+            .await
+            .unwrap();
+        let mut run = seed_run("run-live-chain");
+        run.project_id = Some("project-test".to_string());
+        store.runs().insert(&run).await.unwrap();
+
+        let candidate_node = ChainReasoningNode {
+            id: "node-candidate".to_string(),
+            graph_kind: Some(NODE_CANDIDATE.to_string()),
+            label: Some("IDOR candidate".to_string()),
+            ref_id: Some("pc-idor".to_string()),
+            repo: "web".to_string(),
+            path: "src/routes/projects.ts".to_string(),
+            line: Some(17),
+            cap: "IDOR".to_string(),
+            rule: "candidate".to_string(),
+            severity: "Low".to_string(),
+            kind: NODE_KIND_ENTRY.to_string(),
+            routes: vec!["GET /api/projects/:id".to_string()],
+            roles: vec!["authenticated".to_string()],
+            objects: vec!["project".to_string()],
+            evidence_refs: vec!["pc-idor".to_string()],
+        };
+        let verified_node = ChainReasoningNode {
+            id: "node-verified".to_string(),
+            graph_kind: Some(NODE_VERIFIED_VULNERABILITY.to_string()),
+            label: Some("Tenant data export confirmed".to_string()),
+            ref_id: Some("vuln-export".to_string()),
+            repo: "api".to_string(),
+            path: "src/export.ts".to_string(),
+            line: Some(88),
+            cap: "ACCESS_CONTROL".to_string(),
+            rule: "verified_vulnerability".to_string(),
+            severity: "High".to_string(),
+            kind: NODE_KIND_SINK.to_string(),
+            routes: vec!["GET /api/export".to_string()],
+            roles: vec!["authenticated".to_string()],
+            objects: vec!["tenant export".to_string()],
+            evidence_refs: vec!["vuln-export".to_string()],
+        };
+        let input = ChainReasoningInput {
+            run_id: "run-live-chain".to_string(),
+            repos: vec!["web".to_string(), "api".to_string()],
+            nodes: vec![candidate_node.clone(), verified_node.clone()],
+            edges: vec![ChainReasoningEdge {
+                from: candidate_node.id.clone(),
+                to: verified_node.id.clone(),
+                label: "verified_as".to_string(),
+                cross_repo: true,
+                edge_id: Some("edge-live".to_string()),
+                evidence_ref: Some("va-export".to_string()),
+                source: Some("verification_attempt".to_string()),
+            }],
+            max_chains: 10,
+        };
+        let outcome = ChainReasoningOutcome::Ranked {
+            run_id: "run-live-chain".to_string(),
+            output: nyctos_types::chain::ChainReasoningOutput {
+                chains: vec![ChainCandidate {
+                    member_ids: vec![candidate_node.id.clone(), verified_node.id.clone()],
+                    rationale:
+                        "Low-severity IDOR setup reaches a live-confirmed tenant export impact."
+                            .to_string(),
+                    prerequisites: vec!["authenticated user".to_string()],
+                    evidence: vec!["verified export proof".to_string()],
+                    blast_radius: vec!["tenant export data".to_string()],
+                    confidence: 91,
+                    missing_verification_steps: Vec::new(),
+                    edge_provenance: vec!["edge-live".to_string()],
+                }],
+            },
+            prompt_version: CHAIN_REASONING_PROMPT_VERSION.to_string(),
+            spent_usd_micros: 7_000,
+            attempts: 1,
+            metrics: AgentTraceMetrics::default(),
+        };
+        let mut report = ChainReasoningPassReport::default();
+        apply_chain_outcome(
+            &store,
+            &input,
+            outcome,
+            &mut report,
+            "project-test",
+            "test-runtime",
+            "test-model",
+            0,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(report.chains_persisted, 1);
+        assert_eq!(report.chains_verified, 1);
+        assert_eq!(report.chains_needing_verification, 0);
+        assert_eq!(report.vulnerabilities_recorded, 1);
+
+        let chains = store.chains().list_by_run("run-live-chain").await.unwrap();
+        assert_eq!(chains[0].status, "Verified");
+        assert_eq!(chains[0].severity.as_deref(), Some("High"));
+        let evidence: serde_json::Value =
+            serde_json::from_str(chains[0].evidence_blob.as_deref().unwrap()).unwrap();
+        assert_eq!(evidence.get("terminal_live_proof").and_then(|v| v.as_bool()), Some(true));
+
+        let vulns = store.verified_vulnerabilities().list_by_run("run-live-chain").await.unwrap();
+        assert_eq!(vulns.len(), 1);
+        assert_eq!(vulns[0].chain_id.as_deref(), Some(chains[0].id.as_str()));
+        assert_eq!(vulns[0].severity, "Critical");
+        assert_eq!(vulns[0].source_candidate_ids, vec!["pc-idor".to_string()]);
+    }
+
+    #[tokio::test]
     async fn apply_chain_outcome_handles_no_chains_without_writes() {
         let tmp = tempfile::tempdir().unwrap();
         let store = Store::open(tmp.path()).await.unwrap();
@@ -6568,9 +6938,18 @@ mod tests {
             metrics: AgentTraceMetrics::default(),
         };
         let mut report = ChainReasoningPassReport::default();
-        apply_chain_outcome(&store, &input, outcome, &mut report, "test-runtime", "test-model", 0)
-            .await
-            .unwrap();
+        apply_chain_outcome(
+            &store,
+            &input,
+            outcome,
+            &mut report,
+            "project-test",
+            "test-runtime",
+            "test-model",
+            0,
+        )
+        .await
+        .unwrap();
         assert_eq!(report.chains_persisted, 0);
         assert_eq!(report.cross_repo_chains, 0);
         assert_eq!(report.members_stamped, 0);

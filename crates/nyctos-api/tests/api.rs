@@ -95,8 +95,8 @@ impl AuthSetupAgent for StubAuthSetupAgent {
                     session_import_path: None,
                     login_url: Some("/api/auth/sign-in".to_string()),
                     username: None,
-                    username_env: None,
-                    login_email_env: Some("NYCTOS_MANAGER_EMAIL".to_string()),
+                    username_env: Some("NYCTOS_MANAGER_EMAIL".to_string()),
+                    login_email_env: None,
                     password_env: Some("NYCTOS_MANAGER_PASSWORD".to_string()),
                     password_secret_ref: None,
                     cookie_env: None,
@@ -3456,6 +3456,92 @@ router.get("/api/admin/report", requireAdmin, adminReport);
             && var["secret"] == true
     }));
     assert!(trigger.calls.lock().await.is_empty(), "auth setup must not trigger a pentest");
+}
+
+#[tokio::test]
+async fn auth_auto_setup_records_dev_mail_otp_profiles() {
+    let srv = TestServer::start().await;
+    let client = reqwest::Client::new();
+    let created: Value = client
+        .post(format!("{}/api/v1/projects", srv.base()))
+        .json(&serde_json::json!({
+            "name": "otp-auth-app",
+            "target_base_url": "http://localhost:3000"
+        }))
+        .send()
+        .await
+        .expect("post project")
+        .json()
+        .await
+        .expect("project json");
+    let project_id = created["id"].as_str().expect("project id");
+    let repo_dir = srv._tmp.path().join("otp-auth-source");
+    std::fs::create_dir_all(repo_dir.join("src")).expect("mkdir");
+    std::fs::write(
+        repo_dir.join("src/routes.ts"),
+        r#"router.post("/api/auth/login", sendLoginCode);
+router.post("/api/auth/verify-code", verifyLoginCode);
+router.get("/app/dev-mail", devMailInbox);
+"#,
+    )
+    .expect("write source");
+    std::fs::write(
+        repo_dir.join("src/seed.ts"),
+        r#"export const testUsers = {
+  user_a: { email: "user-a@example.test" },
+  user_b: { email: "user-b@example.test" },
+};"#,
+    )
+    .expect("write seed");
+    let now = nyctos_core::now_epoch_ms();
+    srv.store
+        .repos()
+        .upsert(&RepoRecord {
+            id: "repo-otp-auth-source".to_string(),
+            name: "otp-auth-source".to_string(),
+            project_id: project_id.to_string(),
+            source_kind: "local".to_string(),
+            source_url_or_path: repo_dir.display().to_string(),
+            branch: None,
+            auth_ref: None,
+            i_own_this: true,
+            last_scan_run_id: None,
+            last_scan_finished_at: None,
+            created_at: now,
+            updated_at: now,
+        })
+        .await
+        .expect("repo");
+
+    let started: Value = client
+        .post(format!("{}/api/v1/projects/{project_id}/auth/auto-setup", srv.base()))
+        .json(&serde_json::json!({ "target_base_url": "http://localhost:3000" }))
+        .send()
+        .await
+        .expect("post auth setup")
+        .json()
+        .await
+        .expect("json");
+    let job_id = started["job"]["id"].as_str().expect("job id");
+    let job = wait_auth_setup_job(&client, &srv.base(), project_id, job_id).await;
+    assert_eq!(job["status"], "succeeded");
+    let response = &job["result"];
+
+    assert_eq!(response["verification"]["status"], "needs_review");
+    assert!(response["verification"]["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|check| check.as_str().unwrap_or_default().contains("/app/dev-mail")));
+    let profiles =
+        response["project"]["runtime_profile"]["auth_profiles"].as_array().expect("profiles");
+    assert!(profiles.iter().any(|profile| {
+        profile["role"] == "user_a"
+            && profile["mode"] == "otp_email_mailbox"
+            && profile["otp_source"]["kind"] == "mailbox"
+            && profile["otp_source"]["mailbox_url"] == "http://localhost:3000/app/dev-mail/"
+            && profile["otp_source"]["email_env"] == "NYCTOS_USER_A_USERNAME"
+    }));
 }
 
 #[tokio::test]
