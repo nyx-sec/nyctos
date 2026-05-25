@@ -1,151 +1,155 @@
-<!-- nyx: verbatim -->
 <div align="center">
-  <img src="assets/nyctos-readme-header.png" alt="NYCTOS - automated pentesting, refined" width="900"/>
+  <img src="assets/nyctos-readme-header.png" alt="Nyctos" width="640"/>
 
-[![Status: pre-MVP](https://img.shields.io/badge/status-pre--MVP-2ea067)](#status)
-[![Binary: nyctos](https://img.shields.io/badge/binary-nyctos-c79a2b)](#naming)
-[![License: PolyForm Small Business 1.0.0](https://img.shields.io/badge/license-PolyForm%20Small%20Business-9fa3ad)](LICENSE.md)
-[![Docs](https://img.shields.io/badge/docs-operator%20guide-58a6ff)](docs/SUMMARY.md)
+**Run a live pentest against a dev app you control. Nyctos reads the repo, drives the local target, verifies findings, and gives you proof instead of a guess list.**
+
+  <p>
+    <a href="LICENSE.md"><img alt="License: PolyForm Small Business" src="https://img.shields.io/badge/license-PolyForm%20Small%20Business-0f172a?style=flat-square" /></a>
+    <a href="https://www.rust-lang.org/"><img alt="Rust 2024" src="https://img.shields.io/badge/rust-2024-f97316?style=flat-square&logo=rust&logoColor=white" /></a>
+    <a href="https://pnpm.io/"><img alt="pnpm frontend" src="https://img.shields.io/badge/pnpm-frontend-facc15?style=flat-square&logo=pnpm&logoColor=111827" /></a>
+    <a href="https://github.com/nyx-sec/nyx"><img alt="nyx scanner" src="https://img.shields.io/badge/scanner-nyx-2563eb?style=flat-square" /></a>
+  </p>
 </div>
+
+<p align="center"><img src="assets/screenshots/demo.gif" alt="Nyctos dashboard walkthrough showing pentest options, a live local run, verified vulnerabilities, and proof details" width="900"/></p>
 
 ---
 
-Nyctos is a self-hosted security analysis daemon that wraps the `nyx`
-scanner with an AI-driven exploit-synthesis layer and a full-environment
-sandbox. It runs continuously across your repositories, validates
-findings inside an isolated dev environment, and emits reproducible
-evidence for every exploitable finding.
+## Pentest locally, prove locally
 
-The shipping binary is `nyctos`; the upstream OSS static scanner stays
-`nyx` (see Naming below).
-<!-- /nyx: verbatim -->
+Nyctos is the product layer around `nyx` for live, local pentesting. Point it at a repo and a dev URL. It launches or watches the app, reads the code, maps routes, sends scoped probes, and only promotes findings when it can attach evidence.
 
-## Status
-
-Pre-MVP. The daemon is functional end-to-end against the upstream
-`nyx` scanner. The end-to-end demo fixture, MVP polish, and
-closed-beta packaging phases come next, before the first tag.
-
-What ships today:
-
-- `nyx` subprocess driver with parallel run aggregation and a
-  SQLite-backed state store.
-- Axum HTTP + WebSocket API, auth-token gated, loopback bind by
-  default.
-- Embedded SPA: first-launch wizard, project + repo manager,
-  findings browser, live scan view, quarantine, AI trace viewer.
-- Two AI runtime adapters, Anthropic SDK and Claude Code, wired to
-  six tasks: payload synthesis, spec derivation, chain reasoning,
-  novel finding discovery, attack planning, and live evidence review.
-- Two sandbox lanes: birdcage (in-process seccomp on Linux) and a
-  chain lane that auto-selects libkrun, Firecracker, or Docker.
-- Env-builder docker-compose spinup, cross-repo chain runner, and
-  reproducible-evidence bundles for every confirmed finding.
-- Scan triggers: CLI, cron, webhook, plus a GitHub Actions
-  composite for PR gating.
-
-The daemon UI is a loopback-bound SPA. The project switcher scopes
-overview, runs, vulnerabilities, repositories, and environment
-settings to the selected app:
-
-![Nyctos project workspace for acme-app, showing the project switcher in the sidebar, project-scoped Overview, Pentest Runs, Vulnerabilities, Repositories, and Environments navigation, plus an overview card with repository, environment, vulnerability, and run shortcuts](assets/screenshots/ui-project-workspace.png)
-
-`nyctos doctor` prints the runtime probes the daemon uses at
-startup:
-
-![nyctos doctor output showing state dir, config, SQLite schema v5, resolved nyx scanner version, claude-code adapter, sandbox chain lane on docker, sandbox fast lane on birdcage, scheduler and webhook status](assets/screenshots/cli-doctor.png)
-
-## Documentation
-
-Operator-facing docs live under [`docs/`](docs/); the
-[`docs/SUMMARY.md`](docs/SUMMARY.md) index lists every page. Start
-here:
-
-- [`docs/install.md`](docs/install.md): prerequisites, source build,
-  and `nyctos doctor`.
-- [`docs/quickstart.md`](docs/quickstart.md): first daemon, first
-  project, first scan, first findings.
-- [`docs/triggers/cron.md`](docs/triggers/cron.md) and
-  [`docs/triggers/webhook.md`](docs/triggers/webhook.md): no-touch
-  scan triggers.
-- [`docs/ci/github-actions.md`](docs/ci/github-actions.md): the
-  shipped composite Action for PR gating.
-
-### Quickstart in three commands
-
-Repos in Nyctos are always nested under a `Project`. A fresh
-install reaches a first scan in three steps:
+The dashboard is built for the part that usually gets messy: deciding what is real, what already has proof, and what still needs a harder look.
 
 ```bash
-nyctos project create acme-app --target-base-url http://localhost:3000
-nyctos project add-repo acme-app acme-backend --path /abs/path/backend --i-own-this
-nyctos scan --project acme-app
+cargo run --bin nyctos -- scan ./apps/web --target-url http://127.0.0.1:3000
+cargo run --bin nyctos -- serve
 ```
 
-`nyctos --help` shows the rest of the surface (scan, project,
-pr-comment, reverify, inspect, budget, traces, doctor, serve) plus
-the top-level flags every subcommand inherits:
+The target stays local. The API binds to loopback by default. The run history, traces, evidence, and triage state live in the Nyctos product store.
 
-![nyctos --help output listing the nine subcommands (scan, project, pr-comment, reverify, inspect, budget, traces, doctor, serve) and the top-level --config, --state-dir, --log-level flags](assets/screenshots/cli-help.png)
+<p align="center"><img src="assets/screenshots/project-workspace.png" alt="Nyctos project workspace with a live pentest, verified risk, target status, repositories, and recent activity" width="900"/></p>
 
-The `project` subcommand the quickstart leads with is the entry
-point for the Project / repo model: `create`, `list`, `show`,
-`delete`, `add-repo`.
+## What a run does
 
-![nyctos project --help output listing the create, list, show, delete, and add-repo subcommands plus the top-level --config, --state-dir, --log-level flags](assets/screenshots/cli-project.png)
+| Stage | What happens |
+|---|---|
+| **Scope** | Load project repos, target URLs, launch profile, previous findings, and runtime settings. |
+| **Static scan** | Run `nyx` over the source tree and normalize the scanner output. |
+| **Explore** | Build route, form, auth, and API context from the app and codebase. |
+| **Candidate pass** | Turn scanner findings and runtime signals into concrete issues worth checking. |
+| **Verification** | Send targeted live checks to the dev app and collect request, response, and trace proof. |
+| **Triage** | Store verified vulnerabilities with confidence, status, evidence, and run attribution. |
+| **Attack pass** | Optional destructive local pass that tries to break the app after the rest of the context is known. |
 
-See [`docs/quickstart.md`](docs/quickstart.md) for the worked
-walkthrough (wizard, TOML form, HTTP form, output shape) and
-[`docs/cli.md#project`](docs/cli.md) for the full `project`
-subcommand reference.
+<p align="center"><img src="assets/screenshots/live-pentest.png" alt="Nyctos live pentest run with app readiness, auth sessions, repo progress, pentest phases, and live verifier proof" width="900"/></p>
 
-## Upstream `nyx` scanner
+## How the live pentest fits together
 
-`nyctos` shells out to the upstream `nyx` static scanner; the agent has
-no FFI link against it. The `nyx` binary must be installed and discoverable:
+```mermaid
+flowchart TD
+    Start["Start pentest"] --> Scope["Load repos, config, target URL"]
+    Scope --> Launch["Launch or attach to dev app"]
+    Launch --> Static["Run nyx static scan"]
+    Static --> Explore["Explore routes, forms, auth, APIs"]
+    Explore --> Candidates["Create candidate vulnerabilities"]
+    Candidates --> Verify["Verify against the live target"]
+    Verify --> Evidence["Store proof, trace data, confidence"]
+    Evidence --> Triage["Show findings in dashboard and CLI"]
 
-- by default on `PATH` (verify with `which nyx`), or
-- via `[nyx].binary_path = "/abs/path/to/nyx"` in `nyctos.toml`.
+    Evidence --> AttackGate{"Unsafe attack agent enabled?"}
+    AttackGate -- "No" --> Triage
+    AttackGate -- "Yes" --> Attack["Run destructive local attack pass"]
+    Attack --> Promote["Add new findings or raise confidence"]
+    Promote --> Triage
 
-`nyctos doctor` reports the resolved path, the detected version, and the
-minimum supported version. It exits non-zero when the binary is missing or
-below the minimum.
+    Scope -. "code and launch context" .-> Attack
+    Candidates -. "known weak spots" .-> Attack
+    Verify -. "proof and failures" .-> Attack
+```
 
-## Licensing
+The unsafe attack agent runs last because it should not waste time guessing from a blank page. By the time it starts, Nyctos has code context, target context, previous candidates, existing vulnerabilities, and live verification signals. If it breaks something new, the result is recorded as a vulnerability candidate or used to raise confidence on an existing one.
 
-Nyctos is **source-available** software, distributed under the PolyForm
-Small Business License 1.0.0. The PolyForm license is not OSI-approved,
-so Nyctos is not OSS. Do not describe it as such in public
-communication.
+This mode is meant for disposable local state. It can mutate data, create accounts, submit payloads, corrupt fixtures, or knock the dev app over. That is the point.
 
-- Free for personal use, research, hobby projects, OSS contribution, and
-  any organisation that qualifies as a Small Business under the license
-  (fewer than 100 staff and less than $1,000,000 USD annual revenue).
-- A commercial license is required for organisations above that
-  threshold. See `LICENSE.md` for the verbatim license text and contact
-  details.
+## CLI first, dashboard when it matters
 
-The upstream `nyx` core scanner is a separate project under
-GPL-3.0-or-later. That GPL-licensed scanner is the OSS component of the
-stack; the `nyctos` daemon in this repository is not.
+Use the CLI for one-off runs, CI smoke checks, and local scripts:
 
-## Naming
+```bash
+nyctos doctor
+nyctos scan ./apps/web
+nyctos scan ./apps/web --target-url http://127.0.0.1:3000
+nyctos scan ./apps/web --exploit
+nyctos scan ./apps/web --unsafe-attack-agent
+nyctos serve
+nyctos pr-comment --run-id <id>
+```
 
-**Nyctos** (Greek genitive of `Nyx`, "of-the-night") is the product
-brand. The shipping crates (`nyctos`, `nyctos-core`, `nyctos-ai`,
-`nyctos-api`, `nyctos-nyx`, `nyctos-sandbox`, `nyctos-types`,
-`nyctos-ui`), binary (`nyctos`), config (`nyctos.toml`), and state
-directory (`~/.local/share/nyctos/`) all carry the same brand. The
-upstream OSS static scanner `nyx` (GPL-3.0-or-later) keeps its name
-and is invoked as a subprocess; do not conflate it with the
-commercial daemon. Full target surface at `.pitboss/nyctos-spec.md`.
+Use the dashboard when you want to watch a live run, inspect proof, update triage, or keep project setup in one place.
 
-## Contributing
+<p align="center"><img src="assets/screenshots/verified-vulnerabilities.png" alt="Nyctos verified vulnerability list with risk scores, confidence, source location, and triage tabs" width="900"/></p>
 
-Contributor-facing notes for working on the daemon itself live under
-[`docs/dev/`](docs/dev/):
+<p align="center"><img src="assets/screenshots/vulnerability-detail.png" alt="Nyctos vulnerability detail modal with live evidence, business impact, reproduction steps, and remediation" width="900"/></p>
 
-- [`docs/dev/sqlx.md`](docs/dev/sqlx.md): regenerating the SQLx
-  prepared-query cache after a `query!` change.
-- [`docs/dev/frontend.md`](docs/dev/frontend.md): release vs debug
-  SPA embedding, plus the two-terminal Vite dev loop.
+## Local app setup
+
+A launch profile tells Nyctos how to start the target and where to probe it:
+
+```toml
+[project]
+name = "checkout-service"
+root = "/Users/you/dev/checkout-service"
+
+[project.launch]
+command = "npm run dev"
+cwd = "/Users/you/dev/checkout-service"
+target_url = "http://127.0.0.1:3000"
+health_url = "http://127.0.0.1:3000/health"
+startup_timeout_secs = 45
+```
+
+For live testing, use `127.0.0.1`, `localhost`, or another dev host you control. Use seeded accounts and throwaway databases for destructive runs.
+
+## Install from source
+
+Nyctos is pre-MVP. The core loop works, but packaging is still moving.
+
+```bash
+cargo build --workspace
+cargo run --bin nyctos -- doctor
+cargo run --bin nyctos-api
+npm --prefix frontend install
+npm --prefix frontend run dev
+```
+
+Useful checks while working on the repo:
+
+```bash
+cargo fmt --all
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+npm --prefix frontend run check
+```
+
+## Docs
+
+- [Configuration](docs/config.md)
+- [CLI](docs/cli.md)
+- [API](docs/api.md)
+- [Product store](docs/product-store.md)
+- [SQLx setup](docs/dev/sqlx.md)
+
+## Screenshot workflow
+
+README screenshots are captured from the current Vite UI with a seeded local pentest. The capture script starts Vite, mocks the daemon API, records a fast-forward demo GIF, and frames the stills:
+
+```bash
+node scripts/capture-screenshots.mjs --all
+```
+
+Raw captures are kept under `assets/screenshots/raw/`. Framed README assets are written next to them in `assets/screenshots/`.
+
+## License
+
+Nyctos is source-available under PolyForm Small Business License 1.0.0. See [LICENSE.md](LICENSE.md). The upstream `nyx` scanner is a separate GPL-3.0-or-later project.

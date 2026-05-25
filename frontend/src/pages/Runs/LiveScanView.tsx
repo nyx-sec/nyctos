@@ -124,6 +124,7 @@ const RUN_PROGRESS_PHASES = [
   { phase: "AuthSessionAcquisitionStarted", weight: 5 },
   { phase: "LiveVerificationStarted", weight: 12 },
   { phase: "BrowserVerificationStarted", weight: 3 },
+  { phase: "UnsafeAttackAgentStarted", weight: 8 },
 ];
 
 const PHASE_ORDER = RUN_PROGRESS_PHASES.map((phase) => phase.phase);
@@ -957,6 +958,7 @@ function formatPhase(phase: string): string {
   if (phase === "AuthSessionAcquisitionStarted") return "Auth sessions";
   if (phase === "LiveVerificationStarted") return "Live verification";
   if (phase === "BrowserVerificationStarted") return "Browser verification";
+  if (phase === "UnsafeAttackAgentStarted") return "Unsafe attack agent";
   return phase;
 }
 

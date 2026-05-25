@@ -19,8 +19,9 @@ use nyctos_types::attack_graph::{
 };
 use nyctos_types::chain::ChainRecord;
 use nyctos_types::product::{
-    ApiClientCallModel, FormModel, FrontendRouteModel, NyxSignalRecord, PentestCandidateRecord,
-    RouteModelEndpoint, RouteModelRecord, VerificationAttemptRecord, VerifiedVulnerabilityRecord,
+    canonical_risk_rating, clamp_risk_score, ApiClientCallModel, FormModel, FrontendRouteModel,
+    NyxSignalRecord, PentestCandidateRecord, RouteModelEndpoint, RouteModelRecord,
+    VerificationAttemptRecord, VerifiedVulnerabilityRecord,
 };
 
 use super::candidate::CandidateFindingRecord;
@@ -719,6 +720,10 @@ impl<'a> AttackGraphStore<'a> {
                     "title": rec.title,
                     "severity": rec.severity,
                     "confidence": rec.confidence,
+                    "risk_score": clamp_risk_score(rec.risk_score),
+                    "risk_rating": canonical_risk_rating(&rec.risk_rating, rec.risk_score),
+                    "risk_score_source": rec.risk_score_source,
+                    "risk_score_rationale": rec.risk_score_rationale,
                     "vuln_class": rec.vuln_class,
                     "status": rec.status,
                     "business_impact": rec.business_impact,

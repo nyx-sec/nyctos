@@ -1,1 +1,1 @@
-export { VulnerabilityList } from "./VulnerabilityList";
+export { VulnerabilityDetail, VulnerabilityList } from "./VulnerabilityList";

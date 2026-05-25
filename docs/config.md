@@ -146,6 +146,7 @@ See `docs/triggers/webhook.md` for the full handler contract.
 | `exploit_dry_run`                  | bool | `false` | Evaluate guarded live plans and write audit records without sending HTTP/browser traffic where feasible. |
 | `business_logic_templates_enabled` | bool | `true` | Generate first-class business-logic pentest candidates from route/auth metadata. Generated plans still pass through normal verifier safety gates. |
 | `research_mode_enabled`            | bool | `false` | Enable Vuln Research Mode. This adds product-invariant hypotheses from the semantic route model and prior candidate memory, prioritizes those candidates in attack planning/exploration, and uses deeper research prompts. It does not relax live execution gates. |
+| `unsafe_attack_agent_enabled`      | bool | `false` | Run the pre-MVP unrestricted local attack-agent phase after normal verification. Intended only for disposable user-owned dev apps; once invoked it does not use the guarded live-verifier policy. |
 | `business_logic_template_ids`      | array of strings | `[]` | Optional allowlist of template ids. Empty means every registered template is considered. Use `nyctos business-logic templates` or `GET /api/v1/business-logic/templates` to list ids. |
 | `exploit_request_cap`              | int (optional) | unset (`10`) | Per-candidate cap for guarded live HTTP/browser actions. `0` is floored to `1`. |
 | `exploit_requests_per_second`      | int (optional) | unset (`5`) | Per-candidate rate limit for guarded live HTTP/browser actions. `0` is floored to `1`. |
@@ -210,6 +211,20 @@ effects. The candidates carry `research_mode_provenance` in
 same provenance in their verdict blob. Live HTTP/browser execution
 still goes through the same target scope, request cap, rate limit,
 exploit-mode, state-changing, dry-run, and reset gates.
+
+Unsafe attack-agent mode is a separate pre-MVP local-only phase:
+
+```toml
+[run]
+unsafe_attack_agent_enabled = true
+```
+
+It runs after normal verification while the configured local app is
+still up. The agent receives repo workspaces, target URLs, prior
+candidates, and existing vulnerabilities, then may use CLI tools to
+attack the dev app directly and record `verified_vulnerabilities` with
+proof artifacts. It is intentionally not routed through
+`ExploitSafetyPolicy`; use it only against disposable local targets.
 
 Optional scanner findings are persisted as pentest candidates. Live web
 findings still pass live verification before surfacing as verified

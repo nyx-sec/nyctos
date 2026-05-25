@@ -25,7 +25,10 @@ use nyctos_core::{
 use nyctos_nyx::{Diag, NyxError, NyxRunner, NyxScanLane, MINIMUM_NYX_VERSION};
 use nyctos_sandbox::{select_backend, BackendChoice, BackendKind, Lane};
 use nyctos_types::event::{AgentEvent, AiEvent, EventSink, RunEvent, SandboxEvent};
-use nyctos_types::product::{LaunchHealthCheck, LaunchStep, ProjectLaunchProfileInput};
+use nyctos_types::product::{
+    canonical_risk_rating, clamp_risk_score, risk_rating_for_score, LaunchHealthCheck, LaunchStep,
+    ProjectLaunchProfileInput,
+};
 use nyctos_types::project::{ProjectRuntimeCommand, ProjectRuntimeProfile};
 use regex::Regex;
 use semver::Version;
@@ -195,6 +198,11 @@ enum Command {
         /// planning/exploration, without relaxing live safety gates.
         #[arg(long)]
         research_mode: bool,
+        /// Run the unrestricted local attack-agent phase at the end of
+        /// the pentest. Intended only for disposable user-owned dev
+        /// environments.
+        #[arg(long)]
+        unsafe_attack_agent: bool,
         /// Restrict business-logic candidate synthesis to specific
         /// template ids. Repeat for multiple templates.
         #[arg(long = "business-template", value_name = "ID")]
@@ -380,6 +388,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             browser_checks,
             no_business_logic_templates,
             research_mode,
+            unsafe_attack_agent,
             business_logic_template_ids,
             no_orchestration,
             app_url,
@@ -411,6 +420,9 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             }
             if research_mode {
                 run_config.run.research_mode_enabled = true;
+            }
+            if unsafe_attack_agent {
+                run_config.run.unsafe_attack_agent_enabled = true;
             }
             if !business_logic_template_ids.is_empty() {
                 run_config.run.business_logic_template_ids = business_logic_template_ids;
@@ -1740,6 +1752,83 @@ async fn drive_scan(
         Some(browser_msg.clone()),
     );
     verification_notes.push(browser_msg);
+    if config.run.unsafe_attack_agent_enabled {
+        emit_phase(&events, &run.id, project.id.as_str(), "UnsafeAttackAgentStarted", true, None);
+        if let Some(env) = environment.as_ref() {
+            match ai_pipeline::run_attack_agent_pass(
+                &config.ai,
+                store,
+                &bundle,
+                &workspaces_for_ai,
+                &live_target_urls,
+                &env.environment_run_id,
+                &state_dir.traces_for_run(&run.id).join("unsafe_attack_agent"),
+                events.clone(),
+            )
+            .await
+            {
+                Ok(report) => {
+                    verification_notes.push(format!(
+                        "unsafe attack agent: {} dispatched, {} vulnerabilities recorded, {} candidates promoted, {} failed",
+                        report.dispatched,
+                        report.vulnerabilities_recorded,
+                        report.candidates_promoted,
+                        report.failed
+                    ));
+                    if verbose
+                        && (report.dispatched > 0
+                            || report.vulnerabilities_recorded > 0
+                            || report.failed > 0)
+                    {
+                        println!(
+                            "unsafe attack agent - {} dispatched, {} vulnerabilities recorded, {} candidates promoted, {} failed (${:.6})",
+                            report.dispatched,
+                            report.vulnerabilities_recorded,
+                            report.candidates_promoted,
+                            report.failed,
+                            report.spend_usd_micros as f64 / 1_000_000.0,
+                        );
+                    }
+                    emit_phase(
+                        &events,
+                        &run.id,
+                        project.id.as_str(),
+                        "UnsafeAttackAgentStarted",
+                        false,
+                        Some(format!(
+                            "{} vulnerabilities recorded, {} candidates promoted, {} failed",
+                            report.vulnerabilities_recorded,
+                            report.candidates_promoted,
+                            report.failed
+                        )),
+                    );
+                }
+                Err(err) => {
+                    verification_notes.push(format!("unsafe attack agent failed: {err}"));
+                    tracing::warn!(error = %err, "unsafe attack agent pass failed");
+                    emit_phase(
+                        &events,
+                        &run.id,
+                        project.id.as_str(),
+                        "UnsafeAttackAgentStarted",
+                        false,
+                        Some(format!("unsafe attack agent failed: {err}")),
+                    );
+                }
+            }
+        } else {
+            let message = "unsafe attack agent skipped: no running app environment".to_string();
+            verification_notes.push(message.clone());
+            emit_phase(
+                &events,
+                &run.id,
+                project.id.as_str(),
+                "UnsafeAttackAgentStarted",
+                false,
+                Some(message),
+            );
+        }
+    }
     match materialize_review_vulnerabilities(store, &run.id, project.id.as_str(), now_epoch_ms())
         .await
     {
@@ -2161,6 +2250,9 @@ async fn run_scan_for_api(
         }
         if let Some(enabled) = overrides.research_mode_enabled {
             cfg.run.research_mode_enabled = enabled;
+        }
+        if let Some(enabled) = overrides.unsafe_attack_agent_enabled {
+            cfg.run.unsafe_attack_agent_enabled = enabled;
         }
         if let Some(ids) = overrides.business_logic_template_ids {
             cfg.run.business_logic_template_ids = ids;
@@ -3992,6 +4084,249 @@ impl ReviewSurfaceReport {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+struct VerifiedRiskScore {
+    score: f64,
+    rating: String,
+    source: String,
+    rationale: String,
+}
+
+fn agent_risk_from_candidate(candidate: &PentestCandidateRecord) -> Option<VerifiedRiskScore> {
+    agent_risk_from_values(&candidate.affected_components)
+        .or_else(|| agent_risk_from_json_str(&candidate.test_plan))
+}
+
+fn agent_risk_from_values(values: &[serde_json::Value]) -> Option<VerifiedRiskScore> {
+    values.iter().find_map(agent_risk_from_value)
+}
+
+fn agent_risk_from_json_str(raw: &str) -> Option<VerifiedRiskScore> {
+    serde_json::from_str::<serde_json::Value>(raw)
+        .ok()
+        .and_then(|value| agent_risk_from_value(&value))
+}
+
+fn agent_risk_from_value(value: &serde_json::Value) -> Option<VerifiedRiskScore> {
+    let raw_score = json_number_field_recursive(
+        value,
+        &[
+            "risk_score",
+            "riskScore",
+            "nyctos_risk_score",
+            "security_risk_score",
+            "cvss",
+            "cvss_score",
+            "cvssScore",
+            "cvss_v3_score",
+        ],
+    )?;
+    let score = round_risk_score(clamp_risk_score(raw_score));
+    let rating = json_string_field_recursive(
+        value,
+        &["risk_rating", "riskRating", "risk_level", "riskLevel", "rating"],
+    )
+    .map(|rating| canonical_risk_rating(&rating, score))
+    .unwrap_or_else(|| risk_rating_for_score(score).to_string());
+    let source = json_string_field_recursive(
+        value,
+        &["risk_score_source", "riskScoreSource", "score_source", "scoreSource", "risk_model"],
+    )
+    .unwrap_or_else(|| "nyctos-agent".to_string());
+    let rationale = json_string_field_recursive(
+        value,
+        &[
+            "risk_score_rationale",
+            "riskScoreRationale",
+            "risk_rationale",
+            "riskRationale",
+            "score_rationale",
+            "scoreRationale",
+            "rationale",
+            "explanation",
+        ],
+    )
+    .unwrap_or_else(|| "Agent supplied a risk score in vulnerability evidence.".to_string());
+    Some(VerifiedRiskScore {
+        score,
+        rating,
+        source: non_empty_trimmed(&source, "nyctos-agent"),
+        rationale: non_empty_trimmed(
+            &rationale,
+            "Agent supplied a risk score in vulnerability evidence.",
+        ),
+    })
+}
+
+fn fallback_verified_risk_score(
+    severity: &str,
+    confidence: f64,
+    live_verified: bool,
+    texts: &[&str],
+    components: &[serde_json::Value],
+) -> VerifiedRiskScore {
+    let confidence = if confidence.is_finite() { confidence.clamp(0.0, 1.0) } else { 0.0 };
+    let (base, min_score, max_score) = severity_score_band(severity);
+    let mut score = base;
+    let mut factors = Vec::new();
+
+    if confidence >= 0.9 {
+        score += 0.4;
+        factors.push("high confidence".to_string());
+    } else if confidence >= 0.75 {
+        score += 0.2;
+        factors.push("moderate confidence".to_string());
+    } else if confidence < 0.5 {
+        score -= 0.5;
+        factors.push("low confidence".to_string());
+    }
+
+    if live_verified {
+        score += 0.4;
+        factors.push("live verification evidence".to_string());
+    }
+
+    let mut evidence_text = texts.join(" ");
+    for component in components {
+        evidence_text.push(' ');
+        evidence_text.push_str(&compact_json(component));
+    }
+    let lower = evidence_text.to_ascii_lowercase();
+    if text_contains_any(
+        &lower,
+        &["auth", "admin", "tenant", "session", "token", "protected", "privilege"],
+    ) {
+        score += 0.3;
+        factors.push("identity or access-control impact".to_string());
+    }
+    if text_contains_any(
+        &lower,
+        &[
+            "sql",
+            "command",
+            "rce",
+            "ssrf",
+            "secret",
+            "password",
+            "payment",
+            "state-changing",
+            "delete",
+            "write",
+        ],
+    ) {
+        score += 0.3;
+        factors.push("exploitability or sensitive-impact hints".to_string());
+    }
+    if text_contains_any(
+        &lower,
+        &["needs review", "unverified", "no deterministic", "not confirmed", "source evidence"],
+    ) {
+        score -= 0.6;
+        factors.push("unconfirmed evidence".to_string());
+    }
+
+    let score = round_risk_score(score.clamp(min_score, max_score));
+    let factor_summary = if factors.is_empty() {
+        "no additional exploitability hints".to_string()
+    } else {
+        factors.join(", ")
+    };
+    VerifiedRiskScore {
+        score,
+        rating: risk_rating_for_score(score).to_string(),
+        source: "heuristic".to_string(),
+        rationale: format!(
+            "Backend fallback heuristic based on severity `{severity}`, confidence {}%, and {factor_summary}.",
+            (confidence * 100.0).round() as u8
+        ),
+    }
+}
+
+fn severity_score_band(severity: &str) -> (f64, f64, f64) {
+    match severity.trim().to_ascii_lowercase().as_str() {
+        "critical" => (9.0, 9.0, 10.0),
+        "high" => (7.0, 7.0, 8.9),
+        "medium" | "moderate" => (4.0, 4.0, 6.9),
+        "low" => (1.0, 1.0, 3.9),
+        "info" | "informational" => (0.0, 0.0, 0.9),
+        _ => (0.0, 0.0, 3.9),
+    }
+}
+
+fn round_risk_score(score: f64) -> f64 {
+    (clamp_risk_score(score) * 10.0).round() / 10.0
+}
+
+fn normalized_json_key(raw: &str) -> String {
+    raw.chars().filter(|ch| ch.is_ascii_alphanumeric()).flat_map(char::to_lowercase).collect()
+}
+
+fn json_number_field_recursive(value: &serde_json::Value, keys: &[&str]) -> Option<f64> {
+    let keys = keys.iter().map(|key| normalized_json_key(key)).collect::<Vec<_>>();
+    json_number_field_recursive_normalized(value, &keys)
+}
+
+fn json_number_field_recursive_normalized(
+    value: &serde_json::Value,
+    keys: &[String],
+) -> Option<f64> {
+    match value {
+        serde_json::Value::Object(obj) => {
+            for (key, value) in obj {
+                if keys.iter().any(|target| target == &normalized_json_key(key)) {
+                    if let Some(score) = value.as_f64() {
+                        return Some(score);
+                    }
+                    if let Some(text) = value.as_str().and_then(|text| text.parse::<f64>().ok()) {
+                        return Some(text);
+                    }
+                }
+            }
+            obj.values().find_map(|value| json_number_field_recursive_normalized(value, keys))
+        }
+        serde_json::Value::Array(items) => {
+            items.iter().find_map(|value| json_number_field_recursive_normalized(value, keys))
+        }
+        _ => None,
+    }
+}
+
+fn json_string_field_recursive(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    let keys = keys.iter().map(|key| normalized_json_key(key)).collect::<Vec<_>>();
+    json_string_field_recursive_normalized(value, &keys)
+}
+
+fn json_string_field_recursive_normalized(
+    value: &serde_json::Value,
+    keys: &[String],
+) -> Option<String> {
+    match value {
+        serde_json::Value::Object(obj) => {
+            for (key, value) in obj {
+                if keys.iter().any(|target| target == &normalized_json_key(key)) {
+                    if let Some(text) = value.as_str().filter(|text| !text.trim().is_empty()) {
+                        return Some(text.to_string());
+                    }
+                }
+            }
+            obj.values().find_map(|value| json_string_field_recursive_normalized(value, keys))
+        }
+        serde_json::Value::Array(items) => {
+            items.iter().find_map(|value| json_string_field_recursive_normalized(value, keys))
+        }
+        _ => None,
+    }
+}
+
+fn non_empty_trimmed(value: &str, default: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        default.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 async fn materialize_review_vulnerabilities(
     store: &Store,
     run_id: &str,
@@ -4046,6 +4381,23 @@ fn review_vulnerability_from_finding(
     let endpoint = verdict.as_ref().and_then(|v| json_string_field(v, "endpoint"));
     let hint = verdict.as_ref().and_then(|v| json_string_field(v, "suggested_payload_hint"));
     let title = format_location_title(&finding.cap, &finding.path, finding.line);
+    let affected_components = vec![serde_json::json!({
+        "kind": "quarantined_finding",
+        "repo": &finding.repo,
+        "path": &finding.path,
+        "line": finding.line,
+        "finding_id": &finding.id,
+        "finding_origin": &finding.finding_origin,
+    })];
+    let risk = verdict.as_ref().and_then(agent_risk_from_value).unwrap_or_else(|| {
+        fallback_verified_risk_score(
+            &finding.severity,
+            0.74,
+            false,
+            &[&rationale, &finding.cap, &finding.path, "unverified review item"],
+            &affected_components,
+        )
+    });
     VerifiedVulnerabilityRecord {
         id: format!("vuln-review-{}-{}", finding.run_id, finding.id),
         run_id: finding.run_id.clone(),
@@ -4053,15 +4405,12 @@ fn review_vulnerability_from_finding(
         title,
         severity: finding.severity.clone(),
         confidence: 0.74,
+        risk_score: risk.score,
+        risk_rating: risk.rating,
+        risk_score_source: risk.source,
+        risk_score_rationale: risk.rationale,
         vuln_class: finding.cap.clone(),
-        affected_components: vec![serde_json::json!({
-            "kind": "quarantined_finding",
-            "repo": &finding.repo,
-            "path": &finding.path,
-            "line": finding.line,
-            "finding_id": &finding.id,
-            "finding_origin": &finding.finding_origin,
-        })],
+        affected_components,
         business_impact: rationale.clone(),
         evidence_summary: format!(
             "Needs review: AI exploration produced source or live evidence, but deterministic verification has not confirmed it yet. {rationale}"
@@ -4091,6 +4440,21 @@ fn review_vulnerability_from_ai_candidate(
         .rationale
         .clone()
         .unwrap_or_else(|| "AI novel-finding discovery proposed this issue.".to_string());
+    let affected_components = vec![serde_json::json!({
+        "kind": "pending_ai_candidate",
+        "repo": &candidate.repo,
+        "path": &candidate.path,
+        "line": candidate.line,
+        "candidate_id": &candidate.id,
+        "rule_hint": &candidate.rule_hint,
+    })];
+    let risk = fallback_verified_risk_score(
+        "High",
+        0.68,
+        false,
+        &[&rationale, &candidate.cap, &candidate.path, "unverified pending AI candidate"],
+        &affected_components,
+    );
     VerifiedVulnerabilityRecord {
         id: format!("vuln-review-{}-{}", candidate.run_id, candidate.id),
         run_id: candidate.run_id.clone(),
@@ -4098,15 +4462,12 @@ fn review_vulnerability_from_ai_candidate(
         title,
         severity: "High".to_string(),
         confidence: 0.68,
+        risk_score: risk.score,
+        risk_rating: risk.rating,
+        risk_score_source: risk.source,
+        risk_score_rationale: risk.rationale,
         vuln_class: candidate.cap.clone(),
-        affected_components: vec![serde_json::json!({
-            "kind": "pending_ai_candidate",
-            "repo": &candidate.repo,
-            "path": &candidate.path,
-            "line": candidate.line,
-            "candidate_id": &candidate.id,
-            "rule_hint": &candidate.rule_hint,
-        })],
+        affected_components,
         business_impact: rationale.clone(),
         evidence_summary: format!(
             "Needs review: AI discovery proposed this candidate, but no deterministic live verification has confirmed it yet. {rationale}"
@@ -4308,6 +4669,15 @@ fn vulnerability_from_candidate(
             "Live verification attempt confirmed the candidate against the running local app."
                 .to_string()
         });
+    let risk = agent_risk_from_candidate(candidate).unwrap_or_else(|| {
+        fallback_verified_risk_score(
+            &candidate.severity_guess,
+            0.95,
+            true,
+            &[&evidence_summary, &candidate.hypothesis, &candidate.test_plan],
+            &candidate.affected_components,
+        )
+    });
     VerifiedVulnerabilityRecord {
         id: format!("vuln-{}", candidate.id.trim_start_matches("pc-")),
         run_id: candidate.run_id.clone(),
@@ -4315,6 +4685,10 @@ fn vulnerability_from_candidate(
         title: candidate.title.clone(),
         severity: candidate.severity_guess.clone(),
         confidence: 0.95,
+        risk_score: risk.score,
+        risk_rating: risk.rating,
+        risk_score_source: risk.source,
+        risk_score_rationale: risk.rationale,
         vuln_class: candidate.vuln_class.clone(),
         affected_components: candidate.affected_components.clone(),
         business_impact: candidate.hypothesis.clone(),
@@ -5785,8 +6159,31 @@ mod tests {
 
         assert_eq!(vuln.status, "NeedsReview");
         assert_eq!(vuln.confidence, 0.68);
+        assert_eq!(vuln.risk_rating, "High");
+        assert_eq!(vuln.risk_score_source, "heuristic");
+        assert!(vuln.risk_score_rationale.contains("unconfirmed evidence"));
         assert!(vuln.verification_attempt_ids.is_empty());
         assert!(vuln.evidence_summary.contains("Needs review"));
+    }
+
+    #[test]
+    fn candidate_risk_score_prefers_agent_evidence_and_clamps() {
+        let mut candidate = review_candidate("XSS");
+        candidate.affected_components = vec![serde_json::json!({
+            "repo": "web",
+            "path": "src/routes.ts",
+            "risk_score": 99.0,
+            "risk_rating": "Critical",
+            "risk_score_source": "nyctos-agent",
+            "risk_score_rationale": "Agent assessed exploitable stored XSS with session impact.",
+        })];
+
+        let vuln = vulnerability_from_candidate(&candidate, "va-1", 1_000, None);
+
+        assert_eq!(vuln.risk_score, 10.0);
+        assert_eq!(vuln.risk_rating, "Critical");
+        assert_eq!(vuln.risk_score_source, "nyctos-agent");
+        assert!(vuln.risk_score_rationale.contains("stored XSS"));
     }
 
     #[test]

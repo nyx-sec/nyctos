@@ -141,6 +141,7 @@ pub fn build_router(state: ServerState) -> Router {
         .route("/api/v1/findings", get(list_findings))
         .route("/api/v1/vulnerabilities", get(list_vulnerabilities))
         .route("/api/v1/vulnerabilities/status", patch(bulk_update_vulnerability_status))
+        .route("/api/v1/vulnerabilities/{id}", get(get_vulnerability))
         .route("/api/v1/vulnerabilities/{id}/status", patch(update_vulnerability_status))
         .route("/api/v1/findings/{id}", get(get_finding))
         .route("/api/v1/findings/{id}/repro-bundle", post(create_repro_bundle))
@@ -2483,6 +2484,7 @@ async fn start_pentest_project(
                 browser_checks_enabled: request.browser_checks_enabled,
                 business_logic_templates_enabled: request.business_logic_templates_enabled,
                 research_mode_enabled: request.research_mode_enabled,
+                unsafe_attack_agent_enabled: request.unsafe_attack_agent_enabled,
                 business_logic_template_ids: if request.business_logic_template_ids.is_empty() {
                     None
                 } else {
@@ -2813,6 +2815,18 @@ async fn list_vulnerabilities(
     State(s): State<ServerState>,
 ) -> Result<Json<Vec<nyctos_types::product::VerifiedVulnerabilityRecord>>, ApiError> {
     Ok(Json(s.store.verified_vulnerabilities().list_all_including_triaged().await?))
+}
+
+async fn get_vulnerability(
+    State(s): State<ServerState>,
+    Path(id): Path<String>,
+) -> Result<Json<nyctos_types::product::VerifiedVulnerabilityRecord>, ApiError> {
+    s.store
+        .verified_vulnerabilities()
+        .get(&id)
+        .await?
+        .map(Json)
+        .ok_or_else(|| ApiError::NotFound(format!("vulnerability `{id}` not found")))
 }
 
 async fn require_run(s: &ServerState, id: &str) -> Result<RunRecord, ApiError> {

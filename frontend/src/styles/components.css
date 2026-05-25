@@ -1229,10 +1229,6 @@
   gap: var(--space-5);
 }
 
-.vulnerability-page__copy {
-  min-width: 112px;
-}
-
 .vulnerability-tabs {
   align-items: flex-end;
   border-bottom: 1px solid var(--border);
@@ -1356,17 +1352,31 @@
   padding: 0;
 }
 
-.vulnerability-bulk-bar__moves > legend,
-.vulnerability-status-actions > legend {
+.vulnerability-action-legend {
+  border: 0;
+  clip: rect(0, 0, 0, 0);
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  padding: 0;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
+}
+
+.vulnerability-action-label {
   color: var(--text-tertiary);
   font-size: var(--text-xs);
   font-weight: var(--weight-semibold);
+  line-height: 1;
   padding: 0;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 
 .vulnerability-bulk-bar__moves .btn,
-.vulnerability-status-actions .btn {
+.vulnerability-status-actions .btn,
+.vulnerability-bulk-bar > .btn {
   min-height: 30px;
 }
 
@@ -1446,6 +1456,7 @@
   min-width: 0;
   padding: var(--space-4);
   text-align: left;
+  text-decoration: none;
 }
 
 .vulnerability-rich-row__kicker {
@@ -1624,20 +1635,54 @@
   gap: var(--space-2);
 }
 
-.vulnerability-detail-modal {
-  width: min(900px, calc(100vw - 32px));
-}
-
-.vulnerability-detail__subtitle {
-  margin: 2px 0 0;
-  color: var(--text-tertiary);
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  word-break: break-all;
+.vulnerability-detail-page__state {
+  align-items: center;
+  border-top: 1px solid var(--border);
+  color: var(--text-secondary);
+  display: flex;
+  gap: var(--space-2);
+  padding: var(--space-5) 0;
 }
 
 .vulnerability-detail__body {
+  display: flex;
+  flex-direction: column;
   gap: var(--space-5);
+}
+
+.vulnerability-detail__summary {
+  border-bottom: 1px solid var(--border);
+  display: grid;
+  gap: var(--space-5);
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 0.55fr);
+  padding-bottom: var(--space-5);
+}
+
+.vulnerability-detail__summary-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.vulnerability-detail__layout {
+  align-items: start;
+  display: grid;
+  gap: var(--space-6);
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+}
+
+.vulnerability-detail__main,
+.vulnerability-detail__aside {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  min-width: 0;
+}
+
+.vulnerability-detail__aside {
+  border-left: 1px solid var(--border);
+  padding-left: var(--space-5);
 }
 
 .vulnerability-detail__section {
@@ -1673,6 +1718,15 @@
   font-size: var(--text-sm);
 }
 
+.vulnerability-detail__meta--summary {
+  align-content: start;
+  grid-template-columns: 110px minmax(0, 1fr);
+}
+
+.vulnerability-detail__meta--compact {
+  grid-template-columns: 80px minmax(0, 1fr);
+}
+
 .vulnerability-detail__meta dt {
   color: var(--text-tertiary);
 }
@@ -1687,14 +1741,14 @@
 .vulnerability-detail__text {
   margin: 0;
   color: var(--text-secondary);
-  font-size: var(--text-sm);
-  line-height: 1.6;
+  font-size: var(--text-base);
+  line-height: 1.65;
   white-space: pre-wrap;
 }
 
 .vulnerability-detail__pre {
   margin: 0;
-  max-height: 260px;
+  max-height: none;
   overflow: auto;
   padding: var(--space-3);
   border: 1px solid var(--terminal-line);
@@ -1733,6 +1787,10 @@
   gap: var(--space-2);
   color: var(--text-tertiary);
   font-size: var(--text-sm);
+}
+
+.vulnerability-detail__source-list--compact li {
+  grid-template-columns: 80px minmax(0, 1fr);
 }
 
 .vulnerability-detail__source-list code {
@@ -4649,6 +4707,24 @@
 
   .vulnerability-rich-row__actions {
     justify-content: flex-start;
+  }
+
+  .vulnerability-detail__summary,
+  .vulnerability-detail__layout {
+    grid-template-columns: 1fr;
+  }
+
+  .vulnerability-detail__aside {
+    border-left: 0;
+    border-top: 1px solid var(--border);
+    padding-left: 0;
+    padding-top: var(--space-5);
+  }
+
+  .vulnerability-detail__meta,
+  .vulnerability-detail__meta--summary,
+  .vulnerability-detail__meta--compact {
+    grid-template-columns: 1fr;
   }
 
   .project-summary__actions {

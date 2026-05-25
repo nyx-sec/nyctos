@@ -4,9 +4,10 @@ use sqlx::{Row, SqlitePool};
 
 pub use nyctos_types::business_logic::BusinessLogicTemplateRunRecord;
 pub use nyctos_types::product::{
-    EnvironmentRunRecord, LaunchEnvRef, LaunchHealthCheck, LaunchStep, LaunchWorkingDir,
-    NyxSignalRecord, PentestCandidateRecord, ProjectLaunchProfile, ProjectLaunchProfileInput,
-    RouteModelRecord, VerificationAttemptRecord, VerifiedVulnerabilityRecord,
+    canonical_risk_rating, clamp_risk_score, EnvironmentRunRecord, LaunchEnvRef, LaunchHealthCheck,
+    LaunchStep, LaunchWorkingDir, NyxSignalRecord, PentestCandidateRecord, ProjectLaunchProfile,
+    ProjectLaunchProfileInput, RouteModelRecord, VerificationAttemptRecord,
+    VerifiedVulnerabilityRecord,
 };
 
 use crate::store::StoreError;
@@ -654,14 +655,30 @@ impl<'a> VerifiedVulnerabilityStore<'a> {
         sqlx::query(
             r#"
             INSERT INTO verified_vulnerabilities (
-                id, run_id, project_id, title, severity, confidence, vuln_class,
+                id, run_id, project_id, title, severity, confidence, risk_score,
+                risk_rating, risk_score_source, risk_score_rationale, vuln_class,
                 affected_components_json, business_impact, evidence_summary, repro_steps,
                 remediation, source_candidate_ids_json, source_signal_ids_json,
                 verification_attempt_ids_json, chain_id, status, first_seen, last_seen
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 last_seen = excluded.last_seen,
                 status = excluded.status,
+                title = excluded.title,
+                severity = excluded.severity,
+                confidence = MAX(verified_vulnerabilities.confidence, excluded.confidence),
+                risk_score = excluded.risk_score,
+                risk_rating = excluded.risk_rating,
+                risk_score_source = excluded.risk_score_source,
+                risk_score_rationale = excluded.risk_score_rationale,
+                vuln_class = excluded.vuln_class,
+                affected_components_json = excluded.affected_components_json,
+                business_impact = excluded.business_impact,
+                evidence_summary = excluded.evidence_summary,
+                repro_steps = excluded.repro_steps,
+                remediation = excluded.remediation,
+                source_candidate_ids_json = excluded.source_candidate_ids_json,
+                source_signal_ids_json = excluded.source_signal_ids_json,
                 verification_attempt_ids_json = excluded.verification_attempt_ids_json
             "#,
         )
@@ -671,6 +688,13 @@ impl<'a> VerifiedVulnerabilityStore<'a> {
         .bind(&rec.title)
         .bind(&rec.severity)
         .bind(rec.confidence)
+        .bind(clamp_risk_score(rec.risk_score))
+        .bind(canonical_risk_rating(&rec.risk_rating, rec.risk_score))
+        .bind(non_empty_or_default(&rec.risk_score_source, "heuristic"))
+        .bind(non_empty_or_default(
+            &rec.risk_score_rationale,
+            "Backend risk score did not include a rationale.",
+        ))
         .bind(&rec.vuln_class)
         .bind(serde_json::to_string(&rec.affected_components)?)
         .bind(&rec.business_impact)
@@ -693,7 +717,8 @@ impl<'a> VerifiedVulnerabilityStore<'a> {
     pub async fn get(&self, id: &str) -> Result<Option<VerifiedVulnerabilityRecord>, StoreError> {
         let row = sqlx::query(
             r#"
-            SELECT id, run_id, project_id, title, severity, confidence, vuln_class,
+            SELECT id, run_id, project_id, title, severity, confidence, risk_score,
+                   risk_rating, risk_score_source, risk_score_rationale, vuln_class,
                    affected_components_json, business_impact, evidence_summary, repro_steps,
                    remediation, source_candidate_ids_json, source_signal_ids_json,
                    verification_attempt_ids_json, chain_id, status, first_seen, last_seen
@@ -726,7 +751,8 @@ impl<'a> VerifiedVulnerabilityStore<'a> {
     ) -> Result<Vec<VerifiedVulnerabilityRecord>, StoreError> {
         let rows = sqlx::query(
             r#"
-            SELECT id, run_id, project_id, title, severity, confidence, vuln_class,
+            SELECT id, run_id, project_id, title, severity, confidence, risk_score,
+                   risk_rating, risk_score_source, risk_score_rationale, vuln_class,
                    affected_components_json, business_impact, evidence_summary, repro_steps,
                    remediation, source_candidate_ids_json, source_signal_ids_json,
                    verification_attempt_ids_json, chain_id, status, first_seen, last_seen
@@ -755,7 +781,8 @@ impl<'a> VerifiedVulnerabilityStore<'a> {
     ) -> Result<Vec<VerifiedVulnerabilityRecord>, StoreError> {
         let rows = sqlx::query(
             r#"
-            SELECT id, run_id, project_id, title, severity, confidence, vuln_class,
+            SELECT id, run_id, project_id, title, severity, confidence, risk_score,
+                   risk_rating, risk_score_source, risk_score_rationale, vuln_class,
                    affected_components_json, business_impact, evidence_summary, repro_steps,
                    remediation, source_candidate_ids_json, source_signal_ids_json,
                    verification_attempt_ids_json, chain_id, status, first_seen, last_seen
@@ -784,7 +811,8 @@ impl<'a> VerifiedVulnerabilityStore<'a> {
     ) -> Result<Vec<VerifiedVulnerabilityRecord>, StoreError> {
         let rows = sqlx::query(
             r#"
-            SELECT id, run_id, project_id, title, severity, confidence, vuln_class,
+            SELECT id, run_id, project_id, title, severity, confidence, risk_score,
+                   risk_rating, risk_score_source, risk_score_rationale, vuln_class,
                    affected_components_json, business_impact, evidence_summary, repro_steps,
                    remediation, source_candidate_ids_json, source_signal_ids_json,
                    verification_attempt_ids_json, chain_id, status, first_seen, last_seen
@@ -805,7 +833,8 @@ impl<'a> VerifiedVulnerabilityStore<'a> {
     ) -> Result<Vec<VerifiedVulnerabilityRecord>, StoreError> {
         let rows = sqlx::query(
             r#"
-            SELECT id, run_id, project_id, title, severity, confidence, vuln_class,
+            SELECT id, run_id, project_id, title, severity, confidence, risk_score,
+                   risk_rating, risk_score_source, risk_score_rationale, vuln_class,
                    affected_components_json, business_impact, evidence_summary, repro_steps,
                    remediation, source_candidate_ids_json, source_signal_ids_json,
                    verification_attempt_ids_json, chain_id, status, first_seen, last_seen
@@ -823,7 +852,8 @@ impl<'a> VerifiedVulnerabilityStore<'a> {
     pub async fn list_all(&self) -> Result<Vec<VerifiedVulnerabilityRecord>, StoreError> {
         let rows = sqlx::query(
             r#"
-            SELECT id, run_id, project_id, title, severity, confidence, vuln_class,
+            SELECT id, run_id, project_id, title, severity, confidence, risk_score,
+                   risk_rating, risk_score_source, risk_score_rationale, vuln_class,
                    affected_components_json, business_impact, evidence_summary, repro_steps,
                    remediation, source_candidate_ids_json, source_signal_ids_json,
                    verification_attempt_ids_json, chain_id, status, first_seen, last_seen
@@ -842,7 +872,8 @@ impl<'a> VerifiedVulnerabilityStore<'a> {
     ) -> Result<Vec<VerifiedVulnerabilityRecord>, StoreError> {
         let rows = sqlx::query(
             r#"
-            SELECT id, run_id, project_id, title, severity, confidence, vuln_class,
+            SELECT id, run_id, project_id, title, severity, confidence, risk_score,
+                   risk_rating, risk_score_source, risk_score_rationale, vuln_class,
                    affected_components_json, business_impact, evidence_summary, repro_steps,
                    remediation, source_candidate_ids_json, source_signal_ids_json,
                    verification_attempt_ids_json, chain_id, status, first_seen, last_seen
@@ -1046,6 +1077,19 @@ fn row_to_vulnerability(
         title: row.try_get("title")?,
         severity: row.try_get("severity")?,
         confidence: row.try_get("confidence")?,
+        risk_score: clamp_risk_score(row.try_get("risk_score")?),
+        risk_rating: canonical_risk_rating(
+            &row.try_get::<String, _>("risk_rating")?,
+            row.try_get("risk_score")?,
+        ),
+        risk_score_source: non_empty_or_default(
+            &row.try_get::<String, _>("risk_score_source")?,
+            "heuristic",
+        ),
+        risk_score_rationale: non_empty_or_default(
+            &row.try_get::<String, _>("risk_score_rationale")?,
+            "Backend risk score did not include a rationale.",
+        ),
         vuln_class: row.try_get("vuln_class")?,
         affected_components: parse_json(row.try_get::<String, _>("affected_components_json")?)?,
         business_impact: row.try_get("business_impact")?,
@@ -1082,6 +1126,15 @@ fn parse_json_opt<T: serde::de::DeserializeOwned>(
     raw: Option<String>,
 ) -> Result<Option<T>, StoreError> {
     raw.map(|s| serde_json::from_str(&s)).transpose().map_err(StoreError::from)
+}
+
+fn non_empty_or_default(value: &str, default: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        default.to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 fn json_opt_to_string(value: &Option<serde_json::Value>) -> Result<Option<String>, StoreError> {
@@ -1304,6 +1357,10 @@ mod tests {
             title: "Reflected XSS".to_string(),
             severity: "High".to_string(),
             confidence: 0.95,
+            risk_score: 8.4,
+            risk_rating: "High".to_string(),
+            risk_score_source: "nyctos-agent".to_string(),
+            risk_score_rationale: "Agent evidence confirmed exploitable reflected XSS.".to_string(),
             vuln_class: "xss".to_string(),
             affected_components: vec![serde_json::json!({"repo":"web"})],
             business_impact: "Session theft in local dev build".to_string(),
@@ -1323,6 +1380,11 @@ mod tests {
             s.verified_vulnerabilities().list_by_run("run-1").await.unwrap()[0].id,
             "vuln-1"
         );
+        let loaded_vuln = s.verified_vulnerabilities().get("vuln-1").await.unwrap().unwrap();
+        assert_eq!(loaded_vuln.risk_score, 8.4);
+        assert_eq!(loaded_vuln.risk_rating, "High");
+        assert_eq!(loaded_vuln.risk_score_source, "nyctos-agent");
+        assert!(loaded_vuln.risk_score_rationale.contains("exploitable reflected XSS"));
         let updated = s
             .verified_vulnerabilities()
             .set_status("vuln-1", "FalsePositive")
@@ -1336,6 +1398,43 @@ mod tests {
                 .status,
             "FalsePositive"
         );
+
+        sqlx::query(
+            r#"
+            INSERT INTO verified_vulnerabilities (
+                id, run_id, project_id, title, severity, confidence, vuln_class,
+                affected_components_json, business_impact, evidence_summary, repro_steps,
+                remediation, source_candidate_ids_json, source_signal_ids_json,
+                verification_attempt_ids_json, chain_id, status, first_seen, last_seen
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind("vuln-legacy")
+        .bind("run-1")
+        .bind("p-1")
+        .bind("Legacy vulnerability")
+        .bind("Medium")
+        .bind(0.5)
+        .bind("legacy")
+        .bind("[]")
+        .bind("Legacy impact")
+        .bind("Legacy evidence")
+        .bind("Legacy repro")
+        .bind("Legacy remediation")
+        .bind("[]")
+        .bind("[]")
+        .bind("[]")
+        .bind(Option::<String>::None)
+        .bind("Open")
+        .bind(3_451)
+        .bind(3_451)
+        .execute(s.pool())
+        .await
+        .unwrap();
+        let legacy = s.verified_vulnerabilities().get("vuln-legacy").await.unwrap().unwrap();
+        assert_eq!(legacy.risk_score, 0.0);
+        assert_eq!(legacy.risk_rating, "Info");
+        assert_eq!(legacy.risk_score_source, "heuristic");
     }
 
     #[tokio::test]

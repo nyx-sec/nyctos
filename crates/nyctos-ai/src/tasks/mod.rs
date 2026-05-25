@@ -6,6 +6,7 @@
 //! limited to validation failures, and budget caps all live here so the
 //! adapter layer can stay vendor-neutral.
 
+pub mod attack_agent;
 pub mod auth_setup;
 pub mod chain_reasoning;
 pub mod exploration;
@@ -14,6 +15,11 @@ pub mod novel_findings;
 pub mod payload_synthesis;
 pub mod spec_derivation;
 
+pub use attack_agent::{
+    run as run_attack_agent, AttackAgentAuditEntry, AttackAgentKnownLead, AttackAgentOutcome,
+    AttackAgentScope, AttackAgentVulnerability, AttackWorkspace, ExistingVulnerabilitySummary,
+    ATTACK_AGENT_PROMPT_VERSION, DEFAULT_ATTACK_AGENT_MAX_TURNS,
+};
 pub use auth_setup::{
     run as run_auth_setup, AuthSetupOutcome, AuthSetupScope, AUTH_SETUP_PROMPT_VERSION,
     DEFAULT_AUTH_SETUP_RUN_CAP_USD_MICROS,

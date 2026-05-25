@@ -13,7 +13,7 @@ import { QuarantineList } from "@/pages/Quarantine";
 import { LiveScanView, RunList } from "@/pages/Runs";
 import { Settings } from "@/pages/Settings";
 import { SetupWizard } from "@/pages/Setup";
-import { VulnerabilityList } from "@/pages/Vulnerabilities";
+import { VulnerabilityDetail, VulnerabilityList } from "@/pages/Vulnerabilities";
 
 export function App() {
   const status = useSetupStatus();
@@ -64,6 +64,10 @@ export function App() {
         <Route path="/projects/:projectId/runs/:runId" element={<LiveScanView />} />
         <Route path="/projects/:projectId/vulnerabilities" element={<VulnerabilityList />} />
         <Route
+          path="/projects/:projectId/vulnerabilities/:vulnerabilityId"
+          element={<VulnerabilityDetail />}
+        />
+        <Route
           path="/projects/:projectId/findings"
           element={advanced ? <FindingList /> : <Navigate to="/settings" replace />}
         />
@@ -82,6 +86,7 @@ export function App() {
         <Route path="/runs" element={<RunList />} />
         <Route path="/runs/:runId" element={<LiveScanView />} />
         <Route path="/vulnerabilities" element={<VulnerabilityList />} />
+        <Route path="/vulnerabilities/:vulnerabilityId" element={<VulnerabilityDetail />} />
         <Route
           path="/findings"
           element={advanced ? <FindingList /> : <Navigate to="/settings" replace />}

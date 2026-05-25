@@ -56,11 +56,12 @@ pub use integration::{
 };
 pub use payload::{PayloadRecord, PayloadStore};
 pub use product::{
-    BusinessLogicTemplateRunRecord, BusinessLogicTemplateRunStore, EnvironmentRunRecord,
-    EnvironmentRunStore, LaunchProfileStore, NyxSignalRecord, NyxSignalStore,
-    PentestCandidateRecord, PentestCandidateStore, ProjectLaunchProfile, ProjectLaunchProfileInput,
-    RouteModelRecord, RouteModelStore, VerificationAttemptRecord, VerificationAttemptStore,
-    VerifiedVulnerabilityRecord, VerifiedVulnerabilityStore,
+    canonical_risk_rating, clamp_risk_score, BusinessLogicTemplateRunRecord,
+    BusinessLogicTemplateRunStore, EnvironmentRunRecord, EnvironmentRunStore, LaunchProfileStore,
+    NyxSignalRecord, NyxSignalStore, PentestCandidateRecord, PentestCandidateStore,
+    ProjectLaunchProfile, ProjectLaunchProfileInput, RouteModelRecord, RouteModelStore,
+    VerificationAttemptRecord, VerificationAttemptStore, VerifiedVulnerabilityRecord,
+    VerifiedVulnerabilityStore,
 };
 pub use project::{
     ProjectPatch, ProjectPatchOption, ProjectRecord, ProjectRuntimeProfile, ProjectStore,

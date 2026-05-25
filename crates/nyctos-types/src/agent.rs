@@ -255,6 +255,28 @@ pub enum ExtractedAgentResult {
         #[serde(default)]
         suggested_payload_hint: Option<String>,
     },
+    /// Unsafe local attack-agent output: the agent claims it exploited
+    /// or broke something in the running development app and provides
+    /// enough material to create a user-facing vulnerability row.
+    AttackVulnerability {
+        title: String,
+        vuln_class: String,
+        severity: String,
+        confidence: u8,
+        #[serde(default)]
+        #[ts(type = "Array<unknown>")]
+        affected_components: Vec<serde_json::Value>,
+        business_impact: String,
+        evidence_summary: String,
+        repro_steps: String,
+        remediation: String,
+        #[serde(default)]
+        source_candidate_ids: Vec<String>,
+        #[serde(default)]
+        source_signal_ids: Vec<String>,
+        #[serde(default)]
+        proof_artifact_paths: Vec<String>,
+    },
     /// Free-form exploration trace event. Captures anything the agent
     /// surfaced that does not fit a more specific variant.
     ExplorationEvent { message: String },
@@ -323,6 +345,51 @@ pub fn classify_tool_use(name: &str, input: &serde_json::Value) -> Option<Extrac
                 suggested_payload_hint,
             })
         }
+        "record_attack_vulnerability" => {
+            let title = input.get("title")?.as_str()?.trim().to_string();
+            let vuln_class =
+                input.get("vuln_class").or_else(|| input.get("cap"))?.as_str()?.trim().to_string();
+            let severity =
+                input.get("severity").and_then(|v| v.as_str()).unwrap_or("High").trim().to_string();
+            let business_impact = input.get("business_impact")?.as_str()?.trim().to_string();
+            let evidence_summary = input.get("evidence_summary")?.as_str()?.trim().to_string();
+            let repro_steps = input.get("repro_steps")?.as_str()?.trim().to_string();
+            let remediation = input
+                .get("remediation")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Review the vulnerable flow and apply a targeted fix.")
+                .trim()
+                .to_string();
+            if title.is_empty()
+                || vuln_class.is_empty()
+                || business_impact.is_empty()
+                || evidence_summary.is_empty()
+                || repro_steps.is_empty()
+            {
+                return None;
+            }
+            let confidence =
+                input.get("confidence").map(confidence_percent_from_value).unwrap_or(90);
+            let affected_components = input
+                .get("affected_components")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            Some(ExtractedAgentResult::AttackVulnerability {
+                title,
+                vuln_class,
+                severity,
+                confidence,
+                affected_components,
+                business_impact,
+                evidence_summary,
+                repro_steps,
+                remediation,
+                source_candidate_ids: string_array(input, "source_candidate_ids"),
+                source_signal_ids: string_array(input, "source_signal_ids"),
+                proof_artifact_paths: string_array(input, "proof_artifact_paths"),
+            })
+        }
         "record_auth_profile" => {
             let profile = auth_profile_from_tool_input(input)?;
             let rationale = optional_string(input, "rationale")
@@ -340,6 +407,17 @@ pub fn classify_tool_use(name: &str, input: &serde_json::Value) -> Option<Extrac
             message: format!("tool {name} input={input}"),
         }),
     }
+}
+
+fn confidence_percent_from_value(value: &serde_json::Value) -> u8 {
+    if let Some(raw) = value.as_u64() {
+        return raw.min(100) as u8;
+    }
+    if let Some(raw) = value.as_f64().filter(|v| v.is_finite()) {
+        let percent = if raw <= 1.0 { raw * 100.0 } else { raw };
+        return percent.round().clamp(0.0, 100.0) as u8;
+    }
+    90
 }
 
 fn auth_profile_from_tool_input(input: &serde_json::Value) -> Option<ProjectAuthProfile> {

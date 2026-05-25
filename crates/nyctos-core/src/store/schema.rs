@@ -8,7 +8,7 @@ use sqlx::SqlitePool;
 use crate::store::StoreError;
 
 /// Highest schema version shipped by this build.
-pub const CURRENT_SCHEMA_VERSION: i64 = 5;
+pub const CURRENT_SCHEMA_VERSION: i64 = 1;
 
 pub static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 

@@ -435,6 +435,11 @@ fn sample_vulnerability(id: &str, run_id: &str, project_id: &str) -> VerifiedVul
         title: "Authentication bypass".to_string(),
         severity: "Critical".to_string(),
         confidence: 0.96,
+        risk_score: 9.6,
+        risk_rating: "Critical".to_string(),
+        risk_score_source: "nyctos-agent".to_string(),
+        risk_score_rationale: "Live verification reached a protected endpoint without a session."
+            .to_string(),
         vuln_class: "auth".to_string(),
         affected_components: vec![serde_json::json!({"repo":"web","path":"src/auth.ts"})],
         business_impact: "Attackers can enter another tenant's account.".to_string(),
@@ -470,6 +475,19 @@ async fn vulnerability_status_endpoints_update_single_and_bulk_rows() {
     srv.store.runs().insert(&run).await.expect("run");
     let vuln = sample_vulnerability("vuln-api", "run-vuln-status", DEFAULT_PROJECT_ID);
     srv.store.verified_vulnerabilities().upsert(&vuln).await.expect("vuln");
+
+    let loaded: Value = client
+        .get(format!("{}/api/v1/vulnerabilities/vuln-api", srv.base()))
+        .send()
+        .await
+        .expect("get vulnerability")
+        .error_for_status()
+        .expect("get vulnerability status")
+        .json()
+        .await
+        .expect("get vulnerability json");
+    assert_eq!(loaded["id"], "vuln-api");
+    assert_eq!(loaded["risk_score"], 9.6);
 
     let patched: Value = client
         .patch(format!("{}/api/v1/vulnerabilities/vuln-api/status", srv.base()))
@@ -508,6 +526,9 @@ async fn vulnerability_status_endpoints_update_single_and_bulk_rows() {
         .await
         .expect("list json");
     assert_eq!(listed[0]["status"], "FalsePositive");
+    assert_eq!(listed[0]["risk_score"], 9.6);
+    assert_eq!(listed[0]["risk_rating"], "Critical");
+    assert_eq!(listed[0]["risk_score_source"], "nyctos-agent");
 }
 
 #[tokio::test]
@@ -1390,6 +1411,7 @@ async fn start_pentest_passes_exploit_overrides_to_trigger() {
             "browser_checks_enabled": true,
             "business_logic_templates_enabled": true,
             "research_mode_enabled": true,
+            "unsafe_attack_agent_enabled": true,
             "business_logic_template_ids": ["tenant_object_isolation"],
         }))
         .send()
@@ -1414,6 +1436,7 @@ async fn start_pentest_passes_exploit_overrides_to_trigger() {
             browser_checks_enabled: Some(true),
             business_logic_templates_enabled: Some(true),
             research_mode_enabled: Some(true),
+            unsafe_attack_agent_enabled: Some(true),
             business_logic_template_ids: Some(vec!["tenant_object_isolation".to_string()]),
         }),
     );

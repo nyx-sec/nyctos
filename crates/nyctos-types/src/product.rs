@@ -5,6 +5,52 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+pub fn clamp_risk_score(score: f64) -> f64 {
+    if score.is_finite() {
+        score.clamp(0.0, 10.0)
+    } else {
+        0.0
+    }
+}
+
+pub fn risk_rating_for_score(score: f64) -> &'static str {
+    let score = clamp_risk_score(score);
+    if score >= 9.0 {
+        "Critical"
+    } else if score >= 7.0 {
+        "High"
+    } else if score >= 4.0 {
+        "Medium"
+    } else if score >= 1.0 {
+        "Low"
+    } else {
+        "Info"
+    }
+}
+
+pub fn canonical_risk_rating(raw: &str, score: f64) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "critical" => "Critical".to_string(),
+        "high" => "High".to_string(),
+        "medium" | "moderate" => "Medium".to_string(),
+        "low" => "Low".to_string(),
+        "info" | "informational" => "Info".to_string(),
+        _ => risk_rating_for_score(score).to_string(),
+    }
+}
+
+fn default_risk_rating() -> String {
+    "Info".to_string()
+}
+
+fn default_risk_score_source() -> String {
+    "heuristic".to_string()
+}
+
+fn default_risk_score_rationale() -> String {
+    "Legacy record did not include a backend risk score.".to_string()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct LaunchStep {
     pub command: String,
@@ -260,6 +306,14 @@ pub struct VerifiedVulnerabilityRecord {
     pub title: String,
     pub severity: String,
     pub confidence: f64,
+    #[serde(default)]
+    pub risk_score: f64,
+    #[serde(default = "default_risk_rating")]
+    pub risk_rating: String,
+    #[serde(default = "default_risk_score_source")]
+    pub risk_score_source: String,
+    #[serde(default = "default_risk_score_rationale")]
+    pub risk_score_rationale: String,
     pub vuln_class: String,
     #[serde(default)]
     #[ts(type = "Array<unknown>")]
@@ -419,6 +473,9 @@ pub struct StartPentestRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub research_mode_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub unsafe_attack_agent_enabled: Option<bool>,
     #[serde(default)]
     pub business_logic_template_ids: Vec<String>,
 }

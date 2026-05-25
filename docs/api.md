@@ -351,6 +351,7 @@ safe mode:
   "exploit_dry_run": false,
   "business_logic_templates_enabled": true,
   "research_mode_enabled": false,
+  "unsafe_attack_agent_enabled": false,
   "business_logic_template_ids": ["tenant_object_isolation"]
 }
 ```
@@ -378,6 +379,11 @@ attack planning/exploration, and records research provenance on
 candidates and research-mode exploration findings. It is not an
 execution-safety override; exploit mode, state-changing, target-scope,
 request-cap, rate-limit, dry-run, and reset gates still apply.
+
+`unsafe_attack_agent_enabled = true` runs the final unrestricted local
+attack-agent phase for this run. It is intended for disposable
+user-owned dev apps and does not route the agent's actions through the
+guarded live-verifier policy.
 
 Response: `{ "run_id": "run-..." }`.
 

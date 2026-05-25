@@ -16,6 +16,9 @@ pub enum TaskKind {
     NovelFindings,
     Exploration,
     AttackPlanning,
+    /// Unsafe local dev-app attacker loop. This is a pre-MVP final
+    /// pentest phase that records directly observed exploit proof.
+    AttackAgent,
     /// AI critique pass that reviews a live candidate verification
     /// attempt before the product pipeline creates a user-facing
     /// verified vulnerability.
@@ -37,6 +40,7 @@ impl TaskKind {
             TaskKind::NovelFindings => "NovelFindings",
             TaskKind::Exploration => "Exploration",
             TaskKind::AttackPlanning => "AttackPlanning",
+            TaskKind::AttackAgent => "AttackAgent",
             TaskKind::LiveEvidenceReview => "LiveEvidenceReview",
             TaskKind::Verifier => "Verifier",
         }

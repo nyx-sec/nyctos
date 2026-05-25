@@ -265,6 +265,7 @@ export const qk = {
   runRouteModel: (id: string) => ["runs", id, "route-model"] as const,
   runCandidates: (id: string) => ["runs", id, "candidates"] as const,
   vulnerabilities: () => ["vulnerabilities"] as const,
+  vulnerability: (id: string) => ["vulnerabilities", id] as const,
   projectVulnerabilities: (id: string) => ["projects", id, "vulnerabilities"] as const,
   runSignals: (id: string, meaningfulOnly: boolean) =>
     ["runs", id, "signals", meaningfulOnly] as const,
@@ -717,6 +718,15 @@ export function useVulnerabilities(enabled = true) {
   });
 }
 
+export function useVulnerability(id: string | undefined) {
+  return useQuery({
+    queryKey: id ? qk.vulnerability(id) : ["vulnerabilities", "_disabled"],
+    queryFn: () =>
+      request<VerifiedVulnerabilityRecord>(`/vulnerabilities/${encodeURIComponent(id!)}`),
+    enabled: Boolean(id),
+  });
+}
+
 export function useUpdateVulnerabilityStatus() {
   const qc = useQueryClient();
   return useMutation({
@@ -725,7 +735,8 @@ export function useUpdateVulnerabilityStatus() {
         method: "PATCH",
         body: JSON.stringify({ status } satisfies VulnerabilityStatusPatch),
       }),
-    onSuccess: () => {
+    onSuccess: (data, vars) => {
+      qc.setQueryData(qk.vulnerability(vars.id), data);
       qc.invalidateQueries({ queryKey: qk.vulnerabilities() });
       qc.invalidateQueries({ queryKey: ["projects"] });
       qc.invalidateQueries({ queryKey: ["runs"] });

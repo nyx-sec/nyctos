@@ -85,6 +85,7 @@ nyctos scan --project acme-app --repo acme-backend
 nyctos scan --project acme-app --output report.json --since-ref origin/main
 nyctos scan --project acme-app --exploit-mode --allow-state-changing-live-probes --business-template tenant_object_isolation
 nyctos scan --project acme-app --research-mode
+nyctos scan --project acme-app --unsafe-attack-agent
 ```
 
 | Flag | Effect |
@@ -98,6 +99,7 @@ nyctos scan --project acme-app --research-mode
 | `--allow-state-changing-live-probes` | Allow mutating live probes for this scan when exploit mode is enabled. |
 | `--exploit-dry-run` | Evaluate guarded live plans and write audit records without sending HTTP/browser traffic. |
 | `--research-mode` | Enable Vuln Research Mode for this scan. Adds product-invariant hypotheses and deeper planning/exploration without relaxing live execution gates. |
+| `--unsafe-attack-agent` | Run the final unrestricted local attack-agent phase. Intended only for disposable user-owned dev apps. |
 | `--no-business-logic-templates` | Disable business-logic template candidate synthesis for this scan. |
 | `--business-template ID` | Restrict business-logic template synthesis to the given id. Repeat for multiple ids. |
 | `--no-orchestration` | Run the scan without starting or health-checking the project's launch profile. Static scanning and source-only analysis still run. |

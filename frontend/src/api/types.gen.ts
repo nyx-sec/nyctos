@@ -116,7 +116,7 @@ export type AgentTask = { prompt_version: string, task_id: string, system: strin
  */
 working_directory?: string, max_turns: number, };
 
-export type ExtractedAgentResult = { "kind": "PayloadFound", rule_id: string, body: string, } | { "kind": "SpecFound", capability: string, spec: string, } | { "kind": "ChainsRanked", chain_ids: Array<string>, rationale: string, } | { "kind": "ExplorationFinding", path: string, line: number | null, cap: string, rationale: string, endpoint: string | null, suggested_payload_hint: string | null, } | { "kind": "ExplorationEvent", message: string, } | { "kind": "AuthProfileDiscovered", profile: ProjectAuthProfile, rationale: string, } | { "kind": "AuthSetupVerification", status: string, checks: Array<string>, warnings: Array<string>, };
+export type ExtractedAgentResult = { "kind": "PayloadFound", rule_id: string, body: string, } | { "kind": "SpecFound", capability: string, spec: string, } | { "kind": "ChainsRanked", chain_ids: Array<string>, rationale: string, } | { "kind": "ExplorationFinding", path: string, line: number | null, cap: string, rationale: string, endpoint: string | null, suggested_payload_hint: string | null, } | { "kind": "AttackVulnerability", title: string, vuln_class: string, severity: string, confidence: number, affected_components: Array<unknown>, business_impact: string, evidence_summary: string, repro_steps: string, remediation: string, source_candidate_ids: Array<string>, source_signal_ids: Array<string>, proof_artifact_paths: Array<string>, } | { "kind": "ExplorationEvent", message: string, } | { "kind": "AuthProfileDiscovered", profile: ProjectAuthProfile, rationale: string, } | { "kind": "AuthSetupVerification", status: string, checks: Array<string>, warnings: Array<string>, };
 
 export type AgentResult = { prompt_version: string, task_id: string,
 /**
@@ -290,7 +290,7 @@ export type PentestCandidateRecord = { id: string, run_id: string, project_id: s
 
 export type VerificationAttemptRecord = { id: string, run_id: string, project_id: string, environment_run_id: string, candidate_id?: string, chain_id?: string, method: string, status: string, started_at: number, finished_at: number | null, duration_ms: number | null, request?: unknown, response?: unknown, oracle?: unknown, artifact_paths: Array<string>, error?: string, replay_stable?: boolean, };
 
-export type VerifiedVulnerabilityRecord = { id: string, run_id: string, project_id: string, title: string, severity: string, confidence: number, vuln_class: string, affected_components: Array<unknown>, business_impact: string, evidence_summary: string, repro_steps: string, remediation: string, source_candidate_ids: Array<string>, source_signal_ids: Array<string>, verification_attempt_ids: Array<string>, chain_id?: string, status: string, first_seen: number, last_seen: number, };
+export type VerifiedVulnerabilityRecord = { id: string, run_id: string, project_id: string, title: string, severity: string, confidence: number, risk_score: number, risk_rating: string, risk_score_source: string, risk_score_rationale: string, vuln_class: string, affected_components: Array<unknown>, business_impact: string, evidence_summary: string, repro_steps: string, remediation: string, source_candidate_ids: Array<string>, source_signal_ids: Array<string>, verification_attempt_ids: Array<string>, chain_id?: string, status: string, first_seen: number, last_seen: number, };
 
 export type RouteEvidence = { path: string, line: number | null, snippet: string, };
 
@@ -306,7 +306,7 @@ export type RouteModel = { backend_routes: Array<RouteModelEndpoint>, frontend_r
 
 export type RouteModelRecord = { id: string, run_id: string, project_id: string, model: RouteModel, created_at: number, };
 
-export type StartPentestRequest = { exploit_mode_enabled: boolean, allow_state_changing_live_probes: boolean, exploit_dry_run?: boolean, browser_checks_enabled?: boolean, business_logic_templates_enabled?: boolean, research_mode_enabled?: boolean, business_logic_template_ids: Array<string>, };
+export type StartPentestRequest = { exploit_mode_enabled: boolean, allow_state_changing_live_probes: boolean, exploit_dry_run?: boolean, browser_checks_enabled?: boolean, business_logic_templates_enabled?: boolean, research_mode_enabled?: boolean, unsafe_attack_agent_enabled?: boolean, business_logic_template_ids: Array<string>, };
 
 export type StartPentestResponse = { run_id: string, };
 

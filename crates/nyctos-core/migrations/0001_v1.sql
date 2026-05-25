@@ -1,7 +1,7 @@
 -- Baseline schema for nyctos.
 --
 -- The project has not shipped with persisted user databases yet, so the
--- early local migration history has been squashed into this single
+-- local migration history has been squashed into this single
 -- baseline. Future schema changes after an external release should add
 -- new numbered migrations instead of editing this file.
 
@@ -242,6 +242,9 @@ CREATE TABLE project_launch_profiles (
     mode                  TEXT    NOT NULL DEFAULT 'custom-commands',
     build_steps_json      TEXT    NOT NULL DEFAULT '[]',
     start_steps_json      TEXT    NOT NULL DEFAULT '[]',
+    seed_steps_json       TEXT    NOT NULL DEFAULT '[]',
+    reset_steps_json      TEXT    NOT NULL DEFAULT '[]',
+    login_steps_json      TEXT    NOT NULL DEFAULT '[]',
     stop_steps_json       TEXT    NOT NULL DEFAULT '[]',
     health_checks_json    TEXT    NOT NULL DEFAULT '[]',
     target_urls_json      TEXT    NOT NULL DEFAULT '[]',
@@ -350,6 +353,10 @@ CREATE TABLE verified_vulnerabilities (
     title                             TEXT    NOT NULL,
     severity                          TEXT    NOT NULL,
     confidence                        REAL    NOT NULL,
+    risk_score                        REAL    NOT NULL DEFAULT 0.0,
+    risk_rating                       TEXT    NOT NULL DEFAULT 'Info',
+    risk_score_source                 TEXT    NOT NULL DEFAULT 'heuristic',
+    risk_score_rationale              TEXT    NOT NULL DEFAULT 'Legacy record was assigned a conservative heuristic score from stored severity and confidence during migration.',
     vuln_class                        TEXT    NOT NULL,
     affected_components_json          TEXT    NOT NULL DEFAULT '[]',
     business_impact                   TEXT    NOT NULL,
@@ -387,6 +394,72 @@ CREATE TABLE run_phase_events (
     message       TEXT,
     created_at    INTEGER NOT NULL,
     FOREIGN KEY (run_id)     REFERENCES runs(id)     ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+
+CREATE TABLE attack_graph_nodes (
+    id               TEXT    PRIMARY KEY,
+    run_id           TEXT    NOT NULL,
+    project_id       TEXT    NOT NULL,
+    kind             TEXT    NOT NULL,
+    stable_key       TEXT    NOT NULL,
+    label            TEXT    NOT NULL,
+    ref_id           TEXT,
+    properties_json  TEXT    NOT NULL DEFAULT '{}',
+    created_at       INTEGER NOT NULL,
+    updated_at       INTEGER NOT NULL,
+    UNIQUE(run_id, kind, stable_key),
+    FOREIGN KEY (run_id)     REFERENCES runs(id)     ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+
+CREATE TABLE attack_graph_edges (
+    id               TEXT    PRIMARY KEY,
+    run_id           TEXT    NOT NULL,
+    project_id       TEXT    NOT NULL,
+    kind             TEXT    NOT NULL,
+    from_node_id     TEXT    NOT NULL,
+    to_node_id       TEXT    NOT NULL,
+    evidence_ref     TEXT,
+    properties_json  TEXT    NOT NULL DEFAULT '{}',
+    created_at       INTEGER NOT NULL,
+    FOREIGN KEY (run_id)       REFERENCES runs(id)               ON DELETE CASCADE,
+    FOREIGN KEY (project_id)   REFERENCES projects(id)           ON DELETE CASCADE,
+    FOREIGN KEY (from_node_id) REFERENCES attack_graph_nodes(id) ON DELETE CASCADE,
+    FOREIGN KEY (to_node_id)   REFERENCES attack_graph_nodes(id) ON DELETE CASCADE
+);
+
+CREATE TABLE business_logic_template_runs (
+    run_id                    TEXT    NOT NULL,
+    project_id                TEXT    NOT NULL,
+    template_id               TEXT    NOT NULL,
+    template_version          TEXT    NOT NULL,
+    generated_count           INTEGER NOT NULL DEFAULT 0,
+    skipped_count             INTEGER NOT NULL DEFAULT 0,
+    skip_reasons_json         TEXT    NOT NULL DEFAULT '[]',
+    dry_run                   INTEGER NOT NULL DEFAULT 0,
+    created_at                INTEGER NOT NULL,
+    updated_at                INTEGER NOT NULL,
+    PRIMARY KEY (run_id, template_id, template_version),
+    FOREIGN KEY (run_id)     REFERENCES runs(id)     ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+
+CREATE TABLE project_integrations (
+    id                    TEXT    PRIMARY KEY,
+    project_id            TEXT    NOT NULL,
+    kind                  TEXT    NOT NULL,
+    name                  TEXT    NOT NULL,
+    enabled               INTEGER NOT NULL,
+    events_json           TEXT    NOT NULL,
+    min_severity          TEXT,
+    config_json           TEXT    NOT NULL,
+    target                TEXT    NOT NULL,
+    created_at            INTEGER NOT NULL,
+    updated_at            INTEGER NOT NULL,
+    last_delivery_at      INTEGER,
+    last_delivery_status  TEXT,
+    last_delivery_error   TEXT,
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
 );
 
@@ -487,6 +560,32 @@ CREATE INDEX idx_route_models_project_id         ON route_models(project_id);
 
 CREATE INDEX idx_run_phase_events_run_id        ON run_phase_events(run_id);
 CREATE INDEX idx_run_phase_events_phase         ON run_phase_events(phase);
+
+CREATE INDEX idx_attack_graph_nodes_run_kind
+    ON attack_graph_nodes(run_id, kind);
+CREATE INDEX idx_attack_graph_nodes_project_kind
+    ON attack_graph_nodes(project_id, kind);
+CREATE INDEX idx_attack_graph_nodes_ref
+    ON attack_graph_nodes(kind, ref_id);
+CREATE INDEX idx_attack_graph_nodes_stable
+    ON attack_graph_nodes(run_id, kind, stable_key);
+
+CREATE INDEX idx_attack_graph_edges_run_kind
+    ON attack_graph_edges(run_id, kind);
+CREATE INDEX idx_attack_graph_edges_from
+    ON attack_graph_edges(from_node_id);
+CREATE INDEX idx_attack_graph_edges_to
+    ON attack_graph_edges(to_node_id);
+CREATE INDEX idx_attack_graph_edges_evidence
+    ON attack_graph_edges(evidence_ref);
+
+CREATE INDEX idx_business_logic_template_runs_run
+    ON business_logic_template_runs(run_id);
+CREATE INDEX idx_business_logic_template_runs_template
+    ON business_logic_template_runs(template_id, template_version);
+
+CREATE INDEX idx_project_integrations_project ON project_integrations(project_id);
+CREATE INDEX idx_project_integrations_enabled ON project_integrations(project_id, enabled);
 
 INSERT INTO meta (id, schema_version, created_at, agent_version)
 VALUES (1, 1, 0, '0.0.0')

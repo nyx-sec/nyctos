@@ -538,6 +538,12 @@ pub struct RunConfig {
     /// live execution safety gates.
     #[serde(default)]
     pub research_mode_enabled: bool,
+    /// Enable the pre-MVP unsafe local attack-agent phase. Once this
+    /// final phase is invoked it does not route actions through the
+    /// guarded live-verifier policy; it relies on the configured local
+    /// development environment and CLI-backed sandbox boundary.
+    #[serde(default)]
+    pub unsafe_attack_agent_enabled: bool,
     /// Optional allowlist of business-logic template ids. Empty means
     /// every registered template is considered.
     #[serde(default)]
@@ -608,6 +614,7 @@ impl Default for RunConfig {
             exploit_dry_run: false,
             business_logic_templates_enabled: true,
             research_mode_enabled: false,
+            unsafe_attack_agent_enabled: false,
             business_logic_template_ids: Vec::new(),
             exploit_request_cap: None,
             exploit_requests_per_second: None,

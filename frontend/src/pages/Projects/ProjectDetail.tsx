@@ -116,6 +116,7 @@ export function ProjectDetail({ view = "overview" }: ProjectDetailProps = {}) {
         allow_state_changing_live_probes: options.allowStateChanging,
         browser_checks_enabled: options.browserChecks,
         research_mode_enabled: options.researchMode,
+        unsafe_attack_agent_enabled: options.unsafeAttackAgent,
         business_logic_template_ids: [],
       });
       showToast(`Pentest started (run ${run_id}).`, { tone: "success" });
@@ -1281,6 +1282,7 @@ interface StartPentestOptions {
   allowStateChanging: boolean;
   browserChecks: boolean;
   researchMode: boolean;
+  unsafeAttackAgent: boolean;
 }
 
 interface StartPentestModalProps {
@@ -1294,6 +1296,7 @@ function StartPentestModal({ busy, onConfirm, onCancel }: StartPentestModalProps
   const [allowStateChanging, setAllowStateChanging] = useState(false);
   const [browserChecks, setBrowserChecks] = useState(false);
   const [researchMode, setResearchMode] = useState(false);
+  const [unsafeAttackAgent, setUnsafeAttackAgent] = useState(false);
 
   function setExploitModeChecked(checked: boolean) {
     setExploitMode(checked);
@@ -1306,7 +1309,13 @@ function StartPentestModal({ busy, onConfirm, onCancel }: StartPentestModalProps
       confirmLabel={exploitMode ? "Start with exploit mode" : "Start safe pentest"}
       busy={busy}
       onConfirm={() =>
-        onConfirm({ exploitMode, allowStateChanging, browserChecks, researchMode })
+        onConfirm({
+          exploitMode,
+          allowStateChanging,
+          browserChecks,
+          researchMode,
+          unsafeAttackAgent,
+        })
       }
       onCancel={onCancel}
       body={
@@ -1334,7 +1343,20 @@ function StartPentestModal({ busy, onConfirm, onCancel }: StartPentestModalProps
             />
             <span>
               <strong>Vuln research mode</strong>
-              <small>Generate deeper product-invariant hypotheses without changing safety gates.</small>
+              <small>
+                Generate deeper product-invariant hypotheses without changing safety gates.
+              </small>
+            </span>
+          </label>
+          <label className="pentest-options__check">
+            <input
+              type="checkbox"
+              checked={unsafeAttackAgent}
+              onChange={(event) => setUnsafeAttackAgent(event.currentTarget.checked)}
+            />
+            <span>
+              <strong>Unsafe attack agent</strong>
+              <small>Let the final local agent mutate and break the disposable dev app.</small>
             </span>
           </label>
           <label className="pentest-options__check">

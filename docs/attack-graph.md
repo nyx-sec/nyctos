@@ -10,7 +10,7 @@ common set of nodes and edges so later UI and report surfaces can answer
 provenance and blast-radius questions without hand-joining every table.
 
 Source: `crates/nyctos-core/src/store/attack_graph.rs`,
-`crates/nyctos-core/migrations/0002_attack_graph.sql`,
+`crates/nyctos-core/migrations/0001_v1.sql`,
 `crates/nyctos-types/src/attack_graph.rs`.
 
 ## Schema
