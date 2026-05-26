@@ -3963,6 +3963,11 @@
   grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr) auto auto;
 }
 
+.runtime-env-row .runtime-profile-row__remove {
+  align-self: end;
+  justify-self: end;
+}
+
 .runtime-env-row__secret {
   align-items: center;
   color: var(--text-secondary);

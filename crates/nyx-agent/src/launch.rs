@@ -33,6 +33,7 @@ pub struct RunningProjectEnvironment {
     seed_steps: Vec<LaunchStep>,
     reset_steps: Vec<LaunchStep>,
     env_refs: Vec<LaunchEnvRef>,
+    env_overrides: HashMap<String, String>,
     logs_dir: PathBuf,
     store: Store,
     events: EventSink,
@@ -93,12 +94,13 @@ async fn start_launch_profile(ctx: LaunchContext<'_>) -> anyhow::Result<RunningP
         &target_urls,
     );
 
+    let env_overrides = launch_env_overrides(ctx.project, ctx.profile);
     let start_result = match ctx.profile.mode.as_str() {
-        "already-running" => use_existing_app(&ctx, &env_id, &logs_dir).await,
+        "already-running" => use_existing_app(&ctx, &env_id, &logs_dir, &env_overrides).await,
         "docker-compose" if ctx.profile.start_steps.is_empty() => {
-            start_compose(&ctx, &env_id, &logs_dir).await
+            start_compose(&ctx, &env_id, &logs_dir, &env_overrides).await
         }
-        _ => start_custom(&ctx, &env_id, &logs_dir).await,
+        _ => start_custom(&ctx, &env_id, &logs_dir, &env_overrides).await,
     };
 
     match start_result {
@@ -127,6 +129,7 @@ async fn start_launch_profile(ctx: LaunchContext<'_>) -> anyhow::Result<RunningP
                 seed_steps: ctx.profile.seed_steps.clone(),
                 reset_steps: ctx.profile.reset_steps.clone(),
                 env_refs: ctx.profile.env_refs.clone(),
+                env_overrides,
                 logs_dir,
                 store: ctx.store.clone(),
                 events: ctx.events,
@@ -159,6 +162,7 @@ async fn start_custom(
     ctx: &LaunchContext<'_>,
     env_id: &str,
     logs_dir: &Path,
+    env_overrides: &HashMap<String, String>,
 ) -> anyhow::Result<(RunningMode, serde_json::Value)> {
     if !ctx.profile.build_steps.is_empty() {
         ctx.store
@@ -178,6 +182,7 @@ async fn start_custom(
             run_step_to_completion(
                 step,
                 &ctx.profile.env_refs,
+                env_overrides,
                 ctx.workspaces,
                 logs_dir,
                 "build",
@@ -204,8 +209,15 @@ async fn start_custom(
         );
         for (index, step) in ctx.profile.start_steps.iter().enumerate() {
             children.push(
-                spawn_start_step(step, &ctx.profile.env_refs, ctx.workspaces, logs_dir, index)
-                    .await?,
+                spawn_start_step(
+                    step,
+                    &ctx.profile.env_refs,
+                    env_overrides,
+                    ctx.workspaces,
+                    logs_dir,
+                    index,
+                )
+                .await?,
             );
         }
     } else {
@@ -223,12 +235,27 @@ async fn start_custom(
             &ctx.profile.target_urls,
         );
     }
-    let _ = wait_for_profile_health(ctx.profile, ctx.workspaces, logs_dir).await?;
-    run_profile_hooks(ctx.profile, ctx.workspaces, logs_dir, "seed", &ctx.profile.seed_steps)
-        .await?;
-    run_profile_hooks(ctx.profile, ctx.workspaces, logs_dir, "login", &ctx.profile.login_steps)
-        .await?;
-    let health = wait_for_profile_health(ctx.profile, ctx.workspaces, logs_dir).await?;
+    let _ = wait_for_profile_health(ctx.profile, env_overrides, ctx.workspaces, logs_dir).await?;
+    run_profile_hooks(
+        ctx.profile,
+        env_overrides,
+        ctx.workspaces,
+        logs_dir,
+        "seed",
+        &ctx.profile.seed_steps,
+    )
+    .await?;
+    run_profile_hooks(
+        ctx.profile,
+        env_overrides,
+        ctx.workspaces,
+        logs_dir,
+        "login",
+        &ctx.profile.login_steps,
+    )
+    .await?;
+    let health =
+        wait_for_profile_health(ctx.profile, env_overrides, ctx.workspaces, logs_dir).await?;
     Ok((RunningMode::Custom { children }, health))
 }
 
@@ -236,6 +263,7 @@ async fn use_existing_app(
     ctx: &LaunchContext<'_>,
     env_id: &str,
     logs_dir: &Path,
+    env_overrides: &HashMap<String, String>,
 ) -> anyhow::Result<(RunningMode, serde_json::Value)> {
     ctx.store
         .environment_runs()
@@ -250,12 +278,27 @@ async fn use_existing_app(
         Some("checking app URL"),
         &ctx.profile.target_urls,
     );
-    let _ = wait_for_profile_health(ctx.profile, ctx.workspaces, logs_dir).await?;
-    run_profile_hooks(ctx.profile, ctx.workspaces, logs_dir, "seed", &ctx.profile.seed_steps)
-        .await?;
-    run_profile_hooks(ctx.profile, ctx.workspaces, logs_dir, "login", &ctx.profile.login_steps)
-        .await?;
-    let health = wait_for_profile_health(ctx.profile, ctx.workspaces, logs_dir).await?;
+    let _ = wait_for_profile_health(ctx.profile, env_overrides, ctx.workspaces, logs_dir).await?;
+    run_profile_hooks(
+        ctx.profile,
+        env_overrides,
+        ctx.workspaces,
+        logs_dir,
+        "seed",
+        &ctx.profile.seed_steps,
+    )
+    .await?;
+    run_profile_hooks(
+        ctx.profile,
+        env_overrides,
+        ctx.workspaces,
+        logs_dir,
+        "login",
+        &ctx.profile.login_steps,
+    )
+    .await?;
+    let health =
+        wait_for_profile_health(ctx.profile, env_overrides, ctx.workspaces, logs_dir).await?;
     Ok((RunningMode::None, health))
 }
 
@@ -263,6 +306,7 @@ async fn start_compose(
     ctx: &LaunchContext<'_>,
     _env_id: &str,
     logs_dir: &Path,
+    env_overrides: &HashMap<String, String>,
 ) -> anyhow::Result<(RunningMode, serde_json::Value)> {
     let repos: Vec<RepoInput> = ctx
         .workspaces
@@ -277,12 +321,27 @@ async fn start_compose(
     )?;
     let env = builder.up().await?;
     let services = env.services_health().await.unwrap_or_default();
-    let _ = wait_for_profile_health(ctx.profile, ctx.workspaces, logs_dir).await?;
-    run_profile_hooks(ctx.profile, ctx.workspaces, logs_dir, "seed", &ctx.profile.seed_steps)
-        .await?;
-    run_profile_hooks(ctx.profile, ctx.workspaces, logs_dir, "login", &ctx.profile.login_steps)
-        .await?;
-    let readiness = wait_for_profile_health(ctx.profile, ctx.workspaces, logs_dir).await?;
+    let _ = wait_for_profile_health(ctx.profile, env_overrides, ctx.workspaces, logs_dir).await?;
+    run_profile_hooks(
+        ctx.profile,
+        env_overrides,
+        ctx.workspaces,
+        logs_dir,
+        "seed",
+        &ctx.profile.seed_steps,
+    )
+    .await?;
+    run_profile_hooks(
+        ctx.profile,
+        env_overrides,
+        ctx.workspaces,
+        logs_dir,
+        "login",
+        &ctx.profile.login_steps,
+    )
+    .await?;
+    let readiness =
+        wait_for_profile_health(ctx.profile, env_overrides, ctx.workspaces, logs_dir).await?;
     let health = serde_json::json!({
         "ok": true,
         "mode": "docker-compose",
@@ -324,6 +383,7 @@ impl RunningProjectEnvironment {
                     run_step_to_completion(
                         step,
                         &self.env_refs,
+                        &self.env_overrides,
                         &self.workspaces,
                         &self.logs_dir,
                         "reset",
@@ -370,6 +430,7 @@ impl RunningProjectEnvironment {
                         run_step_to_completion(
                             step,
                             &self.env_refs,
+                            &self.env_overrides,
                             &self.workspaces,
                             &self.logs_dir,
                             "reset",
@@ -413,6 +474,7 @@ impl RunningProjectEnvironment {
             if let Err(err) = run_step_to_completion(
                 step,
                 &self.env_refs,
+                &self.env_overrides,
                 &self.workspaces,
                 &self.logs_dir,
                 "stop",
@@ -479,6 +541,7 @@ impl RunningProjectEnvironment {
 async fn run_step_to_completion(
     step: &LaunchStep,
     env_refs: &[LaunchEnvRef],
+    env_overrides: &HashMap<String, String>,
     workspaces: &HashMap<String, WorkspaceHandle>,
     logs_dir: &Path,
     phase: &str,
@@ -486,7 +549,7 @@ async fn run_step_to_completion(
 ) -> anyhow::Result<()> {
     let stdout_path = logs_dir.join(format!("{phase}-{index}-stdout.log"));
     let stderr_path = logs_dir.join(format!("{phase}-{index}-stderr.log"));
-    let mut command = command_for_step(step, env_refs, workspaces)?;
+    let mut command = command_for_step(step, env_refs, env_overrides, workspaces)?;
     command
         .stdout(Stdio::from(std::fs::File::create(stdout_path)?))
         .stderr(Stdio::from(std::fs::File::create(stderr_path)?));
@@ -523,13 +586,23 @@ async fn run_step_to_completion(
 
 async fn run_profile_hooks(
     profile: &ProjectLaunchProfile,
+    env_overrides: &HashMap<String, String>,
     workspaces: &HashMap<String, WorkspaceHandle>,
     logs_dir: &Path,
     phase: &str,
     steps: &[LaunchStep],
 ) -> anyhow::Result<()> {
     for (index, step) in steps.iter().enumerate() {
-        run_step_to_completion(step, &profile.env_refs, workspaces, logs_dir, phase, index).await?;
+        run_step_to_completion(
+            step,
+            &profile.env_refs,
+            env_overrides,
+            workspaces,
+            logs_dir,
+            phase,
+            index,
+        )
+        .await?;
     }
     Ok(())
 }
@@ -549,6 +622,7 @@ fn step_label(phase: &str) -> &'static str {
 async fn spawn_start_step(
     step: &LaunchStep,
     env_refs: &[LaunchEnvRef],
+    env_overrides: &HashMap<String, String>,
     workspaces: &HashMap<String, WorkspaceHandle>,
     logs_dir: &Path,
     index: usize,
@@ -567,7 +641,7 @@ async fn spawn_start_step(
         .await?
         .into_std()
         .await;
-    let mut command = command_for_step(step, env_refs, workspaces)?;
+    let mut command = command_for_step(step, env_refs, env_overrides, workspaces)?;
     command.stdout(Stdio::from(stdout)).stderr(Stdio::from(stderr)).kill_on_drop(true);
     if step.stdin.is_some() {
         command.stdin(Stdio::piped());
@@ -593,6 +667,7 @@ async fn write_launch_stdin(step: &LaunchStep, child: &mut Child) -> anyhow::Res
 fn command_for_step(
     step: &LaunchStep,
     env_refs: &[LaunchEnvRef],
+    env_overrides: &HashMap<String, String>,
     workspaces: &HashMap<String, WorkspaceHandle>,
 ) -> anyhow::Result<Command> {
     let mut cmd = Command::new("sh");
@@ -600,7 +675,7 @@ fn command_for_step(
     if let Some(dir) = working_dir_for_step(step, workspaces) {
         cmd.current_dir(dir);
     }
-    for (key, value) in resolve_launch_env(env_refs, step, workspaces)? {
+    for (key, value) in resolve_launch_env(env_refs, step, env_overrides, workspaces)? {
         cmd.env(key, value);
     }
     Ok(cmd)
@@ -634,6 +709,7 @@ fn resolve_working_dir(base: &Path, dir: &str) -> PathBuf {
 async fn wait_for_health(
     checks: &[LaunchHealthCheck],
     env_refs: &[LaunchEnvRef],
+    env_overrides: &HashMap<String, String>,
     workspaces: &HashMap<String, WorkspaceHandle>,
     logs_dir: &Path,
 ) -> anyhow::Result<serde_json::Value> {
@@ -647,11 +723,17 @@ async fn wait_for_health(
         let result = match check.kind.as_str() {
             "http" => wait_for_http(check.url.as_deref(), timeout).await,
             "command" => match &check.command {
-                Some(step) => {
-                    run_step_to_completion(step, env_refs, workspaces, logs_dir, "health", index)
-                        .await
-                        .map(|_| serde_json::json!({"ok": true, "kind": "command"}))
-                }
+                Some(step) => run_step_to_completion(
+                    step,
+                    env_refs,
+                    env_overrides,
+                    workspaces,
+                    logs_dir,
+                    "health",
+                    index,
+                )
+                .await
+                .map(|_| serde_json::json!({"ok": true, "kind": "command"})),
                 None => Err(anyhow::anyhow!("command health check is missing command")),
             },
             other => Err(anyhow::anyhow!("unsupported health check kind `{other}`")),
@@ -671,6 +753,7 @@ async fn wait_for_health(
 
 async fn wait_for_profile_health(
     profile: &ProjectLaunchProfile,
+    env_overrides: &HashMap<String, String>,
     workspaces: &HashMap<String, WorkspaceHandle>,
     logs_dir: &Path,
 ) -> anyhow::Result<serde_json::Value> {
@@ -687,14 +770,17 @@ async fn wait_for_profile_health(
                 timeout_seconds: Some(60),
             })
             .collect();
-        return wait_for_health(&checks, &profile.env_refs, workspaces, logs_dir).await;
+        return wait_for_health(&checks, &profile.env_refs, env_overrides, workspaces, logs_dir)
+            .await;
     }
-    wait_for_health(&profile.health_checks, &profile.env_refs, workspaces, logs_dir).await
+    wait_for_health(&profile.health_checks, &profile.env_refs, env_overrides, workspaces, logs_dir)
+        .await
 }
 
 fn resolve_launch_env(
     refs: &[LaunchEnvRef],
     step: &LaunchStep,
+    env_overrides: &HashMap<String, String>,
     workspaces: &HashMap<String, WorkspaceHandle>,
 ) -> anyhow::Result<HashMap<String, String>> {
     let mut env = HashMap::new();
@@ -712,14 +798,51 @@ fn resolve_launch_env(
                     continue;
                 }
                 validate_env_key(key)?;
-                let value = std::env::var(key)
-                    .map_err(|_| anyhow::anyhow!("env variable `{key}` is not set"))?;
+                let value = env_overrides
+                    .get(key)
+                    .filter(|value| !value.is_empty())
+                    .cloned()
+                    .or_else(|| std::env::var(key).ok())
+                    .ok_or_else(|| anyhow::anyhow!("env variable `{key}` is not set"))?;
                 env.insert(key.to_string(), value);
             }
             other => anyhow::bail!("unsupported launch env ref kind `{other}`"),
         }
     }
     Ok(env)
+}
+
+fn launch_env_overrides(
+    project: &Project,
+    profile: &ProjectLaunchProfile,
+) -> HashMap<String, String> {
+    let mut overrides: HashMap<String, String> = project
+        .runtime_profile
+        .as_ref()
+        .into_iter()
+        .flat_map(|profile| profile.env_vars.iter())
+        .filter_map(|var| {
+            let name = var.name.trim();
+            if name.is_empty() || var.value.is_empty() {
+                None
+            } else {
+                Some((name.to_string(), var.value.clone()))
+            }
+        })
+        .collect();
+    if !overrides.contains_key("NYX_AGENT_BASE_URL") {
+        if let Some(target) = project
+            .runtime_profile
+            .as_ref()
+            .and_then(|runtime| runtime.target_base_url.as_deref())
+            .or(project.target_base_url.as_deref())
+            .or_else(|| profile.target_urls.first().map(String::as_str))
+            .filter(|target| !target.trim().is_empty())
+        {
+            overrides.insert("NYX_AGENT_BASE_URL".to_string(), target.trim().to_string());
+        }
+    }
+    overrides
 }
 
 fn resolve_env_file_path(
@@ -897,6 +1020,7 @@ mod tests {
     use super::*;
     use nyx_agent_core::project::ProjectId;
     use nyx_agent_core::store::{ProjectLaunchProfileInput, RunRecord};
+    use nyx_agent_types::project::ProjectRuntimeProfile;
     use tokio::sync::broadcast;
 
     fn launch_step(repo_name: Option<&str>) -> LaunchStep {
@@ -912,6 +1036,10 @@ mod tests {
 
     fn env_file_ref(path: &str) -> LaunchEnvRef {
         LaunchEnvRef { kind: "env-file".to_string(), value: path.to_string(), secret: true }
+    }
+
+    fn env_var_ref(name: &str, secret: bool) -> LaunchEnvRef {
+        LaunchEnvRef { kind: "env-var".to_string(), value: name.to_string(), secret }
     }
 
     async fn fresh_store() -> (tempfile::TempDir, Store) {
@@ -980,11 +1108,121 @@ mod tests {
         workspaces
             .insert("web".to_string(), WorkspaceHandle::for_local_path_test("web", tmp.path()));
 
-        let env = resolve_launch_env(&[env_file_ref(".env.dev")], &launch_step(None), &workspaces)
-            .expect("resolve env");
+        let env_overrides = HashMap::new();
+        let env = resolve_launch_env(
+            &[env_file_ref(".env.dev")],
+            &launch_step(None),
+            &env_overrides,
+            &workspaces,
+        )
+        .expect("resolve env");
 
         assert_eq!(env.get("API_URL").map(String::as_str), Some("http://localhost:3000"));
         assert_eq!(env.get("QUOTED").map(String::as_str), Some("two words"));
+    }
+
+    #[test]
+    fn resolves_env_var_refs_from_runtime_profile_values_before_process_env() {
+        let workspaces = HashMap::new();
+        let profile = ProjectRuntimeProfile {
+            build_commands: Vec::new(),
+            start_commands: Vec::new(),
+            health_check_url: None,
+            health_check_command: None,
+            target_base_url: None,
+            allowed_hosts: Vec::new(),
+            env_vars: vec![nyx_agent_types::project::ProjectRuntimeEnvVar {
+                name: "NYX_AGENT_BASE_URL".to_string(),
+                value: "http://127.0.0.1:8787".to_string(),
+                secret: false,
+            }],
+            auth_profiles: Vec::new(),
+            env_file: None,
+            timeout_seconds: None,
+        };
+        let project = Project {
+            id: ProjectId::new("p-1"),
+            name: "acme".to_string(),
+            description: None,
+            target_base_url: None,
+            env_config: None,
+            runtime_profile: Some(profile),
+            default_launch_profile: None,
+        };
+        let launch_profile = ProjectLaunchProfile {
+            id: "lp-1".to_string(),
+            project_id: "p-1".to_string(),
+            name: "test".to_string(),
+            mode: "custom-commands".to_string(),
+            build_steps: Vec::new(),
+            start_steps: Vec::new(),
+            seed_steps: Vec::new(),
+            reset_steps: Vec::new(),
+            login_steps: Vec::new(),
+            stop_steps: Vec::new(),
+            health_checks: Vec::new(),
+            target_urls: Vec::new(),
+            env_refs: Vec::new(),
+            working_dirs: Vec::new(),
+            readiness: "Ready".to_string(),
+            created_at: 1,
+            updated_at: 1,
+            is_default: true,
+        };
+        let env_overrides = launch_env_overrides(&project, &launch_profile);
+
+        let env = resolve_launch_env(
+            &[env_var_ref("NYX_AGENT_BASE_URL", false)],
+            &launch_step(None),
+            &env_overrides,
+            &workspaces,
+        )
+        .expect("resolve env var from runtime profile");
+
+        assert_eq!(
+            env.get("NYX_AGENT_BASE_URL").map(String::as_str),
+            Some("http://127.0.0.1:8787")
+        );
+    }
+
+    #[test]
+    fn derives_base_url_env_override_from_launch_target() {
+        let project = Project {
+            id: ProjectId::new("p-1"),
+            name: "acme".to_string(),
+            description: None,
+            target_base_url: None,
+            env_config: None,
+            runtime_profile: None,
+            default_launch_profile: None,
+        };
+        let launch_profile = ProjectLaunchProfile {
+            id: "lp-1".to_string(),
+            project_id: "p-1".to_string(),
+            name: "test".to_string(),
+            mode: "custom-commands".to_string(),
+            build_steps: Vec::new(),
+            start_steps: Vec::new(),
+            seed_steps: Vec::new(),
+            reset_steps: Vec::new(),
+            login_steps: Vec::new(),
+            stop_steps: Vec::new(),
+            health_checks: Vec::new(),
+            target_urls: vec!["http://127.0.0.1:8787".to_string()],
+            env_refs: Vec::new(),
+            working_dirs: Vec::new(),
+            readiness: "Ready".to_string(),
+            created_at: 1,
+            updated_at: 1,
+            is_default: true,
+        };
+
+        let env_overrides = launch_env_overrides(&project, &launch_profile);
+
+        assert_eq!(
+            env_overrides.get("NYX_AGENT_BASE_URL").map(String::as_str),
+            Some("http://127.0.0.1:8787")
+        );
     }
 
     #[test]
@@ -997,8 +1235,14 @@ mod tests {
         workspaces
             .insert("api".to_string(), WorkspaceHandle::for_local_path_test("api", tmp_b.path()));
 
-        let err = resolve_launch_env(&[env_file_ref(".env.dev")], &launch_step(None), &workspaces)
-            .expect_err("relative env file needs context");
+        let env_overrides = HashMap::new();
+        let err = resolve_launch_env(
+            &[env_file_ref(".env.dev")],
+            &launch_step(None),
+            &env_overrides,
+            &workspaces,
+        )
+        .expect_err("relative env file needs context");
 
         assert!(err.to_string().contains("no code source"));
     }
@@ -1014,9 +1258,18 @@ mod tests {
         let mut step = command("cat > answered");
         step.stdin = Some("y\n".to_string());
 
-        run_step_to_completion(&step, &[], &workspaces, workspace.path(), "reset", 0)
-            .await
-            .expect("stdin-backed command");
+        let env_overrides = HashMap::new();
+        run_step_to_completion(
+            &step,
+            &[],
+            &env_overrides,
+            &workspaces,
+            workspace.path(),
+            "reset",
+            0,
+        )
+        .await
+        .expect("stdin-backed command");
 
         assert_eq!(std::fs::read_to_string(workspace.path().join("answered")).unwrap(), "y\n");
     }

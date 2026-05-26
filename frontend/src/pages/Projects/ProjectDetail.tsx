@@ -1,5 +1,5 @@
 import { type FocusEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   type AgentEventLike,
   getProjectSetupJob,
@@ -38,11 +38,10 @@ import { applyEvent, type RepoLiveState, type RepoLiveStatus } from "../Repos/re
 import {
   launchProfileDraftError,
   launchProfileFromDraft,
-  launchProfileToDraft,
+  profileDraftFromLaunchAndRuntime,
   ProjectRuntimeProfileForm,
   type RuntimeProfileDraft,
   runtimeProfileFromDraft,
-  runtimeProfileToDraft,
 } from "./ProjectRuntimeProfileForm";
 
 type LiveMap = Record<string, RepoLiveState>;
@@ -66,12 +65,14 @@ interface ProjectOverviewProps {
   live: LiveMap;
   launchProfile: ProjectLaunchProfile | null;
   canStartPentest: boolean;
-  startPentestPending: boolean;
   runsPending: boolean;
   reposPending: boolean;
   vulnerabilitiesPending: boolean;
   integrationsPending: boolean;
-  onStartPentest: () => void;
+}
+
+interface ProjectDetailLocationState {
+  addRepoForAiSetup?: boolean;
 }
 
 const STATUS_TONE: Record<RepoLiveStatus, BadgeTone> = {
@@ -84,6 +85,7 @@ const STATUS_TONE: Record<RepoLiveStatus, BadgeTone> = {
 export function ProjectDetail({ view = "overview" }: ProjectDetailProps = {}) {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
   const project = useProject(projectId);
   const repos = useProjectRepos(projectId);
   const startPentest = useStartPentest(projectId ?? "");
@@ -127,13 +129,17 @@ export function ProjectDetail({ view = "overview" }: ProjectDetailProps = {}) {
       }
       return current;
     });
-    if (
-      !projectSetupPolling &&
-      (latest.status === "queued" || latest.status === "running")
-    ) {
+    if (!projectSetupPolling && (latest.status === "queued" || latest.status === "running")) {
       void pollProjectSetupJob(projectId, latest.id);
     }
   }, [setupJobs.data, projectId, projectSetupPolling]);
+
+  useEffect(() => {
+    const state = location.state as ProjectDetailLocationState | null;
+    if (view !== "repos" || !state?.addRepoForAiSetup) return;
+    showToast("Add a repository to use AI setup mode.", { tone: "info" });
+    navigate(`${location.pathname}${location.search}`, { replace: true, state: null });
+  }, [location.pathname, location.search, location.state, navigate, showToast, view]);
 
   async function onStartPentest(options: StartPentestOptions) {
     showToast("Starting pentest for this app...", { tone: "info" });
@@ -296,6 +302,16 @@ export function ProjectDetail({ view = "overview" }: ProjectDetailProps = {}) {
   const activeRun = runRows.find((run) => run.status === "Running") ?? null;
   const encodedProjectId = encodeURIComponent(projectId);
 
+  function onAiSetupClick() {
+    if (rows.length === 0) {
+      navigate(`/projects/${encodedProjectId}/repos`, {
+        state: { addRepoForAiSetup: true } satisfies ProjectDetailLocationState,
+      });
+      return;
+    }
+    setShowAiSetupOptions(true);
+  }
+
   return (
     <>
       <PageShell size="wide" className="project-detail">
@@ -315,14 +331,21 @@ export function ProjectDetail({ view = "overview" }: ProjectDetailProps = {}) {
             actions={
               <>
                 <Button
-                  onClick={() => setShowAiSetupOptions(true)}
-                  disabled={rows.length === 0 || projectSetupRunning}
-                  title={rows.length === 0 ? "Add a repository before running AI setup" : undefined}
+                  variant={canStartPentest ? "default" : "primary"}
+                  onClick={onAiSetupClick}
+                  disabled={repos.isPending || projectSetupRunning}
+                  title={
+                    repos.isPending
+                      ? "Checking repositories before AI setup"
+                      : rows.length === 0
+                        ? "Add a repository to use AI setup mode"
+                        : undefined
+                  }
                 >
                   {projectSetupRunning ? "Setting up..." : "AI setup"}
                 </Button>
                 <Button
-                  variant="primary"
+                  variant={canStartPentest ? "primary" : "default"}
                   onClick={() => setShowPentestOptions(true)}
                   disabled={!canStartPentest || startPentest.isPending}
                 >
@@ -374,12 +397,10 @@ export function ProjectDetail({ view = "overview" }: ProjectDetailProps = {}) {
             live={live}
             launchProfile={launchProfile}
             canStartPentest={canStartPentest}
-            startPentestPending={startPentest.isPending}
             runsPending={runningRuns.isPending || succeededRuns.isPending || failedRuns.isPending}
             reposPending={repos.isPending}
             vulnerabilitiesPending={vulnerabilities.isPending}
             integrationsPending={integrations.isPending}
-            onStartPentest={() => setShowPentestOptions(true)}
           />
         )}
 
@@ -517,12 +538,10 @@ function ProjectOverview({
   live,
   launchProfile,
   canStartPentest,
-  startPentestPending,
   runsPending,
   reposPending,
   vulnerabilitiesPending,
   integrationsPending,
-  onStartPentest,
 }: ProjectOverviewProps) {
   const environmentStatus = launchProfileStatus(launchProfile);
   const verifiedCount = vulnerabilities.length;
@@ -563,9 +582,7 @@ function ProjectOverview({
             <ReadinessPanel
               readiness={readiness}
               canStartPentest={canStartPentest}
-              startPentestPending={startPentestPending}
               reposPending={reposPending}
-              onStartPentest={onStartPentest}
             />
           )}
         </section>
@@ -740,17 +757,12 @@ function CurrentRunPanel({
 function ReadinessPanel({
   readiness,
   canStartPentest,
-  startPentestPending,
   reposPending,
-  onStartPentest,
 }: {
   readiness: ReadinessCheck[];
   canStartPentest: boolean;
-  startPentestPending: boolean;
   reposPending: boolean;
-  onStartPentest: () => void;
 }) {
-  const missing = readiness.find((check) => !check.ok);
   return (
     <>
       <div className="project-panel__header">
@@ -779,20 +791,6 @@ function ReadinessPanel({
           </li>
         ))}
       </ul>
-      <div className="project-overview__actions">
-        <Button
-          variant="primary"
-          onClick={onStartPentest}
-          disabled={!canStartPentest || startPentestPending}
-        >
-          {startPentestPending ? "Starting..." : "Start pentest"}
-        </Button>
-        {missing && (
-          <Link className="btn btn--ghost" to={missing.to}>
-            Resolve setup
-          </Link>
-        )}
-      </div>
     </>
   );
 }
@@ -1372,13 +1370,11 @@ function environmentSaveSnapshot(draft: RuntimeProfileDraft): string {
 }
 
 function profileDraftFromProject(project: ProjectRecord): RuntimeProfileDraft {
-  const draft = launchProfileToDraft(project.default_launch_profile, project.target_base_url ?? "");
-  const runtimeDraft = runtimeProfileToDraft(
+  return profileDraftFromLaunchAndRuntime(
+    project.default_launch_profile,
     project.runtime_profile,
     project.target_base_url ?? "",
   );
-  draft.auth_profiles = runtimeDraft.auth_profiles;
-  return draft;
 }
 
 interface AiSetupOptions {

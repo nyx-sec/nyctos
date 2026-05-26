@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { ReactNode } from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ToastProvider } from "@/components/Toast";
 import { ProjectDetail } from "./ProjectDetail";
 
 class FakeWebSocket {
@@ -35,13 +36,16 @@ function wrap(children: ReactNode, initial = "/projects/proj-1") {
   });
   return (
     <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={[initial]}>
-        <Routes>
-          <Route path="/projects/:projectId" element={children} />
-          <Route path="/projects/:projectId/runs/:runId" element={<div>run detail</div>} />
-          <Route path="/runs/:runId" element={<div>run detail</div>} />
-        </Routes>
-      </MemoryRouter>
+      <ToastProvider>
+        <MemoryRouter initialEntries={[initial]}>
+          <Routes>
+            <Route path="/projects/:projectId" element={children} />
+            <Route path="/projects/:projectId/repos" element={<ProjectDetail view="repos" />} />
+            <Route path="/projects/:projectId/runs/:runId" element={<div>run detail</div>} />
+            <Route path="/runs/:runId" element={<div>run detail</div>} />
+          </Routes>
+        </MemoryRouter>
+      </ToastProvider>
     </QueryClientProvider>
   );
 }
@@ -121,6 +125,9 @@ describe("ProjectDetail", () => {
       if (url === "/api/v1/projects/proj-1") return jsonResponse(readyProject());
       if (url === "/api/v1/projects/proj-1/repos") return jsonResponse(repos());
       if (url === "/api/v1/projects/proj-1/vulnerabilities") return jsonResponse([]);
+      if (url === "/api/v1/projects/proj-1/integrations") return jsonResponse([]);
+      if (url === "/api/v1/projects/proj-1/setup/ai") return jsonResponse({ jobs: [] });
+      if (url.startsWith("/api/v1/runs?")) return jsonResponse([]);
       if (url === "/api/v1/projects/proj-1/pentest") {
         pentestBodies.push(JSON.parse(String(init?.body)));
         return jsonResponse({ run_id: "run-1" });
@@ -131,7 +138,8 @@ describe("ProjectDetail", () => {
     render(wrap(<ProjectDetail />));
 
     expect(await screen.findByRole("heading", { name: "Demo App" })).toBeInTheDocument();
-    fireEvent.click(screen.getAllByRole("button", { name: "Start pentest" })[0]);
+    expect(screen.getAllByRole("button", { name: "Start pentest" })).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "Start pentest" }));
 
     expect(screen.getByRole("dialog", { name: "Start pentest" })).toBeInTheDocument();
     const exploitMode = screen.getByLabelText(/Exploit mode/) as HTMLInputElement;
@@ -173,13 +181,16 @@ describe("ProjectDetail", () => {
       if (url === "/api/v1/projects/proj-1") return jsonResponse(readyProject());
       if (url === "/api/v1/projects/proj-1/repos") return jsonResponse(repos());
       if (url === "/api/v1/projects/proj-1/vulnerabilities") return jsonResponse([]);
+      if (url === "/api/v1/projects/proj-1/integrations") return jsonResponse([]);
+      if (url === "/api/v1/projects/proj-1/setup/ai") return jsonResponse({ jobs: [] });
+      if (url.startsWith("/api/v1/runs?")) return jsonResponse([]);
       throw new Error(`unexpected url ${url}`);
     });
 
     render(wrap(<ProjectDetail />));
 
     expect(await screen.findByRole("heading", { name: "Demo App" })).toBeInTheDocument();
-    fireEvent.click(screen.getAllByRole("button", { name: "Start pentest" })[0]);
+    fireEvent.click(screen.getByRole("button", { name: "Start pentest" }));
 
     expect(screen.getByRole("button", { name: "Start safe pentest" })).toBeInTheDocument();
     expect(screen.getByText(/Safe mode is the default/)).toBeInTheDocument();
@@ -215,6 +226,28 @@ describe("ProjectDetail", () => {
     ).toBeInTheDocument();
   });
 
+  it("sends AI setup to repositories with guidance when no repo is linked", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      if (url === "/api/v1/projects/proj-1") return jsonResponse(readyProject());
+      if (url === "/api/v1/projects/proj-1/repos") return jsonResponse([]);
+      if (url === "/api/v1/projects/proj-1/vulnerabilities") return jsonResponse([]);
+      if (url === "/api/v1/projects/proj-1/integrations") return jsonResponse([]);
+      if (url === "/api/v1/projects/proj-1/setup/ai") return jsonResponse({ jobs: [] });
+      if (url.startsWith("/api/v1/runs?")) return jsonResponse([]);
+      throw new Error(`unexpected url ${url}`);
+    });
+
+    render(wrap(<ProjectDetail />));
+
+    expect(await screen.findByRole("heading", { name: "Demo App" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "AI setup" }));
+
+    expect(await screen.findByRole("heading", { name: "Repositories" })).toBeInTheDocument();
+    expect(await screen.findByText("Add a repository to use AI setup mode.")).toBeInTheDocument();
+    expect(screen.getByText("No repositories yet")).toBeInTheDocument();
+  });
+
   it("autosaves environment edits with lifecycle hooks last", async () => {
     const patchRequests: Array<{ url: string; body: Record<string, unknown> }> = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
@@ -226,6 +259,7 @@ describe("ProjectDetail", () => {
       if (url === "/api/v1/projects/proj-1/repos") return jsonResponse(repos());
       if (url === "/api/v1/projects/proj-1/vulnerabilities") return jsonResponse([]);
       if (url === "/api/v1/projects/proj-1/integrations") return jsonResponse([]);
+      if (url === "/api/v1/projects/proj-1/setup/ai") return jsonResponse({ jobs: [] });
       if (url.startsWith("/api/v1/runs?")) return jsonResponse([]);
       if (url === "/api/v1/launch-target/test") {
         return jsonResponse({ ok: true, url: "http://localhost:3000", message: "Reachable" });
@@ -286,6 +320,7 @@ describe("ProjectDetail", () => {
       if (url === "/api/v1/projects/proj-1/repos") return jsonResponse(repos());
       if (url === "/api/v1/projects/proj-1/vulnerabilities") return jsonResponse([]);
       if (url === "/api/v1/projects/proj-1/integrations") return jsonResponse([]);
+      if (url === "/api/v1/projects/proj-1/setup/ai") return jsonResponse({ jobs: [] });
       if (url.startsWith("/api/v1/runs?")) return jsonResponse([]);
       if (url === "/api/v1/launch-target/test") {
         return jsonResponse({ ok: true, url: "http://localhost:3000", message: "Reachable" });

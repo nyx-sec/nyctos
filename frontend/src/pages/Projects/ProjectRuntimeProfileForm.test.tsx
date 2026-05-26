@@ -8,6 +8,7 @@ import { ProjectAddModal } from "./ProjectAddModal";
 import {
   emptyRuntimeProfileDraft,
   launchProfileFromDraft,
+  profileDraftFromLaunchAndRuntime,
   ProjectRuntimeProfileForm,
   type RuntimeProfileDraft,
   runtimeProfileFromDraft,
@@ -158,6 +159,54 @@ describe("ProjectRuntimeProfileForm", () => {
     expect(launchProfileFromDraft(draft)?.env_refs).toEqual([
       { kind: "env-file", value: ".env.dev", secret: true },
       { kind: "env-var", value: "NODE_ENV", secret: false },
+    ]);
+  });
+
+  it("shows saved runtime env values for launch env references", () => {
+    const draft = profileDraftFromLaunchAndRuntime(
+      {
+        id: "lp-1",
+        project_id: "p-1",
+        name: "App",
+        mode: "custom-commands",
+        build_steps: [],
+        start_steps: [],
+        seed_steps: [],
+        reset_steps: [],
+        login_steps: [],
+        stop_steps: [],
+        health_checks: [],
+        target_urls: ["http://127.0.0.1:8787"],
+        env_refs: [{ kind: "env-var", value: "NYX_AGENT_BASE_URL", secret: false }],
+        working_dirs: [],
+        readiness: "Ready",
+        created_at: 1,
+        updated_at: 1,
+        is_default: true,
+      },
+      {
+        build_commands: [],
+        start_commands: [],
+        target_base_url: "http://127.0.0.1:8787",
+        allowed_hosts: [],
+        env_vars: [
+          {
+            name: "NYX_AGENT_BASE_URL",
+            value: "http://127.0.0.1:8787",
+            secret: false,
+          },
+        ],
+        auth_profiles: [],
+      },
+      "",
+    );
+
+    expect(draft.env_vars).toEqual([
+      {
+        name: "NYX_AGENT_BASE_URL",
+        value: "http://127.0.0.1:8787",
+        secret: false,
+      },
     ]);
   });
 

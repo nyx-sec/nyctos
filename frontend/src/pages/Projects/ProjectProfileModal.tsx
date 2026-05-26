@@ -6,11 +6,10 @@ import { Spinner } from "@/components/Spinner";
 import {
   launchProfileDraftError,
   launchProfileFromDraft,
-  launchProfileToDraft,
+  profileDraftFromLaunchAndRuntime,
   ProjectRuntimeProfileForm,
   type RuntimeProfileDraft,
   runtimeProfileFromDraft,
-  runtimeProfileToDraft,
 } from "./ProjectRuntimeProfileForm";
 
 interface Props {
@@ -103,11 +102,9 @@ export function ProjectProfileModal({ project, onClose, onSaved }: Props) {
 }
 
 function profileDraftFromProject(project: ProjectRecord): RuntimeProfileDraft {
-  const draft = launchProfileToDraft(project.default_launch_profile, project.target_base_url ?? "");
-  const runtimeDraft = runtimeProfileToDraft(
+  return profileDraftFromLaunchAndRuntime(
+    project.default_launch_profile,
     project.runtime_profile,
     project.target_base_url ?? "",
   );
-  draft.auth_profiles = runtimeDraft.auth_profiles;
-  return draft;
 }

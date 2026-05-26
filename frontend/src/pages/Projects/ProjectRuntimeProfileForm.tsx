@@ -252,6 +252,18 @@ export function runtimeProfileToDraft(
   };
 }
 
+export function profileDraftFromLaunchAndRuntime(
+  launchProfile: ProjectLaunchProfile | null | undefined,
+  runtimeProfile: ProjectRuntimeProfile | null | undefined,
+  fallbackTargetBaseUrl = "",
+): RuntimeProfileDraft {
+  const draft = launchProfileToDraft(launchProfile, fallbackTargetBaseUrl);
+  const runtimeDraft = runtimeProfileToDraft(runtimeProfile, fallbackTargetBaseUrl);
+  draft.env_vars = mergeRuntimeEnvDrafts(draft.env_vars, runtimeDraft.env_vars);
+  draft.auth_profiles = runtimeDraft.auth_profiles;
+  return draft;
+}
+
 export function runtimeProfileFromDraft(
   draft: RuntimeProfileDraft,
 ): ProjectRuntimeProfile | undefined {
@@ -1451,6 +1463,26 @@ function envDrafts(vars: ProjectRuntimeEnvVar[]): RuntimeEnvDraft[] {
     value: v.value,
     secret: v.secret,
   }));
+}
+
+function mergeRuntimeEnvDrafts(
+  launchEnvVars: RuntimeEnvDraft[],
+  runtimeEnvVars: RuntimeEnvDraft[],
+): RuntimeEnvDraft[] {
+  const merged = launchEnvVars.map((row) => ({ ...row }));
+  for (const runtimeRow of runtimeEnvVars) {
+    const name = runtimeRow.name.trim();
+    if (!name) continue;
+    const existing = merged.find((row) => row.name.trim() === name);
+    if (existing) {
+      existing.name = name;
+      existing.value = runtimeRow.value;
+      existing.secret = existing.secret || runtimeRow.secret;
+    } else {
+      merged.push({ ...runtimeRow, name });
+    }
+  }
+  return merged;
 }
 
 function authDrafts(profiles: ProjectAuthProfile[]): AuthProfileDraft[] {
