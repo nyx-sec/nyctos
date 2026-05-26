@@ -4754,7 +4754,7 @@ async fn list_quarantine(
     }
     // Most-recently-stamped findings first; candidates fall in after
     // (no `last_seen`).
-    out.sort_by(|a, b| b.last_seen.unwrap_or(0).cmp(&a.last_seen.unwrap_or(0)));
+    out.sort_by_key(|b| std::cmp::Reverse(b.last_seen.unwrap_or(0)));
     Ok(Json(out))
 }
 
