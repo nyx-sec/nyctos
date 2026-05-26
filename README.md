@@ -173,7 +173,7 @@ Nyctos is free and open source under AGPLv3-or-later. Commercial licenses,
 paid support, onboarding help, private policy packs, and enterprise terms are
 available for teams that need proprietary embedding, hosted resale, custom
 support obligations, or license comfort. See [LICENSE.md](LICENSE.md) or contact
-<licensing@nyx.dev>.
+<email being setup>.
 
 Nyctos does not include or resell model access. AI runtimes are optional
 BYOK/local connectors; users are responsible for complying with the terms for
