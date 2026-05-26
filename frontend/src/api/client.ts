@@ -51,6 +51,7 @@ import type {
   ProjectRuntimeEnvVar,
   ProjectRuntimeProfile,
   ProjectSetupError,
+  ProjectSetupJobListResponse,
   ProjectSetupJobRecord,
   ProjectSetupRequest,
   ProjectSetupResponse,
@@ -121,6 +122,7 @@ export type {
   ProjectRuntimeEnvVar,
   ProjectRuntimeProfile,
   ProjectSetupError,
+  ProjectSetupJobListResponse,
   ProjectSetupJobRecord,
   ProjectSetupRequest,
   ProjectSetupResponse,
@@ -369,6 +371,7 @@ export const qk = {
     ["projects", projectId, "launch-profile", "default"] as const,
   authSetupJob: (projectId: string, jobId: string) =>
     ["projects", projectId, "auth-setup", jobId] as const,
+  projectSetupJobs: (projectId: string) => ["projects", projectId, "project-setup"] as const,
   projectSetupJob: (projectId: string, jobId: string) =>
     ["projects", projectId, "project-setup", jobId] as const,
 };
@@ -559,11 +562,28 @@ export function getProjectSetupJob(
   );
 }
 
+export function listProjectSetupJobs(projectId: string): Promise<ProjectSetupJobListResponse> {
+  return request<ProjectSetupJobListResponse>(`/projects/${encodeURIComponent(projectId)}/setup/ai`);
+}
+
+export function useProjectSetupJobs(projectId: string | undefined, enabled = true) {
+  return useQuery({
+    queryKey: qk.projectSetupJobs(projectId ?? ""),
+    queryFn: () => listProjectSetupJobs(projectId ?? ""),
+    enabled: Boolean(projectId) && enabled,
+    refetchInterval: (query) => {
+      const latest = query.state.data?.jobs[0];
+      return latest?.status === "queued" || latest?.status === "running" ? 1_250 : false;
+    },
+  });
+}
+
 export function useAiProjectSetup(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (body: ProjectSetupRequestInput = {}) => startAiProjectSetup(projectId, body),
     onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: qk.projectSetupJobs(projectId) });
       qc.setQueryData(qk.projectSetupJob(projectId, data.job.id), data.job);
     },
   });

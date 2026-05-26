@@ -7,12 +7,15 @@
 //! writes.
 
 use nyx_agent_types::agent::{
-    AgentResult, AgentTask, AgentTraceMetrics, AiError, Budget, BudgetKind, ExtractedAgentResult,
+    classify_tool_use, AgentResult, AgentTask, AgentTraceMetrics, AiError, Budget, BudgetKind,
+    ExtractedAgentResult,
 };
 use nyx_agent_types::event::EventSink;
 use nyx_agent_types::product::{ProjectLaunchProfile, SeedSetupPlan};
+use serde_json::Value;
 
 use crate::runtime::AiRuntime;
+use crate::tasks::structured_output::json_values_from_text;
 
 pub const SEED_SETUP_PROMPT_VERSION: &str = "phase25.seed_setup.v1";
 pub const DEFAULT_SEED_SETUP_RUN_CAP_USD_MICROS: i64 = 3_000_000;
@@ -99,7 +102,7 @@ fn build_agent_task(scope: &SeedSetupScope) -> AgentTask {
          3. Emit roles that auth setup should configure, usually `user_a`, `user_b`, and `admin` when the app supports them.\n\
          4. Emit owned objects with `name`, `id`, `route`, and `marker` so IDOR/authz checks can compare owner and peer access. Include tenant/workspace/org markers when visible.\n\
          5. Emit env vars only as local deterministic fixture values. Mark passwords/tokens/cookies as secret.\n\
-         6. Emit exactly one `record_seed_setup` JSON line. The input may be either a plan object or `{{\"plan\": ...}}`.\n\
+         6. Emit exactly one `record_seed_setup` JSON line. The input may be either a plan object or `{{\"plan\": ...}}`. Put the JSON on its own line in the final answer; do not only describe the plan in prose.\n\
          \n\
          Example:\n\
          {{\"tool\":\"record_seed_setup\",\"input\":{{\"plan\":{{\"summary\":\"Prepared deterministic users and one project owned by user_a.\",\"seed_steps\":[{{\"command\":\"npm run nyx-agent:seed\",\"timeout_seconds\":120}}],\"reset_steps\":[{{\"command\":\"npm run dev:reset\",\"timeout_seconds\":120,\"stdin\":\"y\\n\"}}],\"env_vars\":[{{\"name\":\"NYX_AGENT_USER_A_USERNAME\",\"value\":\"user-a@example.test\",\"secret\":false}},{{\"name\":\"NYX_AGENT_USER_A_PASSWORD\",\"value\":\"nyx-agent-user-a-pass\",\"secret\":true}}],\"roles\":[\"user_a\",\"user_b\"],\"seeded_objects\":[{{\"name\":\"project\",\"id\":\"nyx-agent-project-a\",\"route\":\"/api/projects/{{id}}\",\"marker\":\"nyx-agent-owned-by-user-a\"}}],\"checks\":[\"seed script found in package.json\"],\"warnings\":[]}}}}}}\n",
@@ -129,9 +132,13 @@ fn lift_agent_result(result: AgentResult) -> Result<SeedSetupOutcome, AiError> {
             latest = Some(plan.clone());
         }
     }
+    let latest = latest.or_else(|| seed_setup_from_final_message(&result.final_message));
     let Some(mut plan) = latest else {
         return Err(AiError::MalformedResponse(
-            "seed setup agent did not emit record_seed_setup".to_string(),
+            format!(
+                "seed setup agent did not emit record_seed_setup or a parseable seed plan JSON; final message preview: {}",
+                final_message_preview(&result.final_message)
+            ),
         ));
     };
     normalise_plan(&mut plan);
@@ -144,6 +151,71 @@ fn lift_agent_result(result: AgentResult) -> Result<SeedSetupOutcome, AiError> {
         prompt_version: result.prompt_version,
         metrics,
     })
+}
+
+fn seed_setup_from_final_message(message: &str) -> Option<SeedSetupPlan> {
+    json_values_from_text(message).into_iter().rev().find_map(|value| seed_setup_from_value(&value))
+}
+
+fn seed_setup_from_value(value: &Value) -> Option<SeedSetupPlan> {
+    if let Some(plan) = seed_setup_from_tool_value(value) {
+        return Some(plan);
+    }
+    if let Some(input) = value.get("input").or_else(|| value.get("arguments")) {
+        if let Some(plan) = seed_setup_from_value(&coerce_json_string(input)) {
+            return Some(plan);
+        }
+    }
+    if let Some(record) = value.get("record_seed_setup") {
+        if let Some(plan) = seed_setup_from_value(record) {
+            return Some(plan);
+        }
+    }
+    if let Some(plan_value) = value.get("plan") {
+        return serde_json::from_value(plan_value.clone()).ok();
+    }
+    if looks_like_seed_plan(value) {
+        return serde_json::from_value(value.clone()).ok();
+    }
+    value
+        .as_array()
+        .and_then(|items| items.iter().find_map(seed_setup_from_value))
+        .or_else(|| value.as_object().and_then(|obj| obj.values().find_map(seed_setup_from_value)))
+}
+
+fn seed_setup_from_tool_value(value: &Value) -> Option<SeedSetupPlan> {
+    if let Some(calls) = value.get("tool_calls").and_then(|v| v.as_array()) {
+        return calls.iter().find_map(seed_setup_from_value);
+    }
+    let name = value.get("tool").or_else(|| value.get("name"))?.as_str()?;
+    let input = value
+        .get("input")
+        .or_else(|| value.get("arguments"))
+        .map(coerce_json_string)
+        .unwrap_or_else(|| serde_json::json!({}));
+    match classify_tool_use(name, &input)? {
+        ExtractedAgentResult::SeedSetupPlan { plan } => Some(plan),
+        _ => None,
+    }
+}
+
+fn looks_like_seed_plan(value: &Value) -> bool {
+    value.is_object()
+        && ["seed_steps", "reset_steps", "env_vars", "roles", "seeded_objects"]
+            .iter()
+            .any(|key| value.get(key).is_some())
+}
+
+fn coerce_json_string(value: &Value) -> Value {
+    value
+        .as_str()
+        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+        .unwrap_or_else(|| value.clone())
+}
+
+fn final_message_preview(message: &str) -> String {
+    let compact = message.split_whitespace().collect::<Vec<_>>().join(" ");
+    compact.chars().take(280).collect()
 }
 
 fn normalise_plan(plan: &mut SeedSetupPlan) {
@@ -195,4 +267,54 @@ fn render_list(items: &[String], empty: &str) -> String {
         return empty.to_string();
     }
     items.iter().map(|item| format!("- {item}")).collect::<Vec<_>>().join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_pretty_fenced_seed_setup_tool_marker() {
+        let text = r#"
+```json
+{
+  "tool": "record_seed_setup",
+  "input": {
+    "plan": {
+      "summary": "Prepared fixtures.",
+      "seed_steps": [{"command": "npm run nyx-agent:seed"}],
+      "reset_steps": [{"command": "npm run dev:reset", "stdin": "y\n"}],
+      "env_vars": [],
+      "roles": ["user_a", "user_b"],
+      "seeded_objects": [],
+      "checks": [],
+      "warnings": []
+    }
+  }
+}
+```
+"#;
+        let plan = seed_setup_from_final_message(text).expect("parsed");
+        assert_eq!(plan.roles, vec!["user_a", "user_b"]);
+        assert_eq!(plan.reset_steps[0].stdin.as_deref(), Some("y\n"));
+    }
+
+    #[test]
+    fn parses_direct_seed_plan_object() {
+        let text = r#"
+{
+  "summary": "Direct plan.",
+  "seed_steps": [{"command": "npm run seed"}],
+  "reset_steps": [],
+  "env_vars": [],
+  "roles": ["admin"],
+  "seeded_objects": [],
+  "checks": [],
+  "warnings": []
+}
+"#;
+        let plan = seed_setup_from_final_message(text).expect("parsed");
+        assert_eq!(plan.seed_steps[0].command, "npm run seed");
+        assert_eq!(plan.roles, vec!["admin"]);
+    }
 }

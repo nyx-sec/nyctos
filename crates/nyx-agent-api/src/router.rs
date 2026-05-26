@@ -7,6 +7,7 @@
 //! socket.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::panic::AssertUnwindSafe;
 use std::path::{Path as FsPath, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -22,7 +23,7 @@ use axum::{
     routing::{get, patch, post},
     Json, Router,
 };
-use futures_util::{SinkExt, Stream, StreamExt};
+use futures_util::{FutureExt, SinkExt, Stream, StreamExt};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -59,10 +60,11 @@ use nyx_agent_types::integration::{
     TestProjectIntegrationResponse,
 };
 use nyx_agent_types::product::{
-    ProjectLaunchProfile, ProjectLaunchProfileInput, ProjectSetupError, ProjectSetupJobRecord,
-    ProjectSetupPhase, ProjectSetupRequest, ProjectSetupResponse, ProjectSetupStartResponse,
-    ProjectSetupVerification, ProjectSetupVerificationStatus, SeedSetupPlan, SeedSetupResponse,
-    StartPentestRequest, StartPentestResponse, TestLaunchTargetRequest, TestLaunchTargetResponse,
+    ProjectLaunchProfile, ProjectLaunchProfileInput, ProjectSetupError,
+    ProjectSetupJobListResponse, ProjectSetupJobRecord, ProjectSetupPhase, ProjectSetupRequest,
+    ProjectSetupResponse, ProjectSetupStartResponse, ProjectSetupVerification,
+    ProjectSetupVerificationStatus, SeedSetupPlan, SeedSetupResponse, StartPentestRequest,
+    StartPentestResponse, TestLaunchTargetRequest, TestLaunchTargetResponse,
 };
 use nyx_agent_types::project::{
     AuthSetupError, AuthSetupJobRecord, AuthSetupPhase, AuthSetupRequest, AuthSetupResponse,
@@ -100,7 +102,10 @@ pub fn build_router(state: ServerState) -> Router {
             "/api/v1/projects/{project_id}/auth/auto-setup/{job_id}",
             get(get_auth_auto_setup_job),
         )
-        .route("/api/v1/projects/{project_id}/setup/ai", post(start_ai_project_setup))
+        .route(
+            "/api/v1/projects/{project_id}/setup/ai",
+            get(list_ai_project_setup_jobs).post(start_ai_project_setup),
+        )
         .route("/api/v1/projects/{project_id}/setup/ai/{job_id}", get(get_ai_project_setup_job))
         .route(
             "/api/v1/projects/{project_id}/repos",
@@ -950,7 +955,23 @@ async fn start_auth_auto_setup_project(
     let job_id = job.id.clone();
     let state = s.clone();
     tokio::spawn(async move {
-        run_auth_auto_setup_job(state, id, req, job_id).await;
+        let panic_state = state.clone();
+        let panic_job_id = job_id.clone();
+        let result =
+            AssertUnwindSafe(run_auth_auto_setup_job(state, id, req, job_id)).catch_unwind().await;
+        if let Err(payload) = result {
+            let detail = panic_payload_message(payload.as_ref());
+            tracing::error!(job_id = %panic_job_id, %detail, "auth setup job panicked");
+            panic_state
+                .auth_setup_jobs
+                .fail(
+                    &panic_job_id,
+                    auth_setup_internal_error(format!(
+                        "auth setup background task panicked: {detail}"
+                    )),
+                )
+                .await;
+        }
     });
 
     Ok(Json(AuthSetupStartResponse { job }))
@@ -993,10 +1014,39 @@ async fn start_ai_project_setup(
     let job_id = job.id.clone();
     let state = s.clone();
     tokio::spawn(async move {
-        run_ai_project_setup_job(state, id, req, job_id).await;
+        let panic_state = state.clone();
+        let panic_job_id = job_id.clone();
+        let result =
+            AssertUnwindSafe(run_ai_project_setup_job(state, id, req, job_id)).catch_unwind().await;
+        if let Err(payload) = result {
+            let detail = panic_payload_message(payload.as_ref());
+            tracing::error!(job_id = %panic_job_id, %detail, "project setup job panicked");
+            panic_state
+                .project_setup_jobs
+                .fail(
+                    &panic_job_id,
+                    project_setup_internal_error(format!(
+                        "project setup background task panicked: {detail}"
+                    )),
+                )
+                .await;
+        }
     });
 
     Ok(Json(ProjectSetupStartResponse { job }))
+}
+
+async fn list_ai_project_setup_jobs(
+    State(s): State<ServerState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<ProjectSetupJobListResponse>, ApiError> {
+    s.store
+        .projects()
+        .get(&project_id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("project `{project_id}` not found")))?;
+    let jobs = s.project_setup_jobs.list_by_project(&project_id).await;
+    Ok(Json(ProjectSetupJobListResponse { jobs }))
 }
 
 async fn get_ai_project_setup_job(
@@ -1020,10 +1070,43 @@ async fn run_ai_project_setup_job(
     req: ProjectSetupRequest,
     job_id: String,
 ) {
+    tracing::info!(
+        project_id = %id,
+        job_id = %job_id,
+        project_setup = req.project_setup,
+        seed_setup = req.seed_setup,
+        auth_setup = req.auth_setup,
+        "AI project setup job started"
+    );
     let result = run_ai_project_setup_once(s.clone(), &id, req, &job_id).await;
     match result {
-        Ok(response) => s.project_setup_jobs.complete(&job_id, response).await,
-        Err(error) => s.project_setup_jobs.fail(&job_id, error).await,
+        Ok(response) => {
+            tracing::info!(
+                project_id = %id,
+                job_id = %job_id,
+                profile_id = %response.profile.id,
+                auth_profiles = response
+                    .project
+                    .runtime_profile
+                    .as_ref()
+                    .map(|profile| profile.auth_profiles.len())
+                    .unwrap_or(0),
+                seed_setup = response.seed_setup.is_some(),
+                auth_setup = response.auth_setup.is_some(),
+                "AI project setup job finished"
+            );
+            s.project_setup_jobs.complete(&job_id, response).await;
+        }
+        Err(error) => {
+            tracing::error!(
+                project_id = %id,
+                job_id = %job_id,
+                code = %error.code,
+                detail = %error.detail,
+                "AI project setup job failed"
+            );
+            s.project_setup_jobs.fail(&job_id, error).await;
+        }
     }
 }
 
@@ -1306,7 +1389,7 @@ async fn run_ai_project_setup_once(
     if !verification.warnings.is_empty() {
         message.push_str(&format!(" Review {} warning(s).", verification.warnings.len()));
     }
-    Ok(ProjectSetupResponse {
+    let response = ProjectSetupResponse {
         project,
         profile,
         agent_used,
@@ -1314,7 +1397,9 @@ async fn run_ai_project_setup_once(
         seed_setup,
         auth_setup,
         message,
-    })
+    };
+    validate_project_setup_postconditions(&req, &response)?;
+    Ok(response)
 }
 
 async fn run_auth_auto_setup_job(
@@ -1323,10 +1408,28 @@ async fn run_auth_auto_setup_job(
     req: AuthSetupRequest,
     job_id: String,
 ) {
+    tracing::info!(project_id = %id, job_id = %job_id, "auth setup job started");
     let result = run_auth_auto_setup_once(s.clone(), &id, req, &job_id).await;
     match result {
-        Ok(response) => s.auth_setup_jobs.complete(&job_id, response).await,
-        Err(error) => s.auth_setup_jobs.fail(&job_id, error).await,
+        Ok(response) => {
+            tracing::info!(
+                project_id = %id,
+                job_id = %job_id,
+                profiles = response.profiles_added + response.profiles_updated,
+                "auth setup job finished"
+            );
+            s.auth_setup_jobs.complete(&job_id, response).await;
+        }
+        Err(error) => {
+            tracing::error!(
+                project_id = %id,
+                job_id = %job_id,
+                code = %error.code,
+                detail = %error.detail,
+                "auth setup job failed"
+            );
+            s.auth_setup_jobs.fail(&job_id, error).await;
+        }
     }
 }
 
@@ -1620,6 +1723,16 @@ fn project_setup_store_error(err: nyx_agent_core::store::StoreError) -> ProjectS
     }
 }
 
+fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(message) = payload.downcast_ref::<&'static str>() {
+        return (*message).to_string();
+    }
+    if let Some(message) = payload.downcast_ref::<String>() {
+        return message.clone();
+    }
+    "unknown panic payload".to_string()
+}
+
 fn project_setup_not_found_error(detail: String) -> ProjectSetupError {
     ProjectSetupError {
         code: "project_not_found".to_string(),
@@ -1776,6 +1889,58 @@ fn validate_seed_setup_plan(plan: &SeedSetupPlan) -> Result<(), ProjectSetupErro
                 title: "AI seed setup proposed an invalid environment variable".to_string(),
                 detail: "A seed environment variable had an empty name.".to_string(),
                 hint: Some("Retry seed setup or add the fixture env vars manually.".to_string()),
+                retryable: true,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_project_setup_postconditions(
+    req: &ProjectSetupRequest,
+    response: &ProjectSetupResponse,
+) -> Result<(), ProjectSetupError> {
+    if req.project_setup {
+        let mut profile = project_launch_profile_to_input(&response.profile);
+        validate_project_setup_profile(&mut profile).map_err(|_| ProjectSetupError {
+            code: "launch_profile_not_persisted".to_string(),
+            title: "AI setup did not save a usable launch profile".to_string(),
+            detail: "The setup job finished without a target URL, start command, or health check in the saved launch profile.".to_string(),
+            hint: Some("Retry AI setup. If this repeats, add local setup docs or commands manually in the environment profile.".to_string()),
+            retryable: true,
+        })?;
+    }
+    if req.seed_setup && response.seed_setup.is_none() {
+        return Err(ProjectSetupError {
+            code: "seed_setup_not_persisted".to_string(),
+            title: "AI setup did not save seed setup".to_string(),
+            detail: "The setup job finished without a seed setup result.".to_string(),
+            hint: Some("Retry AI setup with Seed setup selected.".to_string()),
+            retryable: true,
+        });
+    }
+    if req.auth_setup {
+        if response.auth_setup.is_none() {
+            return Err(ProjectSetupError {
+                code: "auth_setup_not_persisted".to_string(),
+                title: "AI setup did not save auth setup".to_string(),
+                detail: "The setup job finished without an auth setup result.".to_string(),
+                hint: Some("Retry AI setup with Auth setup selected.".to_string()),
+                retryable: true,
+            });
+        }
+        let auth_profiles = response
+            .project
+            .runtime_profile
+            .as_ref()
+            .map(|profile| profile.auth_profiles.len())
+            .unwrap_or(0);
+        if auth_profiles == 0 {
+            return Err(ProjectSetupError {
+                code: "auth_profiles_not_persisted".to_string(),
+                title: "AI setup did not save auth profiles".to_string(),
+                detail: "The setup job finished but the project still has zero runtime auth profiles.".to_string(),
+                hint: Some("Retry auth setup after confirming the local app has deterministic test users or fixture credentials.".to_string()),
                 retryable: true,
             });
         }

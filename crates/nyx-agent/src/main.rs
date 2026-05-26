@@ -43,6 +43,7 @@ use semver::Version;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 mod ai_pipeline;
+mod ai_terminal;
 mod attacker_playbooks;
 mod auth_sessions;
 mod auth_setup_ai;

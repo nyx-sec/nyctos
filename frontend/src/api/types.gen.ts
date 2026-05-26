@@ -317,6 +317,8 @@ export type ProjectSetupJobRecord = { id: string, project_id: string, status: Pr
 
 export type ProjectSetupStartResponse = { job: ProjectSetupJobRecord, };
 
+export type ProjectSetupJobListResponse = { jobs: Array<ProjectSetupJobRecord>, };
+
 export type EnvironmentRunRecord = { id: string, run_id: string, project_id: string, profile_id: string, status: string, started_at: number | null, ready_at: number | null, stopped_at: number | null, target_urls: Array<string>, health?: unknown, logs_dir?: string, teardown?: unknown, };
 
 export type NyxSignalRecord = { id: string, run_id: string, project_id: string, repo_id: string, repo: string, path: string, line: number | null, cap: string, rule: string, severity: string, message?: string, evidence?: unknown, signal_kind: string, meaningful: boolean, suppressed_reason?: string, agent_candidate_id?: string, created_at: number, };

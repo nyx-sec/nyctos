@@ -333,6 +333,11 @@ pub struct ProjectSetupStartResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ProjectSetupJobListResponse {
+    pub jobs: Vec<ProjectSetupJobRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct EnvironmentRunRecord {
     pub id: String,
     pub run_id: String,

@@ -79,7 +79,7 @@ use nyx_agent_types::spec::{SpecDerivationInput, SPEC_DERIVATION_PROMPT_VERSION}
 use nyx_agent_types::verify::{Oracle, VerifyResult, VerifyVerdict};
 use tokio::sync::Semaphore;
 
-use crate::{live_planning, pentest_tools, route_model};
+use crate::{ai_terminal::wrap_runtime, live_planning, pentest_tools, route_model};
 
 // Per-call PayloadSynthesis / SpecDerivation caps now live on
 // `AiConfig` as
@@ -216,7 +216,7 @@ async fn selected_one_shot_runtime(
             if let Some(model) = &config.model {
                 adapter = adapter.with_default_model(model.clone());
             }
-            Ok(Some(Arc::new(adapter)))
+            Ok(Some(wrap_runtime(adapter)))
         }
         ConfigAiRuntime::Anthropic => {
             let api_key = match secrets.get(nyx_agent_core::secrets::ACCOUNT_AI_ANTHROPIC) {
@@ -235,7 +235,7 @@ async fn selected_one_shot_runtime(
             if let Some(model) = &config.model {
                 adapter = adapter.with_default_model(model.clone());
             }
-            Ok(Some(Arc::new(adapter)))
+            Ok(Some(wrap_runtime(adapter)))
         }
         ConfigAiRuntime::ClaudeCode => {
             let mut adapter = match ClaudeCodeAdapter::discover(tracker).await {
@@ -251,7 +251,7 @@ async fn selected_one_shot_runtime(
             if let Some(model) = &config.model {
                 adapter = adapter.with_default_model(model.clone());
             }
-            Ok(Some(Arc::new(adapter)))
+            Ok(Some(wrap_runtime(adapter)))
         }
         ConfigAiRuntime::Codex => {
             let mut adapter = match CodexCliAdapter::discover(tracker).await {
@@ -267,7 +267,7 @@ async fn selected_one_shot_runtime(
             if let Some(model) = &config.model {
                 adapter = adapter.with_default_model(model.clone());
             }
-            Ok(Some(Arc::new(adapter)))
+            Ok(Some(wrap_runtime(adapter)))
         }
     }
 }
@@ -293,7 +293,7 @@ async fn selected_agent_loop_runtime(
             if let Some(model) = &config.model {
                 adapter = adapter.with_default_model(model.clone());
             }
-            Some(Arc::new(adapter))
+            Some(wrap_runtime(adapter))
         }
         ConfigAiRuntime::Codex => {
             let mut adapter = match CodexCliAdapter::discover(tracker).await {
@@ -308,7 +308,7 @@ async fn selected_agent_loop_runtime(
             if let Some(model) = &config.model {
                 adapter = adapter.with_default_model(model.clone());
             }
-            Some(Arc::new(adapter))
+            Some(wrap_runtime(adapter))
         }
         ConfigAiRuntime::Anthropic => {
             tracing::info!(

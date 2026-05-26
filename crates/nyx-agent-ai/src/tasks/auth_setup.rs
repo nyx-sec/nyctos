@@ -8,15 +8,18 @@
 use std::time::Duration;
 
 use nyx_agent_types::agent::{
-    AgentResult, AgentTask, AgentTraceMetrics, AiError, Budget, BudgetKind, ExtractedAgentResult,
+    classify_tool_use, AgentResult, AgentTask, AgentTraceMetrics, AiError, Budget, BudgetKind,
+    ExtractedAgentResult,
 };
 use nyx_agent_types::event::EventSink;
 use nyx_agent_types::project::{
     AuthSetupVerification, AuthSetupVerificationStatus, ProjectAuthMode, ProjectAuthOwnedObject,
     ProjectAuthProfile,
 };
+use serde_json::Value;
 
 use crate::runtime::AiRuntime;
+use crate::tasks::structured_output::{json_values_from_text, optional_string, string_array};
 
 pub const AUTH_SETUP_PROMPT_VERSION: &str = "phase24.auth_setup.v1";
 pub const DEFAULT_AUTH_SETUP_RUN_CAP_USD_MICROS: i64 = 2_000_000;
@@ -145,7 +148,8 @@ fn build_agent_task(scope: &AuthSetupScope) -> AgentTask {
          `kind\":\"mailbox\"`, `mailbox_url`, `email_env`, and a code `body_regex`.\n\
          4. Emit one `record_auth_verification` JSON line with `status` (`verified` or \
          `needs_review`), `checks`, and `warnings`, explaining how the profiles map back to code \
-         and what still needs operator input.\n\
+         and what still needs operator input. Put each JSON object on its own line in the final \
+         answer; do not only describe the profiles in prose.\n\
          \n\
          Example profile line:\n\
          {{\"tool\":\"record_auth_profile\",\"input\":{{\"role\":\"member\",\"mode\":\"ai_auto\",\
@@ -196,6 +200,12 @@ fn lift_agent_result(scope: &AuthSetupScope, result: AgentResult) -> AuthSetupOu
             _ => {}
         }
     }
+    let parsed = auth_setup_from_final_message(&result.final_message);
+    profiles
+        .extend(parsed.profiles.into_iter().filter_map(|profile| finalize_profile(scope, profile)));
+    if verification.is_none() {
+        verification = parsed.verification;
+    }
     dedupe_profiles(&mut profiles);
     let login_paths = dedupe_strings(
         profiles
@@ -224,6 +234,135 @@ fn lift_agent_result(scope: &AuthSetupScope, result: AgentResult) -> AuthSetupOu
         prompt_version: result.prompt_version,
         metrics,
     }
+}
+
+#[derive(Default)]
+struct ParsedAuthSetup {
+    profiles: Vec<ProjectAuthProfile>,
+    verification: Option<AuthSetupVerification>,
+}
+
+fn auth_setup_from_final_message(message: &str) -> ParsedAuthSetup {
+    let mut out = ParsedAuthSetup::default();
+    for value in json_values_from_text(message) {
+        merge_auth_setup(&mut out, auth_setup_from_value(&value));
+    }
+    out
+}
+
+fn auth_setup_from_value(value: &Value) -> ParsedAuthSetup {
+    let mut out = ParsedAuthSetup::default();
+    if let Some(parsed) = auth_setup_from_tool_value(value) {
+        merge_auth_setup(&mut out, parsed);
+    }
+    if let Some(input) = value.get("input").or_else(|| value.get("arguments")) {
+        merge_auth_setup(&mut out, auth_setup_from_value(&coerce_json_string(input)));
+    }
+    if let Some(record) = value.get("record_auth_profile") {
+        merge_auth_setup(&mut out, auth_setup_from_value(record));
+    }
+    if let Some(record) = value.get("record_auth_verification") {
+        merge_auth_setup(&mut out, auth_setup_from_value(record));
+    }
+    if let Some(profile_value) = value.get("profile") {
+        if let Ok(profile) = serde_json::from_value::<ProjectAuthProfile>(profile_value.clone()) {
+            out.profiles.push(profile);
+        }
+    }
+    for key in ["profiles", "auth_profiles"] {
+        if let Some(items) = value.get(key).and_then(|v| v.as_array()) {
+            for item in items {
+                if let Ok(profile) = serde_json::from_value::<ProjectAuthProfile>(item.clone()) {
+                    out.profiles.push(profile);
+                } else {
+                    merge_auth_setup(&mut out, auth_setup_from_value(item));
+                }
+            }
+        }
+    }
+    if looks_like_auth_profile(value) {
+        if let Ok(profile) = serde_json::from_value::<ProjectAuthProfile>(value.clone()) {
+            out.profiles.push(profile);
+        }
+    }
+    if let Some(verification_value) = value.get("verification") {
+        if let Some(verification) = verification_from_value(verification_value) {
+            out.verification = Some(verification);
+        }
+    }
+    if out.verification.is_none() && value.get("status").is_some() {
+        out.verification = verification_from_value(value);
+    }
+    if out.profiles.is_empty() && out.verification.is_none() {
+        if let Some(items) = value.as_array() {
+            for item in items {
+                merge_auth_setup(&mut out, auth_setup_from_value(item));
+            }
+        } else if let Some(obj) = value.as_object() {
+            for item in obj.values() {
+                merge_auth_setup(&mut out, auth_setup_from_value(item));
+            }
+        }
+    }
+    out
+}
+
+fn auth_setup_from_tool_value(value: &Value) -> Option<ParsedAuthSetup> {
+    if let Some(calls) = value.get("tool_calls").and_then(|v| v.as_array()) {
+        let mut out = ParsedAuthSetup::default();
+        for call in calls {
+            merge_auth_setup(&mut out, auth_setup_from_value(call));
+        }
+        return Some(out);
+    }
+    let name = value.get("tool").or_else(|| value.get("name"))?.as_str()?;
+    let input = value
+        .get("input")
+        .or_else(|| value.get("arguments"))
+        .map(coerce_json_string)
+        .unwrap_or_else(|| serde_json::json!({}));
+    let mut out = ParsedAuthSetup::default();
+    match classify_tool_use(name, &input)? {
+        ExtractedAgentResult::AuthProfileDiscovered { profile, .. } => out.profiles.push(profile),
+        ExtractedAgentResult::AuthSetupVerification { status, checks, warnings } => {
+            out.verification = Some(agent_verification(&status, checks, warnings));
+        }
+        _ => return None,
+    }
+    Some(out)
+}
+
+fn verification_from_value(value: &Value) -> Option<AuthSetupVerification> {
+    let status = optional_string(value, "status")?;
+    Some(agent_verification(
+        &status,
+        string_array(value, "checks"),
+        string_array(value, "warnings"),
+    ))
+}
+
+fn looks_like_auth_profile(value: &Value) -> bool {
+    value.is_object()
+        && value.get("role").is_some()
+        && (value.get("mode").is_some()
+            || value.get("login_url").is_some()
+            || value.get("username_env").is_some()
+            || value.get("login_email_env").is_some()
+            || value.get("password_env").is_some())
+}
+
+fn merge_auth_setup(out: &mut ParsedAuthSetup, incoming: ParsedAuthSetup) {
+    out.profiles.extend(incoming.profiles);
+    if incoming.verification.is_some() {
+        out.verification = incoming.verification;
+    }
+}
+
+fn coerce_json_string(value: &Value) -> Value {
+    value
+        .as_str()
+        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+        .unwrap_or_else(|| value.clone())
 }
 
 fn finalize_profile(
@@ -439,11 +578,18 @@ mod tests {
     }
 
     fn fake_result(extracted: Vec<ExtractedAgentResult>) -> AgentResult {
+        fake_result_with_message("done", extracted)
+    }
+
+    fn fake_result_with_message(
+        final_message: impl Into<String>,
+        extracted: Vec<ExtractedAgentResult>,
+    ) -> AgentResult {
         AgentResult {
             prompt_version: AUTH_SETUP_PROMPT_VERSION.to_string(),
             task_id: "auth-setup-p1".to_string(),
             model: "scripted".to_string(),
-            final_message: "done".to_string(),
+            final_message: final_message.into(),
             turns: 2,
             usage: TokenUsage { input_tokens: 100, output_tokens: 20 },
             cache: None,
@@ -509,5 +655,41 @@ mod tests {
         assert_eq!(out.profiles[0].owned_objects[0].id, "project-a");
         assert_eq!(out.verification.status, AuthSetupVerificationStatus::Verified);
         assert_eq!(out.login_paths, vec!["/auth/login".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn final_json_output_becomes_profiles() {
+        let mut scope = AuthSetupScope::new("p1", "repo app");
+        scope.workspace_roots = vec!["/repo".to_string()];
+        let final_message = r#"
+```json
+{
+  "profiles": [
+    {
+      "role": "admin",
+      "mode": "ai_auto",
+      "login_url": "/admin/login",
+      "username_env": "NYX_AGENT_ADMIN_EMAIL",
+      "password_env": "NYX_AGENT_ADMIN_PASSWORD",
+      "headers": [],
+      "owned_objects": []
+    }
+  ],
+  "verification": {
+    "status": "verified",
+    "checks": ["admin login found"],
+    "warnings": []
+  }
+}
+```
+"#;
+        let rt = ScriptedRuntime { result: fake_result_with_message(final_message, Vec::new()) };
+        let (tx, _rx) = broadcast::channel::<AgentEvent>(4);
+        let out = run(&rt, &scope, tx).await.expect("auth setup");
+
+        assert_eq!(out.profiles.len(), 1);
+        assert_eq!(out.profiles[0].role, "admin");
+        assert_eq!(out.profiles[0].login_url.as_deref(), Some("/admin/login"));
+        assert_eq!(out.verification.status, AuthSetupVerificationStatus::Verified);
     }
 }

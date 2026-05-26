@@ -3810,6 +3810,16 @@ async fn ai_project_setup_agent_applies_launch_profile() {
     assert_eq!(job["status"], "succeeded");
     assert_eq!(job["result"]["verification"]["status"], "verified");
     assert_eq!(job["result"]["profile"]["reset_steps"][0]["stdin"], "y\n");
+    let jobs: Value = client
+        .get(format!("{}/api/v1/projects/{project_id}/setup/ai", srv.base()))
+        .send()
+        .await
+        .expect("list project setup jobs")
+        .json()
+        .await
+        .expect("jobs json");
+    assert_eq!(jobs["jobs"][0]["id"], job_id);
+    assert_eq!(jobs["jobs"][0]["status"], "succeeded");
 
     let project: Value = client
         .get(format!("{}/api/v1/projects/{project_id}", srv.base()))

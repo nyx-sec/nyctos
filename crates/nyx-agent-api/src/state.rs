@@ -417,6 +417,19 @@ impl ProjectSetupJobStore {
         self.jobs.lock().await.get(id).cloned()
     }
 
+    pub async fn list_by_project(&self, project_id: &str) -> Vec<ProjectSetupJobRecord> {
+        let mut jobs = self
+            .jobs
+            .lock()
+            .await
+            .values()
+            .filter(|job| job.project_id == project_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        jobs.sort_by(|a, b| b.started_at.cmp(&a.started_at).then_with(|| b.id.cmp(&a.id)));
+        jobs
+    }
+
     pub async fn push_phase(&self, id: &str, phase: ProjectSetupPhase, message: impl Into<String>) {
         let now = nyx_agent_core::now_epoch_ms();
         let message = message.into();

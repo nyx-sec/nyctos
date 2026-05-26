@@ -18,6 +18,7 @@ import {
   useProject,
   useProjectIntegrations,
   useProjectRepos,
+  useProjectSetupJobs,
   useProjectVulnerabilities,
   useRuns,
   useStartPentest,
@@ -87,6 +88,7 @@ export function ProjectDetail({ view = "overview" }: ProjectDetailProps = {}) {
   const repos = useProjectRepos(projectId);
   const startPentest = useStartPentest(projectId ?? "");
   const aiProjectSetup = useAiProjectSetup(projectId ?? "");
+  const setupJobs = useProjectSetupJobs(projectId, Boolean(projectId));
   const vulnerabilities = useProjectVulnerabilities(projectId);
   const integrations = useProjectIntegrations(projectId);
   const runningRuns = useRuns("Running", projectId, Boolean(projectId));
@@ -114,6 +116,24 @@ export function ProjectDetail({ view = "overview" }: ProjectDetailProps = {}) {
       surfaceRunToast(ev, showToast);
     },
   });
+
+  useEffect(() => {
+    if (!projectId) return;
+    const latest = setupJobs.data?.jobs[0];
+    if (!latest) return;
+    setProjectSetupJob((current) => {
+      if (!current || current.id === latest.id || latest.started_at >= current.started_at) {
+        return latest;
+      }
+      return current;
+    });
+    if (
+      !projectSetupPolling &&
+      (latest.status === "queued" || latest.status === "running")
+    ) {
+      void pollProjectSetupJob(projectId, latest.id);
+    }
+  }, [setupJobs.data, projectId, projectSetupPolling]);
 
   async function onStartPentest(options: StartPentestOptions) {
     showToast("Starting pentest for this app...", { tone: "info" });
@@ -287,6 +307,7 @@ export function ProjectDetail({ view = "overview" }: ProjectDetailProps = {}) {
                 {p.description?.trim() && <span>{p.description.trim()}</span>}
                 {runtimeTarget && <code title={runtimeTarget}>{runtimeTarget}</code>}
                 <Badge tone={runtimeStatus.tone}>{runtimeStatus.label}</Badge>
+                {projectSetupJob && <ProjectSetupStatusBadge job={projectSetupJob} />}
                 <span>{formatLaunchMode(launchProfile)}</span>
                 {activeRun && <Badge tone="info">Running</Badge>}
               </span>
@@ -1705,6 +1726,16 @@ function launchProfileStatus(profile: ProjectLaunchProfile | null): {
   if (profile.readiness === "Ready") return { label: "Ready", tone: "success" };
   if (profile.readiness === "NeedsTarget") return { label: "Needs app URL", tone: "info" };
   return { label: "Needs attention", tone: "neutral" };
+}
+
+function ProjectSetupStatusBadge({ job }: { job: ProjectSetupJobRecord }) {
+  if (job.status === "queued" || job.status === "running") {
+    return <Badge tone="info">AI setup running</Badge>;
+  }
+  if (job.status === "failed") {
+    return <Badge tone="danger">AI setup failed</Badge>;
+  }
+  return <Badge tone="success">AI setup complete</Badge>;
 }
 
 function formatLaunchMode(profile: ProjectLaunchProfile | null): string {

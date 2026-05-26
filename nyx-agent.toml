@@ -13,7 +13,8 @@ allow_network = false
 backend = "auto"
 
 [ai]
-runtime = "none"
+provider = "codex"
+runtime = "codex"
 max_concurrent_one_shot = 4
 
 [ai.pricing]
@@ -35,6 +36,8 @@ browser_checks_enabled = false
 exploit_mode_enabled = false
 exploit_dry_run = false
 business_logic_templates_enabled = true
+research_mode_enabled = false
+unsafe_attack_agent_enabled = false
 business_logic_template_ids = []
 exploit_reset_after_state_changing = true
 enable_zap_baseline = true
@@ -56,18 +59,24 @@ target_base_url = "http://localhost:3000"
 [project.launch]
 mode = "auto"
 target_urls = ["http://localhost:3000"]
-
-[[project.launch.health]]
-url = "http://localhost:3000/health"
-timeout_secs = 60
+build = []
+start = []
+login = []
+stop = []
+env_files = []
+env_vars = []
 
 [[project.launch.seed]]
 command = "npm run seed:test"
-repo = "example-backend"
+repo_name = "example-backend"
 
 [[project.launch.reset]]
 command = "npm run db:reset"
-repo = "example-backend"
+repo_name = "example-backend"
+
+[[project.launch.health]]
+url = "http://localhost:3000/health"
+timeout_seconds = 60
 
 [[project.repo]]
 name = "example-backend"

@@ -17,6 +17,7 @@ pub mod project_setup;
 pub mod remediation;
 pub mod seed_setup;
 pub mod spec_derivation;
+pub(crate) mod structured_output;
 
 pub use attack_agent::{
     run as run_attack_agent, AttackAgentAuditEntry, AttackAgentKnownLead, AttackAgentOutcome,

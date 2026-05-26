@@ -14,6 +14,8 @@ use nyx_agent_core::{AiRuntime as ConfigAiRuntime, Config};
 use nyx_agent_types::event::EventSink;
 use tokio::sync::RwLock;
 
+use crate::ai_terminal::wrap_runtime;
+
 pub struct ConfiguredAuthSetupAgent {
     config: Arc<RwLock<Config>>,
     events: EventSink,
@@ -79,7 +81,7 @@ pub async fn build_agent_runtime_from_ai_config(
             if let Some(model) = &ai.model {
                 adapter = adapter.with_default_model(model.clone());
             }
-            Ok(Arc::new(adapter))
+            Ok(wrap_runtime(adapter))
         }
         ConfigAiRuntime::Codex => {
             let mut adapter = CodexCliAdapter::discover(tracker)
@@ -88,7 +90,7 @@ pub async fn build_agent_runtime_from_ai_config(
             if let Some(model) = &ai.model {
                 adapter = adapter.with_default_model(model.clone());
             }
-            Ok(Arc::new(adapter))
+            Ok(wrap_runtime(adapter))
         }
         ConfigAiRuntime::Anthropic => Err(AuthSetupAgentError::Unavailable(
             "Anthropic API runtime does not support repository exploration agents yet".to_string(),
