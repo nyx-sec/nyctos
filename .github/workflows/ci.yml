@@ -21,43 +21,44 @@ jobs:
     name: frontend
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
         with:
           node-version: "22"
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
 
       - name: Install frontend dependencies
-        working-directory: frontend
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       - name: Frontend format check
         working-directory: frontend
-        run: npm run format:check
+        run: pnpm run format:check
 
       - name: Frontend lint
         working-directory: frontend
-        run: npm run lint
+        run: pnpm run lint
 
       - name: Frontend type check
         working-directory: frontend
-        run: npm run typecheck
+        run: pnpm run typecheck
 
       - name: Frontend tests
         working-directory: frontend
-        run: npm test
+        run: pnpm test
 
       - name: Frontend build
         working-directory: frontend
-        run: npm run build
+        run: pnpm run build
 
   rustfmt:
     name: rustfmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -72,7 +73,7 @@ jobs:
     name: clippy-stable
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -89,7 +90,7 @@ jobs:
     name: dependency-policy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -106,7 +107,7 @@ jobs:
     name: rustdoc
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -122,7 +123,7 @@ jobs:
     name: rust-beta-build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@beta
 
@@ -137,7 +138,7 @@ jobs:
     name: msrv
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@1.83
 
@@ -152,7 +153,7 @@ jobs:
     name: rust-stable-test / linux
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -169,7 +170,7 @@ jobs:
     name: env-builder-docker
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -199,7 +200,7 @@ jobs:
         os: [macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -221,23 +222,24 @@ jobs:
     name: release-build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
         with:
           node-version: "22"
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
 
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
 
       - name: Build frontend
-        working-directory: frontend
         run: |
-          npm ci
-          npm run build
+          pnpm install --frozen-lockfile
+          pnpm --dir frontend run build
 
       - name: Release build with embedded UI
         env:
@@ -248,7 +250,7 @@ jobs:
     name: generated-assets
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -282,7 +284,7 @@ jobs:
     name: repo-guards
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install ripgrep
         run: sudo apt-get update && sudo apt-get install -y ripgrep

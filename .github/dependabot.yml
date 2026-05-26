@@ -49,7 +49,8 @@ updates:
     schedule:
       interval: weekly
     groups:
-      actions-minor-and-patch:
+      actions-updates:
         update-types:
+          - major
           - minor
           - patch
