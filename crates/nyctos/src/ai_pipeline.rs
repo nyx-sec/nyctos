@@ -27,14 +27,14 @@ use nyctos_ai::{
     read_spec_excerpt, run_agentic_chain_reasoning, run_attack_agent, run_chain_reasoning,
     run_exploration, run_live_evidence_review, run_novel_findings, run_payload_synthesis,
     run_spec_derivation, AiRuntime, AnthropicSdkAdapter, AttackAgentKnownLead, AttackAgentOutcome,
-    AttackAgentScope, AttackAgentVulnerability, AttackWorkspace, BudgetTracker,
+    AttackAgentProfile, AttackAgentScope, AttackAgentVulnerability, AttackWorkspace, BudgetTracker,
     ChainReasoningOutcome, ChainReasoningWorkspace, ClaudeCodeAdapter, CodexCliAdapter,
     EscapeSuiteGate, EscapeSuiteVerdict, ExistingVulnerabilitySummary, ExplorationAuditEntry,
     ExplorationEndpoint, ExplorationFinding, ExplorationHaltReason, ExplorationKnownLead,
     ExplorationOutcome, ExplorationScope, LiveEvidenceReviewInput, LiveEvidenceReviewOutput,
     NovelFindingDiscoveryOutcome, PayloadSynthesisOutcome, Pricing, SharedBudgetTracker,
-    SpecDerivationOutcome, DEFAULT_ATTACK_AGENT_MAX_TURNS, DEFAULT_EXPLORATION_RUN_CAP_USD_MICROS,
-    DEFAULT_EXPLORATION_SOFT_CAP_USD_MICROS,
+    SpecDerivationOutcome, DEFAULT_ATTACK_AGENT_MAX_TURNS, DEFAULT_ATTACK_AGENT_PROFILES,
+    DEFAULT_EXPLORATION_RUN_CAP_USD_MICROS, DEFAULT_EXPLORATION_SOFT_CAP_USD_MICROS,
 };
 use nyctos_core::store::{
     canonical_risk_rating, clamp_risk_score, compact_memory_for_prompt, finding_id_hash,
@@ -2182,14 +2182,22 @@ async fn apply_chain_outcome(
                 report.chains_persisted += 1;
                 if chain_status == "Verified" {
                     report.chains_verified += 1;
-                    let vuln = verified_vulnerability_from_chain(
+                    let mut vuln = verified_vulnerability_from_chain(
                         input,
                         chain,
                         &rec,
                         project_id,
                         proof.verification_attempt_id.as_deref(),
+                        proof.verified_vulnerability_id.as_deref(),
                         created_at,
                     );
+                    if let Some(existing_id) = proof.verified_vulnerability_id.as_deref() {
+                        if let Some(existing) =
+                            store.verified_vulnerabilities().get(existing_id).await?
+                        {
+                            vuln = merge_chain_vulnerability_with_existing(vuln, existing, &rec);
+                        }
+                    }
                     store.verified_vulnerabilities().upsert(&vuln).await?;
                     report.vulnerabilities_recorded += 1;
                 } else {
@@ -2327,6 +2335,7 @@ fn build_chain_evidence_blob(input: &ChainReasoningInput, chain: &ChainCandidate
 struct ChainLiveProof {
     terminal_live_proof: bool,
     verification_attempt_id: Option<String>,
+    verified_vulnerability_id: Option<String>,
 }
 
 fn chain_terminal_live_proof(
@@ -2343,6 +2352,14 @@ fn chain_terminal_live_proof(
                 None
             }
         });
+    let verified_vulnerability_id =
+        chain.member_ids.iter().filter_map(|id| nodes_by_id.get(id.as_str())).find_map(|n| {
+            if n.graph_kind.as_deref() == Some(NODE_VERIFIED_VULNERABILITY) {
+                n.ref_id.clone()
+            } else {
+                None
+            }
+        });
     let terminal_live_proof =
         chain.member_ids.last().and_then(|id| nodes_by_id.get(id.as_str())).is_some_and(|n| {
             matches!(
@@ -2350,7 +2367,7 @@ fn chain_terminal_live_proof(
                 Some(NODE_VERIFICATION_ATTEMPT) | Some(NODE_VERIFIED_VULNERABILITY)
             )
         });
-    ChainLiveProof { terminal_live_proof, verification_attempt_id }
+    ChainLiveProof { terminal_live_proof, verification_attempt_id, verified_vulnerability_id }
 }
 
 fn verified_vulnerability_from_chain(
@@ -2359,6 +2376,7 @@ fn verified_vulnerability_from_chain(
     rec: &ChainRecord,
     project_id: &str,
     verification_attempt_id: Option<&str>,
+    terminal_vulnerability_id: Option<&str>,
     now_ms: i64,
 ) -> VerifiedVulnerabilityRecord {
     let nodes_by_id: HashMap<&str, &ChainReasoningNode> =
@@ -2405,7 +2423,10 @@ fn verified_vulnerability_from_chain(
             " Terminal live proof is attached to a verified vulnerability node.".to_string()
         });
     VerifiedVulnerabilityRecord {
-        id: format!("vuln-{}", rec.id),
+        id: terminal_vulnerability_id
+            .filter(|id| !id.trim().is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("vuln-{}", rec.id)),
         run_id: rec.run_id.clone(),
         project_id: project_id.to_string(),
         title: chain_title(rec.cross_repo, members.len()),
@@ -2432,6 +2453,82 @@ fn verified_vulnerability_from_chain(
         status: "Open".to_string(),
         first_seen: now_ms,
         last_seen: now_ms,
+    }
+}
+
+fn merge_chain_vulnerability_with_existing(
+    chain_vuln: VerifiedVulnerabilityRecord,
+    existing: VerifiedVulnerabilityRecord,
+    chain: &ChainRecord,
+) -> VerifiedVulnerabilityRecord {
+    let severity =
+        if chain_severity_rank(&chain_vuln.severity) > chain_severity_rank(&existing.severity) {
+            chain_vuln.severity.clone()
+        } else {
+            existing.severity.clone()
+        };
+    let confidence = existing.confidence.max(chain_vuln.confidence);
+    let risk_score = clamp_risk_score(existing.risk_score.max(chain_vuln.risk_score));
+    let mut affected_components =
+        union_json_values(existing.affected_components, chain_vuln.affected_components);
+    affected_components.push(serde_json::json!({
+        "kind": "chain_evidence",
+        "chain_id": chain.id,
+    }));
+    let evidence_summary = append_unique_paragraph(
+        existing.evidence_summary,
+        format!("Chain evidence: {}", chain_vuln.evidence_summary),
+    );
+    let repro_steps = append_unique_paragraph(
+        existing.repro_steps,
+        format!("Chain replay: {}", chain_vuln.repro_steps),
+    );
+    let remediation = append_unique_paragraph(
+        existing.remediation,
+        "Also fix the upstream chain preconditions and rerun chain verification before closing."
+            .to_string(),
+    );
+
+    VerifiedVulnerabilityRecord {
+        id: existing.id,
+        run_id: existing.run_id,
+        project_id: existing.project_id,
+        title: existing.title,
+        severity,
+        confidence,
+        risk_score,
+        risk_rating: canonical_risk_rating("", risk_score),
+        risk_score_source: if risk_score >= existing.risk_score {
+            chain_vuln.risk_score_source
+        } else {
+            existing.risk_score_source
+        },
+        risk_score_rationale: append_unique_paragraph(
+            existing.risk_score_rationale,
+            chain_vuln.risk_score_rationale,
+        ),
+        vuln_class: existing.vuln_class,
+        affected_components,
+        business_impact: append_unique_paragraph(
+            existing.business_impact,
+            chain_vuln.business_impact,
+        ),
+        evidence_summary,
+        repro_steps,
+        remediation,
+        source_candidate_ids: union_strings(
+            existing.source_candidate_ids,
+            chain_vuln.source_candidate_ids,
+        ),
+        source_signal_ids: union_strings(existing.source_signal_ids, chain_vuln.source_signal_ids),
+        verification_attempt_ids: union_strings(
+            existing.verification_attempt_ids,
+            chain_vuln.verification_attempt_ids,
+        ),
+        chain_id: Some(chain.id.clone()),
+        status: existing.status,
+        first_seen: existing.first_seen,
+        last_seen: chain_vuln.last_seen,
     }
 }
 
@@ -4069,107 +4166,124 @@ pub async fn run_attack_agent_pass(
         Some(adapter) => adapter,
         None => return Ok(AttackAgentPassReport::default()),
     };
-    std::fs::create_dir_all(artifact_root)?;
-    let candidates = store.pentest_candidates().list_by_run(&bundle.run_id).await?;
-    let existing_vulnerabilities =
-        store.verified_vulnerabilities().list_by_project(&bundle.project_id).await?;
-    let scope = build_attack_agent_scope(
-        bundle,
-        workspaces,
-        target_urls,
-        &candidates,
-        &existing_vulnerabilities,
-        artifact_root,
-        config.default_run_budget_usd_micros_resolved(),
-    );
     let runtime_name = adapter.name();
     let runtime_model = adapter.default_model().to_string();
-    let started_at = now_epoch_ms();
-    let outcome = match run_attack_agent(adapter.as_ref(), &scope, events).await {
-        Ok(outcome) => outcome,
-        Err(err) => {
-            tracing::warn!(error = %err, "unsafe attack agent failed");
-            return Ok(AttackAgentPassReport { failed: 1, ..AttackAgentPassReport::default() });
-        }
-    };
-    let finished_at = now_epoch_ms();
-    let AttackAgentOutcome::Completed {
-        vulnerabilities,
-        audit,
-        final_message,
-        turns,
-        spent_usd_micros,
-        prompt_version,
-        metrics,
-    } = outcome;
-    let mut trace = build_trace_row(
-        TaskKind::AttackAgent,
-        None,
-        runtime_name,
-        &runtime_model,
-        &prompt_version,
-        spent_usd_micros,
-        started_at,
-        finished_at,
-        Some(&metrics),
-    );
-    let trace_id = trace.id.clone();
-    let structured_replay_plans = vulnerabilities
-        .iter()
-        .map(|vulnerability| {
-            serde_json::json!({
-                "title": vulnerability.title,
-                "fingerprint": attack_vulnerability_fingerprint(vulnerability),
-                "structured_replay_plan": attack_agent_structured_replay_plan(
-                    vulnerability,
-                    target_urls,
-                ),
-            })
-        })
-        .collect::<Vec<_>>();
-    trace.verifier_blob = Some(
-        serde_json::json!({
-            "kind": "unsafe_attack_agent",
-            "run_id": &bundle.run_id,
-            "project_id": &bundle.project_id,
-            "turns": turns,
-            "artifact_dir": artifact_root.to_string_lossy(),
-            "audit": audit,
-            "final_message": final_message,
-            "vulnerabilities": vulnerabilities,
-            "structured_replay_plans": structured_replay_plans,
-        })
-        .to_string(),
-    );
-    persist_trace_row(store, trace).await;
+    std::fs::create_dir_all(artifact_root)?;
 
-    let mut report = AttackAgentPassReport {
-        dispatched: 1,
-        spend_usd_micros: spent_usd_micros,
-        ..AttackAgentPassReport::default()
-    };
-    for vulnerability in vulnerabilities {
-        match persist_attack_agent_vulnerability(
-            store,
+    let mut report = AttackAgentPassReport::default();
+    for profile in DEFAULT_ATTACK_AGENT_PROFILES {
+        let profile_artifact_root = artifact_root.join(profile.slug());
+        std::fs::create_dir_all(&profile_artifact_root)?;
+        let candidates = store.pentest_candidates().list_by_run(&bundle.run_id).await?;
+        let existing_vulnerabilities =
+            store.verified_vulnerabilities().list_by_project(&bundle.project_id).await?;
+        let scope = build_attack_agent_scope(
             bundle,
-            environment_run_id,
-            &trace_id,
-            &candidates,
+            workspaces,
             target_urls,
-            vulnerability,
-            finished_at,
-        )
-        .await
-        {
-            Ok(promoted_existing) => {
-                report.vulnerabilities_recorded += 1;
-                if promoted_existing {
-                    report.candidates_promoted += 1;
-                }
-            }
+            &candidates,
+            &existing_vulnerabilities,
+            &profile_artifact_root,
+            config.default_run_budget_usd_micros_resolved(),
+            *profile,
+        );
+        let started_at = now_epoch_ms();
+        let outcome = match run_attack_agent(adapter.as_ref(), &scope, events.clone()).await {
+            Ok(outcome) => outcome,
             Err(err) => {
                 report.failed += 1;
-                tracing::warn!(error = %err, "failed to persist unsafe attack-agent vulnerability");
+                tracing::warn!(
+                    error = %err,
+                    profile = profile.slug(),
+                    "unsafe attack agent failed"
+                );
+                continue;
+            }
+        };
+        let finished_at = now_epoch_ms();
+        let AttackAgentOutcome::Completed {
+            vulnerabilities,
+            audit,
+            final_message,
+            turns,
+            spent_usd_micros,
+            prompt_version,
+            metrics,
+        } = outcome;
+        report.dispatched += 1;
+        report.spend_usd_micros += spent_usd_micros;
+
+        let mut trace = build_trace_row(
+            TaskKind::AttackAgent,
+            None,
+            runtime_name,
+            &runtime_model,
+            &prompt_version,
+            spent_usd_micros,
+            started_at,
+            finished_at,
+            Some(&metrics),
+        );
+        let trace_id = trace.id.clone();
+        let structured_replay_plans = vulnerabilities
+            .iter()
+            .map(|vulnerability| {
+                serde_json::json!({
+                    "title": vulnerability.title,
+                    "fingerprint": attack_vulnerability_fingerprint(vulnerability),
+                    "structured_replay_plan": attack_agent_structured_replay_plan(
+                        vulnerability,
+                        target_urls,
+                    ),
+                })
+            })
+            .collect::<Vec<_>>();
+        trace.verifier_blob = Some(
+            serde_json::json!({
+                "kind": "unsafe_attack_agent",
+                "agent_profile": profile.slug(),
+                "agent_profile_title": profile.title(),
+                "run_id": &bundle.run_id,
+                "project_id": &bundle.project_id,
+                "turns": turns,
+                "artifact_dir": profile_artifact_root.to_string_lossy(),
+                "audit": audit,
+                "final_message": final_message,
+                "vulnerabilities": vulnerabilities.clone(),
+                "structured_replay_plans": structured_replay_plans,
+            })
+            .to_string(),
+        );
+        persist_trace_row(store, trace).await;
+
+        for vulnerability in vulnerabilities {
+            match persist_attack_agent_vulnerability(
+                store,
+                bundle,
+                environment_run_id,
+                &trace_id,
+                &candidates,
+                &existing_vulnerabilities,
+                target_urls,
+                vulnerability,
+                finished_at,
+            )
+            .await
+            {
+                Ok(promoted_existing) => {
+                    report.vulnerabilities_recorded += 1;
+                    if promoted_existing {
+                        report.candidates_promoted += 1;
+                    }
+                }
+                Err(err) => {
+                    report.failed += 1;
+                    tracing::warn!(
+                        error = %err,
+                        profile = profile.slug(),
+                        "failed to persist unsafe attack-agent vulnerability"
+                    );
+                }
             }
         }
     }
@@ -4184,8 +4298,11 @@ fn build_attack_agent_scope(
     existing_vulnerabilities: &[VerifiedVulnerabilityRecord],
     artifact_root: &std::path::Path,
     run_cap_usd_micros: i64,
+    profile: AttackAgentProfile,
 ) -> AttackAgentScope {
     let mut scope = AttackAgentScope::new(&bundle.run_id, &bundle.project_id);
+    scope.profile = profile;
+    scope.task_id = format!("attack-agent-{}-{}", profile.slug(), bundle.run_id);
     let mut workspaces_vec = workspaces
         .iter()
         .map(|(repo, workspace)| AttackWorkspace {
@@ -4245,11 +4362,14 @@ async fn persist_attack_agent_vulnerability(
     environment_run_id: &str,
     trace_id: &str,
     candidates: &[PentestCandidateRecord],
+    existing_vulnerabilities: &[VerifiedVulnerabilityRecord],
     target_urls: &[String],
     vulnerability: AttackAgentVulnerability,
     now_ms: i64,
 ) -> anyhow::Result<bool> {
     let matched_candidate = attack_agent_candidate_match(&vulnerability, candidates);
+    let matched_vulnerability =
+        attack_agent_existing_vulnerability_match(&vulnerability, existing_vulnerabilities);
     let candidate_id =
         matched_candidate.as_ref().map(|candidate| candidate.id.clone()).unwrap_or_else(|| {
             format!("pc-attack-{}", attack_vulnerability_fingerprint(&vulnerability))
@@ -4340,7 +4460,9 @@ async fn persist_attack_agent_vulnerability(
     };
     store.verification_attempts().insert(&attempt).await?;
 
-    let vuln_id = if candidate.id.starts_with("pc-") {
+    let vuln_id = if let Some(existing) = matched_vulnerability {
+        existing.id.clone()
+    } else if candidate.id.starts_with("pc-") {
         format!("vuln-{}", candidate.id.trim_start_matches("pc-"))
     } else {
         format!("vuln-{}", candidate.id)
@@ -4793,34 +4915,83 @@ fn attack_agent_candidate_match<'a>(
     let vuln_location = first_attack_location(vulnerability);
     candidates.iter().find(|candidate| {
         candidate.vuln_class == vulnerability.vuln_class
-            && vuln_location
-                .as_deref()
-                .is_some_and(|loc| candidate_location(candidate).as_deref() == Some(loc))
+            && vuln_location.as_deref().is_some_and(|loc| {
+                candidate_location(candidate)
+                    .as_deref()
+                    .is_some_and(|candidate_loc| same_attack_location(loc, candidate_loc))
+            })
+    })
+}
+
+fn attack_agent_existing_vulnerability_match<'a>(
+    vulnerability: &AttackAgentVulnerability,
+    existing_vulnerabilities: &'a [VerifiedVulnerabilityRecord],
+) -> Option<&'a VerifiedVulnerabilityRecord> {
+    for id in &vulnerability.source_candidate_ids {
+        if let Some(vuln) = existing_vulnerabilities
+            .iter()
+            .find(|vuln| vuln.source_candidate_ids.iter().any(|source_id| source_id == id))
+        {
+            return Some(vuln);
+        }
+    }
+    let vuln_location = first_attack_location(vulnerability);
+    existing_vulnerabilities.iter().find(|existing| {
+        existing.vuln_class == vulnerability.vuln_class
+            && vuln_location.as_deref().is_some_and(|loc| {
+                first_verified_vulnerability_location(existing)
+                    .as_deref()
+                    .is_some_and(|existing_loc| same_attack_location(loc, existing_loc))
+            })
     })
 }
 
 fn attack_vulnerability_fingerprint(vulnerability: &AttackAgentVulnerability) -> String {
-    let location =
-        first_attack_location(vulnerability).unwrap_or_else(|| vulnerability.title.clone());
-    finding_id_hash(
-        "attack-agent",
-        &location,
-        None,
-        &vulnerability.vuln_class,
-        &vulnerability.title,
-    )
+    let location = first_attack_location(vulnerability)
+        .map(|location| normalized_attack_location(&location))
+        .unwrap_or_else(|| vulnerability.title.clone());
+    finding_id_hash("attack-agent", &location, None, &vulnerability.vuln_class, "confirmed")
 }
 
 fn first_attack_location(vulnerability: &AttackAgentVulnerability) -> Option<String> {
-    vulnerability.affected_components.iter().find_map(|component| {
-        let obj = component.as_object()?;
-        for key in ["endpoint", "url", "path", "route"] {
-            if let Some(value) = obj.get(key).and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
-                return Some(value.to_string());
-            }
+    vulnerability.affected_components.iter().find_map(first_location_from_value)
+}
+
+fn first_location_from_value(component: &serde_json::Value) -> Option<String> {
+    let obj = component.as_object()?;
+    for key in ["endpoint", "url", "path", "route"] {
+        if let Some(value) = obj.get(key).and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+            return Some(value.to_string());
         }
-        None
-    })
+    }
+    None
+}
+
+fn first_verified_vulnerability_location(
+    vulnerability: &VerifiedVulnerabilityRecord,
+) -> Option<String> {
+    vulnerability.affected_components.iter().find_map(first_location_from_value)
+}
+
+fn same_attack_location(left: &str, right: &str) -> bool {
+    normalized_attack_location(left) == normalized_attack_location(right)
+}
+
+fn normalized_attack_location(raw: &str) -> String {
+    let (_, endpoint) = split_method_endpoint(raw.trim());
+    let without_origin = strip_url_origin(&endpoint);
+    without_origin.trim_end_matches('/').to_ascii_lowercase()
+}
+
+fn strip_url_origin(raw: &str) -> &str {
+    let Some(scheme_pos) = raw.find("://") else {
+        return raw;
+    };
+    let after_scheme = &raw[scheme_pos + 3..];
+    match after_scheme.find('/') {
+        Some(path_pos) => &after_scheme[path_pos..],
+        None => "/",
+    }
 }
 
 fn attack_components_or_default(
@@ -5027,6 +5198,31 @@ fn attack_agent_contains_any(haystack: &str, needles: &[&str]) -> bool {
 
 fn safe_id_fragment(raw: &str) -> String {
     raw.chars().map(|ch| if ch.is_ascii_alphanumeric() || ch == '-' { ch } else { '-' }).collect()
+}
+
+fn append_unique_paragraph(left: String, right: String) -> String {
+    let left = left.trim();
+    let right = right.trim();
+    if right.is_empty() || left.contains(right) {
+        return left.to_string();
+    }
+    if left.is_empty() {
+        right.to_string()
+    } else {
+        format!("{left}\n\n{right}")
+    }
+}
+
+fn union_json_values(
+    mut left: Vec<serde_json::Value>,
+    right: Vec<serde_json::Value>,
+) -> Vec<serde_json::Value> {
+    for item in right {
+        if !left.iter().any(|existing| existing == &item) {
+            left.push(item);
+        }
+    }
+    left
 }
 
 fn union_strings(mut left: Vec<String>, right: Vec<String>) -> Vec<String> {
@@ -6814,6 +7010,38 @@ mod tests {
         let mut run = seed_run("run-live-chain");
         run.project_id = Some("project-test".to_string());
         store.runs().insert(&run).await.unwrap();
+        store
+            .verified_vulnerabilities()
+            .upsert(&VerifiedVulnerabilityRecord {
+                id: "vuln-export".to_string(),
+                run_id: "run-live-chain".to_string(),
+                project_id: "project-test".to_string(),
+                title: "Tenant data export confirmed".to_string(),
+                severity: "High".to_string(),
+                confidence: 0.88,
+                risk_score: 8.2,
+                risk_rating: canonical_risk_rating("", 8.2),
+                risk_score_source: "test".to_string(),
+                risk_score_rationale: "existing live proof".to_string(),
+                vuln_class: "ACCESS_CONTROL".to_string(),
+                affected_components: vec![serde_json::json!({
+                    "endpoint": "GET /api/export",
+                    "path": "src/export.ts",
+                })],
+                business_impact: "tenant export data".to_string(),
+                evidence_summary: "existing export proof".to_string(),
+                repro_steps: "GET /api/export as another tenant".to_string(),
+                remediation: "Enforce tenant authorization.".to_string(),
+                source_candidate_ids: Vec::new(),
+                source_signal_ids: Vec::new(),
+                verification_attempt_ids: vec!["va-export".to_string()],
+                chain_id: None,
+                status: "Open".to_string(),
+                first_seen: 500,
+                last_seen: 500,
+            })
+            .await
+            .unwrap();
 
         let candidate_node = ChainReasoningNode {
             id: "node-candidate".to_string(),
@@ -6913,9 +7141,14 @@ mod tests {
 
         let vulns = store.verified_vulnerabilities().list_by_run("run-live-chain").await.unwrap();
         assert_eq!(vulns.len(), 1);
+        assert_eq!(vulns[0].id, "vuln-export");
+        assert_eq!(vulns[0].title, "Tenant data export confirmed");
         assert_eq!(vulns[0].chain_id.as_deref(), Some(chains[0].id.as_str()));
         assert_eq!(vulns[0].severity, "Critical");
         assert_eq!(vulns[0].source_candidate_ids, vec!["pc-idor".to_string()]);
+        assert_eq!(vulns[0].verification_attempt_ids, vec!["va-export".to_string()]);
+        assert_eq!(vulns[0].first_seen, 500);
+        assert!(vulns[0].evidence_summary.contains("Chain evidence:"));
     }
 
     #[tokio::test]
@@ -9058,6 +9291,39 @@ mod tests {
         assert_eq!(severity, "Low");
         assert!(risk < 4.0);
         assert!(rationale.contains("development-only exposure lowers production risk"));
+    }
+
+    #[test]
+    fn attack_agent_fingerprint_ignores_title_drift_for_same_location() {
+        let first = AttackAgentVulnerability {
+            title: "Tenant export leaks data".to_string(),
+            vuln_class: "ACCESS_CONTROL".to_string(),
+            severity: "High".to_string(),
+            confidence: 95,
+            affected_components: vec![serde_json::json!({
+                "endpoint": "GET /api/export/",
+            })],
+            business_impact: "Tenant data exposure.".to_string(),
+            evidence_summary: "Export returned another tenant.".to_string(),
+            repro_steps: "GET /api/export".to_string(),
+            remediation: "Enforce tenant authorization.".to_string(),
+            source_candidate_ids: Vec::new(),
+            source_signal_ids: Vec::new(),
+            proof_artifact_paths: Vec::new(),
+        };
+        let second = AttackAgentVulnerability {
+            title: "Critical cross-tenant export bypass".to_string(),
+            affected_components: vec![serde_json::json!({
+                "url": "http://localhost:8787/api/export",
+            })],
+            ..first.clone()
+        };
+
+        assert!(same_attack_location("GET /api/export/", "http://localhost:8787/api/export"));
+        assert_eq!(
+            attack_vulnerability_fingerprint(&first),
+            attack_vulnerability_fingerprint(&second)
+        );
     }
 
     #[test]

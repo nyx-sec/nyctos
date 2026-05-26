@@ -146,7 +146,7 @@ See `docs/triggers/webhook.md` for the full handler contract.
 | `exploit_dry_run`                  | bool | `false` | Evaluate guarded live plans and write audit records without sending HTTP/browser traffic where feasible. |
 | `business_logic_templates_enabled` | bool | `true` | Generate first-class business-logic pentest candidates from route/auth metadata. Generated plans still pass through normal verifier safety gates. |
 | `research_mode_enabled`            | bool | `false` | Enable Vuln Research Mode. This adds product-invariant hypotheses from the semantic route model and prior candidate memory, prioritizes those candidates in attack planning/exploration, and uses deeper research prompts. It does not relax live execution gates. |
-| `unsafe_attack_agent_enabled`      | bool | `false` | Run the pre-MVP unrestricted local attack-agent phase after normal verification. Intended only for disposable user-owned dev apps; once invoked it does not use the guarded live-verifier policy. |
+| `unsafe_attack_agent_enabled`      | bool | `false` | Run the pre-MVP unrestricted local attack-agent phase after normal verification. Intended only for disposable user-owned dev apps; once invoked it does not use the guarded live-verifier policy. The phase runs seven specialist agents, then a critical chain hunter and final triage pass. |
 | `business_logic_template_ids`      | array of strings | `[]` | Optional allowlist of template ids. Empty means every registered template is considered. Use `nyctos business-logic templates` or `GET /api/v1/business-logic/templates` to list ids. |
 | `exploit_request_cap`              | int (optional) | unset (`10`) | Per-candidate cap for guarded live HTTP/browser actions. `0` is floored to `1`. |
 | `exploit_requests_per_second`      | int (optional) | unset (`5`) | Per-candidate rate limit for guarded live HTTP/browser actions. `0` is floored to `1`. |
@@ -225,6 +225,27 @@ candidates, and existing vulnerabilities, then may use CLI tools to
 attack the dev app directly and record `verified_vulnerabilities` with
 proof artifacts. It is intentionally not routed through
 `ExploitSafetyPolicy`; use it only against disposable local targets.
+
+When enabled, the phase runs serially as nine attack passes:
+
+| Pass | Focus |
+|------|-------|
+| `business_logic` | Workflow, state-machine, role-transition, invite, quota, entitlement, lifecycle, replay, and order-of-operation bugs. |
+| `payments_billing` | Checkout, subscriptions, invoices, coupons, trials, refunds, webhooks, payment status, and plan enforcement. |
+| `user_data_privacy` | IDORs, cross-tenant reads/writes, exports/imports, files, logs, analytics payloads, admin views, and deleted-user data. |
+| `auth_session` | Authentication, authorization, sessions, cookies, password reset, magic links, OAuth, MFA, CSRF, account linking, and privilege escalation. |
+| `api_input` | Mass assignment, validation gaps, schema mismatch, hidden fields, file uploads, SSRF-like fetches, parser confusion, injection, and deserialization. |
+| `infra_dev_prod` | Secrets, env config, debug routes, local services, dev mailers, seed credentials, logs, queues, storage, admin tooling, CORS, and deployment assumptions. |
+| `abuse_automation` | Rate limits, brute force, enumeration, scraping, invite/email/SMS spam, cost abuse, queue flooding, resource exhaustion, and free-tier bypass. |
+| `critical_chain_hunter` | Cross-domain exploit chains that combine smaller primitives into account takeover, cross-tenant compromise, payment bypass, persistent admin access, or secret exposure. |
+| `triage` | Deduplication, dev-only classification, focused confirmation, and material severity/impact upgrades. |
+
+Each pass receives the current candidates and verified vulnerabilities,
+including findings produced by earlier attack passes. The prompt also
+warns that dev mailers, mock payment providers, localhost-only services,
+seed credentials, debug routes, and synthetic fixtures are not
+production vulnerabilities by themselves unless the same trust boundary
+is production-relevant or the behavior creates a real local risk.
 
 Optional scanner findings are persisted as pentest candidates. Live web
 findings still pass live verification before surfacing as verified

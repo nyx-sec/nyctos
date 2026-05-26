@@ -28,8 +28,9 @@ pub use runtime::{
 };
 pub use tasks::attack_agent::{
     run as run_attack_agent, AttackAgentAuditEntry, AttackAgentKnownLead, AttackAgentOutcome,
-    AttackAgentScope, AttackAgentVulnerability, AttackWorkspace, ExistingVulnerabilitySummary,
-    ATTACK_AGENT_PROMPT_VERSION, DEFAULT_ATTACK_AGENT_MAX_TURNS,
+    AttackAgentProfile, AttackAgentScope, AttackAgentVulnerability, AttackWorkspace,
+    ExistingVulnerabilitySummary, ATTACK_AGENT_PROMPT_VERSION, DEFAULT_ATTACK_AGENT_MAX_TURNS,
+    DEFAULT_ATTACK_AGENT_PROFILES, SPECIALIST_ATTACK_AGENT_PROFILES,
 };
 pub use tasks::auth_setup::{
     run as run_auth_setup, AuthSetupOutcome, AuthSetupScope, AUTH_SETUP_PROMPT_VERSION,

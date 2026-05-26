@@ -383,7 +383,17 @@ request-cap, rate-limit, dry-run, and reset gates still apply.
 `unsafe_attack_agent_enabled = true` runs the final unrestricted local
 attack-agent phase for this run. It is intended for disposable
 user-owned dev apps and does not route the agent's actions through the
-guarded live-verifier policy.
+guarded live-verifier policy. The phase runs seven specialist agents,
+then a critical chain hunter and final triage pass.
+
+The attack-agent passes run serially in this order:
+`business_logic`, `payments_billing`, `user_data_privacy`,
+`auth_session`, `api_input`, `infra_dev_prod`, `abuse_automation`,
+`critical_chain_hunter`, `triage`. Each pass gets the same target URLs
+and workspaces, plus the current candidates and verified
+vulnerabilities. Findings from earlier passes can therefore become
+context for later passes. Each pass writes its own trace artifact
+directory and records an `agent_profile` in the trace verifier blob.
 
 Response: `{ "run_id": "run-..." }`.
 

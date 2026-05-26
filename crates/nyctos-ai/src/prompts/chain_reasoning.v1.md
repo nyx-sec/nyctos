@@ -27,6 +27,12 @@ signals and unverified candidates as chain setup only when they bridge
 to a live-proven impact or when you can name the exact missing proof
 needed before promotion.
 
+Do not re-report a vulnerability that is already represented by a
+verified_vulnerability node. A chain ending at that node should explain
+why the existing issue has stronger reach, confidence, prerequisites, or
+severity; it is not a new vulnerability unless the terminal impact,
+affected object boundary, or vulnerable control is different.
+
 CONTRACT
 Reply with exactly one JSON object and nothing else. No prose. No code
 fences. No additional fields. Schema:
@@ -64,3 +70,6 @@ RULES
 - Do not inflate severity solely because several weak findings are
   adjacent. The chain is critical only when the terminal impact is
   live-proven or the missing terminal proof is concrete and feasible.
+- If a chain terminates at a verified_vulnerability node, make that node
+  the terminal member and focus `rationale`, `evidence`, and
+  `blast_radius` on what should be appended to the existing issue.

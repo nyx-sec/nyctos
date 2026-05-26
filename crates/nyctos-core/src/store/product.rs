@@ -771,7 +771,8 @@ impl<'a> VerifiedVulnerabilityStore<'a> {
                 remediation = excluded.remediation,
                 source_candidate_ids_json = excluded.source_candidate_ids_json,
                 source_signal_ids_json = excluded.source_signal_ids_json,
-                verification_attempt_ids_json = excluded.verification_attempt_ids_json
+                verification_attempt_ids_json = excluded.verification_attempt_ids_json,
+                chain_id = COALESCE(excluded.chain_id, verified_vulnerabilities.chain_id)
             "#,
         )
         .bind(&rec.id)

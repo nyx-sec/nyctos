@@ -16,7 +16,7 @@ use serde::Serialize;
 
 use crate::runtime::AiRuntime;
 
-pub const ATTACK_AGENT_PROMPT_VERSION: &str = "phase-pre-mvp.unsafe-attack-agent.v1";
+pub const ATTACK_AGENT_PROMPT_VERSION: &str = "phase-pre-mvp.unsafe-attack-agent.v2";
 pub const DEFAULT_ATTACK_AGENT_MAX_TURNS: u32 = 80;
 
 pub const DEFAULT_ATTACK_AGENT_TOOL_NAMES: &[&str] =
@@ -34,6 +34,7 @@ pub struct AttackAgentScope {
     pub artifact_dir: String,
     pub max_turns: u32,
     pub run_cap_usd_micros: i64,
+    pub profile: AttackAgentProfile,
 }
 
 impl AttackAgentScope {
@@ -50,9 +51,117 @@ impl AttackAgentScope {
             artifact_dir: String::new(),
             max_turns: DEFAULT_ATTACK_AGENT_MAX_TURNS,
             run_cap_usd_micros: i64::MAX,
+            profile: AttackAgentProfile::Generalist,
         }
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttackAgentProfile {
+    Generalist,
+    BusinessLogic,
+    PaymentsBilling,
+    UserDataPrivacy,
+    AuthSession,
+    ApiInput,
+    InfraDevProd,
+    AbuseAutomation,
+    CriticalChainHunter,
+    Triage,
+}
+
+impl AttackAgentProfile {
+    pub fn slug(self) -> &'static str {
+        match self {
+            Self::Generalist => "generalist",
+            Self::BusinessLogic => "business_logic",
+            Self::PaymentsBilling => "payments_billing",
+            Self::UserDataPrivacy => "user_data_privacy",
+            Self::AuthSession => "auth_session",
+            Self::ApiInput => "api_input",
+            Self::InfraDevProd => "infra_dev_prod",
+            Self::AbuseAutomation => "abuse_automation",
+            Self::CriticalChainHunter => "critical_chain_hunter",
+            Self::Triage => "triage",
+        }
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Generalist => "Generalist live attack agent",
+            Self::BusinessLogic => "Business logic specialist",
+            Self::PaymentsBilling => "Payments and billing specialist",
+            Self::UserDataPrivacy => "User data and privacy specialist",
+            Self::AuthSession => "Authentication and session specialist",
+            Self::ApiInput => "API and input-handling specialist",
+            Self::InfraDevProd => "Infrastructure and dev/prod drift specialist",
+            Self::AbuseAutomation => "Abuse and automation specialist",
+            Self::CriticalChainHunter => "Critical cross-domain chain hunter",
+            Self::Triage => "Attack finding triage agent",
+        }
+    }
+
+    fn instructions(self) -> &'static str {
+        match self {
+            Self::Generalist => {
+                "Operate broadly across the live app. Use prior candidates to pick the most promising routes, then pursue live proof."
+            }
+            Self::BusinessLogic => {
+                "Focus on workflow and state-machine abuse: role transitions, ownership changes, invite flows, approval gates, quotas, plan enforcement, object lifecycle edges, concurrency, replay, and order-of-operation mistakes. Try to break the product's assumptions, not just its input validation."
+            }
+            Self::PaymentsBilling => {
+                "Focus on payments, billing, subscriptions, invoices, coupons, trials, plan changes, payment status, refunds, webhooks, idempotency, and entitlement enforcement. Look for ways to obtain paid capabilities, alter billing state, or forge provider-originated events. Treat mock providers as dev-only unless production wiring shares the same trust boundary."
+            }
+            Self::UserDataPrivacy => {
+                "Focus on user data exposure: IDORs, cross-tenant reads/writes, exports, imports, search, files, logs, analytics payloads, deleted-user data, admin views, and overbroad API responses. Prioritize live proof that one user or tenant can access another user's data."
+            }
+            Self::AuthSession => {
+                "Focus on authentication, authorization, sessions, cookies, password reset, magic links, OAuth, MFA, CSRF, role checks, token lifetime, invite acceptance, account linking, and privilege escalation. Build multiple user roles where needed and prove boundary breaks live."
+            }
+            Self::ApiInput => {
+                "Focus on API and parser abuse: mass assignment, validation gaps, hidden fields, schema mismatches, file uploads, SSRF-like fetches, command/path injection, unsafe deserialization, template injection, cache poisoning, and content-type confusion. Prefer targeted probes derived from source over broad scanning."
+            }
+            Self::InfraDevProd => {
+                "Focus on deployment assumptions, secrets, environment config, debug endpoints, local services, dev mailers, seed credentials, logs, queues, storage buckets, admin tooling, CORS, and network trust. Classify dev-only behavior separately and record only production-relevant or locally dangerous impact as vulnerabilities."
+            }
+            Self::AbuseAutomation => {
+                "Focus on abuse at scale: rate limits, brute force, enumeration, scraping, invite or email spam, SMS/email cost abuse, queue flooding, resource exhaustion, free-tier bypass, replay, and automation-resistant workflows. Use small safe volumes and reason from source for scale impact."
+            }
+            Self::CriticalChainHunter => {
+                "Read the prior candidates, signals, and existing vulnerabilities as ingredients. Your job is to find new catastrophic chains that span multiple domains and were easy for specialists to miss: auth plus billing, IDOR plus export, dev drift plus secret access, webhook trust plus entitlement, or low-severity primitives chained into account takeover, cross-tenant compromise, payment bypass, persistent admin access, or secret exfiltration. Do not merely summarize previous findings; attempt live chain proof and record only new or materially upgraded impact."
+            }
+            Self::Triage => {
+                "Act as the final attack triage pass. Review existing vulnerabilities, prior candidates, and any live evidence available in the artifact directory. Deduplicate mentally, resolve dev-only noise, and attempt focused live checks only where they can confirm, upgrade, or reject a high-impact issue. Record a vulnerability only when you have stronger live proof or a materially different impact chain."
+            }
+        }
+    }
+
+    fn render_for_prompt(self) -> String {
+        format!("{} ({})\n{}", self.title(), self.slug(), self.instructions())
+    }
+}
+
+pub const SPECIALIST_ATTACK_AGENT_PROFILES: &[AttackAgentProfile] = &[
+    AttackAgentProfile::BusinessLogic,
+    AttackAgentProfile::PaymentsBilling,
+    AttackAgentProfile::UserDataPrivacy,
+    AttackAgentProfile::AuthSession,
+    AttackAgentProfile::ApiInput,
+    AttackAgentProfile::InfraDevProd,
+    AttackAgentProfile::AbuseAutomation,
+];
+
+pub const DEFAULT_ATTACK_AGENT_PROFILES: &[AttackAgentProfile] = &[
+    AttackAgentProfile::BusinessLogic,
+    AttackAgentProfile::PaymentsBilling,
+    AttackAgentProfile::UserDataPrivacy,
+    AttackAgentProfile::AuthSession,
+    AttackAgentProfile::ApiInput,
+    AttackAgentProfile::InfraDevProd,
+    AttackAgentProfile::AbuseAutomation,
+    AttackAgentProfile::CriticalChainHunter,
+    AttackAgentProfile::Triage,
+];
 
 #[derive(Debug, Clone)]
 pub struct AttackWorkspace {
@@ -157,9 +266,10 @@ fn build_agent_task(scope: &AttackAgentScope) -> AgentTask {
     objective = objective.replace("@@MAX_TURNS@@", &scope.max_turns.to_string());
     objective = objective.replace("@@RUN_ID@@", &scope.run_id);
     objective = objective.replace("@@PROJECT_ID@@", &scope.project_id);
+    objective = objective.replace("@@AGENT_PROFILE@@", &scope.profile.render_for_prompt());
 
     AgentTask {
-        prompt_version: ATTACK_AGENT_PROMPT_VERSION.to_string(),
+        prompt_version: format!("{}.{}", ATTACK_AGENT_PROMPT_VERSION, scope.profile.slug()),
         task_id: scope.task_id.clone(),
         system,
         objective,
@@ -411,6 +521,8 @@ mod tests {
         assert_eq!(vulnerabilities[0].title, "Admin export without auth");
         let task = runtime.task.lock().expect("task").clone().expect("task captured");
         assert!(task.objective.contains("http://127.0.0.1:3000"));
+        assert!(task.objective.contains("Generalist live attack agent"));
+        assert_eq!(task.prompt_version, format!("{}.generalist", ATTACK_AGENT_PROMPT_VERSION));
         assert_eq!(task.working_directory.as_deref(), Some("/tmp/app"));
     }
 }

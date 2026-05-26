@@ -1,5 +1,8 @@
 Attack the running local development app as the final pentest phase.
 
+AGENT PROFILE
+@@AGENT_PROFILE@@
+
 RUN
 - run_id: @@RUN_ID@@
 - project_id: @@PROJECT_ID@@

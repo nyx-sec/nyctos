@@ -39,8 +39,9 @@ The target stays local. The API binds to loopback by default. The run history, t
 | **Explore** | Build route, form, auth, and API context from the app and codebase. |
 | **Candidate pass** | Turn scanner findings and runtime signals into concrete issues worth checking. |
 | **Verification** | Send targeted live checks to the dev app and collect request, response, and trace proof. |
+| **Attack pass** | Optional destructive local phase that runs focused specialists, a cross-domain chain hunter, and final attack triage against the dev app. |
+| **Chain reasoning** | Let the chain agent inspect graph evidence and, for Claude/Codex, read/search repo code to connect low-level leads into higher-impact paths. |
 | **Triage** | Store verified vulnerabilities with confidence, status, evidence, and run attribution. |
-| **Attack pass** | Optional destructive local pass that tries to break the app after the rest of the context is known. |
 
 <p align="center"><img src="assets/screenshots/live-pentest.png" alt="Nyctos live pentest run with app readiness, auth sessions, repo progress, pentest phases, and live verifier proof" width="900"/></p>
 
@@ -55,20 +56,46 @@ flowchart TD
     Explore --> Candidates["Create candidate vulnerabilities"]
     Candidates --> Verify["Verify against the live target"]
     Verify --> Evidence["Store proof, trace data, confidence"]
-    Evidence --> Triage["Show findings in dashboard and CLI"]
 
     Evidence --> AttackGate{"Unsafe attack agent enabled?"}
-    AttackGate -- "No" --> Triage
-    AttackGate -- "Yes" --> Attack["Run destructive local attack pass"]
-    Attack --> Promote["Add new findings or raise confidence"]
-    Promote --> Triage
+    AttackGate -- "No" --> Chain["Source-aware chain reasoning"]
+    AttackGate -- "Yes" --> Specialists["Run seven focused attack specialists"]
+    Specialists --> Hunter["Hunt critical cross-domain chains"]
+    Hunter --> AttackTriage["Deduplicate, classify dev-only noise, and refine proof"]
+    AttackTriage --> Promote["Record new candidates, attempts, and verified vulns"]
+    Promote --> Chain
 
-    Scope -. "code and launch context" .-> Attack
-    Candidates -. "known weak spots" .-> Attack
-    Verify -. "proof and failures" .-> Attack
+    Chain --> ChainDecision{"Terminal live proof?"}
+    ChainDecision -- "Yes" --> VerifiedChain["Promote verified chain vulnerability"]
+    ChainDecision -- "No" --> NeedsChainVerify["Keep as NeedsChainVerification"]
+    VerifiedChain --> Triage["Show verified vulnerabilities and proof"]
+    NeedsChainVerify --> Triage
+
+    Scope -. "code and launch context" .-> Specialists
+    Candidates -. "known weak spots" .-> Specialists
+    Verify -. "proof and failures" .-> Specialists
+    Scope -. "workspace roots" .-> Chain
+    Evidence -. "verification attempts and vulns" .-> Chain
+    Promote -. "unsafe-agent findings" .-> Chain
 ```
 
-The unsafe attack agent runs last because it should not waste time guessing from a blank page. By the time it starts, Nyctos has code context, target context, previous candidates, existing vulnerabilities, and live verification signals. If it breaks something new, the result is recorded as a vulnerability candidate or used to raise confidence on an existing one.
+The unsafe attack phase runs late because it should not waste time guessing from a blank page. By the time it starts, Nyctos has code context, target context, previous candidates, existing vulnerabilities, and live verification signals. It runs serially so each pass can inherit newly recorded findings:
+
+| Pass | Focus |
+|---|---|
+| Business logic | Workflow and state-machine abuse, role transitions, invites, quotas, lifecycle edges, and order-of-operation bugs. |
+| Payments and billing | Checkout, subscriptions, invoices, coupons, trials, webhooks, refunds, entitlement enforcement, and payment-status trust. |
+| User data and privacy | IDORs, cross-tenant data access, exports, imports, files, logs, analytics payloads, and deleted-user remnants. |
+| Auth and session | Login, reset flows, OAuth, magic links, MFA, cookies, CSRF, session lifetime, account linking, and privilege escalation. |
+| API and input handling | Mass assignment, validation gaps, hidden fields, file uploads, parser confusion, SSRF-like fetches, injection, and deserialization. |
+| Infra and dev/prod drift | Secrets, env config, debug routes, dev mailers, seed credentials, logs, local services, admin tooling, CORS, and deployment assumptions. |
+| Abuse and automation | Rate limits, brute force, enumeration, scraping, invite/email/SMS abuse, queue flooding, resource exhaustion, and free-tier abuse. |
+| Critical chain hunter | Cross-domain paths that combine smaller primitives into account takeover, cross-tenant compromise, payment bypass, persistent admin access, or secret exposure. |
+| Attack triage | Deduplicate, classify dev-only noise, confirm material upgrades, and record only issues supported by live proof. |
+
+Each pass is told it is operating in a development environment. Dev mailers, mock payment providers, localhost-only callbacks, seed credentials, debug routes, and synthetic fixtures are not production findings by themselves. They only become findings when the source, config, routing, or live behavior shows a production-relevant trust boundary or a real local-secret risk.
+
+Chain reasoning runs after that. It sees the normalized attack graph: static signals, candidates, routes, roles, objects, authz observations, verification attempts, verified vulnerabilities, and unsafe-agent results. When the selected runtime supports agent loops, the chain worker also receives repo workspace roots and can read/search source before returning chain JSON. Chains that terminate in live proof are promoted as verified chain vulnerabilities; chains without terminal proof stay as `NeedsChainVerification`.
 
 This mode is meant for disposable local state. It can mutate data, create accounts, submit payloads, corrupt fixtures, or knock the dev app over. That is the point.
 
