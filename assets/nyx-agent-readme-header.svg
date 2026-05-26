@@ -25,24 +25,24 @@
     </style>
   </defs>
 
-  <g transform="translate(-22 48)" xml:space="preserve">
+  <g transform="translate(0 48) scale(0.74 1)" xml:space="preserve">
     <text class="banner" x="0" y="0" xml:space="preserve">
-      <tspan fill="#2ea067" xml:space="preserve">███╗   ██╗██╗   ██╗ ██████╗</tspan><tspan fill="#c79a2b" xml:space="preserve">████████╗ ██████╗ ███████╗</tspan>
+      <tspan fill="#2ea067" xml:space="preserve">███╗   ██╗██╗   ██╗██╗  ██╗    </tspan><tspan fill="#c79a2b" xml:space="preserve"> █████╗  ██████╗ ███████╗███╗   ██╗████████╗</tspan>
     </text>
     <text class="banner" x="0" y="38" xml:space="preserve">
-      <tspan fill="#2ea067" xml:space="preserve">████╗  ██║╚██╗ ██╔╝██╔════╝</tspan><tspan fill="#c79a2b" xml:space="preserve">╚══██╔══╝██╔═══██╗██╔════╝</tspan>
+      <tspan fill="#2ea067" xml:space="preserve">████╗  ██║╚██╗ ██╔╝╚██╗██╔╝    </tspan><tspan fill="#c79a2b" xml:space="preserve">██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝</tspan>
     </text>
     <text class="banner" x="0" y="76" xml:space="preserve">
-      <tspan fill="#2ea067" xml:space="preserve">██╔██╗ ██║ ╚████╔╝ ██║     </tspan><tspan fill="#c79a2b" xml:space="preserve">   ██║   ██║   ██║███████╗</tspan>
+      <tspan fill="#2ea067" xml:space="preserve">██╔██╗ ██║ ╚████╔╝  ╚███╔╝     </tspan><tspan fill="#c79a2b" xml:space="preserve">███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║   </tspan>
     </text>
     <text class="banner" x="0" y="114" xml:space="preserve">
-      <tspan fill="#2ea067" xml:space="preserve">██║╚██╗██║  ╚██╔╝  ██║     </tspan><tspan fill="#c79a2b" xml:space="preserve">   ██║   ██║   ██║╚════██║</tspan>
+      <tspan fill="#2ea067" xml:space="preserve">██║╚██╗██║  ╚██╔╝   ██╔██╗     </tspan><tspan fill="#c79a2b" xml:space="preserve">██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║   </tspan>
     </text>
     <text class="banner" x="0" y="152" xml:space="preserve">
-      <tspan fill="#2ea067" xml:space="preserve">██║ ╚████║   ██║   ╚██████╗</tspan><tspan fill="#c79a2b" xml:space="preserve">   ██║   ╚██████╔╝███████║</tspan>
+      <tspan fill="#2ea067" xml:space="preserve">██║ ╚████║   ██║   ██╔╝ ██╗    </tspan><tspan fill="#c79a2b" xml:space="preserve">██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║   </tspan>
     </text>
     <text class="banner" x="0" y="190" xml:space="preserve">
-      <tspan fill="#2ea067" xml:space="preserve">╚═╝  ╚═══╝   ╚═╝    ╚═════╝</tspan><tspan fill="#c79a2b" xml:space="preserve">   ╚═╝    ╚═════╝ ╚══════╝</tspan>
+      <tspan fill="#2ea067" xml:space="preserve">╚═╝  ╚═══╝   ╚═╝   ╚═╝  ╚═╝    </tspan><tspan fill="#c79a2b" xml:space="preserve">╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝   </tspan>
     </text>
   </g>
 

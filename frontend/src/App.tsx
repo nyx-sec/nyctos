@@ -3,7 +3,6 @@ import { useSetupStatus } from "@/api/client";
 import { useAdvancedMode } from "@/api/preferences";
 import { AppLayout } from "@/components/AppLayout";
 import { Card } from "@/components/Card";
-import { CommunityEditionNotice } from "@/components/CommunityEditionNotice";
 import { Spinner } from "@/components/Spinner";
 import { ChainDetail, ChainList } from "@/pages/Chains";
 import { FindingList } from "@/pages/Findings";
@@ -48,7 +47,6 @@ export function App() {
 
   return (
     <AppLayout setupComplete={complete}>
-      <CommunityEditionNotice />
       <Routes>
         <Route path="/" element={<Navigate to="/projects" replace />} />
         <Route path="/setup" element={<SetupWizard />} />
