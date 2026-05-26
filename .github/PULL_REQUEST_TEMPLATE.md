@@ -10,6 +10,10 @@
 
 <!-- List the checks you ran. Include failures or skipped checks with the reason. -->
 
+## Contributor License Agreement
+
+- [ ] I have read and agree to the [Nyctos Contributor License Agreement](../CLA.md), and I have the right to submit this contribution under those terms.
+
 ## Checklist
 
 - [ ] `cargo fmt --all -- --check`

@@ -2,6 +2,21 @@
 
 Thanks for helping improve Nyctos. This repo is security-sensitive: it launches local apps, reads repos, stores proof, drives live probes, and talks to optional AI runtimes. Small changes can cross trust boundaries, so prefer focused patches with clear tests.
 
+## Contribution Terms
+
+Nyctos accepts contributions under the [Nyctos Contributor License Agreement](CLA.md).
+
+By submitting a pull request, commit, patch, or other contribution, you agree
+that your contribution may be used in the community edition, commercial
+editions, enterprise builds, hosted services, internal production repositories,
+and future versions of Nyctos. You keep copyright in your own contribution, but
+you grant Nyctos broad rights to use, relicense, commercialize, and sublicense
+it without royalties or other compensation.
+
+Do not submit a contribution if you cannot grant those rights. If you are
+contributing on behalf of an employer, client, school, or other organization,
+make sure that organization has authorized the contribution first.
+
 ## Development Setup
 
 Prerequisites:
@@ -127,6 +142,8 @@ Use the existing UI primitives and styling conventions. Keep operational screens
 ## Pull Requests
 
 Good PRs are small enough to review, explain the trust boundary they touch, and include focused tests. Include screenshots or screen recordings for dashboard changes when useful. Update docs when behavior, config, CLI flags, API responses, setup flow, or safety expectations change.
+
+Before opening a PR, read and accept the [Nyctos Contributor License Agreement](CLA.md). The PR template includes a CLA checkbox, and maintainers may request additional written confirmation for larger or employer-owned contributions.
 
 Do not commit local state, `.DS_Store`, build output, fuzz corpus growth, secrets, trace logs, or target app data.
 

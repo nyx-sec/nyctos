@@ -169,4 +169,4 @@ npm --prefix frontend run check
 
 ## License
 
-Nyctos is source-available under PolyForm Small Business License 1.0.0. See [LICENSE.md](LICENSE.md). The upstream `nyx` scanner is a separate GPL-3.0-or-later project.
+Nyctos is source-available under PolyForm Small Business License 1.0.0. See [LICENSE.md](LICENSE.md). Contributions are accepted under the [Nyctos Contributor License Agreement](CLA.md). The upstream `nyx` scanner is a separate GPL-3.0-or-later project.
