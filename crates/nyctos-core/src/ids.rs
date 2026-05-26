@@ -1,6 +1,6 @@
 //! Small helpers for minting persisted-record identifiers.
 
-use rand::RngCore;
+use rand::Rng;
 
 /// Eight hex characters (4 bytes) of cryptographic randomness, suitable
 /// as a per-insert disambiguator on otherwise-deterministic record ids

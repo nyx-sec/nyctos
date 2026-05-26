@@ -913,7 +913,7 @@ async fn patch_project(
         return Err(ApiError::NotFound(format!("project `{id}` not found")));
     }
     if let Some(input) = launch_profile_from_runtime.as_ref() {
-        s.store.launch_profiles().upsert_default(&id, &input, now).await?;
+        s.store.launch_profiles().upsert_default(&id, input, now).await?;
     }
     let row = s
         .store
@@ -2371,10 +2371,10 @@ fn normalize_credential_literal(value: &str, kind: AuthSetupCredentialKind) -> O
     if kind == AuthSetupCredentialKind::Email && !value.contains('@') {
         return None;
     }
-    if kind == AuthSetupCredentialKind::Password {
-        if lower.contains("bcrypt") || lower.contains("argon2") || value.starts_with("$2") {
-            return None;
-        }
+    if kind == AuthSetupCredentialKind::Password
+        && (lower.contains("bcrypt") || lower.contains("argon2") || value.starts_with("$2"))
+    {
+        return None;
     }
     Some(value.to_string())
 }
@@ -2546,6 +2546,7 @@ fn normalize_role_name(role: &str) -> Option<String> {
     Some(role.to_string())
 }
 
+#[allow(clippy::type_complexity)]
 fn apply_agent_auth_setup_output(
     profiles: &mut Vec<ProjectAuthProfile>,
     output: AuthSetupAgentOutput,

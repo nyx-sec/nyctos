@@ -920,7 +920,7 @@ fn email_change_without_reauth_probes(
         route_model,
         role,
         route_looks_email_change_without_reauth,
-        |route, marker| email_change_json(route, marker),
+        email_change_json,
         "new_email",
         "Email change without reauth probe",
         "submits a controlled email marker to an email-change route that does not advertise password/current-password reauth fields",
@@ -1718,9 +1718,8 @@ fn route_looks_permission_change(route: &RouteModelEndpoint, detail: &RouteModel
     if !permission_hit {
         return false;
     }
-    let detail_object = collection_path_for_detail(&detail.path).and_then(|path| {
-        path.split('/').filter(|part| !part.is_empty()).last().map(str::to_string)
-    });
+    let detail_object = collection_path_for_detail(&detail.path)
+        .and_then(|path| path.split('/').rfind(|part| !part.is_empty()).map(str::to_string));
     detail_object.as_deref().map(|object| lower.contains(object)).unwrap_or(true)
         || route_looks_file_object(route)
 }

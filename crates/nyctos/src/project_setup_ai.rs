@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
 
 use nyctos_ai::{run_project_setup, ProjectSetupScope, DEFAULT_PROJECT_SETUP_RUN_CAP_USD_MICROS};
@@ -31,7 +31,8 @@ impl ProjectSetupAgent for ConfiguredProjectSetupAgent {
             let mut scope =
                 ProjectSetupScope::new(req.project_id.clone(), req.project_name.clone());
             scope.target_base_url = req.target_base_url;
-            scope.workspace_roots = req.workspace_roots.iter().map(path_to_string).collect();
+            scope.workspace_roots =
+                req.workspace_roots.iter().map(|path| path_to_string(path)).collect();
             scope.existing_launch_profile = req.existing_launch_profile;
             scope.run_cap_usd_micros = config
                 .ai
@@ -57,7 +58,7 @@ impl ProjectSetupAgent for ConfiguredProjectSetupAgent {
     }
 }
 
-fn path_to_string(path: &PathBuf) -> String {
+fn path_to_string(path: &Path) -> String {
     path.to_string_lossy().to_string()
 }
 

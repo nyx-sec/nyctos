@@ -111,13 +111,12 @@ fn build_agent_task(scope: &AuthSetupScope) -> AgentTask {
     let target = scope.target_base_url.as_deref().unwrap_or("(not set)");
     let max_secs = scope.max_wall_clock.as_secs();
 
-    let system = format!(
-        "You are nyctos's auth setup exploration agent.\n\
+    let system = "You are nyctos's auth setup exploration agent.\n\
          Inspect the repository before emitting profiles. Do not invent roles, routes, or \
          credentials. Prefer roles and login/session flows that are clearly represented in the \
          codebase. Never output raw passwords, cookies, bearer tokens, or one-time codes; only \
          output env var names or secret references. Keep generated profiles specific to this repo."
-    );
+        .to_string();
 
     let objective = format!(
         "Project: {project_name} ({project_id})\n\

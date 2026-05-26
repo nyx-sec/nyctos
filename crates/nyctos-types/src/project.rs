@@ -98,10 +98,11 @@ pub struct ProjectAuthHeaderRef {
     pub value_secret_ref: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum ProjectAuthMode {
     Anonymous,
+    #[default]
     HeaderInjection,
     BrowserLogin,
     ManualSso,
@@ -113,24 +114,13 @@ pub enum ProjectAuthMode {
     CustomCommand,
 }
 
-impl Default for ProjectAuthMode {
-    fn default() -> Self {
-        Self::HeaderInjection
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum ProjectOtpSourceKind {
+    #[default]
     Manual,
     Mailbox,
     Imap,
-}
-
-impl Default for ProjectOtpSourceKind {
-    fn default() -> Self {
-        Self::Manual
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -483,6 +473,7 @@ pub enum TriStateJson {
 
 /// Tri-state wire shape used by [`PatchProjectRequest::runtime_profile`].
 #[derive(Debug, Default)]
+#[allow(clippy::large_enum_variant)]
 pub enum TriStateProjectRuntimeProfile {
     #[default]
     Unset,

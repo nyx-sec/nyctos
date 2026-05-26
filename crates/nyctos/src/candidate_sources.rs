@@ -843,9 +843,7 @@ fn normalise_path(raw: &str) -> String {
         }
     }
     let path = trimmed.split('?').next().unwrap_or(trimmed).trim_end_matches('/');
-    if path.is_empty() || path == "(current page)" {
-        path.to_ascii_lowercase()
-    } else if path.starts_with('/') {
+    if path.is_empty() || path == "(current page)" || path.starts_with('/') {
         path.to_ascii_lowercase()
     } else {
         format!("/{}", path.to_ascii_lowercase())

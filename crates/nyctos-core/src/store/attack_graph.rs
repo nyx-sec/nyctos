@@ -6,6 +6,8 @@
 //! surfaces can answer provenance and blast-radius questions without
 //! reverse-engineering every table's JSON columns.
 
+#![allow(clippy::too_many_arguments)]
+
 use std::collections::{HashMap, HashSet};
 
 use sqlx::{Row, SqlitePool};

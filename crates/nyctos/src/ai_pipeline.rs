@@ -5348,7 +5348,7 @@ fn memory_matches_candidate(
     )
     .to_ascii_lowercase();
     let endpoint = memory.endpoint.as_deref().unwrap_or("");
-    [&memory.hypothesis.as_str(), endpoint]
+    [memory.hypothesis.as_str(), endpoint]
         .iter()
         .map(|s| s.split_whitespace().take(8).collect::<Vec<_>>().join(" ").to_ascii_lowercase())
         .any(|needle| needle.len() >= 12 && haystack.contains(&needle))
@@ -5403,7 +5403,7 @@ fn candidate_applies_to_repo(candidate: &PentestCandidateRecord, repo: &str) -> 
             component.as_object().and_then(|obj| obj.get("repo")).and_then(|value| value.as_str())
         })
         .collect::<Vec<_>>();
-    repos.is_empty() || repos.iter().any(|r| *r == repo)
+    repos.is_empty() || repos.contains(&repo)
 }
 
 fn candidate_to_exploration_known_lead(candidate: &PentestCandidateRecord) -> ExplorationKnownLead {

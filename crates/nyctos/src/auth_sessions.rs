@@ -287,7 +287,7 @@ impl AuthSessionResult {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct AuthSessionOptions {
     pub browser_checks_enabled: bool,
     pub workspace_paths: Vec<PathBuf>,
@@ -296,20 +296,6 @@ pub struct AuthSessionOptions {
     pub ai_events: Option<EventSink>,
     pub run_id: Option<String>,
     pub project_id: Option<String>,
-}
-
-impl Default for AuthSessionOptions {
-    fn default() -> Self {
-        Self {
-            browser_checks_enabled: false,
-            workspace_paths: Vec::new(),
-            env_overrides: BTreeMap::new(),
-            ai_runtime: None,
-            ai_events: None,
-            run_id: None,
-            project_id: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -464,13 +450,13 @@ async fn acquire_uncached_session(
         ProjectAuthMode::OtpEmailMailbox => {
             acquire_agent_login(profile, &mut session, target_url, artifact_dir, options)
                 .await
-                .or_else(|err| {
+                .map_err(|err| {
                     if options.ai_runtime.is_some() {
-                        Err(err)
+                        err
                     } else {
-                        Err(skip_reason(
+                        skip_reason(
                             "email OTP mailbox auth skipped: no Codex/Claude agent runtime is configured for adaptive login",
-                        ))
+                        )
                     }
                 })
         }

@@ -233,6 +233,7 @@ pub struct AgentResult {
 /// stable payload its consumer needs; richer per-variant schemas live
 /// alongside the consuming task.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[allow(clippy::large_enum_variant)]
 #[serde(tag = "kind")]
 pub enum ExtractedAgentResult {
     /// PayloadSynthesis output: exploit payload candidate (rule id +

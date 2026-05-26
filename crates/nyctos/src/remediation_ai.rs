@@ -30,7 +30,8 @@ impl RemediationAgent for ConfiguredRemediationAgent {
                 .await
                 .map_err(|err| RemediationAgentError::Unavailable(err.to_string()))?;
             let mut scope = RemediationScope::new(req.vulnerability.clone());
-            scope.workspace_roots = req.workspace_roots.iter().map(path_to_string).collect();
+            scope.workspace_roots =
+                req.workspace_roots.iter().map(|path| path_to_string(path)).collect();
             scope.run_cap_usd_micros = config
                 .ai
                 .exploration_run_cap_usd_micros_resolved(DEFAULT_REMEDIATION_RUN_CAP_USD_MICROS);
@@ -47,7 +48,7 @@ impl RemediationAgent for ConfiguredRemediationAgent {
     }
 }
 
-fn path_to_string(path: &PathBuf) -> String {
+fn path_to_string(path: &Path) -> String {
     path.to_string_lossy().to_string()
 }
 

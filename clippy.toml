@@ -1,7 +1,6 @@
 avoid-breaking-exported-api = false
-msrv = "1.83"
+msrv = "1.88"
 
 # Workspace lint rules that clippy itself cannot express (e.g.
 # `missing-instrument`) live in `../lints.toml` and are enforced by
 # scripts under `.ci/`. See `lints.toml` for the current set.
-

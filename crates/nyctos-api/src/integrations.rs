@@ -1,6 +1,6 @@
 //! Outbound project integration delivery.
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use lettre::message::Mailbox;
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message as EmailMessage, Tokio1Executor};
@@ -411,6 +411,12 @@ impl IntegrationDispatcher {
                 Ok(())
             }
         }
+    }
+}
+
+impl Default for IntegrationDispatcher {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

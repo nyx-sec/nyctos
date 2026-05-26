@@ -549,6 +549,7 @@ pub struct NoPlanLiveTestPlan {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[allow(clippy::large_enum_variant)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum LiveTestPlan {
     #[serde(rename = "single_http", alias = "http")]

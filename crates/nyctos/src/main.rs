@@ -1,3 +1,5 @@
+#![allow(clippy::result_large_err, clippy::too_many_arguments)]
+
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::Future;
@@ -809,8 +811,8 @@ fn business_logic_command(action: BusinessLogicAction) -> anyhow::Result<ExitCod
                 return Ok(ExitCode::SUCCESS);
             }
             println!(
-                "{:<38} {:<7} {:<18} {:<15} {:<13} {}",
-                "id", "version", "category", "mutability", "availability", "title"
+                "{:<38} {:<7} {:<18} {:<15} {:<13} title",
+                "id", "version", "category", "mutability", "availability"
             );
             for template in templates {
                 println!(
@@ -2990,8 +2992,7 @@ fn classify_nyx_exploit_class(
 }
 
 fn canonical_nyx_exploit_class(raw: &str) -> Option<&'static str> {
-    let normalized =
-        raw.trim().to_ascii_uppercase().replace('-', "_").replace(' ', "_").replace('.', "_");
+    let normalized = raw.trim().to_ascii_uppercase().replace(['-', ' ', '.'], "_");
     match normalized.as_str() {
         "DOM_XSS" | "CLIENT_SIDE_XSS" => Some("DOM_XSS"),
         "XSS" | "CROSS_SITE_SCRIPTING" if !normalized.contains("STORED") => Some("DOM_XSS"),
@@ -5109,8 +5110,7 @@ fn endpoint_resource(
         .and_then(|endpoint| {
             endpoint
                 .split('/')
-                .filter(|part| !part.is_empty() && !part.starts_with(':') && !part.starts_with('{'))
-                .next_back()
+                .rfind(|part| !part.is_empty() && !part.starts_with(':') && !part.starts_with('{'))
                 .map(str::to_string)
         })
         .unwrap_or_else(|| fallback.to_string())
@@ -5989,7 +5989,7 @@ fn emit_phase(
             run_id: run_id.to_string(),
             project_id: project_id.to_string(),
             phase: phase.to_string(),
-            status: if message.is_some() { "Finished".to_string() } else { "Finished".to_string() },
+            status: "Finished".to_string(),
             message,
             finished_at_ms: now_epoch_ms(),
         }
@@ -6074,7 +6074,7 @@ fn review_confirmed_live_evidence(
 
     LiveEvidenceReviewOutput {
         decision: LiveEvidenceReviewDecision::Accept,
-        confidence: candidate.confidence.max(0.75).min(0.95),
+        confidence: candidate.confidence.clamp(0.75, 0.95),
         rationale: "Deterministic oracle found positive, vulnerability-specific live evidence."
             .to_string(),
         evidence_strengths: positive,
@@ -7953,8 +7953,13 @@ mod tests {
             })
             .await?;
 
-        let targets =
-            select_scan_targets(&store, &Config::default(), &[project.name.clone()], &[]).await?;
+        let targets = select_scan_targets(
+            &store,
+            &Config::default(),
+            std::slice::from_ref(&project.name),
+            &[],
+        )
+        .await?;
 
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].0.id.as_str(), project.id);

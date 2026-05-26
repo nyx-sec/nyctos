@@ -3,6 +3,8 @@
 //! deployable app. Scans, env-builder merges, and chain validation all
 //! hang off the project.
 
+#![allow(clippy::too_many_arguments)]
+
 use sqlx::{Row, SqlitePool};
 
 pub use nyctos_types::project::{ProjectRecord, ProjectRuntimeProfile};

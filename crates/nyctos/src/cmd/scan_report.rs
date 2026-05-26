@@ -377,7 +377,7 @@ pub fn vulnerability_repos(v: &ReportVulnerability) -> Vec<String> {
 }
 
 pub fn vulnerability_primary_location(v: &ReportVulnerability) -> (String, String, Option<i64>) {
-    for component in &v.affected_components {
+    if let Some(component) = v.affected_components.first() {
         let repo =
             component.get("repo").and_then(|v| v.as_str()).unwrap_or("<project>").to_string();
         let path = component

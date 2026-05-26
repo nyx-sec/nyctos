@@ -3913,7 +3913,7 @@ router.get("/api/workspaces/{id}", requireManager, showWorkspace);
         .iter()
         .filter_map(|event| event["phase"].as_str())
         .collect();
-    assert!(phases.iter().position(|phase| *phase == "inspecting_project").is_some());
+    assert!(phases.contains(&"inspecting_project"));
     let seed_phase = phases.iter().position(|phase| *phase == "inspecting_seed").expect("seed");
     let auth_phase = phases.iter().position(|phase| *phase == "inspecting_auth").expect("auth");
     assert!(seed_phase < auth_phase);

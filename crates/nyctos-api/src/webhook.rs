@@ -35,7 +35,7 @@ use axum::http::header::CONTENT_LENGTH;
 use axum::http::{HeaderMap, Request, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use serde::Serialize;
 use sha2::Sha256;
 use subtle::ConstantTimeEq;

@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
 
 use nyctos_ai::{run_seed_setup, SeedSetupScope, DEFAULT_SEED_SETUP_RUN_CAP_USD_MICROS};
@@ -29,7 +29,8 @@ impl SeedSetupAgent for ConfiguredSeedSetupAgent {
                 .map_err(|err| SeedSetupAgentError::Unavailable(err.to_string()))?;
             let mut scope = SeedSetupScope::new(req.project_id.clone(), req.project_name.clone());
             scope.target_base_url = req.target_base_url;
-            scope.workspace_roots = req.workspace_roots.iter().map(path_to_string).collect();
+            scope.workspace_roots =
+                req.workspace_roots.iter().map(|path| path_to_string(path)).collect();
             scope.launch_profile = req.launch_profile;
             scope.run_cap_usd_micros = config
                 .ai
@@ -43,7 +44,7 @@ impl SeedSetupAgent for ConfiguredSeedSetupAgent {
     }
 }
 
-fn path_to_string(path: &PathBuf) -> String {
+fn path_to_string(path: &Path) -> String {
     path.to_string_lossy().to_string()
 }
 

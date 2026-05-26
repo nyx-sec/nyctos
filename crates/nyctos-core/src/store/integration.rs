@@ -226,8 +226,9 @@ fn row_to_integration(
     row: sqlx::sqlite::SqliteRow,
 ) -> Result<ProjectIntegrationStoredRecord, StoreError> {
     let kind_raw: String = row.try_get("kind")?;
-    let kind = ProjectIntegrationKind::from_str(&kind_raw)
-        .ok_or_else(|| StoreError::InvalidIntegrationKind(kind_raw.clone()))?;
+    let kind = kind_raw
+        .parse::<ProjectIntegrationKind>()
+        .map_err(|()| StoreError::InvalidIntegrationKind(kind_raw.clone()))?;
     let events_json: String = row.try_get("events_json")?;
     let events = serde_json::from_str(&events_json).map_err(StoreError::IntegrationJson)?;
     Ok(ProjectIntegrationStoredRecord {

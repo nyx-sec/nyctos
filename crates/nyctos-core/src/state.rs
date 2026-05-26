@@ -168,7 +168,7 @@ impl StateDir {
 /// Mint a 256-bit URL-safe token. Surfaced for tests; the daemon
 /// always goes through [`StateDir::load_or_mint_auth_token`].
 pub fn mint_token() -> String {
-    use rand::RngCore;
+    use rand::Rng;
     let mut buf = [0u8; 32];
     rand::rng().fill_bytes(&mut buf);
     hex::encode(buf)

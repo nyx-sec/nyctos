@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
 
 use nyctos_ai::{
@@ -32,7 +32,8 @@ impl AuthSetupAgent for ConfiguredAuthSetupAgent {
             let runtime = build_agent_runtime(&config).await?;
             let mut scope = AuthSetupScope::new(req.project_id.clone(), req.project_name.clone());
             scope.target_base_url = req.target_base_url;
-            scope.workspace_roots = req.workspace_roots.iter().map(path_to_string).collect();
+            scope.workspace_roots =
+                req.workspace_roots.iter().map(|path| path_to_string(path)).collect();
             scope.requested_roles = req.requested_roles;
             scope.seeded_objects = req.seeded_objects;
             scope.existing_profiles = req.existing_profiles;
@@ -101,7 +102,7 @@ pub async fn build_agent_runtime_from_ai_config(
     }
 }
 
-fn path_to_string(path: &PathBuf) -> String {
+fn path_to_string(path: &Path) -> String {
     path.to_string_lossy().to_string()
 }
 

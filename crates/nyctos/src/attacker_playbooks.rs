@@ -1091,11 +1091,7 @@ mod tests {
             repo: Some("api".to_string()),
             handler_file: Some(format!(
                 "src/routes/{}.rs",
-                path.trim_matches('/')
-                    .replace('/', "_")
-                    .replace(':', "_")
-                    .replace('{', "")
-                    .replace('}', "")
+                path.trim_matches('/').replace(['/', ':'], "_").replace(['{', '}'], "")
             )),
             line: Some(10),
             params: params.iter().map(|s| s.to_string()).collect(),

@@ -9,11 +9,11 @@ import {
   useState,
 } from "react";
 import {
+  type AuthSetupJobRecord,
+  type AuthSetupRequest,
   getAuthSetupJob,
   qk,
   startAuthAutoSetup,
-  type AuthSetupJobRecord,
-  type AuthSetupRequest,
 } from "@/api/client";
 import { useToast } from "@/components/Toast";
 

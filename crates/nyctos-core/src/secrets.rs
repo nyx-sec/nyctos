@@ -20,6 +20,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use keyring_core::{Entry, Error as KeyringError};
 use thiserror::Error;
 
 /// Account-name slot for the Anthropic API key.
@@ -46,7 +47,7 @@ pub enum SecretError {
     Backend {
         account: String,
         #[source]
-        source: keyring::Error,
+        source: KeyringError,
     },
 }
 
@@ -130,7 +131,7 @@ impl SecretStore {
                 let entry = keyring_entry(service, account)?;
                 match entry.get_password() {
                     Ok(value) => Ok(Some(value)),
-                    Err(keyring::Error::NoEntry) => Ok(None),
+                    Err(KeyringError::NoEntry) => Ok(None),
                     Err(source) => {
                         Err(SecretError::Backend { account: account.to_string(), source })
                     }
@@ -150,7 +151,7 @@ impl SecretStore {
                 let entry = keyring_entry(service, account)?;
                 match entry.delete_credential() {
                     Ok(()) => Ok(()),
-                    Err(keyring::Error::NoEntry) => Ok(()),
+                    Err(KeyringError::NoEntry) => Ok(()),
                     Err(source) => {
                         Err(SecretError::Backend { account: account.to_string(), source })
                     }
@@ -165,8 +166,10 @@ impl SecretStore {
     }
 }
 
-fn keyring_entry(service: &str, account: &str) -> Result<keyring::Entry, SecretError> {
-    keyring::Entry::new(service, account)
+fn keyring_entry(service: &str, account: &str) -> Result<Entry, SecretError> {
+    keyring::use_native_store(true)
+        .map_err(|source| SecretError::Backend { account: account.to_string(), source })?;
+    Entry::new(service, account)
         .map_err(|source| SecretError::Backend { account: account.to_string(), source })
 }
 

@@ -5,6 +5,7 @@
 //! webhook URLs or SMTP passwords.
 
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
 use ts_rs::TS;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -24,7 +25,7 @@ impl ProjectIntegrationKind {
         }
     }
 
-    pub fn from_str(raw: &str) -> Option<Self> {
+    fn parse(raw: &str) -> Option<Self> {
         match raw {
             "webhook" => Some(Self::Webhook),
             "slack" => Some(Self::Slack),
@@ -50,17 +51,20 @@ impl ProjectIntegrationEvent {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "snake_case")]
-pub enum SmtpSecurity {
-    StartTls,
-    None,
+impl FromStr for ProjectIntegrationKind {
+    type Err = ();
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        Self::parse(raw).ok_or(())
+    }
 }
 
-impl Default for SmtpSecurity {
-    fn default() -> Self {
-        Self::StartTls
-    }
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum SmtpSecurity {
+    #[default]
+    StartTls,
+    None,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

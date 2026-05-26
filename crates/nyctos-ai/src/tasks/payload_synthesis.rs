@@ -32,6 +32,7 @@ const SYSTEM_PROMPT_V1_STRICTER: &str = include_str!("../prompts/payload_synthes
 /// Outcome of one `run` invocation. Carries enough state for the
 /// caller to either persist a payload row or quarantine the finding.
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum PayloadSynthesisOutcome {
     /// Both validation gates passed. The caller stores the
     /// `output.vuln_payload` / `output.benign_payload` / `output.vuln_oracle`

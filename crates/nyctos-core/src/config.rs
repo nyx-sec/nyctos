@@ -868,7 +868,7 @@ impl ProjectLaunchCommandConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ProjectLaunchHealthConfig {
     pub kind: Option<String>,
@@ -878,12 +878,6 @@ pub struct ProjectLaunchHealthConfig {
     pub command: Option<ProjectLaunchCommandConfig>,
     #[serde(alias = "timeout_secs")]
     pub timeout_seconds: Option<u64>,
-}
-
-impl Default for ProjectLaunchHealthConfig {
-    fn default() -> Self {
-        Self { kind: None, url: None, host: None, port: None, command: None, timeout_seconds: None }
-    }
 }
 
 impl ProjectLaunchHealthConfig {

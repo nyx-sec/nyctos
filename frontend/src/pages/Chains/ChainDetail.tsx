@@ -15,8 +15,8 @@ import { EmptyState } from "@/components/EmptyState";
 import { PageHeader, PageShell } from "@/components/Page";
 import { Spinner } from "@/components/Spinner";
 import { extractChainRationale } from "@/pages/Findings/FindingList";
-import { type GraphChainMember, parseChainEvidence } from "./chainEvidence";
 import { shortChainId } from "./ChainList";
+import { type GraphChainMember, parseChainEvidence } from "./chainEvidence";
 import { parseMemberIds } from "./memberIds";
 
 export function ChainDetail() {

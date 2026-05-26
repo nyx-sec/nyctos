@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
 import type { MouseEvent } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 type CopyStatus = "idle" | "working" | "copied" | "failed";
 

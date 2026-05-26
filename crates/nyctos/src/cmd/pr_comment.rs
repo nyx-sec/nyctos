@@ -258,7 +258,7 @@ pub fn build_comment_body(
     out
 }
 
-fn group_by_file<'a>(rows: &'a [CommentRow]) -> BTreeMap<(String, String), Vec<&'a CommentRow>> {
+fn group_by_file(rows: &[CommentRow]) -> BTreeMap<(String, String), Vec<&CommentRow>> {
     let mut map: BTreeMap<(String, String), Vec<&CommentRow>> = BTreeMap::new();
     for f in rows {
         map.entry((f.repo.clone(), f.path.clone())).or_default().push(f);

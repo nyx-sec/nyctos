@@ -1504,7 +1504,7 @@ fn infer_endpoints(
     for endpoint in endpoints_from_source_path(candidate, target_urls) {
         push_endpoint(&mut out, endpoint);
     }
-    out.sort_by(|a, b| endpoint_rank(a).cmp(&endpoint_rank(b)));
+    out.sort_by_key(endpoint_rank);
     out
 }
 
@@ -1986,9 +1986,9 @@ fn configured_owned_object_for_endpoint<'a>(
 fn route_resource_key(path: &str) -> String {
     path.split('/')
         .filter(|part| {
-            !part.is_empty()
-                && !part.starts_with(':')
-                && !(part.starts_with('{') && part.ends_with('}'))
+            !(part.is_empty()
+                || part.starts_with(':')
+                || part.starts_with('{') && part.ends_with('}'))
         })
         .map(str::to_ascii_lowercase)
         .collect::<Vec<_>>()
@@ -2035,9 +2035,9 @@ fn object_name_from_path(path: &str) -> String {
         .filter(|part| !part.is_empty())
         .rev()
         .find(|part| {
-            !part.chars().any(|ch| ch.is_ascii_digit())
-                && !part.starts_with(':')
-                && !(part.starts_with('{') && part.ends_with('}'))
+            !(part.chars().any(|ch| ch.is_ascii_digit())
+                || part.starts_with(':')
+                || part.starts_with('{') && part.ends_with('}'))
         })
         .unwrap_or("object")
         .trim_matches(['{', '}', ':'])
