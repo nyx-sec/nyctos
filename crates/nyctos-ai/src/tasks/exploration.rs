@@ -590,6 +590,23 @@ fn lift_extracted(result: &AgentResult) -> (Vec<ExplorationFinding>, Vec<AuditEn
                     ),
                 });
             }
+            ExtractedAgentResult::ProjectSetupProfile { summary, warnings, .. } => {
+                audit.push(AuditEntry {
+                    action: "record_project_setup".to_string(),
+                    summary: format!("{} warnings={}", summary, warnings.len()),
+                });
+            }
+            ExtractedAgentResult::SeedSetupPlan { plan } => {
+                audit.push(AuditEntry {
+                    action: "record_seed_setup".to_string(),
+                    summary: format!(
+                        "{} roles={} objects={}",
+                        plan.summary,
+                        plan.roles.len(),
+                        plan.seeded_objects.len()
+                    ),
+                });
+            }
             ExtractedAgentResult::AuthSessionAcquired { summary, .. } => {
                 audit.push(AuditEntry {
                     action: "record_auth_session".to_string(),

@@ -1695,6 +1695,21 @@
   gap: var(--space-2);
 }
 
+.vulnerability-detail__section-header {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  justify-content: space-between;
+}
+
+.vulnerability-detail__section-title {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
 .vulnerability-detail__section + .vulnerability-detail__section {
   padding-top: var(--space-4);
   border-top: 1px solid var(--border);
@@ -1802,6 +1817,180 @@
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   overflow-wrap: anywhere;
+}
+
+.vulnerability-detail__fix-suggestion {
+  border-bottom: 1px solid var(--border);
+  border-top: 1px solid var(--border);
+  padding: var(--space-4) 0;
+}
+
+.vulnerability-detail__fix-running {
+  align-items: center;
+  color: var(--text-secondary);
+  display: flex;
+  font-size: var(--text-sm);
+  gap: var(--space-2);
+}
+
+.vulnerability-detail__fix-events {
+  border-left: 2px solid var(--border);
+  color: var(--text-secondary);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  list-style: none;
+  margin: var(--space-1) 0 0;
+  padding: 0 0 0 var(--space-4);
+}
+
+.vulnerability-detail__fix-events li {
+  display: grid;
+  gap: 2px;
+}
+
+.vulnerability-detail__fix-events span {
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+}
+
+.vulnerability-detail__fix-events p {
+  font-size: var(--text-sm);
+  margin: 0;
+}
+
+.vulnerability-detail__changed-files,
+.vulnerability-detail__fix-explanation {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.vulnerability-detail__changed-files h4,
+.vulnerability-detail__fix-explanation h4 {
+  color: var(--text);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  margin: 0;
+}
+
+.vulnerability-detail__changed-files ul {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-direction: column;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.vulnerability-detail__changed-files li {
+  align-items: center;
+  display: grid;
+  gap: var(--space-3);
+  grid-template-columns: 86px minmax(0, 1fr) auto;
+  min-height: 42px;
+  padding: var(--space-2) var(--space-3);
+}
+
+.vulnerability-detail__changed-files li + li {
+  border-top: 1px solid var(--border);
+}
+
+.vulnerability-detail__changed-files code {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+
+.vulnerability-detail__file-status {
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  padding: 3px 7px;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.file-status--added {
+  background: var(--success-bg);
+  color: var(--success);
+}
+
+.file-status--modified,
+.file-status--changed {
+  background: var(--sev-medium-bg);
+  color: var(--sev-medium);
+}
+
+.file-status--deleted {
+  background: var(--sev-high-bg);
+  color: var(--sev-high);
+}
+
+.file-status--renamed,
+.file-status--copied {
+  background: var(--color-info-quiet);
+  color: var(--color-info);
+}
+
+.vulnerability-detail__file-stats {
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
+.vulnerability-detail__fix-explanation p {
+  color: var(--text-secondary);
+  font-size: var(--text-base);
+  line-height: 1.65;
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.vulnerability-detail__fix-grid {
+  display: grid;
+  gap: var(--space-4);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.vulnerability-detail__fix-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.vulnerability-detail__fix-block h4 {
+  color: var(--text);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  margin: 0;
+}
+
+.vulnerability-detail__fix-block ul {
+  color: var(--text-secondary);
+  display: flex;
+  flex-direction: column;
+  font-size: var(--text-sm);
+  gap: var(--space-2);
+  line-height: 1.55;
+  margin: 0;
+  padding-left: var(--space-4);
+}
+
+.vulnerability-detail__fix-block code {
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+  padding: 1px 5px;
 }
 
 .project-detail {
@@ -5250,7 +5439,8 @@
   }
 
   .vulnerability-detail__summary,
-  .vulnerability-detail__layout {
+  .vulnerability-detail__layout,
+  .vulnerability-detail__fix-grid {
     grid-template-columns: 1fr;
   }
 
@@ -5259,6 +5449,15 @@
     border-top: 1px solid var(--border);
     padding-left: 0;
     padding-top: var(--space-5);
+  }
+
+  .vulnerability-detail__changed-files li {
+    align-items: start;
+    grid-template-columns: 1fr;
+  }
+
+  .vulnerability-detail__file-status {
+    width: fit-content;
   }
 
   .vulnerability-detail__meta,

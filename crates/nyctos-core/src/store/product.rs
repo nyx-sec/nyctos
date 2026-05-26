@@ -1308,6 +1308,7 @@ mod tests {
                 repo_name: Some("web".to_string()),
                 working_directory: Some("frontend".to_string()),
                 timeout_seconds: Some(120),
+                stdin: None,
             }],
             health_checks: vec![LaunchHealthCheck {
                 kind: "http".to_string(),
@@ -1402,6 +1403,7 @@ mod tests {
                         repo_name: None,
                         working_directory: None,
                         timeout_seconds: None,
+                        stdin: None,
                     }],
                     target_urls: vec!["http://localhost:3000".to_string()],
                     ..empty_input()

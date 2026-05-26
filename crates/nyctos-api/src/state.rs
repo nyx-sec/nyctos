@@ -17,6 +17,11 @@ use tokio::sync::{Mutex, RwLock};
 use nyctos_core::store::StoreError;
 use nyctos_core::{Config, SecretStore, Store};
 use nyctos_types::event::{AgentEvent, AiEvent, EventSink, RunEvent, SandboxEvent};
+use nyctos_types::product::{
+    ProjectLaunchProfile, ProjectLaunchProfileInput, ProjectSetupError, ProjectSetupJobEvent,
+    ProjectSetupJobRecord, ProjectSetupJobStatus, ProjectSetupPhase, ProjectSetupResponse,
+    ProjectSetupVerificationStatus, SeedSetupPlan, VerifiedVulnerabilityRecord,
+};
 use nyctos_types::project::{
     AuthSetupError, AuthSetupJobEvent, AuthSetupJobRecord, AuthSetupJobStatus, AuthSetupPhase,
     AuthSetupResponse, AuthSetupVerification, ProjectAuthOwnedObject, ProjectAuthProfile,
@@ -135,10 +140,333 @@ pub trait AuthSetupAgent: Send + Sync + 'static {
     fn explore<'a>(&'a self, req: AuthSetupAgentRequest) -> AuthSetupAgentFuture<'a>;
 }
 
+pub type ProjectSetupAgentFuture<'a> = Pin<
+    Box<dyn Future<Output = Result<ProjectSetupAgentOutput, ProjectSetupAgentError>> + Send + 'a>,
+>;
+
+#[derive(Debug, Clone)]
+pub struct ProjectSetupAgentRequest {
+    pub project_id: String,
+    pub project_name: String,
+    pub target_base_url: Option<String>,
+    pub workspace_roots: Vec<PathBuf>,
+    pub existing_launch_profile: Option<ProjectLaunchProfile>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProjectSetupAgentOutput {
+    pub profile: ProjectLaunchProfileInput,
+    pub summary: String,
+    pub checks: Vec<String>,
+    pub warnings: Vec<String>,
+    pub verification_status: ProjectSetupVerificationStatus,
+    pub message: String,
+}
+
+#[derive(Debug, Error)]
+pub enum ProjectSetupAgentError {
+    #[error("project setup agent unavailable: {0}")]
+    Unavailable(String),
+    #[error("project setup agent failed: {0}")]
+    Failed(String),
+}
+
+pub trait ProjectSetupAgent: Send + Sync + 'static {
+    fn explore<'a>(&'a self, req: ProjectSetupAgentRequest) -> ProjectSetupAgentFuture<'a>;
+}
+
+pub type SeedSetupAgentFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<SeedSetupAgentOutput, SeedSetupAgentError>> + Send + 'a>>;
+
+#[derive(Debug, Clone)]
+pub struct SeedSetupAgentRequest {
+    pub project_id: String,
+    pub project_name: String,
+    pub target_base_url: Option<String>,
+    pub workspace_roots: Vec<PathBuf>,
+    pub launch_profile: Option<ProjectLaunchProfile>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SeedSetupAgentOutput {
+    pub plan: SeedSetupPlan,
+    pub message: String,
+}
+
+#[derive(Debug, Error)]
+pub enum SeedSetupAgentError {
+    #[error("seed setup agent unavailable: {0}")]
+    Unavailable(String),
+    #[error("seed setup agent failed: {0}")]
+    Failed(String),
+}
+
+pub trait SeedSetupAgent: Send + Sync + 'static {
+    fn explore<'a>(&'a self, req: SeedSetupAgentRequest) -> SeedSetupAgentFuture<'a>;
+}
+
+pub type RemediationAgentFuture<'a> = Pin<
+    Box<dyn Future<Output = Result<RemediationAgentOutput, RemediationAgentError>> + Send + 'a>,
+>;
+
+#[derive(Debug, Clone)]
+pub struct RemediationAgentRequest {
+    pub vulnerability: VerifiedVulnerabilityRecord,
+    pub workspace_roots: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct RemediationChangedFile {
+    pub repo: String,
+    pub path: String,
+    pub status: String,
+    pub additions: Option<i64>,
+    pub deletions: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct RemediationAgentOutput {
+    pub changed_files: Vec<RemediationChangedFile>,
+    pub summary: String,
+    pub final_message: String,
+}
+
+#[derive(Debug, Error)]
+pub enum RemediationAgentError {
+    #[error("remediation agent unavailable: {0}")]
+    Unavailable(String),
+    #[error("remediation agent failed: {0}")]
+    Failed(String),
+}
+
+pub trait RemediationAgent: Send + Sync + 'static {
+    fn fix<'a>(&'a self, req: RemediationAgentRequest) -> RemediationAgentFuture<'a>;
+}
+
 #[derive(Debug, Default)]
 pub struct AuthSetupJobStore {
     seq: AtomicU64,
     jobs: Mutex<HashMap<String, AuthSetupJobRecord>>,
+}
+
+#[derive(Debug, Default)]
+pub struct ProjectSetupJobStore {
+    seq: AtomicU64,
+    jobs: Mutex<HashMap<String, ProjectSetupJobRecord>>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RemediationJobEvent {
+    pub at: i64,
+    pub phase: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RemediationJobError {
+    pub title: String,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RemediationJobRecord {
+    pub id: String,
+    pub vulnerability_id: String,
+    pub project_id: String,
+    pub status: String,
+    pub phase: String,
+    pub message: String,
+    pub started_at: i64,
+    pub finished_at: Option<i64>,
+    pub events: Vec<RemediationJobEvent>,
+    pub result: Option<RemediationAgentOutput>,
+    pub error: Option<RemediationJobError>,
+}
+
+#[derive(Debug, Default)]
+pub struct RemediationJobStore {
+    seq: AtomicU64,
+    jobs: Mutex<HashMap<String, RemediationJobRecord>>,
+}
+
+impl RemediationJobStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub async fn create(
+        &self,
+        vulnerability_id: &str,
+        project_id: &str,
+        now: i64,
+    ) -> RemediationJobRecord {
+        let n = self.seq.fetch_add(1, Ordering::Relaxed) + 1;
+        let id = format!("fix-{now}-{n}");
+        let event = RemediationJobEvent {
+            at: now,
+            phase: "queued".to_string(),
+            message: "Fix agent queued.".to_string(),
+        };
+        let record = RemediationJobRecord {
+            id: id.clone(),
+            vulnerability_id: vulnerability_id.to_string(),
+            project_id: project_id.to_string(),
+            status: "queued".to_string(),
+            phase: "queued".to_string(),
+            message: event.message.clone(),
+            started_at: now,
+            finished_at: None,
+            events: vec![event],
+            result: None,
+            error: None,
+        };
+        self.jobs.lock().await.insert(id, record.clone());
+        record
+    }
+
+    pub async fn get(&self, id: &str) -> Option<RemediationJobRecord> {
+        self.jobs.lock().await.get(id).cloned()
+    }
+
+    pub async fn push_phase(&self, id: &str, phase: &str, message: impl Into<String>) {
+        let now = nyctos_core::now_epoch_ms();
+        let message = message.into();
+        let mut jobs = self.jobs.lock().await;
+        let Some(job) = jobs.get_mut(id) else {
+            return;
+        };
+        job.status = "running".to_string();
+        job.phase = phase.to_string();
+        job.message = message.clone();
+        job.events.push(RemediationJobEvent { at: now, phase: phase.to_string(), message });
+    }
+
+    pub async fn complete(&self, id: &str, result: RemediationAgentOutput) {
+        let now = nyctos_core::now_epoch_ms();
+        let mut jobs = self.jobs.lock().await;
+        let Some(job) = jobs.get_mut(id) else {
+            return;
+        };
+        job.status = "succeeded".to_string();
+        job.phase = "complete".to_string();
+        job.message = if result.changed_files.is_empty() {
+            "Fix agent completed without leaving file changes.".to_string()
+        } else {
+            format!("Fix agent updated {} file(s).", result.changed_files.len())
+        };
+        job.finished_at = Some(now);
+        job.result = Some(result);
+        job.error = None;
+        job.events.push(RemediationJobEvent {
+            at: now,
+            phase: "complete".to_string(),
+            message: job.message.clone(),
+        });
+    }
+
+    pub async fn fail(&self, id: &str, error: RemediationJobError) {
+        let now = nyctos_core::now_epoch_ms();
+        let mut jobs = self.jobs.lock().await;
+        let Some(job) = jobs.get_mut(id) else {
+            return;
+        };
+        job.status = "failed".to_string();
+        job.phase = "failed".to_string();
+        job.message = error.title.clone();
+        job.finished_at = Some(now);
+        job.result = None;
+        job.error = Some(error.clone());
+        job.events.push(RemediationJobEvent {
+            at: now,
+            phase: "failed".to_string(),
+            message: error.detail,
+        });
+    }
+}
+
+impl ProjectSetupJobStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub async fn create(&self, project_id: &str, now: i64) -> ProjectSetupJobRecord {
+        let n = self.seq.fetch_add(1, Ordering::Relaxed) + 1;
+        let id = format!("projectsetup-{now}-{n}");
+        let event = ProjectSetupJobEvent {
+            at: now,
+            phase: ProjectSetupPhase::Queued,
+            message: "Project setup queued.".to_string(),
+        };
+        let record = ProjectSetupJobRecord {
+            id: id.clone(),
+            project_id: project_id.to_string(),
+            status: ProjectSetupJobStatus::Queued,
+            phase: ProjectSetupPhase::Queued,
+            message: event.message.clone(),
+            started_at: now,
+            finished_at: None,
+            events: vec![event],
+            result: None,
+            error: None,
+        };
+        self.jobs.lock().await.insert(id, record.clone());
+        record
+    }
+
+    pub async fn get(&self, id: &str) -> Option<ProjectSetupJobRecord> {
+        self.jobs.lock().await.get(id).cloned()
+    }
+
+    pub async fn push_phase(&self, id: &str, phase: ProjectSetupPhase, message: impl Into<String>) {
+        let now = nyctos_core::now_epoch_ms();
+        let message = message.into();
+        let mut jobs = self.jobs.lock().await;
+        let Some(job) = jobs.get_mut(id) else {
+            return;
+        };
+        job.status = ProjectSetupJobStatus::Running;
+        job.phase = phase;
+        job.message = message.clone();
+        job.events.push(ProjectSetupJobEvent { at: now, phase, message });
+    }
+
+    pub async fn complete(&self, id: &str, result: ProjectSetupResponse) {
+        let now = nyctos_core::now_epoch_ms();
+        let mut jobs = self.jobs.lock().await;
+        let Some(job) = jobs.get_mut(id) else {
+            return;
+        };
+        job.status = ProjectSetupJobStatus::Succeeded;
+        job.phase = ProjectSetupPhase::Complete;
+        job.message = result.message.clone();
+        job.finished_at = Some(now);
+        job.result = Some(result);
+        job.error = None;
+        job.events.push(ProjectSetupJobEvent {
+            at: now,
+            phase: ProjectSetupPhase::Complete,
+            message: job.message.clone(),
+        });
+    }
+
+    pub async fn fail(&self, id: &str, error: ProjectSetupError) {
+        let now = nyctos_core::now_epoch_ms();
+        let mut jobs = self.jobs.lock().await;
+        let Some(job) = jobs.get_mut(id) else {
+            return;
+        };
+        job.status = ProjectSetupJobStatus::Failed;
+        job.phase = ProjectSetupPhase::Failed;
+        job.message = error.title.clone();
+        job.finished_at = Some(now);
+        job.result = None;
+        job.error = Some(error.clone());
+        job.events.push(ProjectSetupJobEvent {
+            at: now,
+            phase: ProjectSetupPhase::Failed,
+            message: error.detail,
+        });
+    }
 }
 
 impl AuthSetupJobStore {
@@ -427,6 +755,11 @@ pub struct ServerState {
     pub auth: AuthConfig,
     pub auth_setup_agent: Option<Arc<dyn AuthSetupAgent>>,
     pub auth_setup_jobs: Arc<AuthSetupJobStore>,
+    pub project_setup_agent: Option<Arc<dyn ProjectSetupAgent>>,
+    pub project_setup_jobs: Arc<ProjectSetupJobStore>,
+    pub seed_setup_agent: Option<Arc<dyn SeedSetupAgent>>,
+    pub remediation_agent: Option<Arc<dyn RemediationAgent>>,
+    pub remediation_jobs: Arc<RemediationJobStore>,
     /// Per-run event replay buffer. Populated by a tap task the daemon
     /// runs alongside the broadcast channel and read by `events_ws` on
     /// upgrade so newly-attached LiveScanView clients catch the
@@ -468,6 +801,11 @@ impl ServerState {
             auth,
             auth_setup_agent: None,
             auth_setup_jobs: Arc::new(AuthSetupJobStore::new()),
+            project_setup_agent: None,
+            project_setup_jobs: Arc::new(ProjectSetupJobStore::new()),
+            seed_setup_agent: None,
+            remediation_agent: None,
+            remediation_jobs: Arc::new(RemediationJobStore::new()),
             replay: Arc::new(EventReplay::new()),
             state_repos_dir: None,
             state_bundles_dir: None,
@@ -485,6 +823,21 @@ impl ServerState {
 
     pub fn with_auth_setup_agent(mut self, agent: Arc<dyn AuthSetupAgent>) -> Self {
         self.auth_setup_agent = Some(agent);
+        self
+    }
+
+    pub fn with_project_setup_agent(mut self, agent: Arc<dyn ProjectSetupAgent>) -> Self {
+        self.project_setup_agent = Some(agent);
+        self
+    }
+
+    pub fn with_seed_setup_agent(mut self, agent: Arc<dyn SeedSetupAgent>) -> Self {
+        self.seed_setup_agent = Some(agent);
+        self
+    }
+
+    pub fn with_remediation_agent(mut self, agent: Arc<dyn RemediationAgent>) -> Self {
+        self.remediation_agent = Some(agent);
         self
     }
 

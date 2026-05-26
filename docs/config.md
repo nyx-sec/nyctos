@@ -306,6 +306,7 @@ command = "npm run dev"
 repo = "web"                  # alias: repo_name
 working_directory = "apps/web"
 timeout_secs = 120            # alias: timeout_seconds
+stdin = "y\n"                 # optional text written to stdin after spawn
 ```
 
 HTTP health check:

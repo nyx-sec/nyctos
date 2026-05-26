@@ -31,6 +31,7 @@ export interface RuntimeCommandDraft {
   repo_name: string;
   working_directory: string;
   timeout_seconds: string;
+  stdin: string;
 }
 
 export interface RuntimeEnvDraft {
@@ -157,6 +158,7 @@ const blankCommand = (): RuntimeCommandDraft => ({
   repo_name: "",
   working_directory: "",
   timeout_seconds: "",
+  stdin: "",
 });
 
 const blankEnv = (): RuntimeEnvDraft => ({ name: "", value: "", secret: false });
@@ -785,8 +787,10 @@ function CommandFields({
   commandLabel: string;
   onChange: (row: RuntimeCommandDraft) => void;
 }) {
-  const set = (field: keyof RuntimeCommandDraft) => (e: ChangeEvent<HTMLInputElement>) =>
-    onChange({ ...row, [field]: e.target.value });
+  const set =
+    (field: keyof RuntimeCommandDraft) =>
+    (e: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
+      onChange({ ...row, [field]: e.target.value });
 
   return (
     <div className="runtime-command-fields">
@@ -832,6 +836,17 @@ function CommandFields({
             value={row.timeout_seconds}
             onChange={(timeout_seconds) => onChange({ ...row, timeout_seconds })}
           />
+          <div className="setup-field runtime-command-advanced__stdin">
+            <label htmlFor={`${prefix}-stdin-${index}`}>Stdin</label>
+            <textarea
+              id={`${prefix}-stdin-${index}`}
+              rows={2}
+              spellCheck={false}
+              placeholder={"y\\n"}
+              value={row.stdin}
+              onChange={set("stdin")}
+            />
+          </div>
         </div>
       </details>
     </div>
@@ -1484,6 +1499,7 @@ function commandToDraft(command: ProjectRuntimeCommand | null): RuntimeCommandDr
     repo_name: command.repo_name ?? "",
     working_directory: command.working_directory ?? "",
     timeout_seconds: command.timeout_seconds?.toString() ?? "",
+    stdin: "",
   };
 }
 
@@ -1507,9 +1523,11 @@ function launchStepFromDraft(draft: RuntimeCommandDraft): LaunchStep | undefined
   const repo_name = trimOrUndefined(draft.repo_name);
   const working_directory = trimOrUndefined(draft.working_directory);
   const timeout_seconds = positiveIntOrUndefined(draft.timeout_seconds);
+  const stdin = draft.stdin ? decodeEscapedNewlines(draft.stdin) : undefined;
   if (repo_name) out.repo_name = repo_name;
   if (working_directory) out.working_directory = working_directory;
   if (timeout_seconds !== undefined) out.timeout_seconds = timeout_seconds;
+  if (stdin !== undefined) out.stdin = stdin;
   return out;
 }
 
@@ -1520,6 +1538,7 @@ function launchStepToDraft(step: LaunchStep | null): RuntimeCommandDraft {
     repo_name: step.repo_name ?? "",
     working_directory: step.working_directory ?? "",
     timeout_seconds: step.timeout_seconds?.toString() ?? "",
+    stdin: step.stdin ? encodeEscapedNewlines(step.stdin) : "",
   };
 }
 
@@ -1723,8 +1742,19 @@ function hasCommandContent(row: RuntimeCommandDraft): boolean {
     trimOrUndefined(row.command) ||
       trimOrUndefined(row.repo_name) ||
       trimOrUndefined(row.working_directory) ||
-      trimOrUndefined(row.timeout_seconds),
+      trimOrUndefined(row.timeout_seconds) ||
+      trimOrUndefined(row.stdin),
   );
+}
+
+function decodeEscapedNewlines(input: string): string | undefined {
+  const trimmed = input.trim();
+  if (!trimmed) return undefined;
+  return input.replaceAll("\\n", "\n");
+}
+
+function encodeEscapedNewlines(input: string): string {
+  return input.replaceAll("\n", "\\n");
 }
 
 function sameTrimmed(a: string | null | undefined, b: string | null | undefined): boolean {

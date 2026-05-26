@@ -54,6 +54,18 @@ pub use tasks::live_evidence_review::{
 };
 pub use tasks::novel_findings::{run as run_novel_findings, NovelFindingDiscoveryOutcome};
 pub use tasks::payload_synthesis::{run as run_payload_synthesis, PayloadSynthesisOutcome};
+pub use tasks::project_setup::{
+    run as run_project_setup, ProjectSetupOutcome, ProjectSetupScope,
+    DEFAULT_PROJECT_SETUP_RUN_CAP_USD_MICROS, PROJECT_SETUP_PROMPT_VERSION,
+};
+pub use tasks::remediation::{
+    run as run_remediation, RemediationOutcome, RemediationScope,
+    DEFAULT_REMEDIATION_RUN_CAP_USD_MICROS, REMEDIATION_PROMPT_VERSION,
+};
+pub use tasks::seed_setup::{
+    run as run_seed_setup, SeedSetupOutcome, SeedSetupScope, DEFAULT_SEED_SETUP_RUN_CAP_USD_MICROS,
+    SEED_SETUP_PROMPT_VERSION,
+};
 pub use tasks::spec_derivation::{
     read_excerpt as read_spec_excerpt, run as run_spec_derivation, SpecDerivationOutcome,
 };

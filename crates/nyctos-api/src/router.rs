@@ -59,8 +59,10 @@ use nyctos_types::integration::{
     TestProjectIntegrationResponse,
 };
 use nyctos_types::product::{
-    ProjectLaunchProfileInput, StartPentestRequest, StartPentestResponse, TestLaunchTargetRequest,
-    TestLaunchTargetResponse,
+    ProjectLaunchProfile, ProjectLaunchProfileInput, ProjectSetupError, ProjectSetupJobRecord,
+    ProjectSetupPhase, ProjectSetupRequest, ProjectSetupResponse, ProjectSetupStartResponse,
+    ProjectSetupVerification, ProjectSetupVerificationStatus, SeedSetupPlan, SeedSetupResponse,
+    StartPentestRequest, StartPentestResponse, TestLaunchTargetRequest, TestLaunchTargetResponse,
 };
 use nyctos_types::project::{
     AuthSetupError, AuthSetupJobRecord, AuthSetupPhase, AuthSetupRequest, AuthSetupResponse,
@@ -72,8 +74,9 @@ use nyctos_types::project::{
 use nyctos_types::repo::{CreateRepoRequest, PatchRepoRequest, TestRepoRequest, TestRepoResponse};
 
 use crate::state::{
-    ApiError, AuthSetupAgentError, AuthSetupAgentOutput, AuthSetupAgentRequest, ScanRunOverrides,
-    ScanTriggerSource, ServerState,
+    ApiError, AuthSetupAgentError, AuthSetupAgentOutput, AuthSetupAgentRequest,
+    ProjectSetupAgentError, ProjectSetupAgentRequest, RemediationAgentRequest, RemediationJobError,
+    ScanRunOverrides, ScanTriggerSource, SeedSetupAgentError, SeedSetupAgentRequest, ServerState,
 };
 
 /// Build the production router with every `/api/v1/...` route attached.
@@ -95,6 +98,8 @@ pub fn build_router(state: ServerState) -> Router {
             "/api/v1/projects/{project_id}/auth/auto-setup/{job_id}",
             get(get_auth_auto_setup_job),
         )
+        .route("/api/v1/projects/{project_id}/setup/ai", post(start_ai_project_setup))
+        .route("/api/v1/projects/{project_id}/setup/ai/{job_id}", get(get_ai_project_setup_job))
         .route(
             "/api/v1/projects/{project_id}/repos",
             get(list_project_repos).post(create_project_repo),
@@ -145,6 +150,8 @@ pub fn build_router(state: ServerState) -> Router {
         .route("/api/v1/vulnerabilities", get(list_vulnerabilities))
         .route("/api/v1/vulnerabilities/status", patch(bulk_update_vulnerability_status))
         .route("/api/v1/vulnerabilities/{id}", get(get_vulnerability))
+        .route("/api/v1/vulnerabilities/{id}/fix", post(start_vulnerability_fix))
+        .route("/api/v1/vulnerabilities/{id}/fix/{job_id}", get(get_vulnerability_fix_job))
         .route("/api/v1/vulnerabilities/{id}/status", patch(update_vulnerability_status))
         .route("/api/v1/findings/{id}", get(get_finding))
         .route("/api/v1/findings/{id}/repro-bundle", post(create_repro_bundle))
@@ -960,6 +967,352 @@ async fn get_auth_auto_setup_job(
     Ok(Json(job))
 }
 
+async fn start_ai_project_setup(
+    State(s): State<ServerState>,
+    Path(id): Path<String>,
+    Json(req): Json<ProjectSetupRequest>,
+) -> Result<Json<ProjectSetupStartResponse>, ApiError> {
+    let project = s
+        .store
+        .projects()
+        .get(&id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("project `{id}` not found")))?;
+    let target_base_url = auth_setup_target_base_url(&project, req.target_base_url.as_deref());
+    if let Some(url) = target_base_url.as_deref() {
+        if !is_local_http_url(url) {
+            return Err(ApiError::BadRequest(format!("target URL `{url}` must be local")));
+        }
+    }
+
+    let job = s.project_setup_jobs.create(&id, now_epoch_ms()).await;
+    let job_id = job.id.clone();
+    let state = s.clone();
+    tokio::spawn(async move {
+        run_ai_project_setup_job(state, id, req, job_id).await;
+    });
+
+    Ok(Json(ProjectSetupStartResponse { job }))
+}
+
+async fn get_ai_project_setup_job(
+    State(s): State<ServerState>,
+    Path((project_id, job_id)): Path<(String, String)>,
+) -> Result<Json<ProjectSetupJobRecord>, ApiError> {
+    let job = s
+        .project_setup_jobs
+        .get(&job_id)
+        .await
+        .ok_or_else(|| ApiError::NotFound(format!("project setup job `{job_id}` not found")))?;
+    if job.project_id != project_id {
+        return Err(ApiError::NotFound(format!("project setup job `{job_id}` not found")));
+    }
+    Ok(Json(job))
+}
+
+async fn run_ai_project_setup_job(
+    s: ServerState,
+    id: String,
+    req: ProjectSetupRequest,
+    job_id: String,
+) {
+    let result = run_ai_project_setup_once(s.clone(), &id, req, &job_id).await;
+    match result {
+        Ok(response) => s.project_setup_jobs.complete(&job_id, response).await,
+        Err(error) => s.project_setup_jobs.fail(&job_id, error).await,
+    }
+}
+
+async fn run_ai_project_setup_once(
+    s: ServerState,
+    id: &str,
+    req: ProjectSetupRequest,
+    job_id: &str,
+) -> Result<ProjectSetupResponse, ProjectSetupError> {
+    if !req.project_setup && !req.seed_setup && !req.auth_setup {
+        return Err(project_setup_no_features_error());
+    }
+
+    s.project_setup_jobs
+        .push_phase(job_id, ProjectSetupPhase::CollectingRepos, "Collecting project repositories.")
+        .await;
+    let mut project = s
+        .store
+        .projects()
+        .get(id)
+        .await
+        .map_err(project_setup_store_error)?
+        .ok_or_else(|| project_setup_not_found_error(format!("project `{id}` not found")))?;
+    let repos = s.store.repos().list_by_project(id).await.map_err(project_setup_store_error)?;
+    let workspace_roots = auth_setup_workspace_roots(&repos, s.state_repos_dir.as_deref());
+    if workspace_roots.is_empty() && (req.project_setup || req.seed_setup) {
+        return Err(ProjectSetupError {
+            code: "no_local_workspace".to_string(),
+            title: "Project setup needs a local repository".to_string(),
+            detail: "No local repo workspace was available for the agent to inspect.".to_string(),
+            hint: Some(
+                "Add or ingest at least one local project repository, then retry.".to_string(),
+            ),
+            retryable: true,
+        });
+    }
+    let target_base_url = auth_setup_target_base_url(&project, req.target_base_url.as_deref());
+    if let Some(url) = target_base_url.as_deref() {
+        if !is_local_http_url(url) {
+            return Err(ProjectSetupError {
+                code: "target_not_local".to_string(),
+                title: "Project setup target is not local".to_string(),
+                detail: format!("target URL `{url}` must be local"),
+                hint: Some("Use a localhost or loopback app URL for AI project setup.".to_string()),
+                retryable: false,
+            });
+        }
+    }
+
+    let mut launch_profile = project.default_launch_profile.clone();
+    let mut overall_checks = Vec::new();
+    let mut overall_warnings = Vec::new();
+    let mut messages = Vec::new();
+    let mut seed_setup = None;
+    let mut auth_setup = None;
+    let mut agent_used = false;
+    let mut seed_roles = Vec::new();
+    let mut seeded_objects = Vec::new();
+
+    if req.project_setup {
+        let Some(agent) = s.project_setup_agent.as_ref() else {
+            return Err(ProjectSetupError {
+                code: "agent_runtime_unavailable".to_string(),
+                title: "No AI project setup agent is configured".to_string(),
+                detail: "AI project setup requires a CLI-backed agent runtime.".to_string(),
+                hint: Some("Choose Codex or Claude Code in AI setup and make sure the CLI is installed and logged in.".to_string()),
+                retryable: true,
+            });
+        };
+
+        s.project_setup_jobs
+            .push_phase(
+                job_id,
+                ProjectSetupPhase::StartingAgent,
+                "Starting the repository setup agent.",
+            )
+            .await;
+        let agent_req = ProjectSetupAgentRequest {
+            project_id: id.to_string(),
+            project_name: project.name.clone(),
+            target_base_url: target_base_url.clone(),
+            workspace_roots: workspace_roots.clone(),
+            existing_launch_profile: launch_profile.clone(),
+        };
+        s.project_setup_jobs
+            .push_phase(
+                job_id,
+                ProjectSetupPhase::InspectingProject,
+                "Agent is inspecting scripts, env files, migrations, and local dev workflow.",
+            )
+            .await;
+        let mut output = agent.explore(agent_req).await.map_err(project_setup_agent_error)?;
+        agent_used = true;
+        validate_project_setup_profile(&mut output.profile)?;
+
+        s.project_setup_jobs
+            .push_phase(job_id, ProjectSetupPhase::ApplyingProfile, "Saving launch profile.")
+            .await;
+        let now = now_epoch_ms();
+        let profile = s
+            .store
+            .launch_profiles()
+            .upsert_default(id, &output.profile, now)
+            .await
+            .map_err(project_setup_store_error)?;
+        if project.target_base_url.is_none() {
+            if let Some(target) = profile.target_urls.first().cloned() {
+                let patch = ProjectPatch {
+                    description: ProjectPatchOption::Unset,
+                    target_base_url: ProjectPatchOption::Set(Some(target)),
+                    env_config_json: ProjectPatchOption::Unset,
+                    runtime_profile_json: ProjectPatchOption::Unset,
+                    updated_at: now,
+                };
+                s.store.projects().update(id, &patch).await.map_err(project_setup_store_error)?;
+            }
+        }
+        launch_profile = Some(profile);
+        overall_checks.extend(output.checks);
+        overall_warnings.extend(output.warnings);
+        messages.push(output.message);
+        if output.verification_status == ProjectSetupVerificationStatus::NeedsReview
+            && overall_warnings.is_empty()
+        {
+            overall_warnings
+                .push("Project setup agent marked the launch profile for review.".to_string());
+        }
+        project = s.store.projects().get(id).await.map_err(project_setup_store_error)?.ok_or_else(
+            || project_setup_internal_error("project vanished after AI project setup".to_string()),
+        )?;
+    }
+
+    if req.seed_setup {
+        let Some(agent) = s.seed_setup_agent.as_ref() else {
+            return Err(ProjectSetupError {
+                code: "agent_runtime_unavailable".to_string(),
+                title: "No AI seed setup agent is configured".to_string(),
+                detail: "AI seed setup requires a CLI-backed agent runtime.".to_string(),
+                hint: Some("Choose Codex or Claude Code in AI setup and make sure the CLI is installed and logged in.".to_string()),
+                retryable: true,
+            });
+        };
+
+        s.project_setup_jobs
+            .push_phase(job_id, ProjectSetupPhase::StartingAgent, "Starting the seed setup agent.")
+            .await;
+        let agent_req = SeedSetupAgentRequest {
+            project_id: id.to_string(),
+            project_name: project.name.clone(),
+            target_base_url: target_base_url.clone(),
+            workspace_roots: workspace_roots.clone(),
+            launch_profile: launch_profile.clone(),
+        };
+        s.project_setup_jobs
+            .push_phase(
+                job_id,
+                ProjectSetupPhase::InspectingSeed,
+                "Agent is preparing deterministic local fixtures, roles, owned objects, and reset hooks.",
+            )
+            .await;
+        let output = agent.explore(agent_req).await.map_err(seed_setup_agent_error)?;
+        agent_used = true;
+        validate_seed_setup_plan(&output.plan)?;
+
+        let mut input = launch_profile
+            .as_ref()
+            .map(project_launch_profile_to_input)
+            .unwrap_or_else(|| blank_launch_profile_input(target_base_url.as_deref()));
+        apply_seed_plan_to_launch_profile(&mut input, &output.plan);
+
+        s.project_setup_jobs
+            .push_phase(job_id, ProjectSetupPhase::ApplyingSeed, "Saving seed and reset setup.")
+            .await;
+        let now = now_epoch_ms();
+        let profile = s
+            .store
+            .launch_profiles()
+            .upsert_default(id, &input, now)
+            .await
+            .map_err(project_setup_store_error)?;
+        launch_profile = Some(profile.clone());
+
+        if apply_seed_env_to_project_runtime_profile(
+            &s,
+            id,
+            &project,
+            &output.plan,
+            target_base_url.clone(),
+            launch_profile.as_ref(),
+            now,
+        )
+        .await?
+        {
+            project =
+                s.store.projects().get(id).await.map_err(project_setup_store_error)?.ok_or_else(
+                    || {
+                        project_setup_internal_error(
+                            "project vanished after seed setup".to_string(),
+                        )
+                    },
+                )?;
+        }
+
+        let verification = ProjectSetupVerification {
+            status: if output.plan.warnings.is_empty() {
+                ProjectSetupVerificationStatus::Verified
+            } else {
+                ProjectSetupVerificationStatus::NeedsReview
+            },
+            checks: output.plan.checks.clone(),
+            warnings: output.plan.warnings.clone(),
+        };
+        overall_checks.extend(verification.checks.clone());
+        overall_warnings.extend(verification.warnings.clone());
+        seed_roles = output.plan.roles.clone();
+        seeded_objects = output.plan.seeded_objects.clone();
+        messages.push(output.message.clone());
+        seed_setup =
+            Some(SeedSetupResponse { plan: output.plan, verification, message: output.message });
+    }
+
+    if req.auth_setup {
+        s.project_setup_jobs
+            .push_phase(
+                job_id,
+                ProjectSetupPhase::InspectingAuth,
+                "Running auth setup with seeded roles and owned objects.",
+            )
+            .await;
+        let auth_job = s.auth_setup_jobs.create(id, now_epoch_ms()).await;
+        let auth_req = AuthSetupRequest {
+            target_base_url: target_base_url.clone(),
+            roles: seed_roles.clone(),
+            seeded_objects: seeded_objects.clone(),
+        };
+        let result = run_auth_auto_setup_once(s.clone(), id, auth_req, &auth_job.id).await;
+        match result {
+            Ok(response) => {
+                s.auth_setup_jobs.complete(&auth_job.id, response.clone()).await;
+                overall_checks.extend(response.verification.checks.clone());
+                overall_warnings.extend(response.verification.warnings.clone());
+                if response.verification.status != AuthSetupVerificationStatus::Verified {
+                    overall_warnings.push("Auth setup needs review.".to_string());
+                }
+                messages.push(response.message.clone());
+                agent_used |= response.agent_used;
+                project = response.project.clone();
+                auth_setup = Some(response);
+            }
+            Err(error) => {
+                s.auth_setup_jobs.fail(&auth_job.id, error.clone()).await;
+                return Err(project_setup_from_auth_error(error));
+            }
+        }
+    }
+
+    let profile = ensure_project_setup_launch_profile(
+        &s,
+        id,
+        &mut project,
+        launch_profile,
+        target_base_url.as_deref(),
+    )
+    .await?;
+    let project =
+        s.store.projects().get(id).await.map_err(project_setup_store_error)?.ok_or_else(|| {
+            project_setup_internal_error("project vanished after setup".to_string())
+        })?;
+    let verification = ProjectSetupVerification {
+        status: if overall_warnings.is_empty() {
+            ProjectSetupVerificationStatus::Verified
+        } else {
+            ProjectSetupVerificationStatus::NeedsReview
+        },
+        checks: overall_checks,
+        warnings: overall_warnings,
+    };
+    let mut message =
+        if messages.is_empty() { "AI setup finished.".to_string() } else { messages.join(" ") };
+    if !verification.warnings.is_empty() {
+        message.push_str(&format!(" Review {} warning(s).", verification.warnings.len()));
+    }
+    Ok(ProjectSetupResponse {
+        project,
+        profile,
+        agent_used,
+        verification,
+        seed_setup,
+        auth_setup,
+        message,
+    })
+}
+
 async fn run_auth_auto_setup_job(
     s: ServerState,
     id: String,
@@ -1251,6 +1604,354 @@ fn auth_setup_agent_error(err: AuthSetupAgentError) -> AuthSetupError {
         hint: Some(hint.to_string()),
         retryable,
     }
+}
+
+fn project_setup_store_error(err: nyctos_core::store::StoreError) -> ProjectSetupError {
+    ProjectSetupError {
+        code: "store_error".to_string(),
+        title: "Project setup could not read or save project data".to_string(),
+        detail: err.to_string(),
+        hint: Some("Retry the setup. If this repeats, restart the Nyctos daemon.".to_string()),
+        retryable: true,
+    }
+}
+
+fn project_setup_not_found_error(detail: String) -> ProjectSetupError {
+    ProjectSetupError {
+        code: "project_not_found".to_string(),
+        title: "Project was not found".to_string(),
+        detail,
+        hint: Some("Refresh the project list and try again.".to_string()),
+        retryable: false,
+    }
+}
+
+fn project_setup_internal_error(detail: String) -> ProjectSetupError {
+    ProjectSetupError {
+        code: "internal_error".to_string(),
+        title: "Project setup hit an internal error".to_string(),
+        detail,
+        hint: Some("Retry the setup. If this repeats, check the daemon logs.".to_string()),
+        retryable: true,
+    }
+}
+
+fn project_setup_agent_error(err: ProjectSetupAgentError) -> ProjectSetupError {
+    let raw = err.to_string();
+    let unavailable = matches!(err, ProjectSetupAgentError::Unavailable(_));
+    ProjectSetupError {
+        code: if unavailable { "agent_runtime_unavailable" } else { "agent_failed" }.to_string(),
+        title: if unavailable {
+            "The configured project setup agent is unavailable"
+        } else {
+            "The project setup agent failed"
+        }
+        .to_string(),
+        detail: raw,
+        hint: Some(if unavailable {
+            "Choose Codex or Claude Code in AI setup and make sure the CLI is installed and logged in."
+        } else {
+            "Retry the job. If this repeats, inspect the daemon logs for the underlying CLI error."
+        }
+        .to_string()),
+        retryable: true,
+    }
+}
+
+fn seed_setup_agent_error(err: SeedSetupAgentError) -> ProjectSetupError {
+    let raw = err.to_string();
+    let unavailable = matches!(err, SeedSetupAgentError::Unavailable(_));
+    ProjectSetupError {
+        code: if unavailable { "agent_runtime_unavailable" } else { "seed_agent_failed" }
+            .to_string(),
+        title: if unavailable {
+            "The configured seed setup agent is unavailable"
+        } else {
+            "The seed setup agent failed"
+        }
+        .to_string(),
+        detail: raw,
+        hint: Some(if unavailable {
+            "Choose Codex or Claude Code in AI setup and make sure the CLI is installed and logged in."
+        } else {
+            "Retry the job. If this repeats, inspect the daemon logs for the underlying CLI error."
+        }
+        .to_string()),
+        retryable: true,
+    }
+}
+
+fn project_setup_from_auth_error(err: AuthSetupError) -> ProjectSetupError {
+    ProjectSetupError {
+        code: format!("auth_{}", err.code),
+        title: format!("Auth setup failed: {}", err.title),
+        detail: err.detail,
+        hint: err.hint,
+        retryable: err.retryable,
+    }
+}
+
+fn project_setup_no_features_error() -> ProjectSetupError {
+    ProjectSetupError {
+        code: "no_setup_features_selected".to_string(),
+        title: "No setup features were selected".to_string(),
+        detail: "Select project setup, seed setup, auth setup, or any combination of them."
+            .to_string(),
+        hint: Some("Choose at least one AI setup feature and retry.".to_string()),
+        retryable: false,
+    }
+}
+
+fn validate_project_setup_profile(
+    profile: &mut ProjectLaunchProfileInput,
+) -> Result<(), ProjectSetupError> {
+    for url in &profile.target_urls {
+        if !is_local_http_url(url) {
+            return Err(ProjectSetupError {
+                code: "target_not_local".to_string(),
+                title: "AI project setup proposed a non-local target".to_string(),
+                detail: format!("target URL `{url}` must be local"),
+                hint: Some(
+                    "Ask the setup agent to use a localhost or loopback dev URL.".to_string(),
+                ),
+                retryable: true,
+            });
+        }
+    }
+    for check in &profile.health_checks {
+        if let Some(url) = check.url.as_deref() {
+            if !is_local_http_url(url) {
+                return Err(ProjectSetupError {
+                    code: "health_target_not_local".to_string(),
+                    title: "AI project setup proposed a non-local health check".to_string(),
+                    detail: format!("health check URL `{url}` must be local"),
+                    hint: Some(
+                        "Ask the setup agent to use a localhost or loopback health URL."
+                            .to_string(),
+                    ),
+                    retryable: true,
+                });
+            }
+        }
+    }
+    if profile.target_urls.is_empty()
+        && profile.start_steps.is_empty()
+        && profile.health_checks.is_empty()
+    {
+        return Err(ProjectSetupError {
+            code: "empty_profile".to_string(),
+            title: "AI project setup returned an empty launch profile".to_string(),
+            detail: "The agent did not provide a target URL, start command, or health check."
+                .to_string(),
+            hint: Some("Retry after adding local setup docs or a package script.".to_string()),
+            retryable: true,
+        });
+    }
+    Ok(())
+}
+
+fn validate_seed_setup_plan(plan: &SeedSetupPlan) -> Result<(), ProjectSetupError> {
+    let empty = plan.seed_steps.is_empty()
+        && plan.reset_steps.is_empty()
+        && plan.env_vars.is_empty()
+        && plan.roles.is_empty()
+        && plan.seeded_objects.is_empty();
+    if empty {
+        return Err(ProjectSetupError {
+            code: "empty_seed_plan".to_string(),
+            title: "AI seed setup returned an empty plan".to_string(),
+            detail: "The seed setup agent did not provide seed commands, reset commands, env vars, roles, or seeded objects.".to_string(),
+            hint: Some("Retry after adding local seed docs or fixture scripts to the repository.".to_string()),
+            retryable: true,
+        });
+    }
+    for var in &plan.env_vars {
+        if var.name.trim().is_empty() {
+            return Err(ProjectSetupError {
+                code: "empty_seed_env_name".to_string(),
+                title: "AI seed setup proposed an invalid environment variable".to_string(),
+                detail: "A seed environment variable had an empty name.".to_string(),
+                hint: Some("Retry seed setup or add the fixture env vars manually.".to_string()),
+                retryable: true,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn project_launch_profile_to_input(profile: &ProjectLaunchProfile) -> ProjectLaunchProfileInput {
+    ProjectLaunchProfileInput {
+        name: Some(profile.name.clone()),
+        mode: Some(profile.mode.clone()),
+        build_steps: profile.build_steps.clone(),
+        start_steps: profile.start_steps.clone(),
+        seed_steps: profile.seed_steps.clone(),
+        reset_steps: profile.reset_steps.clone(),
+        login_steps: profile.login_steps.clone(),
+        stop_steps: profile.stop_steps.clone(),
+        health_checks: profile.health_checks.clone(),
+        target_urls: profile.target_urls.clone(),
+        env_refs: profile.env_refs.clone(),
+        working_dirs: profile.working_dirs.clone(),
+    }
+}
+
+fn blank_launch_profile_input(target_base_url: Option<&str>) -> ProjectLaunchProfileInput {
+    ProjectLaunchProfileInput {
+        name: Some("AI local setup".to_string()),
+        mode: Some("already-running".to_string()),
+        build_steps: Vec::new(),
+        start_steps: Vec::new(),
+        seed_steps: Vec::new(),
+        reset_steps: Vec::new(),
+        login_steps: Vec::new(),
+        stop_steps: Vec::new(),
+        health_checks: Vec::new(),
+        target_urls: target_base_url.map(str::to_string).into_iter().collect(),
+        env_refs: Vec::new(),
+        working_dirs: Vec::new(),
+    }
+}
+
+fn apply_seed_plan_to_launch_profile(input: &mut ProjectLaunchProfileInput, plan: &SeedSetupPlan) {
+    if !plan.seed_steps.is_empty() {
+        input.seed_steps = plan.seed_steps.clone();
+    }
+    if !plan.reset_steps.is_empty() {
+        input.reset_steps = plan.reset_steps.clone();
+    }
+    if !plan.seed_steps.is_empty() || !plan.reset_steps.is_empty() {
+        input.mode = Some("custom-commands".to_string());
+    }
+    for var in &plan.env_vars {
+        let name = var.name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        if !input.env_refs.iter().any(|entry| entry.kind == "env-var" && entry.value == name) {
+            input.env_refs.push(nyctos_types::product::LaunchEnvRef {
+                kind: "env-var".to_string(),
+                value: name.to_string(),
+                secret: var.secret,
+            });
+        }
+    }
+}
+
+async fn apply_seed_env_to_project_runtime_profile(
+    s: &ServerState,
+    id: &str,
+    project: &ProjectRecord,
+    plan: &SeedSetupPlan,
+    target_base_url: Option<String>,
+    launch_profile: Option<&ProjectLaunchProfile>,
+    now: i64,
+) -> Result<bool, ProjectSetupError> {
+    if plan.env_vars.is_empty() {
+        return Ok(false);
+    }
+
+    let mut runtime_profile = project.runtime_profile.clone().unwrap_or_else(|| {
+        empty_runtime_profile_for_auth_setup(target_base_url.clone(), launch_profile)
+    });
+    if runtime_profile.target_base_url.is_none() {
+        runtime_profile.target_base_url = target_base_url.clone();
+    }
+    if runtime_profile.health_check_url.is_none() {
+        runtime_profile.health_check_url = target_base_url.clone();
+    }
+    let changed = merge_runtime_env_vars(&mut runtime_profile.env_vars, &plan.env_vars);
+    if !changed {
+        return Ok(false);
+    }
+
+    let runtime_profile_json = serde_json::to_string(&runtime_profile).map_err(|e| {
+        project_setup_internal_error(format!("runtime_profile must serialize to JSON: {e}"))
+    })?;
+    let patch = ProjectPatch {
+        description: ProjectPatchOption::Unset,
+        target_base_url: target_base_url
+            .map(|url| ProjectPatchOption::Set(Some(url)))
+            .unwrap_or(ProjectPatchOption::Unset),
+        env_config_json: ProjectPatchOption::Unset,
+        runtime_profile_json: ProjectPatchOption::Set(Some(runtime_profile_json)),
+        updated_at: now,
+    };
+    if !s.store.projects().update(id, &patch).await.map_err(project_setup_store_error)? {
+        return Err(project_setup_not_found_error(format!("project `{id}` not found")));
+    }
+    Ok(true)
+}
+
+fn merge_runtime_env_vars(
+    existing: &mut Vec<ProjectRuntimeEnvVar>,
+    incoming: &[ProjectRuntimeEnvVar],
+) -> bool {
+    let mut changed = false;
+    for var in incoming {
+        let name = var.name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        if let Some(current) = existing.iter_mut().find(|current| current.name == name) {
+            if current.value != var.value || current.secret != var.secret || current.name != name {
+                current.name = name.to_string();
+                current.value = var.value.clone();
+                current.secret = var.secret;
+                changed = true;
+            }
+        } else {
+            existing.push(ProjectRuntimeEnvVar {
+                name: name.to_string(),
+                value: var.value.clone(),
+                secret: var.secret,
+            });
+            changed = true;
+        }
+    }
+    changed
+}
+
+async fn ensure_project_setup_launch_profile(
+    s: &ServerState,
+    id: &str,
+    project: &mut ProjectRecord,
+    launch_profile: Option<ProjectLaunchProfile>,
+    target_base_url: Option<&str>,
+) -> Result<ProjectLaunchProfile, ProjectSetupError> {
+    if let Some(profile) = launch_profile {
+        return Ok(profile);
+    }
+
+    let input = project
+        .runtime_profile
+        .as_ref()
+        .map(|profile| launch_profile_input_from_runtime(profile, target_base_url))
+        .unwrap_or_else(|| blank_launch_profile_input(target_base_url));
+    let now = now_epoch_ms();
+    let profile = s
+        .store
+        .launch_profiles()
+        .upsert_default(id, &input, now)
+        .await
+        .map_err(project_setup_store_error)?;
+    if project.target_base_url.is_none() {
+        if let Some(target) = profile.target_urls.first().cloned() {
+            let patch = ProjectPatch {
+                description: ProjectPatchOption::Unset,
+                target_base_url: ProjectPatchOption::Set(Some(target)),
+                env_config_json: ProjectPatchOption::Unset,
+                runtime_profile_json: ProjectPatchOption::Unset,
+                updated_at: now,
+            };
+            s.store.projects().update(id, &patch).await.map_err(project_setup_store_error)?;
+            *project =
+                s.store.projects().get(id).await.map_err(project_setup_store_error)?.ok_or_else(
+                    || project_setup_internal_error("project vanished after setup".to_string()),
+                )?;
+        }
+    }
+    Ok(profile)
 }
 
 fn project_patch_for(opt: &Option<Option<String>>) -> ProjectPatchOption<Option<String>> {
@@ -2571,6 +3272,7 @@ fn runtime_command_to_launch_step(
         repo_name: cmd.repo_name.clone(),
         working_directory: cmd.working_directory.clone(),
         timeout_seconds: cmd.timeout_seconds,
+        stdin: None,
     }
 }
 
@@ -3506,6 +4208,116 @@ async fn get_vulnerability(
         .await?
         .map(Json)
         .ok_or_else(|| ApiError::NotFound(format!("vulnerability `{id}` not found")))
+}
+
+#[derive(Debug, Serialize)]
+struct RemediationStartResponse {
+    job: crate::state::RemediationJobRecord,
+}
+
+async fn start_vulnerability_fix(
+    State(s): State<ServerState>,
+    Path(id): Path<String>,
+) -> Result<Json<RemediationStartResponse>, ApiError> {
+    let vulnerability = s
+        .store
+        .verified_vulnerabilities()
+        .get(&id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("vulnerability `{id}` not found")))?;
+    let agent = s.remediation_agent.clone().ok_or_else(|| {
+        ApiError::BadRequest(
+            "no remediation agent is configured; select Codex or Claude Code as the AI runtime"
+                .to_string(),
+        )
+    })?;
+    let repos = s.store.repos().list_by_project(&vulnerability.project_id).await?;
+    let workspace_roots = remediation_workspace_roots(&repos, s.state_repos_dir.as_deref());
+    if workspace_roots.is_empty() {
+        return Err(ApiError::BadRequest(
+            "no writable local repository workspace is available for this project".to_string(),
+        ));
+    }
+
+    let job = s
+        .remediation_jobs
+        .create(&vulnerability.id, &vulnerability.project_id, now_epoch_ms())
+        .await;
+    let job_id = job.id.clone();
+    let jobs = s.remediation_jobs.clone();
+    tokio::spawn(async move {
+        jobs.push_phase(&job_id, "preparing", "Preparing vulnerability context.").await;
+        let request = RemediationAgentRequest { vulnerability, workspace_roots };
+        jobs.push_phase(&job_id, "editing", "Fix agent is editing the local repository.").await;
+        match agent.fix(request).await {
+            Ok(output) => jobs.complete(&job_id, output).await,
+            Err(err) => jobs.fail(&job_id, remediation_error_to_job_error(err)).await,
+        }
+    });
+
+    Ok(Json(RemediationStartResponse { job }))
+}
+
+async fn get_vulnerability_fix_job(
+    State(s): State<ServerState>,
+    Path((id, job_id)): Path<(String, String)>,
+) -> Result<Json<crate::state::RemediationJobRecord>, ApiError> {
+    let job = s
+        .remediation_jobs
+        .get(&job_id)
+        .await
+        .ok_or_else(|| ApiError::NotFound(format!("fix job `{job_id}` not found")))?;
+    if job.vulnerability_id != id {
+        return Err(ApiError::NotFound(format!(
+            "fix job `{job_id}` not found for vulnerability `{id}`"
+        )));
+    }
+    Ok(Json(job))
+}
+
+fn remediation_error_to_job_error(err: crate::state::RemediationAgentError) -> RemediationJobError {
+    match err {
+        crate::state::RemediationAgentError::Unavailable(detail) => {
+            RemediationJobError { title: "Fix agent unavailable".to_string(), detail }
+        }
+        crate::state::RemediationAgentError::Failed(detail) => {
+            RemediationJobError { title: "Fix agent failed".to_string(), detail }
+        }
+    }
+}
+
+fn remediation_workspace_roots(
+    repos: &[RepoRecord],
+    state_repos_dir: Option<&FsPath>,
+) -> Vec<PathBuf> {
+    let mut seen = BTreeSet::new();
+    let mut out = Vec::new();
+    for repo in repos {
+        if matches!(repo.source_kind.as_str(), "local" | "local-path") {
+            push_workspace_root(&mut out, &mut seen, PathBuf::from(&repo.source_url_or_path));
+        }
+        if let Some(root) = state_repos_dir {
+            let legacy = root.join(&repo.name);
+            push_workspace_root(&mut out, &mut seen, legacy.join("checkout"));
+            push_workspace_root(&mut out, &mut seen, legacy);
+            if let Some(state_root) = root.parent() {
+                let project_scoped = state_root
+                    .join("projects")
+                    .join(&repo.project_id)
+                    .join("repos")
+                    .join(&repo.name);
+                push_workspace_root(&mut out, &mut seen, project_scoped.join("checkout"));
+                push_workspace_root(&mut out, &mut seen, project_scoped);
+            }
+        }
+    }
+    out
+}
+
+fn push_workspace_root(out: &mut Vec<PathBuf>, seen: &mut BTreeSet<PathBuf>, path: PathBuf) {
+    if path.is_dir() && seen.insert(path.clone()) {
+        out.push(path);
+    }
 }
 
 async fn require_run(s: &ServerState, id: &str) -> Result<RunRecord, ApiError> {

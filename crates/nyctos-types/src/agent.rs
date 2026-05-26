@@ -13,6 +13,7 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use thiserror::Error;
 use ts_rs::TS;
 
+use crate::product::{ProjectLaunchProfileInput, SeedSetupPlan};
 use crate::project::{ProjectAuthMode, ProjectAuthProfile};
 
 /// Single-turn prompt envelope. The `prompt_version` field is the only
@@ -287,6 +288,18 @@ pub enum ExtractedAgentResult {
     /// generated profiles back to the repository's auth routes and
     /// session flow.
     AuthSetupVerification { status: String, checks: Vec<String>, warnings: Vec<String> },
+    /// Project setup output: a launch profile produced after the agent
+    /// inspected and exercised the repository's local dev workflow.
+    ProjectSetupProfile {
+        profile: ProjectLaunchProfileInput,
+        summary: String,
+        checks: Vec<String>,
+        warnings: Vec<String>,
+    },
+    /// Seed setup output: deterministic local fixtures and launch hooks
+    /// that create roles, owned objects, tenants, and other app-native
+    /// state for live authorization checks.
+    SeedSetupPlan { plan: SeedSetupPlan },
     /// Auth session output: an agent completed login and saved a
     /// Playwright storageState file that the host can import without
     /// logging raw cookies or bearer tokens.
@@ -406,6 +419,24 @@ pub fn classify_tool_use(name: &str, input: &serde_json::Value) -> Option<Extrac
             let checks = string_array(input, "checks");
             let warnings = string_array(input, "warnings");
             Some(ExtractedAgentResult::AuthSetupVerification { status, checks, warnings })
+        }
+        "record_project_setup" => {
+            let profile_value = input.get("profile")?;
+            let profile: ProjectLaunchProfileInput =
+                serde_json::from_value(profile_value.clone()).ok()?;
+            let summary = optional_string(input, "summary")
+                .unwrap_or_else(|| "local project setup".to_string());
+            Some(ExtractedAgentResult::ProjectSetupProfile {
+                profile,
+                summary,
+                checks: string_array(input, "checks"),
+                warnings: string_array(input, "warnings"),
+            })
+        }
+        "record_seed_setup" => {
+            let plan_value = input.get("plan").unwrap_or(input);
+            let plan: SeedSetupPlan = serde_json::from_value(plan_value.clone()).ok()?;
+            Some(ExtractedAgentResult::SeedSetupPlan { plan })
         }
         "record_auth_session" => {
             let storage_state_path = optional_string(input, "storage_state_path")?;

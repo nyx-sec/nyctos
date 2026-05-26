@@ -4,7 +4,7 @@
 
 export type RepoOutcomeTag = "Success" | "Inconclusive" | "Failed";
 
-export type RunEvent = { "kind": "Heartbeat", ts: number, } | { "kind": "RunStarted", run_id: string, project_id: string, repos: Array<string>, started_at_ms: number, } | { "kind": "ProjectStarted", run_id: string, project_id: string, project_name: string, started_at_ms: number, } | { "kind": "PhaseStarted", run_id: string, project_id: string, phase: string, started_at_ms: number, } | { "kind": "PhaseFinished", run_id: string, project_id: string, phase: string, status: string, message: string | null, finished_at_ms: number, } | { "kind": "EnvironmentStatus", run_id: string, project_id: string, environment_run_id: string, status: string, message: string | null, target_urls: Array<string>, ts_ms: number, } | { "kind": "AuthSessionStatus", run_id: string, project_id: string, role: string, status: string, acquired_by: string, message: string | null, ts_ms: number, } | { "kind": "RepoStarted", run_id: string, project_id: string, repo: string, started_at_ms: number, } | { "kind": "RepoStaticDone", run_id: string, project_id: string, repo: string, n_diags: number, elapsed_ms: number, } | { "kind": "RepoDynamicDone", run_id: string, project_id: string, repo: string, elapsed_ms: number, } | { "kind": "RepoFailed", run_id: string, project_id: string, repo: string, message: string, elapsed_ms: number, } | { "kind": "RepoIngestFailed", run_id: string, project_id: string, repo: string, message: string, } | { "kind": "RepoFinished", run_id: string, project_id: string, repo: string, outcome: RepoOutcomeTag, elapsed_ms: number, } | { "kind": "ProjectFinished", run_id: string, project_id: string, finished_at_ms: number, } | { "kind": "RunFinished", run_id: string, project_id: string, finished_at_ms: number, wall_clock_ms: number, succeeded: number, inconclusive: number, failed: number, };
+export type RunEvent = { "kind": "Heartbeat", ts: number, } | { "kind": "RunStarted", run_id: string, project_id: string, repos: Array<string>, started_at_ms: number, } | { "kind": "ProjectStarted", run_id: string, project_id: string, project_name: string, started_at_ms: number, } | { "kind": "PhaseStarted", run_id: string, project_id: string, phase: string, started_at_ms: number, } | { "kind": "PhaseFinished", run_id: string, project_id: string, phase: string, status: string, message: string | null, finished_at_ms: number, } | { "kind": "EnvironmentStatus", run_id: string, project_id: string, environment_run_id: string, status: string, message: string | null, target_urls: Array<string>, ts_ms: number, } | { "kind": "AuthSessionStatus", run_id: string, project_id: string, role: string, status: string, acquired_by: string, message: string | null, ts_ms: number, } | { "kind": "LiveVerificationCapabilities", run_id: string, project_id: string, report: unknown, ts_ms: number, } | { "kind": "RepoStarted", run_id: string, project_id: string, repo: string, started_at_ms: number, } | { "kind": "RepoStaticDone", run_id: string, project_id: string, repo: string, n_diags: number, elapsed_ms: number, } | { "kind": "RepoDynamicDone", run_id: string, project_id: string, repo: string, elapsed_ms: number, } | { "kind": "RepoFailed", run_id: string, project_id: string, repo: string, message: string, elapsed_ms: number, } | { "kind": "RepoIngestFailed", run_id: string, project_id: string, repo: string, message: string, } | { "kind": "RepoFinished", run_id: string, project_id: string, repo: string, outcome: RepoOutcomeTag, elapsed_ms: number, } | { "kind": "ProjectFinished", run_id: string, project_id: string, finished_at_ms: number, } | { "kind": "RunFinished", run_id: string, project_id: string, finished_at_ms: number, wall_clock_ms: number, succeeded: number, inconclusive: number, failed: number, };
 
 export type HaltReason = "BudgetCapReached" | "OperatorCancelled" | "UpstreamRefused";
 
@@ -116,7 +116,7 @@ export type AgentTask = { prompt_version: string, task_id: string, system: strin
  */
 working_directory?: string, max_turns: number, };
 
-export type ExtractedAgentResult = { "kind": "PayloadFound", rule_id: string, body: string, } | { "kind": "SpecFound", capability: string, spec: string, } | { "kind": "ChainsRanked", chain_ids: Array<string>, rationale: string, } | { "kind": "ExplorationFinding", path: string, line: number | null, cap: string, rationale: string, endpoint: string | null, suggested_payload_hint: string | null, } | { "kind": "AttackVulnerability", title: string, vuln_class: string, severity: string, confidence: number, affected_components: Array<unknown>, business_impact: string, evidence_summary: string, repro_steps: string, remediation: string, source_candidate_ids: Array<string>, source_signal_ids: Array<string>, proof_artifact_paths: Array<string>, } | { "kind": "ExplorationEvent", message: string, } | { "kind": "AuthProfileDiscovered", profile: ProjectAuthProfile, rationale: string, } | { "kind": "AuthSetupVerification", status: string, checks: Array<string>, warnings: Array<string>, };
+export type ExtractedAgentResult = { "kind": "PayloadFound", rule_id: string, body: string, } | { "kind": "SpecFound", capability: string, spec: string, } | { "kind": "ChainsRanked", chain_ids: Array<string>, rationale: string, } | { "kind": "ExplorationFinding", path: string, line: number | null, cap: string, rationale: string, endpoint: string | null, suggested_payload_hint: string | null, } | { "kind": "AttackVulnerability", title: string, vuln_class: string, severity: string, confidence: number, affected_components: Array<unknown>, business_impact: string, evidence_summary: string, repro_steps: string, remediation: string, source_candidate_ids: Array<string>, source_signal_ids: Array<string>, proof_artifact_paths: Array<string>, } | { "kind": "ExplorationEvent", message: string, } | { "kind": "AuthProfileDiscovered", profile: ProjectAuthProfile, rationale: string, } | { "kind": "AuthSetupVerification", status: string, checks: Array<string>, warnings: Array<string>, } | { "kind": "ProjectSetupProfile", profile: ProjectLaunchProfileInput, summary: string, checks: Array<string>, warnings: Array<string>, } | { "kind": "SeedSetupPlan", plan: SeedSetupPlan, } | { "kind": "AuthSessionAcquired", storage_state_path: string, summary: string, };
 
 export type AgentResult = { prompt_version: string, task_id: string,
 /**
@@ -240,7 +240,12 @@ export type ProjectAuthProfile = {
  * Stable role name used by live plans, e.g. `anonymous`, `user`,
  * `admin`, `user_a`, or `user_b`.
  */
-role: string, mode: ProjectAuthMode, label?: string, tenant?: string, session_cache_ttl_seconds?: number, session_import_path?: string, login_url?: string, username?: string, username_env?: string, login_email_env?: string, password_env?: string, password_secret_ref?: string, cookie_env?: string, bearer_token_env?: string, headers: Array<ProjectAuthHeaderRef>, otp_source?: ProjectOtpSourceConfig, post_login_assertions: Array<ProjectAuthAssertion>, post_login_assertion?: string, custom_command?: string, owned_objects: Array<ProjectAuthOwnedObject>, };
+role: string,
+/**
+ * Optional semantic aliases understood by live verification planning,
+ * e.g. `owner`, `creator`, `member`, `viewer`, or `admin`.
+ */
+role_aliases?: Array<string>, mode: ProjectAuthMode, label?: string, tenant?: string, session_cache_ttl_seconds?: number, session_import_path?: string, login_url?: string, username?: string, username_env?: string, login_email_env?: string, password_env?: string, password_secret_ref?: string, cookie_env?: string, bearer_token_env?: string, headers: Array<ProjectAuthHeaderRef>, otp_source?: ProjectOtpSourceConfig, post_login_assertions: Array<ProjectAuthAssertion>, post_login_assertion?: string, custom_command?: string, owned_objects: Array<ProjectAuthOwnedObject>, };
 
 export type ProjectRuntimeProfile = { build_commands: Array<ProjectRuntimeCommand>, start_commands: Array<ProjectRuntimeCommand>, health_check_url?: string, health_check_command?: ProjectRuntimeCommand, target_base_url?: string, allowed_hosts: Array<string>, env_vars: Array<ProjectRuntimeEnvVar>, auth_profiles: Array<ProjectAuthProfile>, env_file?: string, timeout_seconds?: number, };
 
@@ -264,7 +269,13 @@ export type AuthSetupJobRecord = { id: string, project_id: string, status: AuthS
 
 export type AuthSetupStartResponse = { job: AuthSetupJobRecord, };
 
-export type LaunchStep = { command: string, repo_id?: string, repo_name?: string, working_directory?: string, timeout_seconds?: number, };
+export type LaunchStep = { command: string, repo_id?: string, repo_name?: string, working_directory?: string, timeout_seconds?: number,
+/**
+ * Optional stdin text written to the command after spawn. Useful
+ * for local-only tools that still ask for confirmation even when
+ * running in a non-interactive launch hook.
+ */
+stdin?: string, };
 
 export type LaunchHealthCheck = { kind: string, url?: string, host?: string, port?: number, command?: LaunchStep, timeout_seconds?: number, };
 
@@ -282,6 +293,30 @@ export type ProjectLaunchProfile = { id: string, project_id: string, name: strin
 
 export type ProjectLaunchProfileInput = { name: string | null, mode: string | null, build_steps: Array<LaunchStep>, start_steps: Array<LaunchStep>, seed_steps: Array<LaunchStep>, reset_steps: Array<LaunchStep>, login_steps: Array<LaunchStep>, stop_steps: Array<LaunchStep>, health_checks: Array<LaunchHealthCheck>, target_urls: Array<string>, env_refs: Array<LaunchEnvRef>, working_dirs: Array<LaunchWorkingDir>, };
 
+export type ProjectSetupRequest = { target_base_url?: string, project_setup: boolean, seed_setup: boolean, auth_setup: boolean, };
+
+export type ProjectSetupVerificationStatus = "verified" | "needs_review";
+
+export type ProjectSetupVerification = { status: ProjectSetupVerificationStatus, checks: Array<string>, warnings: Array<string>, };
+
+export type SeedSetupPlan = { seed_steps: Array<LaunchStep>, reset_steps: Array<LaunchStep>, env_vars: Array<ProjectRuntimeEnvVar>, roles: Array<string>, seeded_objects: Array<ProjectAuthOwnedObject>, summary: string, checks: Array<string>, warnings: Array<string>, };
+
+export type SeedSetupResponse = { plan: SeedSetupPlan, verification: ProjectSetupVerification, message: string, };
+
+export type ProjectSetupResponse = { project: ProjectRecord, profile: ProjectLaunchProfile, agent_used: boolean, verification: ProjectSetupVerification, seed_setup?: SeedSetupResponse, auth_setup?: AuthSetupResponse, message: string, };
+
+export type ProjectSetupJobStatus = "queued" | "running" | "succeeded" | "failed";
+
+export type ProjectSetupPhase = "queued" | "collecting_repos" | "starting_agent" | "inspecting_project" | "inspecting_seed" | "applying_seed" | "inspecting_auth" | "applying_profile" | "complete" | "failed";
+
+export type ProjectSetupJobEvent = { at: number, phase: ProjectSetupPhase, message: string, };
+
+export type ProjectSetupError = { code: string, title: string, detail: string, hint?: string, retryable: boolean, };
+
+export type ProjectSetupJobRecord = { id: string, project_id: string, status: ProjectSetupJobStatus, phase: ProjectSetupPhase, message: string, started_at: number, finished_at?: number, events: Array<ProjectSetupJobEvent>, result?: ProjectSetupResponse, error?: ProjectSetupError, };
+
+export type ProjectSetupStartResponse = { job: ProjectSetupJobRecord, };
+
 export type EnvironmentRunRecord = { id: string, run_id: string, project_id: string, profile_id: string, status: string, started_at: number | null, ready_at: number | null, stopped_at: number | null, target_urls: Array<string>, health?: unknown, logs_dir?: string, teardown?: unknown, };
 
 export type NyxSignalRecord = { id: string, run_id: string, project_id: string, repo_id: string, repo: string, path: string, line: number | null, cap: string, rule: string, severity: string, message?: string, evidence?: unknown, signal_kind: string, meaningful: boolean, suppressed_reason?: string, agent_candidate_id?: string, created_at: number, };
@@ -292,9 +327,9 @@ export type VerificationAttemptRecord = { id: string, run_id: string, project_id
 
 export type AuthzMatrixEntryRecord = { id: string, run_id: string, project_id: string, candidate_id?: string, verification_attempt_id: string, probe_kind: string, role: string, owner_role?: string, tenant?: string, resource: string, object_id?: string, action: string, endpoint: string, expected_decision: string, observed_decision: string, observed_status: number | null, body_marker_result: string, confidence: number, evidence: unknown, created_at: number, };
 
-export type ExplorationMemoryRecord = { id: string, project_id: string, repo: string, run_id: string, source: string, hypothesis: string, endpoint?: string, role_context?: string, object_context?: string, result: string, reason: string, useful_markers: Array<string>, auth_session_notes?: string, follow_up_ideas: Array<string>, candidate_id?: string, verification_attempt_id?: string, trace_id?: string, memory_key: string, created_at: number, updated_at: number, };
-
 export type VerifiedVulnerabilityRecord = { id: string, run_id: string, project_id: string, title: string, severity: string, confidence: number, risk_score: number, risk_rating: string, risk_score_source: string, risk_score_rationale: string, vuln_class: string, affected_components: Array<unknown>, business_impact: string, evidence_summary: string, repro_steps: string, remediation: string, source_candidate_ids: Array<string>, source_signal_ids: Array<string>, verification_attempt_ids: Array<string>, chain_id?: string, status: string, first_seen: number, last_seen: number, };
+
+export type ExplorationMemoryRecord = { id: string, project_id: string, repo: string, run_id: string, source: string, hypothesis: string, endpoint?: string, role_context?: string, object_context?: string, result: string, reason: string, useful_markers: Array<string>, auth_session_notes?: string, follow_up_ideas: Array<string>, candidate_id?: string, verification_attempt_id?: string, trace_id?: string, memory_key: string, created_at: number, updated_at: number, };
 
 export type RouteEvidence = { path: string, line: number | null, snippet: string, };
 

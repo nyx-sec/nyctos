@@ -10,11 +10,11 @@ import { useEffect, useRef, useState } from "react";
 import type {
   AgentEvent,
   AgentTraceRow,
-  AuthzMatrixEntryRecord,
   AuthSetupJobRecord,
   AuthSetupRequest,
   AuthSetupResponse,
   AuthSetupStartResponse,
+  AuthzMatrixEntryRecord,
   BundleManifest,
   ChainRecord,
   CreateProjectIntegrationRequest,
@@ -50,6 +50,12 @@ import type {
   ProjectRuntimeCommand,
   ProjectRuntimeEnvVar,
   ProjectRuntimeProfile,
+  ProjectSetupError,
+  ProjectSetupJobRecord,
+  ProjectSetupRequest,
+  ProjectSetupResponse,
+  ProjectSetupStartResponse,
+  ProjectSetupVerification,
   QuarantineItem,
   QuarantineKind,
   ReplayEvent,
@@ -58,6 +64,8 @@ import type {
   RouteModelRecord,
   RunFindingsResponse,
   RunRecord,
+  SeedSetupPlan,
+  SeedSetupResponse,
   SetupRequest,
   SetupStatusResponse,
   StartPentestRequest,
@@ -72,11 +80,11 @@ import type {
 
 export type {
   AgentTraceRow,
-  AuthzMatrixEntryRecord,
   AuthSetupJobRecord,
   AuthSetupRequest,
   AuthSetupResponse,
   AuthSetupStartResponse,
+  AuthzMatrixEntryRecord,
   BundleManifest,
   ChainRecord,
   CreateProjectIntegrationRequest,
@@ -112,6 +120,12 @@ export type {
   ProjectRuntimeCommand,
   ProjectRuntimeEnvVar,
   ProjectRuntimeProfile,
+  ProjectSetupError,
+  ProjectSetupJobRecord,
+  ProjectSetupRequest,
+  ProjectSetupResponse,
+  ProjectSetupStartResponse,
+  ProjectSetupVerification,
   QuarantineItem,
   QuarantineKind,
   ReplayEvent,
@@ -120,6 +134,8 @@ export type {
   RouteModelRecord,
   RunFindingsResponse,
   RunRecord,
+  SeedSetupPlan,
+  SeedSetupResponse,
   SetupRequest,
   SetupStatusResponse,
   StartPentestRequest,
@@ -252,6 +268,45 @@ export interface BulkVulnerabilityStatusPatch {
   status: string;
 }
 
+export interface VulnerabilityFixChangedFile {
+  repo: string;
+  path: string;
+  status: string;
+  additions?: number | null;
+  deletions?: number | null;
+}
+
+export interface VulnerabilityFixJobEvent {
+  at: number;
+  phase: string;
+  message: string;
+}
+
+export interface VulnerabilityFixJobError {
+  title: string;
+  detail: string;
+}
+
+export interface VulnerabilityFixJobResult {
+  changed_files: VulnerabilityFixChangedFile[];
+  summary: string;
+  final_message: string;
+}
+
+export interface VulnerabilityFixJobRecord {
+  id: string;
+  vulnerability_id: string;
+  project_id: string;
+  status: "queued" | "running" | "succeeded" | "failed" | string;
+  phase: string;
+  message: string;
+  started_at: number;
+  finished_at?: number | null;
+  events: VulnerabilityFixJobEvent[];
+  result?: VulnerabilityFixJobResult | null;
+  error?: VulnerabilityFixJobError | null;
+}
+
 export const qk = {
   health: () => ["health"] as const,
   setupStatus: () => ["setup", "status"] as const,
@@ -272,6 +327,8 @@ export const qk = {
   runCandidates: (id: string) => ["runs", id, "candidates"] as const,
   vulnerabilities: () => ["vulnerabilities"] as const,
   vulnerability: (id: string) => ["vulnerabilities", id] as const,
+  vulnerabilityFixJob: (id: string, jobId: string) =>
+    ["vulnerabilities", id, "fix", jobId] as const,
   projectVulnerabilities: (id: string) => ["projects", id, "vulnerabilities"] as const,
   runSignals: (id: string, meaningfulOnly: boolean) =>
     ["runs", id, "signals", meaningfulOnly] as const,
@@ -312,6 +369,8 @@ export const qk = {
     ["projects", projectId, "launch-profile", "default"] as const,
   authSetupJob: (projectId: string, jobId: string) =>
     ["projects", projectId, "auth-setup", jobId] as const,
+  projectSetupJob: (projectId: string, jobId: string) =>
+    ["projects", projectId, "project-setup", jobId] as const,
 };
 
 // ---- hooks -----------------------------------------------------------------
@@ -465,6 +524,47 @@ export function useAuthAutoSetup(projectId: string) {
     mutationFn: (body: AuthSetupRequest = {}) => startAuthAutoSetup(projectId, body),
     onSuccess: (data) => {
       qc.setQueryData(qk.authSetupJob(projectId, data.job.id), data.job);
+    },
+  });
+}
+
+const DEFAULT_AI_PROJECT_SETUP_REQUEST: ProjectSetupRequest = {
+  project_setup: true,
+  seed_setup: false,
+  auth_setup: false,
+};
+
+type ProjectSetupRequestInput = Partial<ProjectSetupRequest>;
+
+function normalizeAiProjectSetupRequest(body: ProjectSetupRequestInput): ProjectSetupRequest {
+  return { ...DEFAULT_AI_PROJECT_SETUP_REQUEST, ...body };
+}
+
+export function startAiProjectSetup(
+  projectId: string,
+  body: ProjectSetupRequestInput = {},
+): Promise<ProjectSetupStartResponse> {
+  return request<ProjectSetupStartResponse>(`/projects/${encodeURIComponent(projectId)}/setup/ai`, {
+    method: "POST",
+    body: JSON.stringify(normalizeAiProjectSetupRequest(body)),
+  });
+}
+
+export function getProjectSetupJob(
+  projectId: string,
+  jobId: string,
+): Promise<ProjectSetupJobRecord> {
+  return request<ProjectSetupJobRecord>(
+    `/projects/${encodeURIComponent(projectId)}/setup/ai/${encodeURIComponent(jobId)}`,
+  );
+}
+
+export function useAiProjectSetup(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: ProjectSetupRequestInput = {}) => startAiProjectSetup(projectId, body),
+    onSuccess: (data) => {
+      qc.setQueryData(qk.projectSetupJob(projectId, data.job.id), data.job);
     },
   });
 }
@@ -782,6 +882,38 @@ export function useBulkUpdateVulnerabilityStatus() {
       qc.invalidateQueries({ queryKey: qk.vulnerabilities() });
       qc.invalidateQueries({ queryKey: ["projects"] });
       qc.invalidateQueries({ queryKey: ["runs"] });
+    },
+  });
+}
+
+export function useStartVulnerabilityFix() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      request<{ job: VulnerabilityFixJobRecord }>(
+        `/vulnerabilities/${encodeURIComponent(id)}/fix`,
+        {
+          method: "POST",
+        },
+      ),
+    onSuccess: (data, id) => {
+      qc.setQueryData(qk.vulnerabilityFixJob(id, data.job.id), data.job);
+    },
+  });
+}
+
+export function useVulnerabilityFixJob(id: string | undefined, jobId: string | undefined) {
+  return useQuery({
+    queryKey:
+      id && jobId ? qk.vulnerabilityFixJob(id, jobId) : ["vulnerabilities", "_disabled", "fix"],
+    queryFn: () =>
+      request<VulnerabilityFixJobRecord>(
+        `/vulnerabilities/${encodeURIComponent(id!)}/fix/${encodeURIComponent(jobId!)}`,
+      ),
+    enabled: Boolean(id && jobId),
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      return status === "queued" || status === "running" ? 1_500 : false;
     },
   });
 }

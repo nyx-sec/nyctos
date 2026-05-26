@@ -16,8 +16,11 @@ use tokio::sync::broadcast;
 
 use nyctos_api::{
     build_router, AuthConfig, AuthSetupAgent, AuthSetupAgentFuture, AuthSetupAgentOutput,
-    AuthSetupAgentRequest, ScanTrigger, ScanTriggerError, ScanTriggerSource, ServerState,
-    SetupContext,
+    AuthSetupAgentRequest, ProjectSetupAgent, ProjectSetupAgentFuture, ProjectSetupAgentOutput,
+    ProjectSetupAgentRequest, RemediationAgent, RemediationAgentFuture, RemediationAgentOutput,
+    RemediationAgentRequest, RemediationChangedFile, ScanTrigger, ScanTriggerError,
+    ScanTriggerSource, SeedSetupAgent, SeedSetupAgentFuture, SeedSetupAgentOutput,
+    SeedSetupAgentRequest, ServerState, SetupContext,
 };
 use nyctos_core::store::{
     ChainRecord, EnvironmentRunRecord, FindingRecord, PentestCandidateRecord,
@@ -26,8 +29,10 @@ use nyctos_core::store::{
 };
 use nyctos_core::{run_event_log_path, Config, SecretStore, Store};
 use nyctos_types::event::{AgentEvent, EventSink, RepoOutcomeTag, ReproEvent, RunEvent};
+use nyctos_types::product::{LaunchStep, ProjectSetupVerificationStatus, SeedSetupPlan};
 use nyctos_types::project::{
-    AuthSetupVerification, AuthSetupVerificationStatus, ProjectAuthMode, ProjectAuthProfile,
+    AuthSetupVerification, AuthSetupVerificationStatus, ProjectAuthMode, ProjectAuthOwnedObject,
+    ProjectAuthProfile, ProjectRuntimeEnvVar,
 };
 
 struct StubScanTrigger {
@@ -135,6 +140,127 @@ impl AuthSetupAgent for FailingAuthSetupAgent {
     }
 }
 
+struct StubProjectSetupAgent;
+
+impl ProjectSetupAgent for StubProjectSetupAgent {
+    fn explore<'a>(&'a self, req: ProjectSetupAgentRequest) -> ProjectSetupAgentFuture<'a> {
+        Box::pin(async move {
+            assert!(!req.workspace_roots.is_empty());
+            Ok(ProjectSetupAgentOutput {
+                profile: ProjectLaunchProfileInput {
+                    name: Some("AI local dev".to_string()),
+                    mode: Some("custom-commands".to_string()),
+                    build_steps: Vec::new(),
+                    start_steps: vec![LaunchStep {
+                        command: "npm run dev".to_string(),
+                        repo_id: None,
+                        repo_name: Some("web".to_string()),
+                        working_directory: None,
+                        timeout_seconds: Some(120),
+                        stdin: None,
+                    }],
+                    seed_steps: Vec::new(),
+                    reset_steps: vec![LaunchStep {
+                        command: "npm run dev:reset".to_string(),
+                        repo_id: None,
+                        repo_name: Some("web".to_string()),
+                        working_directory: None,
+                        timeout_seconds: Some(120),
+                        stdin: Some("y\n".to_string()),
+                    }],
+                    login_steps: Vec::new(),
+                    stop_steps: Vec::new(),
+                    health_checks: Vec::new(),
+                    target_urls: vec!["http://127.0.0.1:8787".to_string()],
+                    env_refs: Vec::new(),
+                    working_dirs: Vec::new(),
+                },
+                summary: "detected npm dev workflow".to_string(),
+                checks: vec!["package.json inspected".to_string()],
+                warnings: Vec::new(),
+                verification_status: ProjectSetupVerificationStatus::Verified,
+                message: "Project setup agent prepared a launch profile.".to_string(),
+            })
+        })
+    }
+}
+
+struct StubSeedSetupAgent;
+
+impl SeedSetupAgent for StubSeedSetupAgent {
+    fn explore<'a>(&'a self, req: SeedSetupAgentRequest) -> SeedSetupAgentFuture<'a> {
+        Box::pin(async move {
+            assert!(!req.workspace_roots.is_empty());
+            assert!(req.launch_profile.is_some());
+            Ok(SeedSetupAgentOutput {
+                plan: SeedSetupPlan {
+                    seed_steps: vec![LaunchStep {
+                        command: "npm run nyctos:seed".to_string(),
+                        repo_id: None,
+                        repo_name: Some("web".to_string()),
+                        working_directory: None,
+                        timeout_seconds: Some(120),
+                        stdin: None,
+                    }],
+                    reset_steps: vec![LaunchStep {
+                        command: "npm run dev:reset".to_string(),
+                        repo_id: None,
+                        repo_name: Some("web".to_string()),
+                        working_directory: None,
+                        timeout_seconds: Some(120),
+                        stdin: Some("y\n".to_string()),
+                    }],
+                    env_vars: vec![
+                        ProjectRuntimeEnvVar {
+                            name: "NYCTOS_USER_A_EMAIL".to_string(),
+                            value: "user-a@example.test".to_string(),
+                            secret: false,
+                        },
+                        ProjectRuntimeEnvVar {
+                            name: "NYCTOS_USER_A_PASSWORD".to_string(),
+                            value: "nyctos-user-a-pass".to_string(),
+                            secret: true,
+                        },
+                    ],
+                    roles: vec!["user_a".to_string(), "user_b".to_string(), "manager".to_string()],
+                    seeded_objects: vec![ProjectAuthOwnedObject {
+                        name: "workspace".to_string(),
+                        id: "nyctos-workspace-a".to_string(),
+                        route: Some("/api/workspaces/{id}".to_string()),
+                        marker: Some("nyctos-owned-by-user-a".to_string()),
+                    }],
+                    summary: "prepared deterministic users and one owned workspace".to_string(),
+                    checks: vec!["seed script found".to_string()],
+                    warnings: Vec::new(),
+                },
+                message: "Seed setup agent prepared deterministic fixtures.".to_string(),
+            })
+        })
+    }
+}
+
+struct StubRemediationAgent;
+
+impl RemediationAgent for StubRemediationAgent {
+    fn fix<'a>(&'a self, req: RemediationAgentRequest) -> RemediationAgentFuture<'a> {
+        Box::pin(async move {
+            assert_eq!(req.vulnerability.id, "vuln-1");
+            assert!(!req.workspace_roots.is_empty());
+            Ok(RemediationAgentOutput {
+                changed_files: vec![RemediationChangedFile {
+                    repo: "web".to_string(),
+                    path: "src/reviews.ts".to_string(),
+                    status: "modified".to_string(),
+                    additions: Some(8),
+                    deletions: Some(2),
+                }],
+                summary: "Escaped review output.".to_string(),
+                final_message: "Summary:\nEscaped review output.".to_string(),
+            })
+        })
+    }
+}
+
 struct TestServer {
     addr: std::net::SocketAddr,
     events: EventSink,
@@ -176,11 +302,75 @@ impl TestServer {
         .await
     }
 
+    async fn start_with_project_setup_agent(agent: Arc<dyn ProjectSetupAgent>) -> Self {
+        Self::start_with_options_and_agents(
+            Arc::new(StubScanTrigger { run_id: "run-fake".to_string() }),
+            false,
+            true,
+            None,
+            Some(agent),
+            None,
+            None,
+        )
+        .await
+    }
+
+    async fn start_with_setup_agents(
+        project_agent: Arc<dyn ProjectSetupAgent>,
+        seed_agent: Arc<dyn SeedSetupAgent>,
+        auth_agent: Arc<dyn AuthSetupAgent>,
+    ) -> Self {
+        Self::start_with_options_and_agents(
+            Arc::new(StubScanTrigger { run_id: "run-fake".to_string() }),
+            false,
+            true,
+            Some(auth_agent),
+            Some(project_agent),
+            Some(seed_agent),
+            None,
+        )
+        .await
+    }
+
+    async fn start_with_remediation_agent(agent: Arc<dyn RemediationAgent>) -> Self {
+        Self::start_with_options_and_agents(
+            Arc::new(StubScanTrigger { run_id: "run-fake".to_string() }),
+            false,
+            true,
+            None,
+            None,
+            None,
+            Some(agent),
+        )
+        .await
+    }
+
     async fn start_with_options_and_agent(
         trigger: Arc<dyn ScanTrigger>,
         with_auth: bool,
         setup_complete: bool,
         auth_setup_agent: Option<Arc<dyn AuthSetupAgent>>,
+    ) -> Self {
+        Self::start_with_options_and_agents(
+            trigger,
+            with_auth,
+            setup_complete,
+            auth_setup_agent,
+            None,
+            None,
+            None,
+        )
+        .await
+    }
+
+    async fn start_with_options_and_agents(
+        trigger: Arc<dyn ScanTrigger>,
+        with_auth: bool,
+        setup_complete: bool,
+        auth_setup_agent: Option<Arc<dyn AuthSetupAgent>>,
+        project_setup_agent: Option<Arc<dyn ProjectSetupAgent>>,
+        seed_setup_agent: Option<Arc<dyn SeedSetupAgent>>,
+        remediation_agent: Option<Arc<dyn RemediationAgent>>,
     ) -> Self {
         let tmp = tempfile::tempdir().expect("tempdir");
         let store = Store::open(tmp.path()).await.expect("open store");
@@ -203,6 +393,15 @@ impl TestServer {
             .with_state_logs_dir(logs_dir.clone());
         if let Some(agent) = auth_setup_agent {
             state = state.with_auth_setup_agent(agent);
+        }
+        if let Some(agent) = project_setup_agent {
+            state = state.with_project_setup_agent(agent);
+        }
+        if let Some(agent) = seed_setup_agent {
+            state = state.with_seed_setup_agent(agent);
+        }
+        if let Some(agent) = remediation_agent {
+            state = state.with_remediation_agent(agent);
         }
         let app = build_router(state);
 
@@ -309,6 +508,52 @@ async fn wait_auth_setup_job(
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     panic!("auth setup job did not finish");
+}
+
+async fn wait_project_setup_job(
+    client: &reqwest::Client,
+    base: &str,
+    project_id: &str,
+    job_id: &str,
+) -> Value {
+    for _ in 0..50 {
+        let job: Value = client
+            .get(format!("{base}/api/v1/projects/{project_id}/setup/ai/{job_id}"))
+            .send()
+            .await
+            .expect("get project setup job")
+            .json()
+            .await
+            .expect("project setup job json");
+        if matches!(job["status"].as_str(), Some("succeeded" | "failed")) {
+            return job;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("project setup job did not finish");
+}
+
+async fn wait_vulnerability_fix_job(
+    client: &reqwest::Client,
+    base: &str,
+    vulnerability_id: &str,
+    job_id: &str,
+) -> Value {
+    for _ in 0..50 {
+        let job: Value = client
+            .get(format!("{base}/api/v1/vulnerabilities/{vulnerability_id}/fix/{job_id}"))
+            .send()
+            .await
+            .expect("get vulnerability fix job")
+            .json()
+            .await
+            .expect("vulnerability fix job json");
+        if matches!(job["status"].as_str(), Some("succeeded" | "failed")) {
+            return job;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("vulnerability fix job did not finish");
 }
 
 #[tokio::test]
@@ -531,6 +776,55 @@ async fn vulnerability_status_endpoints_update_single_and_bulk_rows() {
     assert_eq!(listed[0]["risk_score"], 9.6);
     assert_eq!(listed[0]["risk_rating"], "Critical");
     assert_eq!(listed[0]["risk_score_source"], "nyctos-agent");
+}
+
+#[tokio::test]
+async fn vulnerability_fix_endpoint_runs_remediation_agent_job() {
+    let srv = TestServer::start_with_remediation_agent(Arc::new(StubRemediationAgent)).await;
+    let client = reqwest::Client::new();
+    let repo_dir = srv._tmp.path().join("web");
+    std::fs::create_dir_all(repo_dir.join("src")).expect("repo dir");
+    let now = nyctos_core::now_epoch_ms();
+    srv.store
+        .repos()
+        .upsert(&RepoRecord {
+            id: "repo-web".to_string(),
+            name: "web".to_string(),
+            project_id: DEFAULT_PROJECT_ID.to_string(),
+            source_kind: "local".to_string(),
+            source_url_or_path: repo_dir.display().to_string(),
+            branch: None,
+            auth_ref: None,
+            i_own_this: true,
+            last_scan_run_id: None,
+            last_scan_finished_at: None,
+            created_at: now,
+            updated_at: now,
+        })
+        .await
+        .expect("repo");
+    let mut run = sample_run("run-1");
+    run.project_id = Some(DEFAULT_PROJECT_ID.to_string());
+    srv.store.runs().insert(&run).await.expect("run");
+    let vuln = sample_vulnerability("vuln-1", "run-1", DEFAULT_PROJECT_ID);
+    srv.store.verified_vulnerabilities().upsert(&vuln).await.expect("vuln");
+
+    let started: Value = client
+        .post(format!("{}/api/v1/vulnerabilities/vuln-1/fix", srv.base()))
+        .send()
+        .await
+        .expect("post fix")
+        .error_for_status()
+        .expect("post fix status")
+        .json()
+        .await
+        .expect("post fix json");
+    let job_id = started["job"]["id"].as_str().expect("job id");
+    let job = wait_vulnerability_fix_job(&client, &srv.base(), "vuln-1", job_id).await;
+
+    assert_eq!(job["status"], "succeeded");
+    assert_eq!(job["result"]["summary"], "Escaped review output.");
+    assert_eq!(job["result"]["changed_files"][0]["path"], "src/reviews.ts");
 }
 
 #[tokio::test]
@@ -3456,6 +3750,188 @@ router.get("/api/admin/report", requireAdmin, adminReport);
             && var["secret"] == true
     }));
     assert!(trigger.calls.lock().await.is_empty(), "auth setup must not trigger a pentest");
+}
+
+#[tokio::test]
+async fn ai_project_setup_agent_applies_launch_profile() {
+    let srv = TestServer::start_with_project_setup_agent(Arc::new(StubProjectSetupAgent)).await;
+    let client = reqwest::Client::new();
+    let created: Value = client
+        .post(format!("{}/api/v1/projects", srv.base()))
+        .json(&serde_json::json!({
+            "name": "wrangler-app",
+            "target_base_url": "http://127.0.0.1:8787"
+        }))
+        .send()
+        .await
+        .expect("post project")
+        .json()
+        .await
+        .expect("project json");
+    let project_id = created["id"].as_str().expect("project id");
+    let repo_dir = srv._tmp.path().join("wrangler-source");
+    std::fs::create_dir_all(&repo_dir).expect("mkdir");
+    std::fs::write(
+        repo_dir.join("package.json"),
+        r#"{"scripts":{"dev":"wrangler dev","dev:reset":"wrangler d1 migrations apply DB --local"}}"#,
+    )
+    .expect("write package");
+    let now = nyctos_core::now_epoch_ms();
+    srv.store
+        .repos()
+        .upsert(&RepoRecord {
+            id: "repo-wrangler-source".to_string(),
+            name: "web".to_string(),
+            project_id: project_id.to_string(),
+            source_kind: "local".to_string(),
+            source_url_or_path: repo_dir.display().to_string(),
+            branch: None,
+            auth_ref: None,
+            i_own_this: true,
+            last_scan_run_id: None,
+            last_scan_finished_at: None,
+            created_at: now,
+            updated_at: now,
+        })
+        .await
+        .expect("repo");
+
+    let started: Value = client
+        .post(format!("{}/api/v1/projects/{project_id}/setup/ai", srv.base()))
+        .json(&serde_json::json!({ "target_base_url": "http://127.0.0.1:8787" }))
+        .send()
+        .await
+        .expect("post project setup")
+        .json()
+        .await
+        .expect("json");
+    let job_id = started["job"]["id"].as_str().expect("job id");
+    let job = wait_project_setup_job(&client, &srv.base(), project_id, job_id).await;
+    assert_eq!(job["status"], "succeeded");
+    assert_eq!(job["result"]["verification"]["status"], "verified");
+    assert_eq!(job["result"]["profile"]["reset_steps"][0]["stdin"], "y\n");
+
+    let project: Value = client
+        .get(format!("{}/api/v1/projects/{project_id}", srv.base()))
+        .send()
+        .await
+        .expect("get project")
+        .json()
+        .await
+        .expect("project json");
+    assert_eq!(project["default_launch_profile"]["target_urls"][0], "http://127.0.0.1:8787");
+    assert_eq!(project["default_launch_profile"]["reset_steps"][0]["stdin"], "y\n");
+}
+
+#[tokio::test]
+async fn ai_setup_runs_project_seed_and_auth_in_one_backend_job() {
+    let srv = TestServer::start_with_setup_agents(
+        Arc::new(StubProjectSetupAgent),
+        Arc::new(StubSeedSetupAgent),
+        Arc::new(StubAuthSetupAgent),
+    )
+    .await;
+    let client = reqwest::Client::new();
+    let created: Value = client
+        .post(format!("{}/api/v1/projects", srv.base()))
+        .json(&serde_json::json!({
+            "name": "full-ai-setup-app",
+            "target_base_url": "http://127.0.0.1:8787"
+        }))
+        .send()
+        .await
+        .expect("post project")
+        .json()
+        .await
+        .expect("project json");
+    let project_id = created["id"].as_str().expect("project id");
+    let repo_dir = srv._tmp.path().join("full-ai-setup-source");
+    std::fs::create_dir_all(repo_dir.join("src")).expect("mkdir");
+    std::fs::write(
+        repo_dir.join("package.json"),
+        r#"{"scripts":{"dev":"wrangler dev","dev:reset":"wrangler d1 migrations apply DB --local","nyctos:seed":"tsx scripts/nyctos-seed.ts"}}"#,
+    )
+    .expect("write package");
+    std::fs::write(
+        repo_dir.join("src/routes.ts"),
+        r#"router.post("/api/auth/sign-in", signIn);
+router.get("/api/workspaces/{id}", requireManager, showWorkspace);
+"#,
+    )
+    .expect("write source");
+    std::fs::write(
+        repo_dir.join("src/fixtures.ts"),
+        r#"export const manager = { email: "manager@example.test", password: "manager-pass" };"#,
+    )
+    .expect("write fixtures");
+    let now = nyctos_core::now_epoch_ms();
+    srv.store
+        .repos()
+        .upsert(&RepoRecord {
+            id: "repo-full-ai-setup-source".to_string(),
+            name: "web".to_string(),
+            project_id: project_id.to_string(),
+            source_kind: "local".to_string(),
+            source_url_or_path: repo_dir.display().to_string(),
+            branch: None,
+            auth_ref: None,
+            i_own_this: true,
+            last_scan_run_id: None,
+            last_scan_finished_at: None,
+            created_at: now,
+            updated_at: now,
+        })
+        .await
+        .expect("repo");
+
+    let started: Value = client
+        .post(format!("{}/api/v1/projects/{project_id}/setup/ai", srv.base()))
+        .json(&serde_json::json!({
+            "target_base_url": "http://127.0.0.1:8787",
+            "project_setup": true,
+            "seed_setup": true,
+            "auth_setup": true
+        }))
+        .send()
+        .await
+        .expect("post project setup")
+        .json()
+        .await
+        .expect("json");
+    let job_id = started["job"]["id"].as_str().expect("job id");
+    let job = wait_project_setup_job(&client, &srv.base(), project_id, job_id).await;
+    assert_eq!(job["status"], "succeeded");
+    let response = &job["result"];
+    assert_eq!(response["seed_setup"]["verification"]["status"], "verified");
+    assert_eq!(response["auth_setup"]["verification"]["status"], "verified");
+    assert_eq!(response["profile"]["seed_steps"][0]["command"], "npm run nyctos:seed");
+    assert_eq!(response["profile"]["reset_steps"][0]["stdin"], "y\n");
+
+    let phases: Vec<_> = job["events"]
+        .as_array()
+        .expect("events")
+        .iter()
+        .filter_map(|event| event["phase"].as_str())
+        .collect();
+    assert!(phases.iter().position(|phase| *phase == "inspecting_project").is_some());
+    let seed_phase = phases.iter().position(|phase| *phase == "inspecting_seed").expect("seed");
+    let auth_phase = phases.iter().position(|phase| *phase == "inspecting_auth").expect("auth");
+    assert!(seed_phase < auth_phase);
+
+    let env_vars = response["project"]["runtime_profile"]["env_vars"].as_array().expect("env vars");
+    assert!(env_vars.iter().any(|var| {
+        var["name"] == "NYCTOS_USER_A_EMAIL"
+            && var["value"] == "user-a@example.test"
+            && var["secret"] == false
+    }));
+    assert!(env_vars.iter().any(|var| {
+        var["name"] == "NYCTOS_MANAGER_PASSWORD"
+            && var["value"] == "manager-pass"
+            && var["secret"] == true
+    }));
+    let profiles =
+        response["project"]["runtime_profile"]["auth_profiles"].as_array().expect("profiles");
+    assert!(profiles.iter().any(|profile| profile["role"] == "manager"));
 }
 
 #[tokio::test]

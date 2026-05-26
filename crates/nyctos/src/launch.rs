@@ -10,6 +10,7 @@ use nyctos_sandbox::env::{EnvBuilder, RepoInput, RunningEnv};
 use nyctos_types::event::{AgentEvent, EventSink, RunEvent};
 use nyctos_types::product::{LaunchEnvRef, LaunchHealthCheck, LaunchStep};
 use tokio::fs::OpenOptions;
+use tokio::io::AsyncWriteExt;
 use tokio::process::{Child, Command};
 
 #[derive(Debug)]
@@ -485,11 +486,17 @@ async fn run_step_to_completion(
 ) -> anyhow::Result<()> {
     let stdout_path = logs_dir.join(format!("{phase}-{index}-stdout.log"));
     let stderr_path = logs_dir.join(format!("{phase}-{index}-stderr.log"));
-    let mut child = command_for_step(step, env_refs, workspaces)?
+    let mut command = command_for_step(step, env_refs, workspaces)?;
+    command
         .stdout(Stdio::from(std::fs::File::create(stdout_path)?))
-        .stderr(Stdio::from(std::fs::File::create(stderr_path)?))
-        .stdin(Stdio::null())
-        .spawn()?;
+        .stderr(Stdio::from(std::fs::File::create(stderr_path)?));
+    if step.stdin.is_some() {
+        command.stdin(Stdio::piped());
+    } else {
+        command.stdin(Stdio::null());
+    }
+    let mut child = command.spawn()?;
+    write_launch_stdin(step, &mut child).await?;
     let timeout = Duration::from_secs(step.timeout_seconds.unwrap_or(300));
     let status = match tokio::time::timeout(timeout, child.wait()).await {
         Ok(status) => status?,
@@ -560,13 +567,27 @@ async fn spawn_start_step(
         .await?
         .into_std()
         .await;
-    let child = command_for_step(step, env_refs, workspaces)?
-        .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(stderr))
-        .stdin(Stdio::null())
-        .kill_on_drop(true)
-        .spawn()?;
+    let mut command = command_for_step(step, env_refs, workspaces)?;
+    command.stdout(Stdio::from(stdout)).stderr(Stdio::from(stderr)).kill_on_drop(true);
+    if step.stdin.is_some() {
+        command.stdin(Stdio::piped());
+    } else {
+        command.stdin(Stdio::null());
+    }
+    let mut child = command.spawn()?;
+    write_launch_stdin(step, &mut child).await?;
     Ok(child)
+}
+
+async fn write_launch_stdin(step: &LaunchStep, child: &mut Child) -> anyhow::Result<()> {
+    let Some(stdin) = step.stdin.as_deref() else {
+        return Ok(());
+    };
+    if let Some(mut child_stdin) = child.stdin.take() {
+        child_stdin.write_all(stdin.as_bytes()).await?;
+        child_stdin.shutdown().await?;
+    }
+    Ok(())
 }
 
 fn command_for_step(
@@ -885,6 +906,7 @@ mod tests {
             repo_name: repo_name.map(str::to_string),
             working_directory: None,
             timeout_seconds: None,
+            stdin: None,
         }
     }
 
@@ -921,6 +943,7 @@ mod tests {
             repo_name: None,
             working_directory: None,
             timeout_seconds: Some(1),
+            stdin: None,
         }
     }
 
@@ -978,6 +1001,24 @@ mod tests {
             .expect_err("relative env file needs context");
 
         assert!(err.to_string().contains("no code source"));
+    }
+
+    #[tokio::test]
+    async fn run_step_writes_configured_stdin() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let mut workspaces = HashMap::new();
+        workspaces.insert(
+            "web".to_string(),
+            WorkspaceHandle::for_local_path_test("web", workspace.path()),
+        );
+        let mut step = command("cat > answered");
+        step.stdin = Some("y\n".to_string());
+
+        run_step_to_completion(&step, &[], &workspaces, workspace.path(), "reset", 0)
+            .await
+            .expect("stdin-backed command");
+
+        assert_eq!(std::fs::read_to_string(workspace.path().join("answered")).unwrap(), "y\n");
     }
 
     #[tokio::test]

@@ -5,6 +5,10 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use crate::project::{
+    AuthSetupResponse, ProjectAuthOwnedObject, ProjectRecord, ProjectRuntimeEnvVar,
+};
+
 pub fn clamp_risk_score(score: f64) -> f64 {
     if score.is_finite() {
         score.clamp(0.0, 10.0)
@@ -66,6 +70,12 @@ pub struct LaunchStep {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "number")]
     pub timeout_seconds: Option<u64>,
+    /// Optional stdin text written to the command after spawn. Useful
+    /// for local-only tools that still ask for confirmation even when
+    /// running in a non-interactive launch hook.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub stdin: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -170,6 +180,156 @@ pub struct ProjectLaunchProfileInput {
     pub env_refs: Vec<LaunchEnvRef>,
     #[serde(default)]
     pub working_dirs: Vec<LaunchWorkingDir>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ProjectSetupRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub target_base_url: Option<String>,
+    #[serde(default = "default_project_setup_enabled")]
+    pub project_setup: bool,
+    #[serde(default)]
+    pub seed_setup: bool,
+    #[serde(default)]
+    pub auth_setup: bool,
+}
+
+fn default_project_setup_enabled() -> bool {
+    true
+}
+
+impl Default for ProjectSetupRequest {
+    fn default() -> Self {
+        Self { target_base_url: None, project_setup: true, seed_setup: false, auth_setup: false }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectSetupVerificationStatus {
+    Verified,
+    NeedsReview,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ProjectSetupVerification {
+    pub status: ProjectSetupVerificationStatus,
+    #[serde(default)]
+    pub checks: Vec<String>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct SeedSetupPlan {
+    #[serde(default)]
+    pub seed_steps: Vec<LaunchStep>,
+    #[serde(default)]
+    pub reset_steps: Vec<LaunchStep>,
+    #[serde(default)]
+    pub env_vars: Vec<ProjectRuntimeEnvVar>,
+    #[serde(default)]
+    pub roles: Vec<String>,
+    #[serde(default)]
+    pub seeded_objects: Vec<ProjectAuthOwnedObject>,
+    pub summary: String,
+    #[serde(default)]
+    pub checks: Vec<String>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct SeedSetupResponse {
+    pub plan: SeedSetupPlan,
+    pub verification: ProjectSetupVerification,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ProjectSetupResponse {
+    pub project: ProjectRecord,
+    pub profile: ProjectLaunchProfile,
+    pub agent_used: bool,
+    pub verification: ProjectSetupVerification,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub seed_setup: Option<SeedSetupResponse>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub auth_setup: Option<AuthSetupResponse>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectSetupJobStatus {
+    Queued,
+    Running,
+    Succeeded,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectSetupPhase {
+    Queued,
+    CollectingRepos,
+    StartingAgent,
+    InspectingProject,
+    InspectingSeed,
+    ApplyingSeed,
+    InspectingAuth,
+    ApplyingProfile,
+    Complete,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ProjectSetupJobEvent {
+    #[ts(type = "number")]
+    pub at: i64,
+    pub phase: ProjectSetupPhase,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ProjectSetupError {
+    pub code: String,
+    pub title: String,
+    pub detail: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub hint: Option<String>,
+    pub retryable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ProjectSetupJobRecord {
+    pub id: String,
+    pub project_id: String,
+    pub status: ProjectSetupJobStatus,
+    pub phase: ProjectSetupPhase,
+    pub message: String,
+    #[ts(type = "number")]
+    pub started_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub finished_at: Option<i64>,
+    #[serde(default)]
+    pub events: Vec<ProjectSetupJobEvent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub result: Option<ProjectSetupResponse>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub error: Option<ProjectSetupError>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ProjectSetupStartResponse {
+    pub job: ProjectSetupJobRecord,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

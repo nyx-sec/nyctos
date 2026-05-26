@@ -851,6 +851,8 @@ pub struct ProjectLaunchCommandConfig {
     pub working_directory: Option<String>,
     #[serde(default, alias = "timeout_secs")]
     pub timeout_seconds: Option<u64>,
+    #[serde(default, alias = "input")]
+    pub stdin: Option<String>,
 }
 
 impl ProjectLaunchCommandConfig {
@@ -861,6 +863,7 @@ impl ProjectLaunchCommandConfig {
             repo_name: self.repo_name.clone(),
             working_directory: self.working_directory.clone(),
             timeout_seconds: self.timeout_seconds,
+            stdin: self.stdin.clone(),
         }
     }
 }

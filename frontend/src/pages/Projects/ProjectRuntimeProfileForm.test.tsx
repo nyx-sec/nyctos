@@ -64,6 +64,7 @@ describe("ProjectRuntimeProfileForm", () => {
         repo_name: " web ",
         working_directory: "",
         timeout_seconds: "120",
+        stdin: "",
       },
     ];
     draft.start_commands = [
@@ -72,6 +73,7 @@ describe("ProjectRuntimeProfileForm", () => {
         repo_name: " web ",
         working_directory: " apps/web ",
         timeout_seconds: "",
+        stdin: "",
       },
     ];
     draft.env_vars = [{ name: " NODE_ENV ", value: " test ", secret: false }];

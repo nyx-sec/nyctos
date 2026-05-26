@@ -52,8 +52,11 @@ mod launch;
 mod live_planning;
 mod node_runtime;
 mod pentest_tools;
+mod project_setup_ai;
+mod remediation_ai;
 mod route_model;
 mod scheduler;
+mod seed_setup_ai;
 
 use anyhow::Context;
 use banner::print_startup_banner;
@@ -941,6 +944,7 @@ fn command_strings_to_steps(commands: &[String]) -> Vec<LaunchStep> {
             repo_name: None,
             working_directory: None,
             timeout_seconds: None,
+            stdin: None,
         })
         .collect()
 }
@@ -2146,9 +2150,24 @@ async fn serve(
         setup.config.clone(),
         events_tx.clone(),
     ));
+    let project_setup_agent = Arc::new(project_setup_ai::ConfiguredProjectSetupAgent::new(
+        setup.config.clone(),
+        events_tx.clone(),
+    ));
+    let seed_setup_agent = Arc::new(seed_setup_ai::ConfiguredSeedSetupAgent::new(
+        setup.config.clone(),
+        events_tx.clone(),
+    ));
+    let remediation_agent = Arc::new(remediation_ai::ConfiguredRemediationAgent::new(
+        setup.config.clone(),
+        events_tx.clone(),
+    ));
     let mut server_state =
         ServerState::new(store.clone(), events_tx.clone(), trigger.clone(), setup, auth_config)
             .with_auth_setup_agent(auth_setup_agent)
+            .with_project_setup_agent(project_setup_agent)
+            .with_seed_setup_agent(seed_setup_agent)
+            .with_remediation_agent(remediation_agent)
             .with_state_repos_dir(state_dir.repos())
             .with_state_bundles_dir(state_dir.bundles())
             .with_state_logs_dir(state_dir.logs());
@@ -6624,6 +6643,7 @@ fn detect_start_step(cfg: &ProjectConfig) -> Option<LaunchStep> {
                 repo_name: Some(repo.name.clone()),
                 working_directory: None,
                 timeout_seconds: None,
+                stdin: None,
             },
         )
     })
@@ -6725,6 +6745,7 @@ fn runtime_command_to_launch_step(cmd: &ProjectRuntimeCommand) -> LaunchStep {
         repo_name: cmd.repo_name.clone(),
         working_directory: cmd.working_directory.clone(),
         timeout_seconds: cmd.timeout_seconds,
+        stdin: None,
     }
 }
 

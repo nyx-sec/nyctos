@@ -2,12 +2,15 @@ import { type FocusEvent, useCallback, useEffect, useMemo, useRef, useState } fr
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   type AgentEventLike,
+  getProjectSetupJob,
   type ProjectIntegrationRecord,
   type ProjectLaunchProfile,
   type ProjectRecord,
+  type ProjectSetupJobRecord,
   type RepoRecord,
   type RunRecord,
   useAgentEvents,
+  useAiProjectSetup,
   useDeleteProject,
   useDeleteProjectRepo,
   usePatchDefaultLaunchProfile,
@@ -83,6 +86,7 @@ export function ProjectDetail({ view = "overview" }: ProjectDetailProps = {}) {
   const project = useProject(projectId);
   const repos = useProjectRepos(projectId);
   const startPentest = useStartPentest(projectId ?? "");
+  const aiProjectSetup = useAiProjectSetup(projectId ?? "");
   const vulnerabilities = useProjectVulnerabilities(projectId);
   const integrations = useProjectIntegrations(projectId);
   const runningRuns = useRuns("Running", projectId, Boolean(projectId));
@@ -95,8 +99,11 @@ export function ProjectDetail({ view = "overview" }: ProjectDetailProps = {}) {
   const [runEvents, setRunEvents] = useState<LiveRunEvent[]>([]);
   const [showAdd, setShowAdd] = useState(false);
   const [showPentestOptions, setShowPentestOptions] = useState(false);
+  const [showAiSetupOptions, setShowAiSetupOptions] = useState(false);
   const [editTarget, setEditTarget] = useState<RepoRecord | null>(null);
   const [removeTarget, setRemoveTarget] = useState<RepoRecord | null>(null);
+  const [projectSetupJob, setProjectSetupJob] = useState<ProjectSetupJobRecord | null>(null);
+  const [projectSetupPolling, setProjectSetupPolling] = useState(false);
 
   useAgentEvents({
     onEvent: (ev: AgentEventLike) => {
@@ -128,6 +135,58 @@ export function ProjectDetail({ view = "overview" }: ProjectDetailProps = {}) {
       );
     } catch (err) {
       showToast(`Could not start pentest: ${String(err)}`, { tone: "danger" });
+    }
+  }
+
+  async function onAiProjectSetup(options: AiSetupOptions) {
+    if (!projectId) return;
+    showToast("AI setup started. The selected agents will run in order.", {
+      tone: "info",
+    });
+    try {
+      const { job } = await aiProjectSetup.mutateAsync({
+        target_base_url: runtimeTarget ?? undefined,
+        project_setup: options.projectSetup,
+        seed_setup: options.seedSetup,
+        auth_setup: options.authSetup,
+      });
+      setProjectSetupJob(job);
+      setShowAiSetupOptions(false);
+      void pollProjectSetupJob(projectId, job.id);
+    } catch (err) {
+      showToast(`Could not start AI setup: ${String(err)}`, { tone: "danger" });
+    }
+  }
+
+  async function pollProjectSetupJob(projectId: string, jobId: string) {
+    if (projectSetupPolling) return;
+    setProjectSetupPolling(true);
+    try {
+      for (;;) {
+        await sleep(1_250);
+        const job = await getProjectSetupJob(projectId, jobId);
+        setProjectSetupJob(job);
+        if (job.status === "succeeded" || job.status === "failed") {
+          if (job.status === "succeeded" && job.result) {
+            showToast(job.result.message, {
+              tone: job.result.verification.status === "verified" ? "success" : "warning",
+              durationMs: 7_000,
+            });
+            await project.refetch();
+          } else if (job.error) {
+            const hint = job.error.hint ? ` ${job.error.hint}` : "";
+            showToast(`${job.error.title}: ${job.error.detail}${hint}`, {
+              tone: "danger",
+              durationMs: 10_000,
+            });
+          }
+          return;
+        }
+      }
+    } catch (err) {
+      showToast(`Could not read AI setup progress: ${String(err)}`, { tone: "danger" });
+    } finally {
+      setProjectSetupPolling(false);
     }
   }
 
@@ -207,6 +266,11 @@ export function ProjectDetail({ view = "overview" }: ProjectDetailProps = {}) {
   const runtimeTarget = launchProfile?.target_urls[0] ?? p.target_base_url;
   const runtimeStatus = launchProfileStatus(launchProfile);
   const canStartPentest = rows.length > 0 && launchProfile?.readiness === "Ready";
+  const projectSetupRunning =
+    aiProjectSetup.isPending ||
+    projectSetupPolling ||
+    projectSetupJob?.status === "queued" ||
+    projectSetupJob?.status === "running";
   const verifiedRows = vulnerabilities.data ?? [];
   const repoCountLabel = formatRepoCount(rows.length);
   const activeRun = runRows.find((run) => run.status === "Running") ?? null;
@@ -229,6 +293,13 @@ export function ProjectDetail({ view = "overview" }: ProjectDetailProps = {}) {
             }
             actions={
               <>
+                <Button
+                  onClick={() => setShowAiSetupOptions(true)}
+                  disabled={rows.length === 0 || projectSetupRunning}
+                  title={rows.length === 0 ? "Add a repository before running AI setup" : undefined}
+                >
+                  {projectSetupRunning ? "Setting up..." : "AI setup"}
+                </Button>
                 <Button
                   variant="primary"
                   onClick={() => setShowPentestOptions(true)}
@@ -376,6 +447,14 @@ export function ProjectDetail({ view = "overview" }: ProjectDetailProps = {}) {
           busy={startPentest.isPending}
           onConfirm={onStartPentest}
           onCancel={() => setShowPentestOptions(false)}
+        />
+      )}
+
+      {showAiSetupOptions && (
+        <AiSetupModal
+          busy={aiProjectSetup.isPending}
+          onConfirm={onAiProjectSetup}
+          onCancel={() => setShowAiSetupOptions(false)}
         />
       )}
 
@@ -1108,6 +1187,10 @@ function toEpochMs(value: number | null | undefined): number | null {
   return value < 10_000_000_000 ? value * 1000 : value;
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
 const ENVIRONMENT_AUTOSAVE_DELAY_MS = 800;
 
 type EnvironmentSaveStatus = "saved" | "dirty" | "saving" | "blocked" | "error";
@@ -1275,6 +1358,79 @@ function profileDraftFromProject(project: ProjectRecord): RuntimeProfileDraft {
   );
   draft.auth_profiles = runtimeDraft.auth_profiles;
   return draft;
+}
+
+interface AiSetupOptions {
+  projectSetup: boolean;
+  seedSetup: boolean;
+  authSetup: boolean;
+}
+
+interface AiSetupModalProps {
+  busy: boolean;
+  onConfirm: (options: AiSetupOptions) => void;
+  onCancel: () => void;
+}
+
+function AiSetupModal({ busy, onConfirm, onCancel }: AiSetupModalProps) {
+  const [options, setOptions] = useState<AiSetupOptions>({
+    projectSetup: true,
+    seedSetup: true,
+    authSetup: true,
+  });
+
+  function setOption(key: keyof AiSetupOptions, checked: boolean) {
+    const next = { ...options, [key]: checked };
+    if (!next.projectSetup && !next.seedSetup && !next.authSetup) return;
+    setOptions(next);
+  }
+
+  return (
+    <ConfirmModal
+      title="AI setup"
+      confirmLabel="Start AI setup"
+      busy={busy}
+      onConfirm={() => onConfirm(options)}
+      onCancel={onCancel}
+      body={
+        <div className="pentest-options">
+          <label className="pentest-options__check">
+            <input
+              type="checkbox"
+              checked={options.projectSetup}
+              onChange={(event) => setOption("projectSetup", event.currentTarget.checked)}
+            />
+            <span>
+              <strong>Project setup</strong>
+              <small>Launch, reset, health, and local target commands.</small>
+            </span>
+          </label>
+          <label className="pentest-options__check">
+            <input
+              type="checkbox"
+              checked={options.seedSetup}
+              onChange={(event) => setOption("seedSetup", event.currentTarget.checked)}
+            />
+            <span>
+              <strong>Seed setup</strong>
+              <small>Roles, owned objects, fixture data, and resettable state.</small>
+            </span>
+          </label>
+          <label className="pentest-options__check">
+            <input
+              type="checkbox"
+              checked={options.authSetup}
+              onChange={(event) => setOption("authSetup", event.currentTarget.checked)}
+            />
+            <span>
+              <strong>Auth setup</strong>
+              <small>Login profiles, sessions, OTP hints, and role wiring.</small>
+            </span>
+          </label>
+        </div>
+      }
+    />
+  );
 }
 
 interface StartPentestOptions {
