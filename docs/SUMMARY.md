@@ -12,7 +12,7 @@ Both names appear in these pages for the reasons explained in
 ## Get started
 
 - [install.md](install.md): prerequisites, source build, the `nyx`
-  scanner dependency, the optional `claude-code` CLI, and
+  scanner dependency, optional AI runtimes, and
   `nyctos doctor` line-by-line.
 - [quickstart.md](quickstart.md): start the daemon, walk the
   first-launch wizard, create a project, attach repos, kick a scan,
@@ -43,7 +43,7 @@ Both names appear in these pages for the reasons explained in
   per-run / per-project / per-repo ordering, the AI runtime
   stream, the WS replay buffer, and the `Lagged` warning frame.
 - [ai-runtime.md](ai-runtime.md): the `AiRuntime` trait, the
-  shipped Anthropic and Claude Code adapters, the
+  shipped Anthropic, local-LLM, Claude Code, and Codex adapters, the
   `BudgetTracker` host port, and the five typed task
   implementations layered on top.
 

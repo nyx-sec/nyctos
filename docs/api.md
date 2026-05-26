@@ -117,7 +117,7 @@ Request:
 
 ```json
 {
-  "ai_runtime": "anthropic | none | local-llm | claude-code",
+  "ai_runtime": "anthropic | none | local-llm | claude-code | codex",
   "anthropic_api_key": "sk-...",
   "local_llm_url": "http://127.0.0.1:8080/v1",
   "local_llm_token": null,
@@ -144,7 +144,7 @@ targeted hints.
 Request:
 
 ```json
-{ "ai_runtime": "claude-code", "sandbox_backend": "birdcage" }
+{ "ai_runtime": "local-llm", "local_llm_url": "http://127.0.0.1:1234/v1", "sandbox_backend": "birdcage" }
 ```
 
 Response:
@@ -153,7 +153,7 @@ Response:
 {
   "checks": [
     { "name": "state-dir", "passed": true, "message": "state directory writable" },
-    { "name": "ai-claude-code", "passed": true, "message": "claude binary on PATH at /usr/local/bin/claude" },
+    { "name": "ai-local-llm", "passed": true, "message": "Local OpenAI-compatible endpoint configured at http://127.0.0.1:1234/v1; one-shot helpers enabled. Set [ai].model if the server requires a specific model id." },
     { "name": "sandbox", "passed": true, "message": "birdcage ready on this host" }
   ]
 }

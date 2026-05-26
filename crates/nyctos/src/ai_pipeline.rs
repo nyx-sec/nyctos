@@ -32,9 +32,10 @@ use nyctos_ai::{
     EscapeSuiteGate, EscapeSuiteVerdict, ExistingVulnerabilitySummary, ExplorationAuditEntry,
     ExplorationEndpoint, ExplorationFinding, ExplorationHaltReason, ExplorationKnownLead,
     ExplorationOutcome, ExplorationScope, LiveEvidenceReviewInput, LiveEvidenceReviewOutput,
-    NovelFindingDiscoveryOutcome, PayloadSynthesisOutcome, Pricing, SharedBudgetTracker,
-    SpecDerivationOutcome, DEFAULT_ATTACK_AGENT_MAX_TURNS, DEFAULT_ATTACK_AGENT_PROFILES,
-    DEFAULT_EXPLORATION_RUN_CAP_USD_MICROS, DEFAULT_EXPLORATION_SOFT_CAP_USD_MICROS,
+    LocalLlmAdapter, NovelFindingDiscoveryOutcome, PayloadSynthesisOutcome, Pricing,
+    SharedBudgetTracker, SpecDerivationOutcome, DEFAULT_ATTACK_AGENT_MAX_TURNS,
+    DEFAULT_ATTACK_AGENT_PROFILES, DEFAULT_EXPLORATION_RUN_CAP_USD_MICROS,
+    DEFAULT_EXPLORATION_SOFT_CAP_USD_MICROS,
 };
 use nyctos_core::store::{
     canonical_risk_rating, clamp_risk_score, compact_memory_for_prompt, finding_id_hash,
@@ -188,11 +189,30 @@ async fn selected_one_shot_runtime(
     match config.runtime {
         ConfigAiRuntime::None => Ok(None),
         ConfigAiRuntime::LocalLlm => {
-            tracing::info!(
-                pass = pass_name,
-                "selected local-llm runtime does not support one-shot tasks yet; skipping"
-            );
-            Ok(None)
+            let Some(api_base) =
+                config.api_base.as_deref().map(str::trim).filter(|v| !v.is_empty())
+            else {
+                tracing::info!(
+                    pass = pass_name,
+                    "selected local-llm runtime has no API base configured; skipping"
+                );
+                return Ok(None);
+            };
+            let bearer_token = match secrets.get(nyctos_core::secrets::ACCOUNT_AI_LOCAL_LLM) {
+                Ok(token) => token,
+                Err(err) => {
+                    tracing::warn!(
+                        pass = pass_name,
+                        "local-llm bearer token unavailable ({err}); continuing without bearer"
+                    );
+                    None
+                }
+            };
+            let mut adapter = LocalLlmAdapter::new(api_base.to_string(), bearer_token, tracker);
+            if let Some(model) = &config.model {
+                adapter = adapter.with_default_model(model.clone());
+            }
+            Ok(Some(Arc::new(adapter)))
         }
         ConfigAiRuntime::Anthropic => {
             let api_key = match secrets.get(nyctos_core::secrets::ACCOUNT_AI_ANTHROPIC) {
@@ -292,7 +312,13 @@ async fn selected_agent_loop_runtime(
             );
             None
         }
-        ConfigAiRuntime::None | ConfigAiRuntime::LocalLlm => None,
+        ConfigAiRuntime::LocalLlm => {
+            tracing::info!(
+                "ai exploration: selected local-llm runtime does not support repository exploration agents; skipping pass"
+            );
+            None
+        }
+        ConfigAiRuntime::None => None,
     }
 }
 

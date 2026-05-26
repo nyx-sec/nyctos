@@ -72,9 +72,9 @@ scan_file() {
 }
 
 # Candidate files: source files outside vendored / generated / pitboss
-# directories. The generated TS bindings file, LICENSE / PolyForm /
-# CHANGELOG files, and the banned-phrases list itself are skipped (they
-# would otherwise self-match).
+# directories. The generated TS bindings file, LICENSE / CHANGELOG
+# files, and the banned-phrases list itself are skipped (they would
+# otherwise self-match).
 while IFS= read -r file; do
     [ -z "$file" ] && continue
     scan_file "$file"
@@ -89,7 +89,6 @@ done < <(find . \
         -not -path './frontend/node_modules/*' \
         -not -path './frontend/src/api/types.gen.ts' \
         -not -name 'LICENSE*' \
-        -not -name 'PolyForm*' \
         -not -name 'CHANGELOG.md' \
         -not -name 'banned-phrases.txt' \
         | sort)

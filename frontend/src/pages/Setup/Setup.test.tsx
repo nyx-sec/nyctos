@@ -95,9 +95,9 @@ describe("SetupWizard", () => {
     attestAndContinue();
     await screen.findByText("Pick an AI runtime");
 
-    // Claude Code is selected by default: Continue is enabled.
+    // Static mode is selected by default: Continue is enabled.
     expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled();
-    expect(screen.getByRole("radio", { name: /Claude Code CLI/i })).toBeChecked();
+    expect(screen.getByRole("radio", { name: /Static engine/i })).toBeChecked();
     expect(screen.queryByLabelText("Anthropic API key")).toBeNull();
 
     fireEvent.click(screen.getByRole("radio", { name: /Anthropic API/i }));

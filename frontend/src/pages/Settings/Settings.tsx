@@ -10,29 +10,29 @@ import { useToast } from "@/components/Toast";
 
 const AI_CHOICES: { value: AiRuntimeChoice; label: string; body: string }[] = [
   {
-    value: "claude-code",
-    label: "Claude Code CLI (recommended)",
-    body: "Local CLI agent.",
-  },
-  {
-    value: "codex",
-    label: "Codex CLI",
-    body: "Local CLI agent.",
-  },
-  {
-    value: "anthropic",
-    label: "Anthropic API",
-    body: "Direct API key in the OS keychain.",
+    value: "none",
+    label: "Static engine",
+    body: "No model access required.",
   },
   {
     value: "local-llm",
     label: "Local OpenAI-compatible",
-    body: "Local /v1 endpoint.",
+    body: "Your local /v1 endpoint.",
   },
   {
-    value: "none",
-    label: "None",
-    body: "Static pass only.",
+    value: "anthropic",
+    label: "Anthropic API (BYOK)",
+    body: "Direct API key in the OS keychain.",
+  },
+  {
+    value: "claude-code",
+    label: "Claude Code CLI (optional)",
+    body: "Uses your installed CLI.",
+  },
+  {
+    value: "codex",
+    label: "Codex CLI (optional)",
+    body: "Uses your installed CLI.",
   },
 ];
 
@@ -282,35 +282,55 @@ export function Settings() {
                 />
               </div>
               <p className="settings-page__hint">
-                Keys are written to the OS keychain and never stored in <code>nyctos.toml</code>.
+                Official BYOK path. Keys are written to the OS keychain and never stored in{" "}
+                <code>nyctos.toml</code>.
               </p>
             </div>
           )}
 
+          {aiRuntime === "none" && (
+            <p className="settings-page__hint">
+              Static scans, route mapping, live checks, evidence storage, and triage stay enabled.
+            </p>
+          )}
+
           {aiRuntime === "local-llm" && (
-            <div className="settings-form-grid settings-form-grid--two">
-              <div className="setup-field">
-                <label htmlFor="settings-local-llm-url">OpenAI-compatible URL</label>
-                <input
-                  id="settings-local-llm-url"
-                  type="url"
-                  placeholder="http://127.0.0.1:1234/v1"
-                  value={localLlmUrl}
-                  onChange={(e) => setLocalLlmUrl(e.target.value)}
-                />
+            <>
+              <div className="settings-form-grid settings-form-grid--two">
+                <div className="setup-field">
+                  <label htmlFor="settings-local-llm-url">OpenAI-compatible URL</label>
+                  <input
+                    id="settings-local-llm-url"
+                    type="url"
+                    placeholder="http://127.0.0.1:1234/v1"
+                    value={localLlmUrl}
+                    onChange={(e) => setLocalLlmUrl(e.target.value)}
+                  />
+                </div>
+                <div className="setup-field">
+                  <label htmlFor="settings-local-llm-token">Bearer token</label>
+                  <input
+                    id="settings-local-llm-token"
+                    type="password"
+                    autoComplete="off"
+                    placeholder="Leave blank to keep current token"
+                    value={localLlmToken}
+                    onChange={(e) => setLocalLlmToken(e.target.value)}
+                  />
+                </div>
               </div>
-              <div className="setup-field">
-                <label htmlFor="settings-local-llm-token">Bearer token</label>
-                <input
-                  id="settings-local-llm-token"
-                  type="password"
-                  autoComplete="off"
-                  placeholder="Leave blank to keep current token"
-                  value={localLlmToken}
-                  onChange={(e) => setLocalLlmToken(e.target.value)}
-                />
-              </div>
-            </div>
+              <p className="settings-page__hint">
+                Local one-shot helpers use <code>/chat/completions</code>. Set{" "}
+                <code>[ai].model</code> in config if your server requires a specific model id.
+              </p>
+            </>
+          )}
+
+          {(aiRuntime === "claude-code" || aiRuntime === "codex") && (
+            <p className="settings-page__hint">
+              Optional local CLI adapter. Nyctos does not include or resell model access; use only
+              with provider-authorized credentials and terms.
+            </p>
           )}
         </SettingsSection>
 

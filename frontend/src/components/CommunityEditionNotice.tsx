@@ -4,9 +4,9 @@ import { Button } from "@/components/Button";
 const STORAGE_KEY = "nyctos.communityEditionNoticeDismissed";
 
 export const COMMUNITY_EDITION_NOTICE =
-  "You are using Nyctos Community Edition. Organizations with more than 100 employees, over $1M in annual revenue, or teams that need commercial terms should discuss licensing at nyctos.dev/pricing.";
+  "You are using Nyctos Community Edition under AGPLv3-or-later. Commercial licenses, paid support, and enterprise terms are available at nyctos.dev/pricing.";
 const NOTICE_PREFIX =
-  "You are using Nyctos Community Edition. Organizations with more than 100 employees, over $1M in annual revenue, or teams that need commercial terms should discuss licensing at";
+  "You are using Nyctos Community Edition under AGPLv3-or-later. Commercial licenses, paid support, and enterprise terms are available at";
 
 function noticeWasDismissed(): boolean {
   try {

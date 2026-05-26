@@ -412,7 +412,8 @@ impl AiConfig {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum AiRuntime {
-    /// AI features off. Static-pass only.
+    /// AI features off. Static scans, route modelling, live checks,
+    /// evidence storage, and triage still run.
     #[default]
     None,
     /// Hosted Anthropic API. The wizard prompts for an API key and
@@ -422,9 +423,11 @@ pub enum AiRuntime {
     /// The endpoint URL goes in `api_base`; any embedded bearer goes
     /// in the keychain under `secrets::ACCOUNT_AI_LOCAL_LLM`.
     LocalLlm,
-    /// Drive an already-installed `claude` CLI on `$PATH`.
+    /// Optional local adapter that drives an already-installed `claude`
+    /// CLI on `$PATH`.
     ClaudeCode,
-    /// Drive an already-installed `codex` CLI on `$PATH`.
+    /// Optional local adapter that drives an already-installed `codex`
+    /// CLI on `$PATH`.
     Codex,
 }
 

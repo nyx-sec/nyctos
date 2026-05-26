@@ -372,9 +372,9 @@ and exit `0`.
 ## `doctor`
 
 Verify that the state directory, config, SQLite schema, upstream
-`nyx` binary, optional `claude-code` CLI, and sandbox backend
-selection look healthy. Runs before logging is initialised so it
-prints to stdout directly.
+`nyx` binary, optional CLI AI adapters, and sandbox backend selection
+look healthy. Runs before logging is initialised so it prints to
+stdout directly.
 
 ```bash
 nyctos doctor
@@ -395,7 +395,9 @@ Output, in order:
    - `nyx FAIL: version too old (...)`.
 6. `claude-code`: detected version and path, or `unavailable (...)`
    when the binary is missing or below the minimum.
-7. Sandbox backend selection for the chain and fast lanes, with
+7. `codex`: detected version and path, or `unavailable (...)` when
+   the binary is missing or below the minimum.
+8. Sandbox backend selection for the chain and fast lanes, with
    the simultaneous-job caps. Each line ends with `default` when
    the cap is the built-in fallback (chain 2 / fast 8 from
    `LaneConcurrency::defaults()`) and `configured` when the
@@ -403,9 +405,7 @@ Output, in order:
    `fast_lane_concurrency` in `nyctos.toml`.
 
 The `doctor` subcommand exits non-zero only when the `nyx`
-discovery fails. `claude-code` and sandbox checks are
-informational; they will move to gating once their respective
-configuration surfaces land.
+discovery fails. CLI AI adapter and sandbox checks are informational.
 
 [`docs/install.md`](install.md) covers each line in more depth,
 including the recovery action for every failure mode.

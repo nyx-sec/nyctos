@@ -93,8 +93,9 @@ pub struct SetupStatusResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct SetupRequest {
     /// Operator-typed AI runtime: `none` | `anthropic` | `local-llm` |
-    /// `claude-code` | `codex`. The wizard stashes API keys (when
-    /// relevant) out-of-band via `secrets`, not in the TOML.
+    /// `claude-code` | `codex`. Static/no-AI mode is valid and
+    /// complete. BYOK/local secrets are stored out-of-band via
+    /// `secrets`, not in the TOML.
     pub ai_runtime: String,
     /// Anthropic API key. Required when `ai_runtime = "anthropic"`.
     /// Persisted to the OS keychain; never written to TOML or logs.

@@ -1,8 +1,9 @@
 # AI runtime
 
 `nyctos-ai` is the crate that turns a `Prompt` or `AgentTask` into
-model output. It owns one trait (`AiRuntime`), two shipped adapters
-(Anthropic Messages, Claude Code CLI), one host port
+model output. It owns one trait (`AiRuntime`), four shipped adapters
+(Anthropic Messages, local OpenAI-compatible, Claude Code CLI, Codex
+CLI), one host port
 (`BudgetTracker`), and the six task implementations that build
 typed structured prompts on top of the trait. Everything else in
 the agent (the run dispatcher, the AI pipeline binary glue, the
@@ -40,7 +41,7 @@ is a defence-in-depth, not the primary gate.
 
 | Method                          | Behaviour                                                                 |
 |---------------------------------|---------------------------------------------------------------------------|
-| `name`                          | Stable adapter name persisted in trace rows (`"anthropic"`, `"claude-code"`). |
+| `name`                          | Stable adapter name persisted in trace rows (`"anthropic"`, `"local-llm"`, `"claude-code"`, `"codex"`). |
 | `default_model`                 | Used when `Prompt.model` is `None`.                                       |
 | `supports_agent_loop`           | `false` for one-shot-only adapters; the dispatcher uses this to route.    |
 | `supports_prompt_cache`         | Affects request body shape (`system` block array with `cache_control`).   |
@@ -117,6 +118,11 @@ re-parses the raw transcript.
 
 ## Adapters
 
+The official provider paths are BYOK/direct API or local endpoints.
+Claude Code and Codex are optional local CLI adapters for users who
+have installed and authenticated those tools themselves. Nyctos does
+not include, proxy, sublicense, or resell model access.
+
 ### Anthropic Messages (`one_shot` only)
 
 `crates/nyctos-ai/src/adapter/anthropic.rs`.
@@ -169,6 +175,40 @@ supports SSE streaming via `stream: true`; a future revision can
 flip to streaming and emit one `AiEvent::TokenReceived` per delta
 without changing the trait.
 
+### Local OpenAI-compatible (`one_shot` only)
+
+`crates/nyctos-ai/src/adapter/local_llm.rs`.
+
+Direct `reqwest` against `<api_base>/chat/completions`. The runtime
+expects `api_base` to point at a local OpenAI-compatible `/v1`
+endpoint such as LM Studio, Ollama, or vLLM. Any bearer token is read
+from the OS keychain; it is never written to TOML.
+
+Capability flags: `supports_agent_loop = false`,
+`supports_prompt_cache = false`,
+`supports_deterministic_sampling = false`. `agent_loop` returns
+`AiError::UnsupportedMode("agent_loop")`.
+
+Request body:
+
+```json
+{
+  "model": "local-model",
+  "max_tokens": 4096,
+  "temperature": 0.0,
+  "stream": false,
+  "messages": [
+    { "role": "system", "content": "<system prompt>" },
+    { "role": "user", "content": "<user>" }
+  ]
+}
+```
+
+Set `[ai].model` when the local server requires a specific model id.
+Local runs record token counts when the server reports `usage`, but
+cost is recorded as zero because Nyctos has no way to know a local
+operator's hardware or provider accounting.
+
 ### Claude Code (`agent_loop` only)
 
 `crates/nyctos-ai/src/adapter/claude_code.rs`.
@@ -203,15 +243,18 @@ minutes. Capability flags: `supports_agent_loop = true`,
 `supports_deterministic_sampling = false`. `one_shot` returns
 `AiError::UnsupportedMode("one_shot")`.
 
+### Codex CLI (`one_shot` and `agent_loop`)
+
+`crates/nyctos-ai/src/adapter/codex.rs`.
+
+Spawns the installed `codex` CLI and consumes the JSONL stream emitted
+by `codex exec`. This adapter is optional and depends on the user's own
+Codex installation and authentication. `nyctos doctor` reports the
+resolved binary and version when present.
+
 ### Adapters on the roadmap
 
-OpenAI, Bedrock, Vertex, and a local-LLM driver. The
-`AiRuntime::LocalLlm` enum variant in
-`crates/nyctos-core/src/config.rs:243` is the configuration slot;
-the adapter implementation has not landed. The
-`secrets::ACCOUNT_AI_LOCAL_LLM` keychain account
-(`crates/nyctos-core/src/secrets.rs:30`) is the slot for the
-embedded bearer.
+OpenAI API, Bedrock, and Vertex.
 
 ## Budget tracking
 
@@ -457,7 +500,7 @@ section (defined at `crates/nyctos-core/src/config.rs:166`):
 [ai]
 provider = "anthropic"
 model = "claude-opus-4-7"
-runtime = "anthropic"               # none | anthropic | local-llm | claude-code
+runtime = "anthropic"               # none | anthropic | local-llm | claude-code | codex
 max_concurrent_one_shot = 4
 # Optional. Omit for unlimited AI runs.
 default_run_budget_usd_micros = 25_000_000  # $25.00 per run
@@ -468,7 +511,7 @@ default_run_budget_usd_micros = 25_000_000  # $25.00 per run
 | `provider`                       | `None`                                 | Free-form provider hint surfaced by the wizard.      |
 | `model`                          | `None`                                 | Per-run model override; tasks may still pick a model per prompt. |
 | `api_base`                       | `None`                                 | Endpoint URL for `local-llm`.                        |
-| `runtime`                        | `none`                                 | One of `none`, `anthropic`, `local-llm`, `claude-code`. |
+| `runtime`                        | `none`                                 | One of `none`, `anthropic`, `local-llm`, `claude-code`, `codex`. |
 | `max_concurrent_one_shot`        | `4`                                    | In-flight one-shot fan-out. Floored to `1`.          |
 | `default_run_budget_usd_micros`  | unset (unlimited)                      | Optional per-run cap stamped on auto-created budget rows. |
 
@@ -481,10 +524,10 @@ OS keychain under `secrets::ACCOUNT_AI_ANTHROPIC` (Anthropic) or
 | Error                                | When                                                                   |
 |--------------------------------------|------------------------------------------------------------------------|
 | `AiError::BudgetExceeded`            | Pre-call or post-call cap check fails. Emits `TaskHalted { BudgetCapReached }`. |
-| `AiError::UnsupportedMode`           | Adapter does not implement the requested mode (anthropic + `agent_loop`, claude-code + `one_shot`). |
-| `AiError::UpstreamRefused`           | Non-2xx HTTP status (anthropic) or non-zero exit (claude-code). Body / stderr rides in the variant string. |
+| `AiError::UnsupportedMode`           | Adapter does not implement the requested mode (anthropic/local-llm + `agent_loop`, claude-code + `one_shot`). |
+| `AiError::UpstreamRefused`           | Non-2xx HTTP status (anthropic/local-llm) or non-zero exit (CLI adapters). Body / stderr rides in the variant string. |
 | `AiError::MalformedResponse`         | JSON deserialisation failed on the response body.                      |
-| `AiError::Transport`                 | Network, IO, or scratch-dir failure. Claude Code agent-loop timeout maps here with the captured stderr appended. |
+| `AiError::Transport`                 | Network, IO, or scratch-dir failure. CLI agent-loop timeout maps here with the captured stderr appended. |
 | `AiError::BudgetTracker`             | The host tracker returned an error (database write failure, etc.).     |
 | `AiError::AdapterUnavailable`        | Construction failed (e.g. `claude` not on `PATH`).                     |
 

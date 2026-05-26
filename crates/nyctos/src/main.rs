@@ -1428,8 +1428,7 @@ async fn drive_scan(
     agent_review_notes
         .push(format!("configured AI runtime: {}", ai_runtime_label(config.ai.runtime)));
     agent_review_notes.push(pentest_tools::auth_profiles_summary(&auth_profiles));
-    if matches!(config.ai.runtime, nyctos_core::AiRuntime::None | nyctos_core::AiRuntime::LocalLlm)
-    {
+    if matches!(config.ai.runtime, nyctos_core::AiRuntime::None) {
         agent_review_notes.push(format!(
             "one-shot helpers skipped for configured runtime {:?}",
             config.ai.runtime
@@ -7157,6 +7156,10 @@ async fn doctor(
     match nyctos_ai::detect_claude_binary().await {
         Ok(bin) => println!("claude-code: available v{} at {}", bin.version, bin.path.display()),
         Err(err) => println!("claude-code: unavailable ({err})"),
+    }
+    match nyctos_ai::detect_codex_binary().await {
+        Ok(bin) => println!("codex: available v{} at {}", bin.version, bin.path.display()),
+        Err(err) => println!("codex: unavailable ({err})"),
     }
 
     report_sandbox_backends(config);

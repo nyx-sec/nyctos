@@ -11,8 +11,8 @@ const ANSI_NYCTOS_RED: &str = "\x1b[38;2;157;47;37m";
 const NYCTOS_TAGLINE: &str = "            automated pentesting, refined";
 const COMMUNITY_EDITION_NOTICE_LINES: [&str; 3] = [
     "Community Edition",
-    "License required: organizations over 100 employees or $1M annual revenue.",
-    "Commercial licensing: nyctos.dev/pricing",
+    "Open source under AGPLv3-or-later.",
+    "Commercial licenses and paid support: nyctos.dev/pricing",
 ];
 
 const NYCTOS_BANNER: [(&str, &str); 6] = [
@@ -83,15 +83,15 @@ fn push_colored_community_notice(out: &mut String) {
     out.push('\n');
     out.push_str(ANSI_BOLD);
     out.push_str(ANSI_NYCTOS_RED);
-    out.push_str("License required:");
+    out.push_str("License:");
     out.push_str(ANSI_RESET);
     out.push(' ');
     out.push_str(ANSI_NYCTOS_MUTED);
-    out.push_str("organizations over 100 employees or $1M annual revenue.");
+    out.push_str("AGPLv3-or-later open source.");
     out.push_str(ANSI_RESET);
     out.push('\n');
     out.push_str(ANSI_NYCTOS_MUTED);
-    out.push_str("Commercial licensing: ");
+    out.push_str("Commercial licenses and paid support: ");
     out.push_str(ANSI_RESET);
     out.push_str(ANSI_NYCTOS_GREEN);
     out.push_str("nyctos.dev/pricing");
@@ -110,7 +110,7 @@ mod tests {
         assert!(!banner.contains(" █████╗  ██████╗"));
         assert!(banner.contains("\n            automated pentesting, refined"));
         assert!(banner.contains("\n\nCommunity Edition\n"));
-        assert!(banner.contains("License required: organizations over 100 employees"));
+        assert!(banner.contains("Open source under AGPLv3-or-later"));
         assert!(!banner.contains("\x1b["));
     }
 
@@ -124,7 +124,7 @@ mod tests {
         assert!(banner.contains(ANSI_NYCTOS_RED));
         assert!(banner.contains(ANSI_BOLD));
         assert!(banner.contains("automated pentesting, refined"));
-        assert!(banner.contains("License required:"));
+        assert!(banner.contains("License:"));
         assert!(banner.contains("nyctos.dev/pricing"));
     }
 }

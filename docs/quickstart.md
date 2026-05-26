@@ -75,15 +75,19 @@ submit. The wizard refuses to submit until you tick
 
 | Field | Writes to | Notes |
 |---|---|---|
-| AI runtime | `[ai] runtime` | `none`, `anthropic`, `local-llm`, or `claude-code`. `none` keeps the AI exploit-synthesis layer off; static-pass scans still run. |
-| Anthropic API key | OS keychain (not TOML) | Required only when runtime is `anthropic`. Persisted under `secrets::ACCOUNT_AI_ANTHROPIC`. |
-| Local LLM URL + token | `[ai] api_base` + keychain | Required only when runtime is `local-llm`. OpenAI-compatible endpoint. |
+| AI runtime | `[ai] runtime` | `none`, `anthropic`, `local-llm`, `claude-code`, or `codex`. `none` is the default and keeps scans fully local with no model provider. |
+| Anthropic API key | OS keychain (not TOML) | Required only when runtime is `anthropic`. This is the official Claude BYOK path. Persisted under `secrets::ACCOUNT_AI_ANTHROPIC`. |
+| Local LLM URL + token | `[ai] api_base` + keychain | Required only when runtime is `local-llm`. OpenAI-compatible endpoint; set `[ai].model` if your server requires a specific model id. |
 | Sandbox backend | `[sandbox] backend` | `auto` is the default and resolves at runtime; `process` is the safe fallback that always works. See `docs/sandbox.md` (forthcoming) for the full backend matrix. |
 | `i_own_this` | (consent gate) | Must be `true` to submit. |
 
 The wizard is mounted on the same daemon, so you do not need to
 restart after submitting. The SPA redirects to `/` once the POST
 returns `200`.
+
+Claude Code and Codex CLI runtimes are optional local adapters. Nyctos
+does not include or resell model access; use them only with credentials
+and usage patterns allowed by the provider terms.
 
 ## Attach a repo to the project
 

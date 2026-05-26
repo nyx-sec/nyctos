@@ -4,7 +4,7 @@
 **Run a live pentest against a dev app you control. Nyctos reads the repo, drives the local target, verifies findings, and gives you proof instead of a guess list.**
 
   <p>
-    <a href="LICENSE.md"><img alt="License: PolyForm Small Business" src="https://img.shields.io/badge/license-PolyForm%20Small%20Business-0f172a?style=flat-square" /></a>
+    <a href="LICENSE.md"><img alt="License: AGPLv3-or-later" src="https://img.shields.io/badge/license-AGPLv3--or--later-0f172a?style=flat-square" /></a>
     <a href="https://www.rust-lang.org/"><img alt="Rust 2024" src="https://img.shields.io/badge/rust-2024-f97316?style=flat-square&logo=rust&logoColor=white" /></a>
     <a href="https://pnpm.io/"><img alt="pnpm frontend" src="https://img.shields.io/badge/pnpm-frontend-facc15?style=flat-square&logo=pnpm&logoColor=111827" /></a>
     <a href="https://github.com/nyx-sec/nyx"><img alt="nyx scanner" src="https://img.shields.io/badge/scanner-nyx-2563eb?style=flat-square" /></a>
@@ -40,7 +40,7 @@ The target stays local. The API binds to loopback by default. The run history, t
 | **Candidate pass** | Turn scanner findings and runtime signals into concrete issues worth checking. |
 | **Verification** | Send targeted live checks to the dev app and collect request, response, and trace proof. |
 | **Attack pass** | Optional destructive local phase that runs focused specialists, a cross-domain chain hunter, and final attack triage against the dev app. |
-| **Chain reasoning** | Let the chain agent inspect graph evidence and, for Claude/Codex, read/search repo code to connect low-level leads into higher-impact paths. |
+| **Chain reasoning** | Let the chain agent inspect graph evidence and, when an optional provider-authorized CLI runtime is configured, read/search repo code to connect low-level leads into higher-impact paths. |
 | **Triage** | Store verified vulnerabilities with confidence, status, evidence, and run attribution. |
 
 <p align="center"><img src="assets/screenshots/live-pentest.png" alt="Nyctos live pentest run with app readiness, auth sessions, repo progress, pentest phases, and live verifier proof" width="900"/></p>
@@ -167,6 +167,22 @@ npm --prefix frontend run check
 - [Product store](docs/product-store.md)
 - [SQLx setup](docs/dev/sqlx.md)
 
+## Support and Commercial Use
+
+Nyctos is free and open source under AGPLv3-or-later. Commercial licenses,
+paid support, onboarding help, private policy packs, and enterprise terms are
+available for teams that need proprietary embedding, hosted resale, custom
+support obligations, or license comfort. See [LICENSE.md](LICENSE.md) or contact
+<licensing@nyx.dev>.
+
+Nyctos does not include or resell model access. AI runtimes are optional
+BYOK/local connectors; users are responsible for complying with the terms for
+their chosen API provider, local endpoint, or installed CLI.
+
 ## License
 
-Nyctos is source-available under PolyForm Small Business License 1.0.0. See [LICENSE.md](LICENSE.md). Contributions are accepted under the [Nyctos Contributor License Agreement](CLA.md). The upstream `nyx` scanner is a separate GPL-3.0-or-later project.
+Nyctos is open source under AGPLv3-or-later. See [LICENSE.md](LICENSE.md).
+Contributions are accepted under the [Nyctos Contributor License
+Agreement](CLA.md) so the project can remain open while commercial licenses are
+available for organizations that need them. The upstream `nyx` scanner is a
+separate GPL-3.0-or-later project.

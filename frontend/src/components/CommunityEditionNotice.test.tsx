@@ -11,7 +11,8 @@ describe("CommunityEditionNotice", () => {
     render(<CommunityEditionNotice />);
 
     expect(screen.getByRole("dialog", { name: "Community Edition" })).toBeInTheDocument();
-    expect(screen.getByText(/more than 100 employees/i)).toBeInTheDocument();
+    expect(screen.getByText(/AGPLv3-or-later/i)).toBeInTheDocument();
+    expect(screen.getByText(/paid support/i)).toBeInTheDocument();
     expect(COMMUNITY_EDITION_NOTICE).toContain("nyctos.dev/pricing");
     expect(screen.getByRole("link", { name: "nyctos.dev/pricing" })).toHaveAttribute(
       "href",

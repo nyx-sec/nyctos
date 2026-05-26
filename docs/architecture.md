@@ -77,9 +77,9 @@ once they reach the worker.
 ## Subprocess boundary to `nyx`
 
 The upstream `nyx` scanner is GPL-3.0-or-later. `nyctos` is
-source-available under PolyForm Small Business 1.0.0. To keep the
-two licenses from contaminating each other, Nyctos consumes `nyx`
-only through `fork`/`exec`, never as a linked library:
+AGPL-3.0-or-later. Nyctos consumes `nyx` only through `fork`/`exec`,
+never as a linked library, so the scanner keeps its own release and
+repository boundary:
 
 - `nyctos_nyx::NyxRunner::discover` resolves the binary via
   `Config::nyx.binary` (operator override) or `$PATH`, then runs
@@ -163,12 +163,12 @@ workspaces, and repro bundles land) is documented in
 ## AI runtime
 
 The `AiRuntime` trait in
-`crates/nyctos-ai/src/runtime.rs:18` is vendor-neutral. Two
-adapters ship today: `AnthropicAdapter` (Messages API) and
-`ClaudeCodeAdapter` (the `claude-code` CLI subprocess). Both
-publish `AgentEvent::Ai` frames into the same broadcast bus the
-run dispatcher uses, keyed by a task id the caller supplies so
-multiple in-flight `one_shot` calls can be demultiplexed.
+`crates/nyctos-ai/src/runtime.rs:18` is vendor-neutral. Shipped
+adapters cover the Anthropic Messages API, OpenAI-compatible local
+`/v1` endpoints, Claude Code CLI, and Codex CLI. They all publish
+`AgentEvent::Ai` frames into the same broadcast bus the run
+dispatcher uses, keyed by a task id the caller supplies so multiple
+in-flight `one_shot` calls can be demultiplexed.
 
 Determinism: every task seeds from `BLAKE3(run_id || task_id)`,
 and adapters that support deterministic sampling set

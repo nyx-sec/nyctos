@@ -579,9 +579,9 @@ async fn setup_doctor(
                 passed: found.is_some(),
                 message: match found {
                     Some(p) => format!(
-                        "Claude Code binary found at {p}; one-shot enabled; agent exploration enabled. Authentication is checked by Claude Code when a task starts."
+                        "Claude Code binary found at {p}; optional local CLI adapter enabled. Use provider-authorized credentials; Nyctos does not include or resell model access."
                     ),
-                    None => "`claude` not found on PATH; install Claude Code first".to_string(),
+                    None => "`claude` not found on PATH; install Claude Code only if you want the optional local CLI adapter".to_string(),
                 },
             });
         }
@@ -643,7 +643,9 @@ async fn local_llm_doctor_check(s: &ServerState, req: &DoctorRequest) -> DoctorC
         Some(url) => DoctorCheck {
             name: "ai-local-llm".to_string(),
             passed: true,
-            message: format!("Local LLM endpoint configured at {url}"),
+            message: format!(
+                "Local OpenAI-compatible endpoint configured at {url}; one-shot helpers enabled. Set [ai].model if the server requires a specific model id."
+            ),
         },
         None => DoctorCheck {
             name: "ai-local-llm".to_string(),
@@ -659,7 +661,7 @@ async fn codex_doctor_check() -> DoctorCheck {
         return DoctorCheck {
             name: "ai-codex".to_string(),
             passed: false,
-            message: "`codex` not found on PATH; install Codex CLI first".to_string(),
+            message: "`codex` not found on PATH; install Codex CLI only if you want the optional local CLI adapter".to_string(),
         };
     };
 
@@ -720,7 +722,7 @@ async fn codex_doctor_check() -> DoctorCheck {
         name: "ai-codex".to_string(),
         passed,
         message: format!(
-            "Codex CLI {version} found at {path}; {auth_msg}; {runtime_msg}; doctor overall {overall}; one-shot enabled; agent exploration enabled"
+            "Codex CLI {version} found at {path}; {auth_msg}; {runtime_msg}; doctor overall {overall}; optional local CLI adapter enabled. Use provider-authorized credentials."
         ),
     }
 }

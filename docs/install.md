@@ -13,9 +13,9 @@ against the workspace in this repository.
 | Component | Version | Notes |
 |---|---|---|
 | Rust toolchain | 1.83 or newer, channel `stable` | Pinned in `rust-toolchain.toml`. `rustup` picks it up automatically on first `cargo` invocation. |
-| `nyx` static scanner | 0.7.0 or newer | External GPL-3.0 binary spawned as a subprocess. See [Install the `nyx` scanner](#install-the-nyx-scanner). |
+| `nyx` static scanner | 0.7.0 or newer | External GPL-3.0-or-later binary spawned as a subprocess. See [Install the `nyx` scanner](#install-the-nyx-scanner). |
 | Node.js + `npm` | Node 18+ | Required only for `cargo build --release` (the release build bundles the SPA). Debug builds ship a stub page and skip Node. |
-| `claude-code` CLI | recent | Optional. Required only if you intend to run the AI exploit-synthesis layer. See [Optional: claude-code](#optional-claude-code). |
+| AI runtime | optional | Static scans work without any model provider. Optional paths are direct BYOK APIs, local OpenAI-compatible endpoints, and provider-authorized local CLIs. |
 | SQLite | bundled | Linked into the binary via SQLx; no system SQLite needed. |
 
 Linux and macOS are the supported targets. Windows is untested.
@@ -68,23 +68,30 @@ install via `[nyx].min_version = "0.8.0"` in `nyctos.toml` if a
 deployment needs a newer floor than the agent default; values below the
 built-in floor are clamped up silently.
 
-The upstream `nyx` scanner is GPL-3.0-or-later, distributed
-separately. It is the only GPL component in the stack. Nyctos itself
-is source-available under PolyForm Small Business 1.0.0; the two
-licenses coexist because Nyctos never links against `nyx`, only
-spawns it.
+The upstream `nyx` scanner is GPL-3.0-or-later and distributed
+separately. Nyctos itself is AGPL-3.0-or-later. Nyctos still consumes
+`nyx` as an external subprocess so the scanner can keep its own release
+cadence and repository boundary.
 
-## Optional: claude-code
+## Optional: AI Runtimes
 
-The AI exploit-synthesis layer (`crates/nyctos-ai`) drives the
-`claude-code` agent-loop CLI as a subprocess. Without it the daemon
-still starts, scans complete, and findings persist; only the AI
-pipeline degrades to "unavailable".
+The static scanner, route modelling, live verification, evidence store,
+and triage workflow do not require AI. `[ai] runtime = "none"` is the
+default and is a complete local scan mode.
 
-To enable it, install Anthropic's `claude-code` CLI and put it on
-`PATH` as `claude` (or, for older installs, `claude-code`; the
-detector accepts either). `nyctos doctor` reports the resolved
-binary and the captured `--version` string.
+To enable AI one-shot helpers, use a direct BYOK API or a local
+OpenAI-compatible endpoint:
+
+- `anthropic`: store an Anthropic API key in the OS keychain.
+- `local-llm`: point `[ai].api_base` at a local `/v1` endpoint such as
+  LM Studio, Ollama, or vLLM. Set `[ai].model` when your server requires
+  a specific model id.
+
+Claude Code and Codex CLI support are optional local adapters for users
+who have installed and authenticated those CLIs themselves. Nyctos does
+not include, proxy, sublicense, or resell model access. Use these
+adapters only with credentials and usage patterns allowed by the
+provider terms.
 
 ## State directory
 
@@ -120,6 +127,7 @@ config not found at ./nyctos.toml (using defaults)
 db OK at /home/op/.local/share/nyctos/state.db (schema v1)
 nyx OK at /usr/local/bin/nyx (version 0.7.0, minimum 0.7.0)
 claude-code: available v1.0.0 at /usr/local/bin/claude
+codex: unavailable (`codex` not on PATH)
 sandbox chain lane -> birdcage (selected by host probe) [2 simultaneous, default]
 sandbox fast lane  -> process (selected by host probe) [8 simultaneous, default]
 webhook: secret resolved from `env:NYX_WEBHOOK_SECRET` (32 bytes)
@@ -136,7 +144,8 @@ Each line maps to a single check:
 | `config OK` / `config not found` | Whether `nyctos.toml` was loaded or defaults applied. A missing config is not fatal. |
 | `db OK ... schema v<N>` | SQLite opened and migrations are caught up. |
 | `nyx OK` / `nyx FAIL` | The scanner binary is on `PATH` (or `[nyx].binary_path` resolved), and its `--version` is at or above `MINIMUM_NYX_VERSION`. |
-| `claude-code: available` / `unavailable` | Informational only. Doctor exits zero with claude-code missing. |
+| `claude-code: available` / `unavailable` | Informational only. Doctor exits zero with Claude Code missing. |
+| `codex: available` / `unavailable` | Informational only. Doctor exits zero with Codex missing. |
 | `sandbox chain lane` / `sandbox fast lane` | Backend that will service each lane plus its concurrency cap. The `default` / `configured` suffix shows whether the cap is the built-in value or an operator override via `[performance] chain_lane_concurrency` / `fast_lane_concurrency`. |
 | `webhook: secret resolved` / `webhook: disabled` | Whether `[triggers] webhook_secret_ref` resolved to a non-empty value. Only present when the secret ref is set; absent on a fresh install. |
 | `webhook caps` | Resolved per-handler concurrency cap and per-IP rate limit. The `default` / `configured` suffix mirrors the lane lines: built-in fallback vs. an operator override via `[triggers] webhook_max_concurrent` / `webhook_rate_limit_per_minute`. Only present when the webhook is enabled. |

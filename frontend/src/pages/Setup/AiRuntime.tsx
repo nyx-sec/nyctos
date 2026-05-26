@@ -8,29 +8,29 @@ interface Props {
 
 const CHOICES: { value: AiRuntimeChoice; label: string; body: string }[] = [
   {
-    value: "claude-code",
-    label: "Claude Code CLI (recommended)",
-    body: "Local CLI agent.",
-  },
-  {
-    value: "codex",
-    label: "Codex CLI",
-    body: "Local CLI agent.",
-  },
-  {
-    value: "anthropic",
-    label: "Anthropic API",
-    body: "Direct API key in the OS keychain.",
+    value: "none",
+    label: "Static engine (recommended)",
+    body: "No model access required.",
   },
   {
     value: "local-llm",
     label: "Local OpenAI-compatible runtime",
-    body: "Local /v1 endpoint.",
+    body: "Your local /v1 endpoint.",
   },
   {
-    value: "none",
-    label: "None (static-pass only)",
-    body: "Static pass only.",
+    value: "anthropic",
+    label: "Anthropic API (BYOK)",
+    body: "Direct API key in the OS keychain.",
+  },
+  {
+    value: "codex",
+    label: "Codex CLI (optional)",
+    body: "Uses your installed CLI.",
+  },
+  {
+    value: "claude-code",
+    label: "Claude Code CLI (optional)",
+    body: "Uses your installed CLI.",
   },
 ];
 
@@ -38,7 +38,7 @@ export function AiRuntimeStep({ form, update }: Props) {
   return (
     <div className="setup-step__body">
       <h3>Pick an AI runtime</h3>
-      <p>Claude Code is the default. You can switch later in Settings.</p>
+      <p>Start with the static engine, then add a local endpoint or BYOK provider later.</p>
       <div className="setup-choices">
         {CHOICES.map((choice) => (
           <label
@@ -70,7 +70,15 @@ export function AiRuntimeStep({ form, update }: Props) {
             value={form.anthropicApiKey}
             onChange={(e) => update({ anthropicApiKey: e.target.value })}
           />
-          <p className="setup-hint">Stored in the OS keychain.</p>
+          <p className="setup-hint">Official BYOK path. Stored in the OS keychain.</p>
+        </div>
+      )}
+
+      {form.aiRuntime === "none" && (
+        <div className="setup-field">
+          <p>
+            Static scans, route mapping, live checks, evidence storage, and triage stay enabled.
+          </p>
         </div>
       )}
 
@@ -95,7 +103,10 @@ export function AiRuntimeStep({ form, update }: Props) {
               value={form.localLlmToken}
               onChange={(e) => update({ localLlmToken: e.target.value })}
             />
-            <p className="setup-hint">Optional. Stored in the OS keychain.</p>
+            <p className="setup-hint">
+              Optional. Stored in the OS keychain. Set <code>[ai].model</code> in config if your
+              server requires a specific model id.
+            </p>
           </div>
         </>
       )}
@@ -105,6 +116,10 @@ export function AiRuntimeStep({ form, update }: Props) {
           <p>
             Nyctos will look for <code>claude</code> on <code>$PATH</code>.
           </p>
+          <p className="setup-hint">
+            Optional local adapter. Nyctos does not include or resell model access; use only with
+            provider-authorized credentials and terms.
+          </p>
         </div>
       )}
 
@@ -112,6 +127,10 @@ export function AiRuntimeStep({ form, update }: Props) {
         <div className="setup-field">
           <p>
             Nyctos will look for <code>codex</code> on <code>$PATH</code>.
+          </p>
+          <p className="setup-hint">
+            Optional local adapter. Nyctos does not include or resell model access; use only with
+            provider-authorized credentials and terms.
           </p>
         </div>
       )}

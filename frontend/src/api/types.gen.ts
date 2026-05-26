@@ -443,8 +443,9 @@ scan_timeout_secs: bigint, };
 export type SetupRequest = {
 /**
  * Operator-typed AI runtime: `none` | `anthropic` | `local-llm` |
- * `claude-code` | `codex`. The wizard stashes API keys (when
- * relevant) out-of-band via `secrets`, not in the TOML.
+ * `claude-code` | `codex`. Static/no-AI mode is valid and
+ * complete. BYOK/local secrets are stored out-of-band via
+ * `secrets`, not in the TOML.
  */
 ai_runtime: string,
 /**

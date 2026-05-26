@@ -13,8 +13,7 @@ allow_network = false
 backend = "auto"
 
 [ai]
-provider = "codex"
-runtime = "codex"
+runtime = "none"
 max_concurrent_one_shot = 4
 
 [ai.pricing]

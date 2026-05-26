@@ -1,11 +1,11 @@
 //! `AiRuntime` trait + concrete vendor adapters.
 //!
 //! Ships the trait, the `BudgetTracker` host port, the direct-HTTP
-//! Anthropic Messages adapter, and the Claude Code / Codex CLI
-//! all-in-one drivers. OpenAI API / Bedrock / Vertex and a local-LLM
-//! driver remain on the roadmap. Adapters depend only on
-//! `nyctos-types`; the agent binary wires the host-side budget port
-//! to `nyctos-core`'s `BudgetStore` at startup.
+//! Anthropic Messages adapter, the OpenAI-compatible local-LLM
+//! adapter, and the Claude Code / Codex CLI all-in-one drivers.
+//! OpenAI API / Bedrock / Vertex remain on the roadmap. Adapters
+//! depend only on `nyctos-types`; the agent binary wires the
+//! host-side budget port to `nyctos-core`'s `BudgetStore` at startup.
 
 pub mod adapter;
 pub mod runtime;
@@ -23,6 +23,7 @@ pub use adapter::codex::{
     detect_codex_binary, parse_codex_jsonl, CodexBinary, CodexCliAdapter, DEFAULT_CODEX_BINARY,
     MINIMUM_CODEX_VERSION,
 };
+pub use adapter::local_llm::{LocalLlmAdapter, DEFAULT_LOCAL_LLM_MODEL};
 pub use runtime::{
     deterministic_seed, AiRuntime, BudgetTracker, InMemoryBudgetTracker, SharedBudgetTracker,
 };

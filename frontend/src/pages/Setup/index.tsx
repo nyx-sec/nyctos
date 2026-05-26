@@ -25,7 +25,7 @@ export interface SetupFormState {
 
 const INITIAL: SetupFormState = {
   iOwnThis: false,
-  aiRuntime: "claude-code",
+  aiRuntime: "none",
   anthropicApiKey: "",
   localLlmUrl: "",
   localLlmToken: "",

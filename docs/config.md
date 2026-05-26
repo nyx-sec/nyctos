@@ -98,12 +98,18 @@ fails the load rather than silently going to default.
 | Value          | Description                                                                                                |
 |----------------|------------------------------------------------------------------------------------------------------------|
 | `none`         | AI features off. Static-pass only.                                                                         |
-| `anthropic`    | Hosted Anthropic API. The wizard stores the API key in the OS keychain under account `ai-anthropic`.       |
-| `local-llm`    | Local OpenAI-compatible runtime (LM Studio, Ollama, vLLM). Endpoint goes in `api_base`; any bearer token lives in the keychain under `ai-local-llm`. |
-| `claude-code`  | Drive an already-installed `claude` CLI on `$PATH`.                                                        |
+| `anthropic`    | Hosted Anthropic API using the operator's API key. The wizard stores the key in the OS keychain under account `ai-anthropic`. |
+| `local-llm`    | Local OpenAI-compatible runtime (LM Studio, Ollama, vLLM). Endpoint goes in `api_base`; set `model` when the server requires one. Any bearer token lives in the keychain under `ai-local-llm`. |
+| `claude-code`  | Optional local adapter that drives an already-installed `claude` CLI on `$PATH`.                           |
+| `codex`        | Optional local adapter that drives an already-installed `codex` CLI on `$PATH`.                            |
 
 API keys never live in TOML. The wizard at first launch writes them
 to the OS keychain.
+
+Nyctos does not include or resell access to model providers. Direct
+API and local endpoint runtimes are the official BYOK paths; CLI
+runtimes are optional local adapters for users who have installed and
+authenticated those tools themselves under the relevant provider terms.
 
 ## `[ui]`
 
