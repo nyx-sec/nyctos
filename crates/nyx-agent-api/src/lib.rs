@@ -1,0 +1,39 @@
+//! Loopback HTTP + WebSocket surface for the nyx-agent daemon.
+//!
+//! The `nyx-agent` binary owns the long-lived daemon process and
+//! wires three things into [`ServerState`]:
+//!
+//! - a connected [`nyx_agent_core::Store`] for read-only queries,
+//! - a tokio broadcast sink ([`nyx_agent_types::event::EventSink`])
+//!   that the run dispatcher publishes lifecycle events through,
+//! - a [`ScanTrigger`] handle the API uses to kick off a manual scan.
+//!
+//! Subscribers attach to the broadcast sink through the
+//! `/api/v1/events?run_id=<id>` WebSocket endpoint without the
+//! dispatcher knowing about them.
+
+pub mod integrations;
+pub mod router;
+pub mod state;
+pub mod webhook;
+
+pub use integrations::spawn_integration_delivery_task;
+pub use router::build_router;
+pub use state::{
+    ApiError, AuthConfig, AuthSetupAgent, AuthSetupAgentError, AuthSetupAgentFuture,
+    AuthSetupAgentOutput, AuthSetupAgentRequest, AuthSetupJobStore, EventReplay, ProjectSetupAgent,
+    ProjectSetupAgentError, ProjectSetupAgentFuture, ProjectSetupAgentOutput,
+    ProjectSetupAgentRequest, ProjectSetupJobStore, RemediationAgent, RemediationAgentError,
+    RemediationAgentFuture, RemediationAgentOutput, RemediationAgentRequest,
+    RemediationChangedFile, RemediationJobError, RemediationJobRecord, RemediationJobStore,
+    ScanRunOverrides, ScanTrigger, ScanTriggerError, ScanTriggerSource, SeedSetupAgent,
+    SeedSetupAgentError, SeedSetupAgentFuture, SeedSetupAgentOutput, SeedSetupAgentRequest,
+    ServerState, SetupContext,
+};
+pub use webhook::{
+    sign as sign_webhook, verify_signature as verify_webhook_signature, EnvSecretResolver,
+    StaticSecretResolver, WebhookConcurrencyLimit, WebhookConfig, WebhookRateLimiter,
+    WebhookResponse, WebhookSecretResolver, DEFAULT_WEBHOOK_MAX_CONCURRENT,
+    DEFAULT_WEBHOOK_RATE_LIMIT_BURST, DEFAULT_WEBHOOK_RATE_LIMIT_MAX_IPS,
+    DEFAULT_WEBHOOK_RATE_LIMIT_PER_MINUTE, MAX_WEBHOOK_BODY_BYTES,
+};

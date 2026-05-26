@@ -1,17 +1,17 @@
 # Cron-driven scans
 
 The daemon ships an in-process scheduler that wakes every 60 seconds,
-evaluates every `[[schedule]]` entry in `nyctos.toml`, and triggers
+evaluates every `[[schedule]]` entry in `nyx-agent.toml`, and triggers
 a scan through the same path the SPA's "Scan now" button uses. There
 is no external `cron` process to wire up. The scheduler runs inside
-`nyctos serve`, so the daemon must be running for entries to fire.
+`nyx-agent serve`, so the daemon must be running for entries to fire.
 
 ## Config
 
 ```toml
 [[schedule]]
 cron = "0 3 * * 1"          # Monday at 03:00 local time
-repo = "nyctos"            # optional; omit to scan every enabled repo
+repo = "nyx-agent"            # optional; omit to scan every enabled repo
 label = "weekly-monday-3am" # surfaced in tracing + the UI
 ```
 
@@ -44,17 +44,17 @@ recipes ship under `packaging/`.
 ### systemd (Linux)
 
 ```bash
-sudo install -m 0644 packaging/nyctos.service /etc/systemd/system/
-sudo install -m 0644 packaging/nyctos.timer /etc/systemd/system/
-sudo install -m 0644 packaging/nyctos-scan.service /etc/systemd/system/
+sudo install -m 0644 packaging/nyx-agent.service /etc/systemd/system/
+sudo install -m 0644 packaging/nyx-agent.timer /etc/systemd/system/
+sudo install -m 0644 packaging/nyx-agent-scan.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now nyctos.service
+sudo systemctl enable --now nyx-agent.service
 # Optional: a host-managed timer that also kicks a one-shot scan.
-sudo systemctl enable --now nyctos.timer
+sudo systemctl enable --now nyx-agent.timer
 ```
 
-`nyctos.service` runs `nyctos serve --headless`. The
-`nyctos.timer` + `nyctos-scan.service` pair is optional: pick
+`nyx-agent.service` runs `nyx-agent serve --headless`. The
+`nyx-agent.timer` + `nyx-agent-scan.service` pair is optional: pick
 either the in-process `[[schedule]]` entries OR the systemd timer, not
 both, to avoid double-firing.
 
@@ -70,10 +70,10 @@ install -m 0644 packaging/com.nyx.agent.plist \
 launchctl bootstrap gui/$(id -u) "$HOME/Library/LaunchAgents/com.nyx.agent.plist"
 ```
 
-The plist runs `nyctos serve --headless` with `KeepAlive=true`,
+The plist runs `nyx-agent serve --headless` with `KeepAlive=true`,
 so the daemon stays up across login sessions. Periodic kicks come
 from the in-process scheduler reading `[[schedule]]` entries out
-of `nyctos.toml`; there is no separate launchd calendar trigger to
+of `nyx-agent.toml`; there is no separate launchd calendar trigger to
 configure.
 
 Do not install this file under `/Library/LaunchDaemons/`. That
@@ -85,7 +85,7 @@ exposes to its own configured repositories.
 ## Verifying
 
 ```bash
-journalctl -u nyctos.service -f
+journalctl -u nyx-agent.service -f
 # or, on macOS:
 log stream --predicate 'subsystem == "com.nyx.agent"'
 ```

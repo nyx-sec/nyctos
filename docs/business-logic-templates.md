@@ -1,6 +1,6 @@
 # Business Logic Templates
 
-Nyctos includes reusable business-logic pentest templates for bugs
+Nyx Agent includes reusable business-logic pentest templates for bugs
 normal scanners tend to miss. Templates are first-class metadata, but
 not a separate executor: they create normal `pentest_candidates` with
 normal live test plans, then the existing verifier handles auth
@@ -16,8 +16,8 @@ the run safety settings.
 CLI:
 
 ```bash
-nyctos business-logic templates
-nyctos business-logic templates --json
+nyx-agent business-logic templates
+nyx-agent business-logic templates --json
 ```
 
 API:
@@ -35,7 +35,7 @@ whether it is executable or metadata-only.
 
 Executable templates may create objects, submit checkout data, change
 file permissions, deliver webhook payloads, or create chatbot
-conversation state. Nyctos only generates these state-changing
+conversation state. Nyx Agent only generates these state-changing
 template candidates when both run gates are enabled:
 
 ```toml
@@ -88,7 +88,7 @@ business_logic_template_ids = [
 The same selection can be supplied per run:
 
 ```bash
-nyctos scan \
+nyx-agent scan \
   --exploit-mode \
   --allow-state-changing-live-probes \
   --research-mode \
@@ -174,7 +174,7 @@ the same object-specific marker:
     "owner_role": "user_a",
     "id": "proj-user-a-1",
     "route": "/api/projects/{id}",
-    "positive_markers": ["nyctos-user-a-project", "proj-user-a-1"]
+    "positive_markers": ["nyx-agent-user-a-project", "proj-user-a-1"]
   },
   "accessor_role": "user_b",
   "owner_request": {
@@ -188,7 +188,7 @@ the same object-specific marker:
   "oracle": {
     "type": "object_ownership_break",
     "forbidden_status": [401, 403, 404],
-    "positive_markers": ["nyctos-user-a-project", "proj-user-a-1"]
+    "positive_markers": ["nyx-agent-user-a-project", "proj-user-a-1"]
   }
 }
 ```
@@ -227,7 +227,7 @@ marker:
   },
   "required_roles": ["user_a", "user_b"],
   "seed_data": {
-    "object_marker": "nyctos-tenant-object-isolation-abc12345",
+    "object_marker": "nyx-agent-tenant-object-isolation-abc12345",
     "owner_role": "user_a",
     "peer_role": "user_b"
   },
@@ -236,7 +236,7 @@ marker:
       "as": "user_a",
       "method": "POST",
       "path": "/api/projects",
-      "json": { "name": "nyctos-tenant-object-isolation-abc12345" },
+      "json": { "name": "nyx-agent-tenant-object-isolation-abc12345" },
       "destructive": true,
       "captures": {
         "object_id": {
@@ -254,7 +254,7 @@ marker:
   "oracle": {
     "step": 1,
     "status_range": "2xx",
-    "body_contains": "nyctos-tenant-object-isolation-abc12345"
+    "body_contains": "nyx-agent-tenant-object-isolation-abc12345"
   }
 }
 ```
@@ -275,7 +275,7 @@ status is not enough.
   "kind": "http_workflow",
   "required_roles": ["user"],
   "seed_data": {
-    "coupon_marker": "nyctos-coupon-price-manipulation-def67890",
+    "coupon_marker": "nyx-agent-coupon-price-manipulation-def67890",
     "forced_price": "0.01",
     "role": "user"
   },
@@ -285,7 +285,7 @@ status is not enough.
       "method": "POST",
       "path": "/api/checkout/coupon",
       "json": {
-        "coupon_code": "nyctos-coupon-price-manipulation-def67890",
+        "coupon_code": "nyx-agent-coupon-price-manipulation-def67890",
         "total": 0.01
       },
       "destructive": true
@@ -294,7 +294,7 @@ status is not enough.
   "oracle": {
     "step": 0,
     "status_range": "2xx",
-    "body_contains": "nyctos-coupon-price-manipulation-def67890"
+    "body_contains": "nyx-agent-coupon-price-manipulation-def67890"
   }
 }
 ```
@@ -358,7 +358,7 @@ signature timestamp windows, or idempotency.
   "kind": "http_workflow",
   "required_roles": ["anonymous"],
   "seed_data": {
-    "event_marker": "nyctos-webhook-replay-freshness-1234abcd",
+    "event_marker": "nyx-agent-webhook-replay-freshness-1234abcd",
     "timestamp": "2000-01-01T00:00:00Z",
     "role": "anonymous"
   },
@@ -368,7 +368,7 @@ signature timestamp windows, or idempotency.
       "method": "POST",
       "path": "/webhooks/stripe",
       "json": {
-        "event_id": "nyctos-webhook-replay-freshness-1234abcd",
+        "event_id": "nyx-agent-webhook-replay-freshness-1234abcd",
         "timestamp": "2000-01-01T00:00:00Z",
         "signature": "unsigned"
       },
@@ -379,7 +379,7 @@ signature timestamp windows, or idempotency.
       "method": "POST",
       "path": "/webhooks/stripe",
       "json": {
-        "event_id": "nyctos-webhook-replay-freshness-1234abcd",
+        "event_id": "nyx-agent-webhook-replay-freshness-1234abcd",
         "timestamp": "2000-01-01T00:00:00Z",
         "signature": "unsigned"
       },
@@ -389,7 +389,7 @@ signature timestamp windows, or idempotency.
   "oracle": {
     "step": 1,
     "status_range": "2xx",
-    "body_contains": "nyctos-webhook-replay-freshness-1234abcd"
+    "body_contains": "nyx-agent-webhook-replay-freshness-1234abcd"
   }
 }
 ```
@@ -403,7 +403,7 @@ route. Required roles: two configured non-anonymous roles, such as
 The template creates an invite, captures an invite token/id from the
 creation response, accepts it, then replays the same acceptance.
 Confirmation requires the replay response to reflect the invite marker.
-If no accept route or no second role is configured, Nyctos records a
+If no accept route or no second role is configured, Nyx Agent records a
 skip reason instead of emitting a weak plan.
 
 ### Password Reset Token Replay
@@ -416,7 +416,7 @@ reset token/code from the response in test harnesses, submits the reset,
 then replays the same token. Confirmation requires the replay reset to
 reflect the marker. If the route model does not expose a request and
 confirmation pair, or the project lacks the required test accounts,
-Nyctos records a skip reason.
+Nyx Agent records a skip reason.
 
 ### Email Change Without Reauth
 

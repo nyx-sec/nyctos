@@ -21,7 +21,7 @@ export function TopBar() {
         ? "Pentest Run"
         : pathname.startsWith("/chains/")
           ? "Chain"
-          : "Nyctos");
+          : "Nyx Agent");
 
   return (
     <header className="app-layout__topbar">

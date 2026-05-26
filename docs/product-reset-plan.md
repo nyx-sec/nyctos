@@ -1,6 +1,6 @@
 # Product Reset Plan
 
-Nyctos should be an automated smart pentesting product for user-owned
+Nyx Agent should be an automated smart pentesting product for user-owned
 local dev builds. It should not feel like a UI around Nyx output.
 
 The primary user action is:
@@ -31,7 +31,7 @@ The repo already has useful pieces, but they are wired around the old
   every static diagnostic as an open finding, then runs payload
   synthesis, spec derivation, chain reasoning, novel finding discovery,
   AI exploration, and payload verification.
-- Environment: `nyctos-sandbox::env::EnvBuilder` can detect and merge
+- Environment: `nyx-agent-sandbox::env::EnvBuilder` can detect and merge
   compose files, but the main scan path does not start the project app
   before Nyx or AI work. AI exploration currently receives no live
   target endpoints.
@@ -309,7 +309,7 @@ while the new path stabilizes.
 
 ### Environment stage
 
-Wire `nyctos-sandbox::env::EnvBuilder` into the run path, but do not
+Wire `nyx-agent-sandbox::env::EnvBuilder` into the run path, but do not
 make docker-compose the only supported mode.
 
 Required work:

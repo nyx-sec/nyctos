@@ -1,0 +1,36 @@
+[package]
+name = "nyx-agent-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+nyx-agent-core = { path = "../nyx-agent-core" }
+nyx-agent-sandbox = { path = "../nyx-agent-sandbox" }
+nyx-agent-types = { path = "../nyx-agent-types" }
+anyhow = { workspace = true }
+async-stream = "0.3"
+axum = { workspace = true }
+futures-util = { workspace = true }
+hex = { workspace = true }
+hmac = { workspace = true }
+lettre = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+regex = { workspace = true }
+sha2 = { workspace = true }
+subtle = { workspace = true }
+tar = { workspace = true }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tower-http = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+reqwest = { workspace = true }
+tempfile = { workspace = true }
+tokio-tungstenite = { workspace = true }

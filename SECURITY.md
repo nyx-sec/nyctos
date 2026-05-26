@@ -4,11 +4,11 @@
 
 Please report security issues privately. Do not open a public GitHub issue for a vulnerability.
 
-Use [GitHub Security Advisories](https://github.com/nyx-sec/nyctos/security/advisories/new) to file a private report. If that link is unavailable for your fork or mirror, contact the maintainer privately and include the same information listed below.
+Use [GitHub Security Advisories](https://github.com/nyx-sec/nyx-agent/security/advisories/new) to file a private report. If that link is unavailable for your fork or mirror, contact the maintainer privately and include the same information listed below.
 
 Include:
 
-- Affected version or commit (`nyctos --version` when available)
+- Affected version or commit (`nyx-agent --version` when available)
 - OS and architecture
 - Reproduction steps or a minimal proof of concept
 - Impact, such as sandbox escape, auth bypass, local file read/write, command execution, UI XSS, CSRF, token disclosure, or unsafe live-probe behavior
@@ -19,7 +19,7 @@ You should receive an acknowledgement within 3 business days and a status update
 
 ## Scope
 
-In scope: bugs that let untrusted input reach Nyctos and cause harm.
+In scope: bugs that let untrusted input reach Nyx Agent and cause harm.
 
 - Sandbox escapes or isolation bypasses in the process, Birdcage, Docker/env-builder, libkrun, or Firecracker paths.
 - Command injection, path traversal, arbitrary file read/write, or symlink/race issues in repo ingestion, launch profiles, repro bundles, trace logs, or env-builder.
@@ -31,7 +31,7 @@ In scope: bugs that let untrusted input reach Nyctos and cause harm.
 
 Out of scope:
 
-- Findings Nyctos reports against your own target app. That is the product working.
+- Findings Nyx Agent reports against your own target app. That is the product working.
 - False positives, missed findings, weak heuristics, or confusing risk scores. File a normal bug report with fixtures and evidence.
 - Issues requiring physical access or an already-compromised local user account.
 - Problems caused only by deliberately weakening local config, disabling safety gates, or scanning systems you do not own.
@@ -40,7 +40,7 @@ Out of scope:
 
 ## Supported Versions
 
-Nyctos is pre-MVP and currently supports the main development line only.
+Nyx Agent is pre-MVP and currently supports the main development line only.
 
 | Version | Status |
 |---|---|
@@ -83,4 +83,4 @@ When in doubt, ask first.
 
 ## Security Model Recap
 
-Nyctos is designed to run locally against development apps the operator controls. The API binds to loopback by default, stores state locally, and uses explicit safety gates for state-changing and unsafe attack-agent behavior. The most important security boundaries are the local API/dashboard, repo ingestion, launch/env setup, trace and repro storage, sandbox execution, AI-runtime adapters, and live verification probes.
+Nyx Agent is designed to run locally against development apps the operator controls. The API binds to loopback by default, stores state locally, and uses explicit safety gates for state-changing and unsafe attack-agent behavior. The most important security boundaries are the local API/dashboard, repo ingestion, launch/env setup, trace and repro storage, sandbox execution, AI-runtime adapters, and live verification probes.

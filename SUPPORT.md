@@ -1,6 +1,6 @@
 # Support
 
-Nyctos is open source under AGPLv3-or-later. Community support happens through
+Nyx Agent is open source under AGPLv3-or-later. Community support happens through
 GitHub issues and discussions when available.
 
 Paid support, onboarding, private policy packs, custom reports, commercial
@@ -9,9 +9,9 @@ supported deployment or proprietary licensing path.
 
 Contact <licensing@nyx.dev> or visit:
 
-- <https://nyctos.dev/support>
-- <https://nyctos.dev/pricing>
+- <https://nyxscan.dev/support>
+- <https://nyxscan.dev/pricing>
 
-Nyctos does not include or resell access to model providers. AI runtimes are
+Nyx Agent does not include or resell access to model providers. AI runtimes are
 optional BYOK/local connectors, and users are responsible for complying with the
 terms for their chosen API provider, local endpoint, or installed CLI.

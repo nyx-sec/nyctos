@@ -362,7 +362,7 @@ function WebhookFields({
         <input
           value={form.webhookUrl}
           onChange={(event) => setForm((cur) => ({ ...cur, webhookUrl: event.target.value }))}
-          placeholder="https://example.com/nyctos"
+          placeholder="https://example.com/nyx-agent"
         />
       </label>
       <label>
@@ -464,7 +464,7 @@ function SmtpFields({
         <input
           value={form.smtpFrom}
           onChange={(event) => setForm((cur) => ({ ...cur, smtpFrom: event.target.value }))}
-          placeholder="Nyctos <alerts@example.com>"
+          placeholder="Nyx Agent <alerts@example.com>"
         />
       </label>
       <label>

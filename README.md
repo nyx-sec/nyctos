@@ -1,7 +1,7 @@
 <div align="center">
-  <img src="assets/nyctos-readme-header.png" alt="Nyctos" width="640"/>
+  <img src="assets/nyx-agent-readme-header.png" alt="Nyx Agent" width="640"/>
 
-**Run a live pentest against a dev app you control. Nyctos reads the repo, drives the local target, verifies findings, and gives you proof instead of a guess list.**
+**Run a live pentest against a dev app you control. Nyx Agent reads the repo, drives the local target, verifies findings, and gives you proof instead of a guess list.**
 
   <p>
     <a href="LICENSE.md"><img alt="License: AGPLv3-or-later" src="https://img.shields.io/badge/license-AGPLv3--or--later-0f172a?style=flat-square" /></a>
@@ -11,24 +11,24 @@
   </p>
 </div>
 
-<p align="center"><img src="assets/screenshots/demo.gif" alt="Nyctos dashboard walkthrough showing pentest options, a live local run, verified vulnerabilities, and proof details" width="900"/></p>
+<p align="center"><img src="assets/screenshots/demo.gif" alt="Nyx Agent dashboard walkthrough showing pentest options, a live local run, verified vulnerabilities, and proof details" width="900"/></p>
 
 ---
 
 ## Pentest locally, prove locally
 
-Nyctos is the product layer around `nyx` for live, local pentesting. Point it at a repo and a dev URL. It launches or watches the app, reads the code, maps routes, sends scoped probes, and only promotes findings when it can attach evidence.
+Nyx Agent is the product layer around `nyx` for live, local pentesting. Point it at a repo and a dev URL. It launches or watches the app, reads the code, maps routes, sends scoped probes, and only promotes findings when it can attach evidence.
 
 The dashboard is built for the part that usually gets messy: deciding what is real, what already has proof, and what still needs a harder look.
 
 ```bash
-cargo run --bin nyctos -- scan ./apps/web --target-url http://127.0.0.1:3000
-cargo run --bin nyctos -- serve
+cargo run --bin nyx-agent -- scan ./apps/web --target-url http://127.0.0.1:3000
+cargo run --bin nyx-agent -- serve
 ```
 
-The target stays local. The API binds to loopback by default. The run history, traces, evidence, and triage state live in the Nyctos product store.
+The target stays local. The API binds to loopback by default. The run history, traces, evidence, and triage state live in the Nyx Agent product store.
 
-<p align="center"><img src="assets/screenshots/project-workspace.png" alt="Nyctos project workspace with a live pentest, verified risk, target status, repositories, and recent activity" width="900"/></p>
+<p align="center"><img src="assets/screenshots/project-workspace.png" alt="Nyx Agent project workspace with a live pentest, verified risk, target status, repositories, and recent activity" width="900"/></p>
 
 ## What a run does
 
@@ -43,7 +43,7 @@ The target stays local. The API binds to loopback by default. The run history, t
 | **Chain reasoning** | Let the chain agent inspect graph evidence and, when an optional provider-authorized CLI runtime is configured, read/search repo code to connect low-level leads into higher-impact paths. |
 | **Triage** | Store verified vulnerabilities with confidence, status, evidence, and run attribution. |
 
-<p align="center"><img src="assets/screenshots/live-pentest.png" alt="Nyctos live pentest run with app readiness, auth sessions, repo progress, pentest phases, and live verifier proof" width="900"/></p>
+<p align="center"><img src="assets/screenshots/live-pentest.png" alt="Nyx Agent live pentest run with app readiness, auth sessions, repo progress, pentest phases, and live verifier proof" width="900"/></p>
 
 ## How the live pentest fits together
 
@@ -79,7 +79,7 @@ flowchart TD
     Promote -. "unsafe-agent findings" .-> Chain
 ```
 
-The unsafe attack phase runs late because it should not waste time guessing from a blank page. By the time it starts, Nyctos has code context, target context, previous candidates, existing vulnerabilities, and live verification signals. It runs serially so each pass can inherit newly recorded findings:
+The unsafe attack phase runs late because it should not waste time guessing from a blank page. By the time it starts, Nyx Agent has code context, target context, previous candidates, existing vulnerabilities, and live verification signals. It runs serially so each pass can inherit newly recorded findings:
 
 | Pass | Focus |
 |---|---|
@@ -104,24 +104,24 @@ This mode is meant for disposable local state. It can mutate data, create accoun
 Use the CLI for one-off runs, CI smoke checks, and local scripts:
 
 ```bash
-nyctos doctor
-nyctos scan ./apps/web
-nyctos scan ./apps/web --target-url http://127.0.0.1:3000
-nyctos scan ./apps/web --exploit
-nyctos scan ./apps/web --unsafe-attack-agent
-nyctos serve
-nyctos pr-comment --run-id <id>
+nyx-agent doctor
+nyx-agent scan ./apps/web
+nyx-agent scan ./apps/web --target-url http://127.0.0.1:3000
+nyx-agent scan ./apps/web --exploit
+nyx-agent scan ./apps/web --unsafe-attack-agent
+nyx-agent serve
+nyx-agent pr-comment --run-id <id>
 ```
 
 Use the dashboard when you want to watch a live run, inspect proof, update triage, or keep project setup in one place.
 
-<p align="center"><img src="assets/screenshots/verified-vulnerabilities.png" alt="Nyctos verified vulnerability list with risk scores, confidence, source location, and triage tabs" width="900"/></p>
+<p align="center"><img src="assets/screenshots/verified-vulnerabilities.png" alt="Nyx Agent verified vulnerability list with risk scores, confidence, source location, and triage tabs" width="900"/></p>
 
-<p align="center"><img src="assets/screenshots/vulnerability-detail.png" alt="Nyctos vulnerability detail page with live evidence, business impact, reproduction steps, and remediation" width="900"/></p>
+<p align="center"><img src="assets/screenshots/vulnerability-detail.png" alt="Nyx Agent vulnerability detail page with live evidence, business impact, reproduction steps, and remediation" width="900"/></p>
 
 ## Local app setup
 
-A launch profile tells Nyctos how to start the target and where to probe it:
+A launch profile tells Nyx Agent how to start the target and where to probe it:
 
 ```toml
 [project]
@@ -140,12 +140,12 @@ For live testing, use `127.0.0.1`, `localhost`, or another dev host you control.
 
 ## Install from source
 
-Nyctos is pre-MVP. The core loop works, but packaging is still moving.
+Nyx Agent is pre-MVP. The core loop works, but packaging is still moving.
 
 ```bash
 cargo build --workspace
-cargo run --bin nyctos -- doctor
-cargo run --bin nyctos-api
+cargo run --bin nyx-agent -- doctor
+cargo run --bin nyx-agent-api
 npm --prefix frontend install
 npm --prefix frontend run dev
 ```
@@ -169,20 +169,20 @@ npm --prefix frontend run check
 
 ## Support and Commercial Use
 
-Nyctos is free and open source under AGPLv3-or-later. Commercial licenses,
+Nyx Agent is free and open source under AGPLv3-or-later. Commercial licenses,
 paid support, onboarding help, private policy packs, and enterprise terms are
 available for teams that need proprietary embedding, hosted resale, custom
 support obligations, or license comfort. See [LICENSE.md](LICENSE.md) or contact
 <email being setup>.
 
-Nyctos does not include or resell model access. AI runtimes are optional
+Nyx Agent does not include or resell model access. AI runtimes are optional
 BYOK/local connectors; users are responsible for complying with the terms for
 their chosen API provider, local endpoint, or installed CLI.
 
 ## License
 
-Nyctos is open source under AGPLv3-or-later. See [LICENSE.md](LICENSE.md).
-Contributions are accepted under the [Nyctos Contributor License
+Nyx Agent is open source under AGPLv3-or-later. See [LICENSE.md](LICENSE.md).
+Contributions are accepted under the [Nyx Agent Contributor License
 Agreement](CLA.md) so the project can remain open while commercial licenses are
 available for organizations that need them. The upstream `nyx` scanner is a
 separate GPL-3.0-or-later project.

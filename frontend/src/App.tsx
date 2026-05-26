@@ -36,7 +36,7 @@ export function App() {
   const onSetup = location.pathname === "/setup";
 
   // Fresh-install gate: every route bounces to /setup until the
-  // wizard writes nyctos.toml. After completion, /setup itself
+  // wizard writes nyx-agent.toml. After completion, /setup itself
   // bounces back to /projects so the operator does not accidentally
   // re-run the wizard.
   if (!complete && !onSetup) {

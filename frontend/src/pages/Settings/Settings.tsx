@@ -283,7 +283,7 @@ export function Settings() {
               </div>
               <p className="settings-page__hint">
                 Official BYOK path. Keys are written to the OS keychain and never stored in{" "}
-                <code>nyctos.toml</code>.
+                <code>nyx-agent.toml</code>.
               </p>
             </div>
           )}
@@ -328,8 +328,8 @@ export function Settings() {
 
           {(aiRuntime === "claude-code" || aiRuntime === "codex") && (
             <p className="settings-page__hint">
-              Optional local CLI adapter. Nyctos does not include or resell model access; use only
-              with provider-authorized credentials and terms.
+              Optional local CLI adapter. Nyx Agent does not include or resell model access; use
+              only with provider-authorized credentials and terms.
             </p>
           )}
         </SettingsSection>

@@ -1,11 +1,11 @@
 # Install
 
-This page walks through building Nyctos from source and wiring its
-external dependencies. The shipping binary is `nyctos`; the product
-brand is "Nyctos". Both names appear here for the reasons explained in
+This page walks through building Nyx Agent from source and wiring its
+external dependencies. The shipping binary is `nyx-agent`; the product
+brand is "Nyx Agent". Both names appear here for the reasons explained in
 `README.md`.
 
-Nyctos has no prebuilt packages yet. Every install is a source build
+Nyx Agent has no prebuilt packages yet. Every install is a source build
 against the workspace in this repository.
 
 ## Prerequisites
@@ -23,53 +23,53 @@ Linux and macOS are the supported targets. Windows is untested.
 ## Build from source
 
 ```bash
-git clone <repo-url> nyctos
-cd nyctos
+git clone <repo-url> nyx-agent
+cd nyx-agent
 cargo build --release
 ```
 
-`cargo build --release` runs `crates/nyctos-ui/build.rs`, which
+`cargo build --release` runs `crates/nyx-agent-ui/build.rs`, which
 invokes `npm ci --silent` and `npm run build` inside `frontend/`,
-then mirrors `frontend/dist/` into `crates/nyctos-ui/dist/` so
+then mirrors `frontend/dist/` into `crates/nyx-agent-ui/dist/` so
 `rust_embed` can pick the assets up at compile time. A release build
 fails loudly if Node is missing or the frontend build errors out: we
 never want to ship a release binary with a stub UI.
 
 If you build the SPA out-of-band (e.g. a CI job that prepopulates
-`crates/nyctos-ui/dist/`), set `NYCTOS_SKIP_FRONTEND_BUILD=1` to skip
+`crates/nyx-agent-ui/dist/`), set `NYX_AGENT_SKIP_FRONTEND_BUILD=1` to skip
 the npm step:
 
 ```bash
-NYCTOS_SKIP_FRONTEND_BUILD=1 cargo build --release
+NYX_AGENT_SKIP_FRONTEND_BUILD=1 cargo build --release
 ```
 
 Debug builds (`cargo build`, `cargo run`, `cargo nextest run`) write
 a tiny stub `index.html` instead, so `/` keeps returning a usable
 page in CI environments without Node.
 
-The resulting binary lives at `target/release/nyctos`. Copy it
+The resulting binary lives at `target/release/nyx-agent`. Copy it
 onto your `PATH` or invoke it directly.
 
 ## Install the `nyx` scanner
 
-Nyctos shells out to the `nyx` binary; it has no FFI link against it.
+Nyx Agent shells out to the `nyx` binary; it has no FFI link against it.
 The agent will not start scans without a usable `nyx`.
 
 Two ways to make `nyx` discoverable, in order of preference:
 
 1. Place `nyx` on `PATH`. Verify with `which nyx`.
-2. Set `[nyx].binary_path = "/abs/path/to/nyx"` in `nyctos.toml`.
+2. Set `[nyx].binary_path = "/abs/path/to/nyx"` in `nyx-agent.toml`.
 
 The minimum version is `0.7.0` (the `MINIMUM_NYX_VERSION` constant in
-`crates/nyctos-nyx/src/runner.rs`). The floor pins to the upstream
+`crates/nyx-agent-nyx/src/runner.rs`). The floor pins to the upstream
 release that introduced `evidence.flow_steps`, which the taint flow,
 spec-derivation, and chain-reasoning passes all consume. Override per
-install via `[nyx].min_version = "0.8.0"` in `nyctos.toml` if a
+install via `[nyx].min_version = "0.8.0"` in `nyx-agent.toml` if a
 deployment needs a newer floor than the agent default; values below the
 built-in floor are clamped up silently.
 
 The upstream `nyx` scanner is GPL-3.0-or-later and distributed
-separately. Nyctos itself is AGPL-3.0-or-later. Nyctos still consumes
+separately. Nyx Agent itself is AGPL-3.0-or-later. Nyx Agent still consumes
 `nyx` as an external subprocess so the scanner can keep its own release
 cadence and repository boundary.
 
@@ -88,7 +88,7 @@ OpenAI-compatible endpoint:
   a specific model id.
 
 Claude Code and Codex CLI support are optional local adapters for users
-who have installed and authenticated those CLIs themselves. Nyctos does
+who have installed and authenticated those CLIs themselves. Nyx Agent does
 not include, proxy, sublicense, or resell model access. Use these
 adapters only with credentials and usage patterns allowed by the
 provider terms.
@@ -101,30 +101,30 @@ platform's data dir:
 
 | Platform | Default path |
 |---|---|
-| Linux | `~/.local/share/nyctos/` |
-| macOS | `~/Library/Application Support/nyctos/` |
+| Linux | `~/.local/share/nyx-agent/` |
+| macOS | `~/Library/Application Support/nyx-agent/` |
 
 Override with `--state-dir /path/to/dir` (global flag) or
-`[general].state_dir = "/path"` in `nyctos.toml`. The directory
+`[general].state_dir = "/path"` in `nyx-agent.toml`. The directory
 holds the SQLite database, run snapshots, ingested repos, repro
 bundles, logs, and the bearer-token file (`auth_token`, mode `0600`).
 
 ## Verify the install
 
-`nyctos doctor` runs every health check the daemon performs at
+`nyx-agent doctor` runs every health check the daemon performs at
 startup and exits non-zero on any failure:
 
 ```bash
-./target/release/nyctos doctor
+./target/release/nyx-agent doctor
 ```
 
 Sample output:
 
 ```
-state dir OK at /home/op/.local/share/nyctos
-logs -> /home/op/.local/share/nyctos/logs/agent.jsonl
-config not found at ./nyctos.toml (using defaults)
-db OK at /home/op/.local/share/nyctos/state.db (schema v1)
+state dir OK at /home/op/.local/share/nyx-agent
+logs -> /home/op/.local/share/nyx-agent/logs/agent.jsonl
+config not found at ./nyx-agent.toml (using defaults)
+db OK at /home/op/.local/share/nyx-agent/state.db (schema v1)
 nyx OK at /usr/local/bin/nyx (version 0.7.0, minimum 0.7.0)
 claude-code: available v1.0.0 at /usr/local/bin/claude
 codex: unavailable (`codex` not on PATH)
@@ -141,7 +141,7 @@ Each line maps to a single check:
 |---|---|
 | `state dir OK` | State dir exists with mode `0700` and every subdirectory is present. |
 | `logs -> <path>` | JSON log file location for this run. |
-| `config OK` / `config not found` | Whether `nyctos.toml` was loaded or defaults applied. A missing config is not fatal. |
+| `config OK` / `config not found` | Whether `nyx-agent.toml` was loaded or defaults applied. A missing config is not fatal. |
 | `db OK ... schema v<N>` | SQLite opened and migrations are caught up. |
 | `nyx OK` / `nyx FAIL` | The scanner binary is on `PATH` (or `[nyx].binary_path` resolved), and its `--version` is at or above `MINIMUM_NYX_VERSION`. |
 | `claude-code: available` / `unavailable` | Informational only. Doctor exits zero with Claude Code missing. |
@@ -159,7 +159,7 @@ version. Every other check is informational.
 ### `nyx FAIL: nyx binary not found on PATH`
 
 Doctor could not resolve `nyx`. Install it, put it on `PATH`, or set
-`[nyx].binary_path` in `nyctos.toml`.
+`[nyx].binary_path` in `nyx-agent.toml`.
 
 ### `nyx FAIL: nyx version <found> below required minimum <required>`
 
@@ -174,9 +174,9 @@ unset). Set one of those env vars, or pass `--state-dir /abs/path`.
 
 ### Release build panics with `frontend build failed`
 
-The `crates/nyctos-ui` build script could not run `npm`. Install
-Node and `npm`, or set `NYCTOS_SKIP_FRONTEND_BUILD=1` and provide
-prebuilt assets in `crates/nyctos-ui/dist/`.
+The `crates/nyx-agent-ui` build script could not run `npm`. Install
+Node and `npm`, or set `NYX_AGENT_SKIP_FRONTEND_BUILD=1` and provide
+prebuilt assets in `crates/nyx-agent-ui/dist/`.
 
 ### `cargo build` fails on missing `.sqlx/` query data
 
@@ -189,7 +189,7 @@ diff.
 
 - `docs/triggers/cron.md`, `docs/triggers/webhook.md` for no-touch
   scan triggers once the daemon is running.
-- `docs/ci/github-actions.md` for using Nyctos as a PR gate via the
+- `docs/ci/github-actions.md` for using Nyx Agent as a PR gate via the
   shipped composite Action.
 - `README.md` "Frontend SPA workflow" for the hot-reload dev loop
   against the daemon.

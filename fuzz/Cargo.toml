@@ -1,5 +1,5 @@
 [package]
-name = "nyctos-fuzz"
+name = "nyx-agent-fuzz"
 version = "0.0.0"
 edition = "2021"
 publish = false
@@ -9,9 +9,9 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-nyctos-core = { path = "../crates/nyctos-core" }
-nyctos-nyx = { path = "../crates/nyctos-nyx" }
-nyctos-types = { path = "../crates/nyctos-types" }
+nyx-agent-core = { path = "../crates/nyx-agent-core" }
+nyx-agent-nyx = { path = "../crates/nyx-agent-nyx" }
+nyx-agent-types = { path = "../crates/nyx-agent-types" }
 serde_json = "1"
 
 [[bin]]

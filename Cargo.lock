@@ -2911,7 +2911,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "nyctos"
+name = "nyx-agent"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -2923,13 +2923,13 @@ dependencies = [
  "cron",
  "hex",
  "ignore",
- "nyctos-ai",
- "nyctos-api",
- "nyctos-core",
- "nyctos-nyx",
- "nyctos-sandbox",
- "nyctos-types",
- "nyctos-ui",
+ "nyx-agent-ai",
+ "nyx-agent-api",
+ "nyx-agent-core",
+ "nyx-agent-nyx",
+ "nyx-agent-sandbox",
+ "nyx-agent-types",
+ "nyx-agent-ui",
  "predicates",
  "regex",
  "reqwest",
@@ -2948,13 +2948,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "nyctos-ai"
+name = "nyx-agent-ai"
 version = "0.1.0"
 dependencies = [
  "async-trait",
  "blake3",
- "nyctos-nyx",
- "nyctos-types",
+ "nyx-agent-nyx",
+ "nyx-agent-types",
  "reqwest",
  "semver",
  "serde",
@@ -2966,7 +2966,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "nyctos-api"
+name = "nyx-agent-api"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -2976,9 +2976,9 @@ dependencies = [
  "hex",
  "hmac 0.13.0",
  "lettre",
- "nyctos-core",
- "nyctos-sandbox",
- "nyctos-types",
+ "nyx-agent-core",
+ "nyx-agent-sandbox",
+ "nyx-agent-types",
  "regex",
  "reqwest",
  "serde",
@@ -2995,7 +2995,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "nyctos-core"
+name = "nyx-agent-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -3004,7 +3004,7 @@ dependencies = [
  "hex",
  "keyring",
  "keyring-core",
- "nyctos-types",
+ "nyx-agent-types",
  "rand 0.10.1",
  "rayon",
  "reqwest",
@@ -3022,11 +3022,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "nyctos-nyx"
+name = "nyx-agent-nyx"
 version = "0.1.0"
 dependencies = [
- "nyctos-core",
- "nyctos-types",
+ "nyx-agent-core",
+ "nyx-agent-types",
  "semver",
  "serde",
  "serde_json",
@@ -3037,13 +3037,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "nyctos-sandbox"
+name = "nyx-agent-sandbox"
 version = "0.1.0"
 dependencies = [
  "birdcage",
  "libc",
- "nyctos-core",
- "nyctos-types",
+ "nyx-agent-core",
+ "nyx-agent-types",
  "regex",
  "semver",
  "serde",
@@ -3056,7 +3056,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "nyctos-types"
+name = "nyx-agent-types"
 version = "0.1.0"
 dependencies = [
  "serde",
@@ -3067,7 +3067,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "nyctos-ui"
+name = "nyx-agent-ui"
 version = "0.1.0"
 dependencies = [
  "axum",
@@ -6503,7 +6503,7 @@ dependencies = [
 name = "xtask"
 version = "0.1.0"
 dependencies = [
- "nyctos-types",
+ "nyx-agent-types",
  "proc-macro2",
  "syn",
  "ts-rs",

@@ -32,9 +32,9 @@ endpoint). The recommended shape is a launchd wrapper:
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
-NYX_WEBHOOK_SECRET="$(cat "$HOME/.config/nyctos/webhook.secret")"
+NYX_WEBHOOK_SECRET="$(cat "$HOME/.config/nyx-agent/webhook.secret")"
 export NYX_WEBHOOK_SECRET
-exec /usr/local/bin/nyctos serve --headless
+exec /usr/local/bin/nyx-agent serve --headless
 ```
 
 Save with mode 0700 and point the LaunchAgent's `ProgramArguments`
@@ -123,7 +123,7 @@ curl -X POST http://127.0.0.1:4747/webhook/git \
 
 ## Operator checklist
 
-- [ ] `[triggers].webhook_secret_ref` set in `nyctos.toml`.
+- [ ] `[triggers].webhook_secret_ref` set in `nyx-agent.toml`.
 - [ ] Matching env var exported in the daemon's process environment.
 - [ ] Daemon reachable from the upstream git server (loopback if both
       run on the same host; otherwise put a TLS terminator in front).

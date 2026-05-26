@@ -1,6 +1,6 @@
 # AI runtime
 
-`nyctos-ai` is the crate that turns a `Prompt` or `AgentTask` into
+`nyx-agent-ai` is the crate that turns a `Prompt` or `AgentTask` into
 model output. It owns one trait (`AiRuntime`), four shipped adapters
 (Anthropic Messages, local OpenAI-compatible, Claude Code CLI, Codex
 CLI), one host port
@@ -9,10 +9,10 @@ typed structured prompts on top of the trait. Everything else in
 the agent (the run dispatcher, the AI pipeline binary glue, the
 trace viewer) sees only the trait, not the vendor SDK.
 
-The crate stays vendor-neutral. Adapters depend on `nyctos-types`
+The crate stays vendor-neutral. Adapters depend on `nyx-agent-types`
 for the wire envelope and on the `BudgetTracker` port for spend
 accounting; nothing else. The binary at
-`crates/nyctos/src/main.rs:1793` is the only place that picks a
+`crates/nyx-agent/src/main.rs:1793` is the only place that picks a
 concrete adapter from `[ai] runtime`, wires it to the
 `BudgetStore`-backed tracker, and hands it to the dispatcher.
 
@@ -32,7 +32,7 @@ trait AiRuntime: Send + Sync {
 }
 ```
 
-Defined at `crates/nyctos-ai/src/runtime.rs:18`. Adapters that
+Defined at `crates/nyx-agent-ai/src/runtime.rs:18`. Adapters that
 implement only one of the two execution modes return
 `AiError::UnsupportedMode("agent_loop")` (or `"one_shot"`) from the
 mode they do not support; the binary checks `supports_agent_loop`
@@ -64,7 +64,7 @@ before `verified_vulnerabilities` rows are created.
 
 ## Wire envelope: `Prompt`, `Response`, `AgentTask`, `AgentResult`
 
-Defined in `crates/nyctos-types/src/agent.rs`. Both adapters
+Defined in `crates/nyx-agent-types/src/agent.rs`. Both adapters
 consume the same shape so the binary never depends on a vendor
 schema.
 
@@ -120,12 +120,12 @@ re-parses the raw transcript.
 
 The official provider paths are BYOK/direct API or local endpoints.
 Claude Code and Codex are optional local CLI adapters for users who
-have installed and authenticated those tools themselves. Nyctos does
+have installed and authenticated those tools themselves. Nyx Agent does
 not include, proxy, sublicense, or resell model access.
 
 ### Anthropic Messages (`one_shot` only)
 
-`crates/nyctos-ai/src/adapter/anthropic.rs`.
+`crates/nyx-agent-ai/src/adapter/anthropic.rs`.
 
 Direct `reqwest` against `POST /v1/messages`. No third-party SDK,
 so version drift on the SDK side cannot couple us to its release
@@ -177,7 +177,7 @@ without changing the trait.
 
 ### Local OpenAI-compatible (`one_shot` only)
 
-`crates/nyctos-ai/src/adapter/local_llm.rs`.
+`crates/nyx-agent-ai/src/adapter/local_llm.rs`.
 
 Direct `reqwest` against `<api_base>/chat/completions`. The runtime
 expects `api_base` to point at a local OpenAI-compatible `/v1`
@@ -206,12 +206,12 @@ Request body:
 
 Set `[ai].model` when the local server requires a specific model id.
 Local runs record token counts when the server reports `usage`, but
-cost is recorded as zero because Nyctos has no way to know a local
+cost is recorded as zero because Nyx Agent has no way to know a local
 operator's hardware or provider accounting.
 
 ### Claude Code (`agent_loop` only)
 
-`crates/nyctos-ai/src/adapter/claude_code.rs`.
+`crates/nyx-agent-ai/src/adapter/claude_code.rs`.
 
 Spawns the `claude` CLI as a subprocess so the agent does not have
 to embed Anthropic's tool-use loop. Detection runs
@@ -219,7 +219,7 @@ to embed Anthropic's tool-use loop. Detection runs
 construction time; failure surfaces as
 `AiError::AdapterUnavailable`. The binary path plus `--version`
 output is captured into `ClaudeBinary` and surfaced by
-`nyctos doctor`.
+`nyx-agent doctor`.
 
 Wire shape:
 
@@ -245,11 +245,11 @@ minutes. Capability flags: `supports_agent_loop = true`,
 
 ### Codex CLI (`one_shot` and `agent_loop`)
 
-`crates/nyctos-ai/src/adapter/codex.rs`.
+`crates/nyx-agent-ai/src/adapter/codex.rs`.
 
 Spawns the installed `codex` CLI and consumes the JSONL stream emitted
 by `codex exec`. This adapter is optional and depends on the user's own
-Codex installation and authentication. `nyctos doctor` reports the
+Codex installation and authentication. `nyx-agent doctor` reports the
 resolved binary and version when present.
 
 ### Adapters on the roadmap
@@ -286,7 +286,7 @@ Two implementations ship:
 - `InMemoryBudgetTracker` (`runtime.rs:74`). Process-local, used
   by adapter tests and any future in-memory dispatcher.
 - `BudgetStoreTracker` lives in the binary glue and forwards into
-  `nyctos_core::store::BudgetStore`. The wizard picks a per-run
+  `nyx_agent_core::store::BudgetStore`. The wizard picks a per-run
   cap (default unlimited from `AiConfig::DEFAULT_RUN_BUDGET_USD_MICROS`)
   and the tracker auto-creates the row on first `add_spend`.
 
@@ -304,7 +304,7 @@ binary drives PayloadSynthesis and SpecDerivation before deeper
 candidate work, then runs NovelFindingDiscovery and finally
 post-live ChainReasoning after candidate/live verification has
 populated graph proof nodes (see the `scan_loop`
-function in `crates/nyctos/src/main.rs`), so earlier-pass spend
+function in `crates/nyx-agent/src/main.rs`), so earlier-pass spend
 reduces the budget every later pass sees through the same tracker.
 Each pass also carries its own per-call cap on the wire
 (`payload_synthesis_per_call_cap_usd_micros`,
@@ -366,7 +366,7 @@ already recoverable from the trace store.
 ## Event stream
 
 Every model call publishes a fan-out of `AgentEvent::Ai { data:
-AiEvent }` frames on the bus (`crates/nyctos-types/src/event.rs:145`).
+AiEvent }` frames on the bus (`crates/nyx-agent-types/src/event.rs:145`).
 The same `task_id` rides on every variant so subscribers can
 multiplex concurrent calls.
 
@@ -476,7 +476,7 @@ load-bearing once a vendor surfaces a sampling-seed parameter.
 
 ## Prompt versions
 
-Every prompt template lives in `crates/nyctos-ai/src/prompts/`.
+Every prompt template lives in `crates/nyx-agent-ai/src/prompts/`.
 Stable version slugs are persisted on every trace row:
 
 | Task                  | Slug                                     |
@@ -493,8 +493,8 @@ must distinguish; the trace store compares slugs verbatim.
 
 ## Configuration
 
-Operators pick the runtime in `nyctos.toml` under the `[ai]`
-section (defined at `crates/nyctos-core/src/config.rs:166`):
+Operators pick the runtime in `nyx-agent.toml` under the `[ai]`
+section (defined at `crates/nyx-agent-core/src/config.rs:166`):
 
 ```toml
 [ai]
@@ -531,7 +531,7 @@ OS keychain under `secrets::ACCOUNT_AI_ANTHROPIC` (Anthropic) or
 | `AiError::BudgetTracker`             | The host tracker returned an error (database write failure, etc.).     |
 | `AiError::AdapterUnavailable`        | Construction failed (e.g. `claude` not on `PATH`).                     |
 
-`thiserror` variants live at `crates/nyctos-types/src/agent.rs:326`.
+`thiserror` variants live at `crates/nyx-agent-types/src/agent.rs:326`.
 
 ## Related pages
 
@@ -539,6 +539,6 @@ OS keychain under `secrets::ACCOUNT_AI_ANTHROPIC` (Anthropic) or
   in the crate map.
 - [events.md](events.md) for the `AiEvent` stream and the
   WebSocket filter contract.
-- [config.md](config.md) for the rest of `nyctos.toml`.
+- [config.md](config.md) for the rest of `nyx-agent.toml`.
 - [api.md](api.md) for the `/api/v1/budgets` route and the
   `/api/v1/traces` endpoints that read the per-call trace store.

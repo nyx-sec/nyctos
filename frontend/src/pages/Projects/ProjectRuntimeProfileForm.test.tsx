@@ -104,10 +104,10 @@ describe("ProjectRuntimeProfileForm", () => {
         username: " alice@example.test ",
         username_env: "",
         login_email_env: "",
-        password_env: " NYCTOS_USER_A_PASSWORD ",
+        password_env: " NYX_AGENT_USER_A_PASSWORD ",
         cookie_env: "",
-        bearer_token_env: " NYCTOS_USER_A_TOKEN ",
-        headers: [{ name: " X-Test-Role ", value_env: " NYCTOS_USER_A_ROLE " }],
+        bearer_token_env: " NYX_AGENT_USER_A_TOKEN ",
+        headers: [{ name: " X-Test-Role ", value_env: " NYX_AGENT_USER_A_ROLE " }],
         otp_source_kind: "manual",
         otp_mailbox_url: "",
         otp_email_env: "",
@@ -134,9 +134,9 @@ describe("ProjectRuntimeProfileForm", () => {
         session_cache_ttl_seconds: 600,
         login_url: "/login",
         username: "alice@example.test",
-        password_env: "NYCTOS_USER_A_PASSWORD",
-        bearer_token_env: "NYCTOS_USER_A_TOKEN",
-        headers: [{ name: "X-Test-Role", value_env: "NYCTOS_USER_A_ROLE" }],
+        password_env: "NYX_AGENT_USER_A_PASSWORD",
+        bearer_token_env: "NYX_AGENT_USER_A_TOKEN",
+        headers: [{ name: "X-Test-Role", value_env: "NYX_AGENT_USER_A_ROLE" }],
         post_login_assertions: [{ kind: "cookie_exists", value: "sid" }],
         owned_objects: [
           {
@@ -212,16 +212,16 @@ describe("ProjectRuntimeProfileForm", () => {
           target_base_url: "http://localhost:3000",
           allowed_hosts: [],
           env_vars: [
-            { name: "NYCTOS_USER_A_USERNAME", value: "user-a@example.test", secret: false },
-            { name: "NYCTOS_USER_A_PASSWORD", value: "user-a-pass", secret: true },
+            { name: "NYX_AGENT_USER_A_USERNAME", value: "user-a@example.test", secret: false },
+            { name: "NYX_AGENT_USER_A_PASSWORD", value: "user-a-pass", secret: true },
           ],
           auth_profiles: [
             {
               role: "user_a",
               mode: "ai_auto",
               login_url: "/api/auth/login",
-              username_env: "NYCTOS_USER_A_USERNAME",
-              password_env: "NYCTOS_USER_A_PASSWORD",
+              username_env: "NYX_AGENT_USER_A_USERNAME",
+              password_env: "NYX_AGENT_USER_A_PASSWORD",
               headers: [],
               post_login_assertions: [],
               owned_objects: [
@@ -294,8 +294,8 @@ describe("ProjectRuntimeProfileForm", () => {
 
     expect(await screen.findByDisplayValue("user_a")).toBeInTheDocument();
     expect(screen.getByDisplayValue("/api/auth/login")).toBeInTheDocument();
-    expect(screen.getAllByDisplayValue("NYCTOS_USER_A_USERNAME").length).toBeGreaterThan(1);
-    expect(screen.getAllByDisplayValue("NYCTOS_USER_A_PASSWORD").length).toBeGreaterThan(1);
+    expect(screen.getAllByDisplayValue("NYX_AGENT_USER_A_USERNAME").length).toBeGreaterThan(1);
+    expect(screen.getAllByDisplayValue("NYX_AGENT_USER_A_PASSWORD").length).toBeGreaterThan(1);
     expect(screen.getByDisplayValue("user-a-pass")).toBeInTheDocument();
     expect(screen.getByDisplayValue("proj-user-a-1")).toBeInTheDocument();
     expect(screen.getAllByText(/Auth setup saved 1 role profile/).length).toBeGreaterThan(0);

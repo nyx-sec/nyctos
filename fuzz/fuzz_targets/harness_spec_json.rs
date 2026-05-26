@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use nyctos_nyx::harness_spec::HarnessSpec;
+use nyx_agent_nyx::harness_spec::HarnessSpec;
 
 fuzz_target!(|data: &[u8]| {
     let Ok(raw) = std::str::from_utf8(data) else {

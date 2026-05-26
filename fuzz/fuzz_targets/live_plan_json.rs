@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use nyctos_types::live_plan::LiveTestPlan;
+use nyx_agent_types::live_plan::LiveTestPlan;
 
 fuzz_target!(|data: &[u8]| {
     let Ok(raw) = std::str::from_utf8(data) else {

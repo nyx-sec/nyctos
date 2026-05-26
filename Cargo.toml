@@ -1,14 +1,14 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/nyctos",
-    "crates/nyctos-types",
-    "crates/nyctos-core",
-    "crates/nyctos-nyx",
-    "crates/nyctos-ai",
-    "crates/nyctos-sandbox",
-    "crates/nyctos-api",
-    "crates/nyctos-ui",
+    "crates/nyx-agent",
+    "crates/nyx-agent-types",
+    "crates/nyx-agent-core",
+    "crates/nyx-agent-nyx",
+    "crates/nyx-agent-ai",
+    "crates/nyx-agent-sandbox",
+    "crates/nyx-agent-api",
+    "crates/nyx-agent-ui",
     "xtask",
 ]
 exclude = ["fuzz"]
@@ -18,7 +18,7 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.88"
 license = "AGPL-3.0-or-later"
-repository = "https://github.com/nyctos/nyctos"
+repository = "https://github.com/nyx-sec/nyx-agent"
 
 [workspace.dependencies]
 tokio = { version = "1.52", features = ["full"] }

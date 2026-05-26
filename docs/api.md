@@ -95,13 +95,13 @@ Liveness probe. Bypasses bearer auth. Response:
 
 `GET /api/v1/setup/status`
 
-Returns whether `nyctos.toml` exists on disk and where the wizard
+Returns whether `nyx-agent.toml` exists on disk and where the wizard
 would write it.
 
 ```json
 {
   "complete": false,
-  "config_path": "/Users/me/Library/Application Support/nyctos/nyctos.toml",
+  "config_path": "/Users/me/Library/Application Support/nyx-agent/nyx-agent.toml",
   "ai_runtime": "none",
   "sandbox_backend": "auto"
 }
@@ -110,7 +110,7 @@ would write it.
 `POST /api/v1/setup`
 
 Commits the wizard's three choices to disk. The handler writes
-`nyctos.toml` atomically (mode 0600) and stashes secrets in the OS
+`nyx-agent.toml` atomically (mode 0600) and stashes secrets in the OS
 keychain.
 
 Request:
@@ -159,7 +159,7 @@ Response:
 }
 ```
 
-The sandbox check routes through `nyctos_sandbox::probe` so its
+The sandbox check routes through `nyx_agent_sandbox::probe` so its
 verdict matches what the run-time auto-selector would see. `auto`
 returns the advisory message `Backend will be chosen at scan time`.
 
@@ -178,7 +178,7 @@ Returns `Vec<ProjectRecord>`. Fields:
 | `name` | string | unique |
 | `description` | string \| null | operator note |
 | `target_base_url` | string \| null | hint for HTTP-shaped scans |
-| `env_config_json` | string \| null | serialised `nyctos-env` envelope |
+| `env_config_json` | string \| null | serialised `nyx-agent-env` envelope |
 | `created_at` | number | epoch ms |
 | `updated_at` | number | epoch ms |
 
@@ -506,7 +506,7 @@ JSON. Each line is `{ "ts_ms": <epoch-ms>, "event": <AgentEvent> }`.
 
 Run card as JSON. Carries per-repo counts, per-severity totals,
 chain links, and the AI cost summary. Backed by
-`nyctos_core::report::build_run_card`.
+`nyx_agent_core::report::build_run_card`.
 
 `GET /api/v1/runs/:id/summary.md`
 
@@ -674,7 +674,7 @@ to `pong`) and `close` (terminates the stream).
 `RepoDynamicDone`, `RepoFailed`, `RepoFinished`,
 `ProjectFinished`, `RunFinished`. See [events.md](events.md) for
 the ordering contract, AI runtime variants, and the field-by-field
-shape sourced from `crates/nyctos-types/src/event.rs`.
+shape sourced from `crates/nyx-agent-types/src/event.rs`.
 
 ## Git webhook
 
@@ -713,7 +713,7 @@ dispatched), 200 (branch filter rejected the delivery).
   writes.
 - [state-dir.md](state-dir.md) for where `auth_token`,
   `bundles/`, and `logs/agent.jsonl` live.
-- [cli.md](cli.md) for the `nyctos scan` shortcut that calls
+- [cli.md](cli.md) for the `nyx-agent scan` shortcut that calls
   this API.
 - [triggers/webhook.md](triggers/webhook.md) and
   [triggers/cron.md](triggers/cron.md) for the two automated

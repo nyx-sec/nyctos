@@ -1,14 +1,14 @@
-# Nyctos License
+# Nyx Agent License
 
 SPDX-License-Identifier: AGPL-3.0-or-later
 
-Nyctos (the `nyctos` daemon, the web UI, and every accompanying file in this
+Nyx Agent (the `nyx-agent` daemon, the web UI, and every accompanying file in this
 repository unless otherwise noted) is open source software licensed under the
 GNU Affero General Public License version 3 or, at your option, any later
 version published by the Free Software Foundation.
 
-You may use, study, copy, modify, and redistribute Nyctos under the AGPL terms.
-If you modify Nyctos and run it as a network service, the AGPL requires you to
+You may use, study, copy, modify, and redistribute Nyx Agent under the AGPL terms.
+If you modify Nyx Agent and run it as a network service, the AGPL requires you to
 offer the corresponding source code for that modified version to users who
 interact with it over a network.
 
@@ -33,13 +33,13 @@ Contact <licensing@nyx.dev> with:
 
 ## Contributions
 
-Contributions are accepted under the [Nyctos Contributor License
-Agreement](CLA.md). The CLA lets the maintainer keep Nyctos available under the
+Contributions are accepted under the [Nyx Agent Contributor License
+Agreement](CLA.md). The CLA lets the maintainer keep Nyx Agent available under the
 AGPL while also offering commercial licenses for organizations that need them.
 
 ## AI Providers
 
-Nyctos does not include, proxy, sublicense, or resell access to Claude, Codex,
+Nyx Agent does not include, proxy, sublicense, or resell access to Claude, Codex,
 OpenAI, Anthropic, or any other model provider. AI runtimes are optional
 operator-configured connectors. Users are responsible for using their own API
 keys, local endpoints, or installed CLIs in compliance with the relevant
@@ -47,9 +47,9 @@ provider terms.
 
 ## Third-Party Software
 
-Nyctos is built on third-party open source libraries. Each library retains its
+Nyx Agent is built on third-party open source libraries. Each library retains its
 own license.
 
-The upstream `nyx` scanner is a separate GPL-3.0-or-later project. Nyctos
+The upstream `nyx` scanner is a separate GPL-3.0-or-later project. Nyx Agent
 invokes `nyx` as an external scanner process rather than vendoring or linking
 it as a library.

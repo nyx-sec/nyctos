@@ -1,9 +1,9 @@
-# Nyctos Contributor License Agreement
+# Nyx Agent Contributor License Agreement
 
 Version 1.0
 
 This Contributor License Agreement ("Agreement" or "CLA") governs
-contributions submitted to Nyctos.
+contributions submitted to Nyx Agent.
 
 This is an important legal document. Do not submit a Contribution unless you
 have the right to grant the licenses below. If you are contributing on behalf
@@ -17,10 +17,10 @@ submitting it.
 
 "Maintainer" means Eli Peter, individually, and any company or other legal
 entity that Eli Peter controls, forms, assigns rights to, or designates to
-own, operate, license, distribute, or commercialize Nyctos, including
+own, operate, license, distribute, or commercialize Nyx Agent, including
 successors and assigns.
 
-"Project" means the Nyctos software, including this repository, any related
+"Project" means the Nyx Agent software, including this repository, any related
 repositories, the community edition, commercial editions, hosted services,
 enterprise versions, internal production repositories, and derivative or
 successor projects.
@@ -79,7 +79,7 @@ this Agreement ends immediately as of the date the claim is filed.
 You retain ownership of the copyright in Your Contributions, subject to the
 licenses granted in this Agreement.
 
-Your Contribution does not give You any ownership interest in Nyctos, the
+Your Contribution does not give You any ownership interest in Nyx Agent, the
 Project, the Maintainer, any company related to the Project, any product or
 service, or any revenue, equity, profits, royalties, licensing fees, business
 opportunity, employment relationship, partnership, joint venture, or other

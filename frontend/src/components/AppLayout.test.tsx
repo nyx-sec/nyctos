@@ -68,7 +68,7 @@ describe("AppLayout", () => {
   it("renders the brand, the post-setup nav links, and child content", () => {
     renderLayout({ route: "/projects", children: <div data-testid="child">child content</div> });
 
-    expect(screen.getByRole("img", { name: "Nyctos" })).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "Nyx Agent" })).toBeInTheDocument();
     for (const label of ["Pentest Runs", "Vulnerabilities", "Settings"]) {
       expect(screen.getByRole("link", { name: new RegExp(label) })).toBeInTheDocument();
     }

@@ -92,8 +92,8 @@ export function Sidebar({ setupComplete }: SidebarProps) {
   return (
     <aside className="app-layout__sidebar" aria-label="Primary navigation">
       <div className="sidebar__brand">
-        <Link to="/projects" className="sidebar__brand-link" aria-label="Nyctos projects">
-          <img src="/logo.png" alt="Nyctos" className="sidebar__brand-logo" />
+        <Link to="/projects" className="sidebar__brand-link" aria-label="Nyx Agent projects">
+          <img src="/logo.png" alt="Nyx Agent" className="sidebar__brand-logo" />
         </Link>
       </div>
       {setupComplete && (

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Frame Nyctos screenshots for the README.
+"""Frame Nyx Agent screenshots for the README.
 
 This is adapted from the Nyx screenshot framer. It keeps the same
 four-corner gradient treatment, but writes to explicit output paths so

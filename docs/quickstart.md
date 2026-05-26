@@ -1,20 +1,20 @@
 # Quickstart
 
-You have `nyctos` built and `nyctos doctor` is green. This page
+You have `nyx-agent` built and `nyx-agent doctor` is green. This page
 takes you from a fresh state directory to a first scan and a
 findings list. Five minutes if the prerequisites are already in
 place; see `docs/install.md` if `doctor` reports anything missing.
 
-The shipping binary is `nyctos`. The product brand is "Nyctos".
+The shipping binary is `nyx-agent`. The product brand is "Nyx Agent".
 Both names appear here for the reasons explained in `README.md`.
 
 ## Start the daemon
 
 ```bash
-nyctos serve
+nyx-agent serve
 ```
 
-`serve` is the default subcommand, so `nyctos` with no arguments
+`serve` is the default subcommand, so `nyx-agent` with no arguments
 does the same thing. It binds `127.0.0.1:8765` (from `[ui]
 listen_addr`), opens your default browser, and prints the ready URL
 on stdout:
@@ -26,7 +26,7 @@ first launch detected; wizard at http://127.0.0.1:8765/setup
 ```
 <!-- /nyx: verbatim -->
 
-The "first launch detected" line only appears when `nyctos.toml`
+The "first launch detected" line only appears when `nyx-agent.toml`
 is not yet on disk. The browser lands on `/setup` in that case;
 once you submit the wizard, subsequent starts go to `/`.
 
@@ -38,7 +38,7 @@ Common flags:
 | `--no-open` | Skip the browser launch. Daemon still binds and serves. |
 | `--headless` | Skip the browser launch AND disable bearer-token auth, since headless mode is intended for CI smoke tests. Do not run a public daemon in `--headless`. |
 | `--open-cmd CMD` | Replace the default browser launcher. `--open-cmd /bin/echo` is the test recipe: the daemon prints the ready URL through your launcher instead of opening a window. |
-| `--log-level FILTER` | Global. Passed to `tracing-subscriber`. Examples: `info`, `debug`, `nyctos=trace,sqlx=warn`. |
+| `--log-level FILTER` | Global. Passed to `tracing-subscriber`. Examples: `info`, `debug`, `nyx-agent=trace,sqlx=warn`. |
 
 `Ctrl+C` shuts the daemon down cleanly: it closes the HTTP listener,
 stops the in-process scheduler, drains any in-flight scan worker,
@@ -46,22 +46,22 @@ and closes the SQLite store.
 
 ## Create a project
 
-Nyctos groups one or more repos under a `Project`. Everything below
+Nyx Agent groups one or more repos under a `Project`. Everything below
 (the wizard, the TOML, the scan command) operates per project, so a
 fresh deployment starts with a project row.
 
 The fastest path is the CLI:
 
 ```bash
-nyctos project create acme-app \
+nyx-agent project create acme-app \
   --description "Acme web product" \
   --target-base-url http://localhost:3000
 ```
 
 `project create` writes a row to the SQLite store and returns the
 generated `project_id`. The project name must be unique. From here
-you can attach repos via `nyctos project add-repo` (worked
-example below) or by hand-editing `nyctos.toml`.
+you can attach repos via `nyx-agent project add-repo` (worked
+example below) or by hand-editing `nyx-agent.toml`.
 
 You can also create the project from the SPA after the first-launch
 wizard completes. The projects list lives at `/projects`.
@@ -69,7 +69,7 @@ wizard completes. The projects list lives at `/projects`.
 ## Walk the first-launch wizard
 
 The SPA at `/setup` asks for five things. Each maps to a single
-config field; the daemon writes `nyctos.toml` only after you
+config field; the daemon writes `nyx-agent.toml` only after you
 submit. The wizard refuses to submit until you tick
 `i_own_this = true`.
 
@@ -85,19 +85,19 @@ The wizard is mounted on the same daemon, so you do not need to
 restart after submitting. The SPA redirects to `/` once the POST
 returns `200`.
 
-Claude Code and Codex CLI runtimes are optional local adapters. Nyctos
+Claude Code and Codex CLI runtimes are optional local adapters. Nyx Agent
 does not include or resell model access; use them only with credentials
 and usage patterns allowed by the provider terms.
 
 ## Attach a repo to the project
 
 The wizard does not register repos. Two paths: the CLI or
-hand-editing `nyctos.toml`.
+hand-editing `nyx-agent.toml`.
 
 CLI (uses the project you created above):
 
 ```bash
-nyctos project add-repo acme-app acme-backend \
+nyx-agent project add-repo acme-app acme-backend \
   --path /abs/path/to/your/checkout \
   --i-own-this
 ```
@@ -105,7 +105,7 @@ nyctos project add-repo acme-app acme-backend \
 For a remote git source:
 
 ```bash
-nyctos project add-repo acme-app acme-backend \
+nyx-agent project add-repo acme-app acme-backend \
   --git-url https://github.com/your-org/demo.git \
   --branch main \
   --i-own-this
@@ -204,8 +204,8 @@ streams `RunStarted`, `RepoStarted`, `RepoFinished`, and
 **From the CLI:**
 
 ```bash
-nyctos scan --project acme-app
-nyctos scan --project acme-app --repo acme-backend
+nyx-agent scan --project acme-app
+nyx-agent scan --project acme-app --repo acme-backend
 ```
 
 Without `--project`, every enabled project runs. `--repo NAME`
@@ -220,7 +220,7 @@ exits non-zero if the diff cannot be computed.
 **Via HTTP** (assumes the loopback default and an auth token):
 
 ```bash
-TOKEN=$(cat ~/.local/share/nyctos/auth_token)
+TOKEN=$(cat ~/.local/share/nyx-agent/auth_token)
 curl -sS -X POST \
   -H "Authorization: Bearer $TOKEN" \
   http://127.0.0.1:8765/api/v1/projects/<project_id>/scan
@@ -228,7 +228,7 @@ curl -sS -X POST \
 
 The dispatcher responds `202` with a `run_id` you can poll on
 `/api/v1/runs/<id>` or subscribe to via `/api/v1/runs/<id>/events`
-(WebSocket). The `<project_id>` is the id returned from `nyctos
+(WebSocket). The `<project_id>` is the id returned from `nyx-agent
 project list` or `POST /api/v1/projects`. See `docs/api.md`
 (forthcoming) for the full route reference.
 
@@ -249,9 +249,9 @@ dynamic verifier did not yet confirm sit there until promoted.
 CLI inspectors:
 
 ```bash
-nyctos inspect quarantine    # quarantined findings + AI candidates
-nyctos traces                # AI conversation traces (recent first)
-nyctos traces --finding F... # traces scoped to one finding
+nyx-agent inspect quarantine    # quarantined findings + AI candidates
+nyx-agent traces                # AI conversation traces (recent first)
+nyx-agent traces --finding F... # traces scoped to one finding
 ```
 
 ## Recurring + remote triggers
@@ -268,7 +268,7 @@ posts a dedup'd PR comment. See `docs/ci/github-actions.md`.
 
 ## Common failure modes
 
-### `scan: no repositories selected; configure one in nyctos.toml`
+### `scan: no repositories selected; configure one in nyx-agent.toml`
 
 No `[[project]]` blocks define any repos, every entry has `enabled
 = false`, or `--project NAME` / `--repo NAME` did not match a
@@ -283,13 +283,13 @@ narrow the search space first.
 
 ### Browser opens but the SPA shows "needs configuration"
 
-`nyctos.toml` is missing. Either complete the wizard at `/setup`
+`nyx-agent.toml` is missing. Either complete the wizard at `/setup`
 or write the file by hand and reload. The daemon does not require
 a restart.
 
 ### `error: bind 127.0.0.1:8765: Address already in use`
 
-Another `nyctos serve` (or another process) holds the port. Stop
+Another `nyx-agent serve` (or another process) holds the port. Stop
 the other process, or pass `--listen 127.0.0.1:0` to pick a free
 port and read the actual address off the `ready on ...` line.
 
@@ -302,7 +302,7 @@ full failure path including `nyx` stderr.
 
 ## Related pages
 
-- `docs/install.md`: building from source and verifying `nyctos
+- `docs/install.md`: building from source and verifying `nyx-agent
   doctor`.
 - `docs/triggers/cron.md`: recurring scans via `[[schedule]]`.
 - `docs/triggers/webhook.md`: push-driven scans via signed HTTP.

@@ -1,0 +1,35 @@
+[package]
+name = "nyx-agent-sandbox"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "nyx-sandbox-shim"
+path = "src/bin/nyx_sandbox_shim.rs"
+
+[[bin]]
+name = "escape-attempt"
+path = "src/bin/escape_attempt.rs"
+
+[dependencies]
+nyx-agent-types = { path = "../nyx-agent-types" }
+nyx-agent-core = { path = "../nyx-agent-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_norway = { workspace = true }
+regex = { workspace = true }
+semver = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+libc = "0.2"
+tempfile = { workspace = true }
+
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+birdcage = "0.8"
+
+[dev-dependencies]
+tempfile = { workspace = true }

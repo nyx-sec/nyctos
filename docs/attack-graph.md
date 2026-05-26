@@ -1,6 +1,6 @@
 # Attack Graph
 
-Nyctos stores an attack graph as a run-scoped index over the artifacts
+Nyx Agent stores an attack graph as a run-scoped index over the artifacts
 the scanner and agent pipeline already persist. It does not replace the
 source tables; `nyx_signals`, `pentest_candidates`,
 `verification_attempts`, `verified_vulnerabilities`, `chains`,
@@ -10,9 +10,9 @@ authoritative. The graph gives those records a
 common set of nodes and edges so later UI and report surfaces can answer
 provenance and blast-radius questions without hand-joining every table.
 
-Source: `crates/nyctos-core/src/store/attack_graph.rs`,
-`crates/nyctos-core/migrations/0001_v1.sql`,
-`crates/nyctos-types/src/attack_graph.rs`.
+Source: `crates/nyx-agent-core/src/store/attack_graph.rs`,
+`crates/nyx-agent-core/migrations/0001_v1.sql`,
+`crates/nyx-agent-types/src/attack_graph.rs`.
 
 ## Schema
 

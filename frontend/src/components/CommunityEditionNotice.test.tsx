@@ -13,10 +13,10 @@ describe("CommunityEditionNotice", () => {
     expect(screen.getByRole("dialog", { name: "Community Edition" })).toBeInTheDocument();
     expect(screen.getByText(/AGPLv3-or-later/i)).toBeInTheDocument();
     expect(screen.getByText(/paid support/i)).toBeInTheDocument();
-    expect(COMMUNITY_EDITION_NOTICE).toContain("nyctos.dev/pricing");
-    expect(screen.getByRole("link", { name: "nyctos.dev/pricing" })).toHaveAttribute(
+    expect(COMMUNITY_EDITION_NOTICE).toContain("nyxscan.dev/pricing");
+    expect(screen.getByRole("link", { name: "nyxscan.dev/pricing" })).toHaveAttribute(
       "href",
-      "https://nyctos.dev/pricing",
+      "https://nyxscan.dev/pricing",
     );
   });
 

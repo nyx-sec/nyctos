@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>dev.nyx-agent.daemon</string>
+
+    <!--
+      This plist is a per-user LaunchAgent. Install it under
+        ~/Library/LaunchAgents/dev.nyx-agent.daemon.plist
+      and load with `launchctl bootstrap gui/$(id -u) ...`.
+
+      LaunchAgents run as the logged-in user, so the daemon never
+      executes with root, and the state directory resolves to the
+      user's default data dir (~/Library/Application Support/nyx-agent).
+
+      Do NOT install this file under /Library/LaunchDaemons. That
+      path runs the daemon as root by default and broadens the blast
+      radius of every OS_COMMAND / PATH_TRAVERSAL / SSRF surface.
+    -->
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/nyx-agent</string>
+        <string>serve</string>
+        <string>--headless</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/nyx-agent.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/nyx-agent.err.log</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

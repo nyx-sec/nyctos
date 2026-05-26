@@ -1,6 +1,6 @@
 # Events
 
-Nyctos publishes every observable state change to a single in-process
+Nyx Agent publishes every observable state change to a single in-process
 `tokio::sync::broadcast` channel. The HTTP server fans the channel
 out over `GET /api/v1/events` as a WebSocket; the frontend's
 LiveScanView reads it to drive per-repo badges, the AI trace viewer
@@ -8,7 +8,7 @@ reads it to follow per-task token spend, and tests subscribe to it
 to assert ordering.
 
 This page documents the wire shape and the ordering contract. The
-typed source is `crates/nyctos-types/src/event.rs`.
+typed source is `crates/nyx-agent-types/src/event.rs`.
 
 ## Wire shape
 
@@ -32,7 +32,7 @@ match on `event.kind` then `event.data.kind`.
 five are placeholder unit variants reserved for future publishers
 (`SandboxEvent`, `FindingEvent`, `BudgetEvent`, `QuarantineEvent`,
 `ReproEvent` are empty structs at
-`crates/nyctos-types/src/event.rs:180-192`). Subscribers should
+`crates/nyx-agent-types/src/event.rs:180-192`). Subscribers should
 ignore unknown variants, not panic.
 
 ## Subscribing
@@ -95,12 +95,12 @@ in-process `RepoBundle`; the tag is the colour a UI badge needs.
 
 The publishers live at:
 
-- `crates/nyctos-core/src/run/mod.rs:282-348` (run / project / repo
+- `crates/nyx-agent-core/src/run/mod.rs:282-348` (run / project / repo
   fan-out and terminators).
-- `crates/nyctos-core/src/run/mod.rs:404-464` (per-repo
+- `crates/nyx-agent-core/src/run/mod.rs:404-464` (per-repo
   `RepoStarted` / `RepoStaticDone` / `RepoFailed` /
   `RepoFinished`).
-- `crates/nyctos/src/main.rs:578` (out-of-band `RepoFailed` when
+- `crates/nyx-agent/src/main.rs:578` (out-of-band `RepoFailed` when
   the API-driven scan path rejects the request before reaching the
   dispatcher).
 
@@ -123,10 +123,10 @@ single socket.
 | `TaskHalted` | terminator; `reason: HaltReason` is `BudgetCapReached`, `OperatorCancelled`, or `UpstreamRefused` |
 
 Adapter publishers live in
-`crates/nyctos-ai/src/adapter/anthropic.rs` and
-`crates/nyctos-ai/src/adapter/claude_code.rs`; the exploration task
+`crates/nyx-agent-ai/src/adapter/anthropic.rs` and
+`crates/nyx-agent-ai/src/adapter/claude_code.rs`; the exploration task
 publishes one of its own at
-`crates/nyctos-ai/src/tasks/exploration.rs:262`.
+`crates/nyx-agent-ai/src/tasks/exploration.rs:262`.
 
 `TaskHalted` is the only AI variant the adapter guarantees to send
 on every code path. The others fire on a best-effort basis: a
@@ -142,16 +142,16 @@ shape is fixed:
 
 | Setting | Value | Source |
 | --- | --- | --- |
-| Frames per run | 128 | `crates/nyctos-api/src/state.rs:113` |
-| Tracked runs | 16 | `crates/nyctos-api/src/state.rs:117` |
-| Eviction | least-recently-touched run | `crates/nyctos-api/src/state.rs:148-154` |
+| Frames per run | 128 | `crates/nyx-agent-api/src/state.rs:113` |
+| Tracked runs | 16 | `crates/nyx-agent-api/src/state.rs:117` |
+| Eviction | least-recently-touched run | `crates/nyx-agent-api/src/state.rs:148-154` |
 
 `Heartbeat` frames are not buffered (no `run_id` to scope to).
 Every other `RunEvent` variant is. `AiEvent`, `SandboxEvent`, and
 the other placeholder families are not buffered today; if the WS
 client joined after the relevant frame, it is lost.
 
-A tap task in `crates/nyctos/src/main.rs:989-1000` subscribes
+A tap task in `crates/nyx-agent/src/main.rs:989-1000` subscribes
 to the broadcast channel and pushes every event into the replay
 buffer. When a WS client opens with `?run_id=<id>`, the handler
 calls `EventReplay::snapshot(run_id)` before joining the live
@@ -164,9 +164,9 @@ idempotent).
 
 The broadcast channel is sized at startup:
 
-- 256 frames for the serve path (`crates/nyctos/src/main.rs:928`).
+- 256 frames for the serve path (`crates/nyx-agent/src/main.rs:928`).
 - 16 frames for the headless wizard path
-  (`crates/nyctos/src/main.rs:443`), since no WS clients
+  (`crates/nyx-agent/src/main.rs:443`), since no WS clients
   attach.
 
 When a subscriber falls more than capacity frames behind, tokio

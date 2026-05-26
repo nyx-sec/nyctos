@@ -1575,7 +1575,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "nyctos-core"
+name = "nyx-agent-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -1583,7 +1583,7 @@ dependencies = [
  "dirs",
  "hex",
  "keyring",
- "nyctos-types",
+ "nyx-agent-types",
  "rand 0.9.4",
  "rayon",
  "reqwest",
@@ -1599,22 +1599,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "nyctos-fuzz"
+name = "nyx-agent-fuzz"
 version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
- "nyctos-core",
- "nyctos-nyx",
- "nyctos-types",
+ "nyx-agent-core",
+ "nyx-agent-nyx",
+ "nyx-agent-types",
  "serde_json",
 ]
 
 [[package]]
-name = "nyctos-nyx"
+name = "nyx-agent-nyx"
 version = "0.1.0"
 dependencies = [
- "nyctos-core",
- "nyctos-types",
+ "nyx-agent-core",
+ "nyx-agent-types",
  "semver",
  "serde",
  "serde_json",
@@ -1625,7 +1625,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "nyctos-types"
+name = "nyx-agent-types"
 version = "0.1.0"
 dependencies = [
  "serde",

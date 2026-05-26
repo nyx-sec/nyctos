@@ -1095,7 +1095,7 @@ function AuthProfileRows({
                   id={`runtime-auth-username-env-${index}`}
                   type="text"
                   autoComplete="off"
-                  placeholder="NYCTOS_USER_A_EMAIL"
+                  placeholder="NYX_AGENT_USER_A_EMAIL"
                   value={row.username_env}
                   onChange={(e) => update(index, { username_env: e.target.value })}
                 />
@@ -1106,7 +1106,7 @@ function AuthProfileRows({
                   id={`runtime-auth-password-env-${index}`}
                   type="text"
                   autoComplete="off"
-                  placeholder="NYCTOS_USER_A_PASSWORD"
+                  placeholder="NYX_AGENT_USER_A_PASSWORD"
                   value={row.password_env}
                   onChange={(e) => update(index, { password_env: e.target.value })}
                 />
@@ -1122,7 +1122,7 @@ function AuthProfileRows({
                   id={`runtime-auth-cookie-env-${index}`}
                   type="text"
                   autoComplete="off"
-                  placeholder="NYCTOS_USER_A_COOKIE"
+                  placeholder="NYX_AGENT_USER_A_COOKIE"
                   value={row.cookie_env}
                   onChange={(e) => update(index, { cookie_env: e.target.value })}
                 />
@@ -1133,7 +1133,7 @@ function AuthProfileRows({
                   id={`runtime-auth-bearer-env-${index}`}
                   type="text"
                   autoComplete="off"
-                  placeholder="NYCTOS_USER_A_TOKEN"
+                  placeholder="NYX_AGENT_USER_A_TOKEN"
                   value={row.bearer_token_env}
                   onChange={(e) => update(index, { bearer_token_env: e.target.value })}
                 />
@@ -1160,7 +1160,7 @@ function AuthProfileRows({
                   id={`runtime-auth-otp-email-${index}`}
                   type="text"
                   autoComplete="off"
-                  placeholder="NYCTOS_USER_A_EMAIL"
+                  placeholder="NYX_AGENT_USER_A_EMAIL"
                   value={row.otp_email_env}
                   onChange={(e) => update(index, { otp_email_env: e.target.value })}
                 />
@@ -1186,7 +1186,7 @@ function AuthProfileRows({
                 id={`runtime-auth-custom-command-${index}`}
                 type="text"
                 autoComplete="off"
-                placeholder="scripts/nyctos-auth-session"
+                placeholder="scripts/nyx-agent-auth-session"
                 value={row.custom_command}
                 onChange={(e) => update(index, { custom_command: e.target.value })}
               />
@@ -1257,7 +1257,7 @@ function HeaderRows({
                 id={`${prefix}-env-${index}`}
                 type="text"
                 autoComplete="off"
-                placeholder="NYCTOS_USER_A_ROLE"
+                placeholder="NYX_AGENT_USER_A_ROLE"
                 value={row.value_env}
                 onChange={(e) =>
                   onChange(replaceAt(rows, index, { ...row, value_env: e.target.value }))
@@ -1409,7 +1409,7 @@ function OwnedObjectRows({
                 id={`${prefix}-marker-${index}`}
                 type="text"
                 autoComplete="off"
-                placeholder="nyctos-user-a-project"
+                placeholder="nyx-agent-user-a-project"
                 value={row.marker}
                 onChange={(e) =>
                   onChange(replaceAt(rows, index, { ...row, marker: e.target.value }))

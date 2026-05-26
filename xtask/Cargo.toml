@@ -15,7 +15,7 @@ name = "xtask"
 path = "src/main.rs"
 
 [dependencies]
-nyctos-types = { path = "../crates/nyctos-types" }
+nyx-agent-types = { path = "../crates/nyx-agent-types" }
 ts-rs = { workspace = true }
 syn = { version = "2", features = ["full", "visit", "parsing", "extra-traits"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }

@@ -1,0 +1,49 @@
+[package]
+name = "nyx-agent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "nyx-agent"
+path = "src/main.rs"
+
+[dependencies]
+nyx-agent-ai = { path = "../nyx-agent-ai" }
+nyx-agent-api = { path = "../nyx-agent-api" }
+nyx-agent-core = { path = "../nyx-agent-core" }
+nyx-agent-nyx = { path = "../nyx-agent-nyx" }
+nyx-agent-sandbox = { path = "../nyx-agent-sandbox" }
+nyx-agent-types = { path = "../nyx-agent-types" }
+nyx-agent-ui = { path = "../nyx-agent-ui" }
+anyhow = { workspace = true }
+async-trait = "0.1"
+axum = { workspace = true }
+chrono = { workspace = true }
+clap = { workspace = true }
+cron = { workspace = true }
+hex = { workspace = true }
+ignore = { workspace = true }
+reqwest = { workspace = true }
+regex = { workspace = true }
+semver = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_norway = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+webbrowser = { workspace = true }
+which = { workspace = true }
+
+[dev-dependencies]
+assert_cmd = "2"
+nyx-agent-core = { path = "../nyx-agent-core", features = ["test-util"] }
+predicates = "3"
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true }
+wiremock = "0.6"

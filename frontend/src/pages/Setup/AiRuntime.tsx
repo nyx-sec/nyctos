@@ -114,10 +114,10 @@ export function AiRuntimeStep({ form, update }: Props) {
       {form.aiRuntime === "claude-code" && (
         <div className="setup-field">
           <p>
-            Nyctos will look for <code>claude</code> on <code>$PATH</code>.
+            Nyx Agent will look for <code>claude</code> on <code>$PATH</code>.
           </p>
           <p className="setup-hint">
-            Optional local adapter. Nyctos does not include or resell model access; use only with
+            Optional local adapter. Nyx Agent does not include or resell model access; use only with
             provider-authorized credentials and terms.
           </p>
         </div>
@@ -126,10 +126,10 @@ export function AiRuntimeStep({ form, update }: Props) {
       {form.aiRuntime === "codex" && (
         <div className="setup-field">
           <p>
-            Nyctos will look for <code>codex</code> on <code>$PATH</code>.
+            Nyx Agent will look for <code>codex</code> on <code>$PATH</code>.
           </p>
           <p className="setup-hint">
-            Optional local adapter. Nyctos does not include or resell model access; use only with
+            Optional local adapter. Nyx Agent does not include or resell model access; use only with
             provider-authorized credentials and terms.
           </p>
         </div>

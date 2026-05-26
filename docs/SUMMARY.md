@@ -1,11 +1,11 @@
-# Nyctos docs
+# Nyx Agent docs
 
-Operator-facing reference for `nyctos`, the binary that ships the
-Nyctos product. Every page on this list describes behaviour that
+Operator-facing reference for `nyx-agent`, the binary that ships the
+Nyx Agent product. Every page on this list describes behaviour that
 currently ships; topics still in flight are tracked in
 `.pitboss/play/deferred.md` and added here once the code lands.
 
-The shipping binary is `nyctos`; the product brand is "Nyctos".
+The shipping binary is `nyx-agent`; the product brand is "Nyx Agent".
 Both names appear in these pages for the reasons explained in
 `README.md`.
 
@@ -13,13 +13,13 @@ Both names appear in these pages for the reasons explained in
 
 - [install.md](install.md): prerequisites, source build, the `nyx`
   scanner dependency, optional AI runtimes, and
-  `nyctos doctor` line-by-line.
+  `nyx-agent doctor` line-by-line.
 - [quickstart.md](quickstart.md): start the daemon, walk the
   first-launch wizard, create a project, attach repos, kick a scan,
   read findings.
-- [cli.md](cli.md): every subcommand `nyctos` ships, the flags
+- [cli.md](cli.md): every subcommand `nyx-agent` ships, the flags
   it accepts, and the exit codes it returns.
-- [config.md](config.md): `nyctos.toml` schema, defaults, and
+- [config.md](config.md): `nyx-agent.toml` schema, defaults, and
   failure modes section by section.
 - [state-dir.md](state-dir.md): on-disk layout of the state
   directory: SQLite file, logs, repo workspaces, repro bundles,
@@ -49,7 +49,7 @@ Both names appear in these pages for the reasons explained in
 
 ## Projects
 
-Nyctos groups one or more repos under a `Project`. Projects are the
+Nyx Agent groups one or more repos under a `Project`. Projects are the
 top-level scan unit: scan, run dispatcher, sandbox env-builder, and
 chain runner all operate per project, so a multi-repo product
 (e.g. backend + frontend) scans, sandboxes, and chains as one unit.
@@ -61,7 +61,7 @@ chain runner all operate per project, so a multi-repo product
   worked example that creates a project and attaches a repo end to
   end.
 - The TOML shape is `[[project]]` blocks that nest `[[project.repo]]`
-  entries. See [`nyctos.toml`](../nyctos.toml) at the repo
+  entries. See [`nyx-agent.toml`](../nyx-agent.toml) at the repo
   root for a populated example.
 
 ## HTTP API

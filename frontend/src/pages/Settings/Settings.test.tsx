@@ -16,7 +16,7 @@ let doctorPayload: { checks: { name: string; passed: boolean; message: string }[
 function defaultStatus(): Record<string, unknown> {
   return {
     complete: true,
-    config_path: "/tmp/nyctos.toml",
+    config_path: "/tmp/nyx-agent.toml",
     ai_runtime: "none",
     ai_provider: null,
     ai_model: null,
@@ -74,7 +74,7 @@ describe("Settings page", () => {
           });
         }
         if (url.endsWith("/setup") && method === "POST") {
-          return new Response(JSON.stringify({ ok: true, config_path: "/tmp/nyctos.toml" }), {
+          return new Response(JSON.stringify({ ok: true, config_path: "/tmp/nyx-agent.toml" }), {
             status: 200,
             headers: { "content-type": "application/json" },
           });
@@ -101,7 +101,7 @@ describe("Settings page", () => {
       ui_listen_addr: "127.0.0.1:9999",
       ui_open_browser: false,
       log_level: "debug",
-      state_dir: "/tmp/nyctos-state",
+      state_dir: "/tmp/nyx-agent-state",
       max_parallel_scans: 7,
       scan_timeout_secs: 42,
     };
@@ -114,7 +114,7 @@ describe("Settings page", () => {
     expect(screen.getByText("127.0.0.1:9999")).toBeInTheDocument();
     expect(screen.getAllByText("Unlimited").length).toBeGreaterThan(0);
     expect(screen.getByText("7 parallel / 42s")).toBeInTheDocument();
-    expect(screen.getByText("/tmp/nyctos-state")).toBeInTheDocument();
+    expect(screen.getByText("/tmp/nyx-agent-state")).toBeInTheDocument();
   });
 
   it("renders Off when the advanced preference is unset", async () => {

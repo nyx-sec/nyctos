@@ -1,0 +1,22 @@
+[package]
+name = "nyx-agent-nyx"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+nyx-agent-core = { path = "../nyx-agent-core" }
+nyx-agent-types = { path = "../nyx-agent-types" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+semver = { workspace = true }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+which = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

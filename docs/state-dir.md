@@ -1,9 +1,9 @@
 # State directory
 
-`nyctos` keeps every artifact that has to outlive a process under
+`nyx-agent` keeps every artifact that has to outlive a process under
 a single root directory: the SQLite store, repo workspaces, repro
 bundles, structured logs, and the local bearer token the API uses
-to authenticate the embedded SPA. Resetting Nyctos on a host means
+to authenticate the embedded SPA. Resetting Nyx Agent on a host means
 removing that one directory.
 
 ## Where it lives
@@ -11,15 +11,15 @@ removing that one directory.
 On first launch the agent resolves the root in this order:
 
 1. `--state-dir <PATH>` on the command line.
-2. `[general] state_dir` in `nyctos.toml`.
-3. `dirs::data_dir()/nyctos`. On macOS that's
-   `~/Library/Application Support/nyctos`; on Linux,
-   `$XDG_DATA_HOME/nyctos` (defaulting to `~/.local/share/nyctos`).
+2. `[general] state_dir` in `nyx-agent.toml`.
+3. `dirs::data_dir()/nyx-agent`. On macOS that's
+   `~/Library/Application Support/nyx-agent`; on Linux,
+   `$XDG_DATA_HOME/nyx-agent` (defaulting to `~/.local/share/nyx-agent`).
 
-`nyctos doctor` prints the resolved path:
+`nyx-agent doctor` prints the resolved path:
 
 ```text
-state dir OK at /Users/eli/Library/Application Support/nyctos
+state dir OK at /Users/eli/Library/Application Support/nyx-agent
 ```
 
 If `dirs::data_dir()` cannot resolve a base (no `HOME`, no
@@ -51,7 +51,7 @@ around it.
 ```
 
 The root and every subdirectory in that list are created together
-by `StateDir::ensure` on the first `nyctos` invocation; later
+by `StateDir::ensure` on the first `nyx-agent` invocation; later
 invocations are idempotent.
 
 ## Permissions
@@ -73,7 +73,7 @@ on <path>: <io error>`.
 SQLite database. The pool opens with WAL journaling, `synchronous =
 NORMAL`, `foreign_keys = ON`, `cache_size = -8000` (8 MiB), and
 `temp_store = MEMORY`. The schema is managed by bundled SQLx
-migrations under `crates/nyctos-core/migrations/`:
+migrations under `crates/nyx-agent-core/migrations/`:
 
 | Migration     | Adds |
 |---------------|------|
@@ -89,7 +89,7 @@ sqlite3 "<state>/state.db" \
   "SELECT schema_version, agent_version, datetime(created_at/1000, 'unixepoch') FROM meta WHERE id = 1;"
 ```
 
-`nyctos doctor` prints the schema version on every run:
+`nyx-agent doctor` prints the schema version on every run:
 
 ```text
 db OK at <state>/state.db (schema v1)
@@ -103,12 +103,12 @@ is no down-migration story.
 Reset the database without touching other artifacts:
 
 ```bash
-nyctos reset db
+nyx-agent reset db
 ```
 
 That command removes `state.db`, `state.db-wal`, and `state.db-shm`
-after checking that no running `nyctos` process has the database open.
-Use `nyctos reset db --yes` in scripts.
+after checking that no running `nyx-agent` process has the database open.
+Use `nyx-agent reset db --yes` in scripts.
 
 ### `auth_token`
 
@@ -159,7 +159,7 @@ Typical files are:
   the redacted replay artifacts.
 
 Session headers, cookies, bearer tokens, and token-like query/body
-values are redacted before Nyctos writes JSON, HTML, console, timeline,
+values are redacted before Nyx Agent writes JSON, HTML, console, timeline,
 or replay files. Playwright traces are skipped when the plan or injected
 session headers contain secret-like values because the zip is not
 post-process-redacted.
@@ -201,16 +201,16 @@ writes here yet. Reserved.
 Run against a tempdir for a one-off scan:
 
 ```bash
-nyctos --state-dir /tmp/nyctos-scratch doctor
-nyctos --state-dir /tmp/nyctos-scratch scan --project demo
+nyx-agent --state-dir /tmp/nyx-agent-scratch doctor
+nyx-agent --state-dir /tmp/nyx-agent-scratch scan --project demo
 ```
 
-Pin the directory in `nyctos.toml` (handy for `systemd` /
+Pin the directory in `nyx-agent.toml` (handy for `systemd` /
 `launchd` units that set their own `HOME`):
 
 ```toml
 [general]
-state_dir = "/var/lib/nyctos"
+state_dir = "/var/lib/nyx-agent"
 ```
 
 Either form works for any subcommand. `--state-dir` wins when both

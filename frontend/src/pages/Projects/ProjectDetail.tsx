@@ -1464,7 +1464,7 @@ function startPentestModalCopy({
   if (stateChanging && unsafeAttackAgent) {
     return {
       confirmLabel: "Start invasive attack run",
-      note: "Nyctos can mutate the disposable app through state-changing probes and the local attack agent; use this only when the target can be reset.",
+      note: "Nyx Agent can mutate the disposable app through state-changing probes and the local attack agent; use this only when the target can be reset.",
     };
   }
   if (stateChanging && researchMode && browserChecks) {
@@ -1536,7 +1536,7 @@ function startPentestModalCopy({
   if (exploitMode) {
     return {
       confirmLabel: "Start exploit run",
-      note: "Nyctos can evaluate invasive live-verification plans, but state-changing probes remain blocked until the second switch is enabled.",
+      note: "Nyx Agent can evaluate invasive live-verification plans, but state-changing probes remain blocked until the second switch is enabled.",
     };
   }
   if (unsafeAttackAgent && researchMode && browserChecks) {
@@ -1674,7 +1674,7 @@ function StartPentestModal({ busy, onConfirm, onCancel }: StartPentestModalProps
             />
             <span>
               <strong>Exploit mode</strong>
-              <small>Allow Nyctos to evaluate invasive live-verification plans.</small>
+              <small>Allow Nyx Agent to evaluate invasive live-verification plans.</small>
             </span>
           </label>
           <label className="pentest-options__check">

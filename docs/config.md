@@ -1,20 +1,20 @@
 # Configuration
 
-Nyctos loads its configuration from `nyctos.toml`. The file is
+Nyx Agent loads its configuration from `nyx-agent.toml`. The file is
 optional: when missing, every section falls back to defaults, so
-read-only commands like `nyctos doctor` work in a fresh checkout
+read-only commands like `nyx-agent doctor` work in a fresh checkout
 with no config on disk.
 
 ## Where the file lives
 
-The agent looks for `./nyctos.toml` relative to the current
+The agent looks for `./nyx-agent.toml` relative to the current
 working directory. Override with `--config <PATH>` on any subcommand:
 
 ```bash
-nyctos --config /etc/nyctos.toml serve
+nyx-agent --config /etc/nyx-agent.toml serve
 ```
 
-`nyctos doctor` prints whether the file was found and which
+`nyx-agent doctor` prints whether the file was found and which
 sections parsed.
 
 ## Schema overview
@@ -43,7 +43,7 @@ fails the load rather than silently going to default.
 | Field       | Type            | Default | Description                                                  |
 |-------------|-----------------|---------|--------------------------------------------------------------|
 | `log_level` | string          | `info`  | `tracing` filter for stderr (e.g. `info`, `debug`, `nyx=trace`). |
-| `state_dir` | path (optional) | unset   | Override the state directory. Falls back to `dirs::data_dir()/nyctos` when unset. |
+| `state_dir` | path (optional) | unset   | Override the state directory. Falls back to `dirs::data_dir()/nyx-agent` when unset. |
 
 ## `[performance]`
 
@@ -74,7 +74,7 @@ fails the load rather than silently going to default.
 | `firecracker` | Lightweight microVM on Linux via Firecracker.                     |
 | `docker`      | Docker container fallback. Slowest, requires the docker daemon.   |
 
-`nyctos doctor` prints which backends probe healthy on this host.
+`nyx-agent doctor` prints which backends probe healthy on this host.
 
 ## `[ai]`
 
@@ -106,7 +106,7 @@ fails the load rather than silently going to default.
 API keys never live in TOML. The wizard at first launch writes them
 to the OS keychain.
 
-Nyctos does not include or resell access to model providers. Direct
+Nyx Agent does not include or resell access to model providers. Direct
 API and local endpoint runtimes are the official BYOK paths; CLI
 runtimes are optional local adapters for users who have installed and
 authenticated those tools themselves under the relevant provider terms.
@@ -153,7 +153,7 @@ See `docs/triggers/webhook.md` for the full handler contract.
 | `business_logic_templates_enabled` | bool | `true` | Generate first-class business-logic pentest candidates from route/auth metadata. Generated plans still pass through normal verifier safety gates. |
 | `research_mode_enabled`            | bool | `false` | Enable Vuln Research Mode. This adds product-invariant hypotheses from the semantic route model and prior candidate memory, prioritizes those candidates in attack planning/exploration, and uses deeper research prompts. It does not relax live execution gates. |
 | `unsafe_attack_agent_enabled`      | bool | `false` | Run the pre-MVP unrestricted local attack-agent phase after normal verification. Intended only for disposable user-owned dev apps; once invoked it does not use the guarded live-verifier policy. The phase runs seven specialist agents, then a critical chain hunter and final triage pass. |
-| `business_logic_template_ids`      | array of strings | `[]` | Optional allowlist of template ids. Empty means every registered template is considered. Use `nyctos business-logic templates` or `GET /api/v1/business-logic/templates` to list ids. |
+| `business_logic_template_ids`      | array of strings | `[]` | Optional allowlist of template ids. Empty means every registered template is considered. Use `nyx-agent business-logic templates` or `GET /api/v1/business-logic/templates` to list ids. |
 | `exploit_request_cap`              | int (optional) | unset (`10`) | Per-candidate cap for guarded live HTTP/browser actions. `0` is floored to `1`. |
 | `exploit_requests_per_second`      | int (optional) | unset (`5`) | Per-candidate rate limit for guarded live HTTP/browser actions. `0` is floored to `1`. |
 | `exploit_reset_after_state_changing` | bool | `true` | Ask the environment orchestration layer to reset/rollback after allowed state-changing probes when the active environment supports it. |
@@ -166,13 +166,13 @@ See `docs/triggers/webhook.md` for the full handler contract.
 | `enable_httpx`                     | bool | `true`  | Run ProjectDiscovery `httpx` against live target URLs when present on PATH. Interesting HTTP metadata becomes live-test candidates. |
 | `enable_aggressive_sqlmap`         | bool | `false` | Reserved for explicit sqlmap use. sqlmap is not auto-enabled because it is aggressive and has GPL/proprietary-integration constraints. |
 
-Exploit mode is intentionally a two-key system. Nyctos defaults to
+Exploit mode is intentionally a two-key system. Nyx Agent defaults to
 non-destructive live verification. State-changing HTTP methods,
 browser actions that may mutate data, and aggressive external probes
 are rejected unless exploit mode is enabled and the specific
 state-changing gate is also enabled. The local server UI exposes the
 same per-run controls in the **Start pentest** modal, so an operator
-can opt into an invasive run without editing `nyctos.toml`.
+can opt into an invasive run without editing `nyx-agent.toml`.
 
 Example opt-in for a disposable local target:
 
@@ -256,7 +256,7 @@ is production-relevant or the behavior creates a real local risk.
 Optional scanner findings are persisted as pentest candidates. Live web
 findings still pass live verification before surfacing as verified
 vulnerabilities; source/package findings are recorded as bounded context
-for AI exploration and triage. Nyctos does not bundle these scanners; it
+for AI exploration and triage. Nyx Agent does not bundle these scanners; it
 invokes local executables on PATH when available.
 
 | Tool | Upstream license | Commercial use note |
@@ -288,7 +288,7 @@ are rejected by the parser.
 | `repo`           | `[[project.repo]]`| empty   | Repos belonging to this project. See below.                                                  |
 
 When `[project.launch]` is omitted, scans still run. If a project has
-`target_base_url` but no stored launch profile, Nyctos creates a
+`target_base_url` but no stored launch profile, Nyx Agent creates a
 conservative already-running profile and health-checks the target URL.
 For local-path repos, `mode = "auto"` can detect root-level Docker
 Compose files or simple `package.json` / `Cargo.toml` start commands.
@@ -343,19 +343,19 @@ target_base_url = "http://localhost:3000"
 [[project.runtime_profile.auth_profiles]]
 role = "user_a"
 mode = "header_injection"
-bearer_token_env = "NYCTOS_USER_A_TOKEN"
+bearer_token_env = "NYX_AGENT_USER_A_TOKEN"
 tenant = "tenant-a"
 
   [[project.runtime_profile.auth_profiles.owned_objects]]
   name = "project"
   id = "proj-user-a-1"
   route = "/api/projects/{id}"
-  marker = "nyctos-user-a-project"
+  marker = "nyx-agent-user-a-project"
 
 [[project.runtime_profile.auth_profiles]]
 role = "user_b"
 mode = "header_injection"
-bearer_token_env = "NYCTOS_USER_B_TOKEN"
+bearer_token_env = "NYX_AGENT_USER_B_TOKEN"
 tenant = "tenant-b"
 
 [[project.runtime_profile.auth_profiles]]
@@ -365,12 +365,12 @@ session_import_path = "sessions/admin-storage-state.json"
 ```
 
 `owned_objects` are optional pre-seeded IDs for horizontal
-authorization checks. Nyctos treats the id and marker as positive live
+authorization checks. Nyx Agent treats the id and marker as positive live
 evidence markers: `user_b` must receive the same marker from `user_a`'s
 object before an IDOR-style vulnerability can verify.
 
 `tenant` is optional metadata used in the Authorization Matrix. When a
-role comparison or object ownership check runs, Nyctos records one row
+role comparison or object ownership check runs, Nyx Agent records one row
 for the allowed control and one row for the challenged access with the
 role, tenant, resource/object, owner role, action, endpoint, expected
 decision, observed HTTP/marker result, confidence, candidate id,
@@ -506,7 +506,7 @@ label = "weekly-monday-3am"
 | `failed to parse config at <path>: unknown field ...`     | Typo in a field name. Sections deny unknown fields. Check the schema tables above.                |
 | `failed to parse config at <path>: missing field ...`     | A required field is unset. `name` on `[[project]]` / `[[project.repo]]`, `cron` on `[[schedule]]`, `url` on a `git` source. |
 | `failed to read config at <path>: ...`                    | Permission issue or the path passed to `--config` is wrong.                                       |
-| `no repositories selected; configure one in nyctos.toml` | The TOML has zero `[[project.repo]]` blocks or every repo is `enabled = false`.                  |
+| `no repositories selected; configure one in nyx-agent.toml` | The TOML has zero `[[project.repo]]` blocks or every repo is `enabled = false`.                  |
 | `invalid [[schedule]] config: ...`                        | A cron expression failed to parse or the referenced repo does not exist. The daemon refuses to start. |
 | Daemon accepts webhooks but every call returns `503`      | `triggers.webhook_secret_ref` is unset, points at an unset env var, or resolves to an empty string. |
 

@@ -5,8 +5,8 @@ schedule and an HTTP webhook for self-hosted git servers.
 
 | Path | Use case |
 |------|----------|
-| [cron.md](cron.md) | Cron expressions in `nyctos.toml`, plus systemd / launchd units that keep the daemon up. |
+| [cron.md](cron.md) | Cron expressions in `nyx-agent.toml`, plus systemd / launchd units that keep the daemon up. |
 | [webhook.md](webhook.md) | `POST /webhook/git` with HMAC-SHA256 verification, branch filter, and a CI-friendly response shape. |
 
-Manual triggers (the SPA's "Scan now" button and `nyctos scan` from
+Manual triggers (the SPA's "Scan now" button and `nyx-agent scan` from
 the CLI) keep working alongside these.

@@ -4,7 +4,7 @@ import { defineConfig } from "vite";
 
 // Vite config mirrors nyx OSS: SPA build to `dist/`, dev proxy that
 // forwards `/api/...` and the `/api/v1/events` websocket to the local
-// nyctos daemon. The daemon listens on 127.0.0.1:8765 by default
+// nyx-agent daemon. The daemon listens on 127.0.0.1:8765 by default
 // (see `[ui].listen_addr` in `Config::default`).
 export default defineConfig({
   plugins: [react()],

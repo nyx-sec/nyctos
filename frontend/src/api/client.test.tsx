@@ -24,15 +24,15 @@ function jsonResponse(body: unknown, init: ResponseInit = { status: 200 }) {
 
 describe("getAuthToken", () => {
   afterEach(() => {
-    delete window.__NYCTOS_BOOTSTRAP__;
+    delete window.__NYX_AGENT_BOOTSTRAP__;
   });
 
   it("returns undefined when no bootstrap is injected", () => {
     expect(getAuthToken()).toBeUndefined();
   });
 
-  it("returns the token injected by nyctos-ui::inject_bootstrap", () => {
-    window.__NYCTOS_BOOTSTRAP__ = { authToken: "tk_abc" };
+  it("returns the token injected by nyx-agent-ui::inject_bootstrap", () => {
+    window.__NYX_AGENT_BOOTSTRAP__ = { authToken: "tk_abc" };
     expect(getAuthToken()).toBe("tk_abc");
   });
 });
@@ -40,7 +40,7 @@ describe("getAuthToken", () => {
 describe("useAllRepos", () => {
   afterEach(() => {
     vi.restoreAllMocks();
-    delete window.__NYCTOS_BOOTSTRAP__;
+    delete window.__NYX_AGENT_BOOTSTRAP__;
   });
 
   it("fans out one /projects call plus one /projects/:id/repos per project", async () => {
@@ -70,7 +70,7 @@ describe("useAllRepos", () => {
   });
 
   it("forwards the bootstrap bearer token on every request", async () => {
-    window.__NYCTOS_BOOTSTRAP__ = { authToken: "tk_xyz" };
+    window.__NYX_AGENT_BOOTSTRAP__ = { authToken: "tk_xyz" };
     const calls: Array<{ url: string; auth: string | null }> = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = typeof input === "string" ? input : (input as Request).url;
@@ -189,11 +189,11 @@ describe("useAgentEvents", () => {
   });
   afterEach(() => {
     (window as unknown as { WebSocket: unknown }).WebSocket = originalWS;
-    delete window.__NYCTOS_BOOTSTRAP__;
+    delete window.__NYX_AGENT_BOOTSTRAP__;
   });
 
   it("builds the URL with run_id + bootstrap token and tracks open / message / close", async () => {
-    window.__NYCTOS_BOOTSTRAP__ = { authToken: "tk_evt" };
+    window.__NYX_AGENT_BOOTSTRAP__ = { authToken: "tk_evt" };
     const seen: unknown[] = [];
     const { Wrapper } = makeWrapper();
     const { result, unmount } = renderHook(

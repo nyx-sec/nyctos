@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/Button";
 
-const STORAGE_KEY = "nyctos.communityEditionNoticeDismissed";
+const STORAGE_KEY = "nyx-agent.communityEditionNoticeDismissed";
 
 export const COMMUNITY_EDITION_NOTICE =
-  "You are using Nyctos Community Edition under AGPLv3-or-later. Commercial licenses, paid support, and enterprise terms are available at nyctos.dev/pricing.";
+  "You are using Nyx Agent Community Edition under AGPLv3-or-later. Commercial licenses, paid support, and enterprise terms are available at nyxscan.dev/pricing.";
 const NOTICE_PREFIX =
-  "You are using Nyctos Community Edition under AGPLv3-or-later. Commercial licenses, paid support, and enterprise terms are available at";
+  "You are using Nyx Agent Community Edition under AGPLv3-or-later. Commercial licenses, paid support, and enterprise terms are available at";
 
 function noticeWasDismissed(): boolean {
   try {
@@ -67,8 +67,8 @@ export function CommunityEditionNotice() {
         <div className="modal__body community-edition-notice__body">
           <p>
             {NOTICE_PREFIX}{" "}
-            <a href="https://nyctos.dev/pricing" target="_blank" rel="noreferrer">
-              nyctos.dev/pricing
+            <a href="https://nyxscan.dev/pricing" target="_blank" rel="noreferrer">
+              nyxscan.dev/pricing
             </a>
             .
           </p>

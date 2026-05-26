@@ -46,7 +46,7 @@ beforeEach(() => {
         return new Response(
           JSON.stringify({
             complete: false,
-            config_path: "/tmp/nyctos.toml",
+            config_path: "/tmp/nyx-agent.toml",
             ai_runtime: "none",
             sandbox_backend: "auto",
           }),
@@ -60,7 +60,7 @@ beforeEach(() => {
         });
       }
       if (url.endsWith("/setup") && method === "POST") {
-        return new Response(JSON.stringify({ ok: true, config_path: "/tmp/nyctos.toml" }), {
+        return new Response(JSON.stringify({ ok: true, config_path: "/tmp/nyx-agent.toml" }), {
           status: 200,
           headers: { "content-type": "application/json" },
         });

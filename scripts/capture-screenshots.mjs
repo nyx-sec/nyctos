@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Capture fresh README screenshots from the current Nyctos frontend.
+ * Capture fresh README screenshots from the current Nyx Agent frontend.
  *
  * The script serves the real React app, mocks the daemon API with a small
  * seeded pentest, captures raw frames, then frames the stills and builds a
@@ -24,8 +24,8 @@ const DOCS_OUT_DIR = join(ROOT, "docs", "assets", "screenshots");
 const RAW_DIR = join(OUT_DIR, "raw");
 const GIF_RAW_DIR = join(RAW_DIR, "gif");
 const FRAMER = join(ROOT, "scripts", "frame-screenshots.py");
-const PORT = Number(process.env.NYCTOS_SCREENSHOT_PORT ?? 4197);
-const GIF_FRAME_MS = Number(process.env.NYCTOS_GIF_FRAME_MS ?? 1900);
+const PORT = Number(process.env.NYX_AGENT_SCREENSHOT_PORT ?? 4197);
+const GIF_FRAME_MS = Number(process.env.NYX_AGENT_GIF_FRAME_MS ?? 1900);
 const BASE_URL = `http://127.0.0.1:${PORT}`;
 const VIEW = { width: 1600, height: 992 };
 const PROJECT_ID = "proj-checkout";
@@ -304,7 +304,7 @@ const integrations = [
     enabled: false,
     events: ["finding_verified"],
     min_severity: "Medium",
-    target: "https://jira.example.test/hooks/nyctos",
+    target: "https://jira.example.test/hooks/nyx-agent",
     created_at: BASE_TS - 1_000_000,
     updated_at: BASE_TS - 100_000,
   },
@@ -399,7 +399,7 @@ async function main() {
       colorScheme: "light",
     });
     await context.addInitScript(() => {
-      window.localStorage.setItem("nyctos.communityEditionNoticeDismissed", "1");
+      window.localStorage.setItem("nyx-agent.communityEditionNoticeDismissed", "1");
     });
     await installMockWebSocket(context);
 
@@ -474,7 +474,7 @@ async function startUiServer() {
 }
 
 function chooseServerMode() {
-  const requested = process.env.NYCTOS_SCREENSHOT_SERVER;
+  const requested = process.env.NYX_AGENT_SCREENSHOT_SERVER;
   if (requested === "dev" || requested === "preview") return requested;
   return exists(join(ROOT, "frontend", "dist", "index.html")) ? "preview" : "dev";
 }
@@ -653,7 +653,7 @@ async function routeApi(route) {
 function setupStatus() {
   return {
     complete: true,
-    config_path: "/Users/you/.config/nyctos/nyctos.toml",
+    config_path: "/Users/you/.config/nyx-agent/nyx-agent.toml",
     ai_runtime: "codex",
     ai_provider: "codex",
     ai_model: "gpt-5",
@@ -664,7 +664,7 @@ function setupStatus() {
     ui_listen_addr: "127.0.0.1:8765",
     ui_open_browser: true,
     log_level: "info",
-    state_dir: "/Users/you/Library/Application Support/nyctos",
+    state_dir: "/Users/you/Library/Application Support/nyx-agent",
     max_parallel_scans: 2,
     scan_timeout_secs: 600,
   };
@@ -692,7 +692,7 @@ async function installMockWebSocket(context) {
   await context.addInitScript(
     ({ runId, projectId, baseTs }) => {
       const NativeWebSocket = window.WebSocket;
-      class MockNyctosWebSocket extends EventTarget {
+      class MockNyxAgentWebSocket extends EventTarget {
         constructor(url, protocols) {
           super();
           const rawUrl = String(url);
@@ -735,11 +735,11 @@ async function installMockWebSocket(context) {
           this.dispatchEvent(event);
         }
       }
-      MockNyctosWebSocket.CONNECTING = 0;
-      MockNyctosWebSocket.OPEN = 1;
-      MockNyctosWebSocket.CLOSING = 2;
-      MockNyctosWebSocket.CLOSED = 3;
-      window.WebSocket = MockNyctosWebSocket;
+      MockNyxAgentWebSocket.CONNECTING = 0;
+      MockNyxAgentWebSocket.OPEN = 1;
+      MockNyxAgentWebSocket.CLOSING = 2;
+      MockNyxAgentWebSocket.CLOSED = 3;
+      window.WebSocket = MockNyxAgentWebSocket;
 
       function eventSequence(activeRunId, activeProjectId, ts) {
         const phase = (delay, name, status, message = null) => [
