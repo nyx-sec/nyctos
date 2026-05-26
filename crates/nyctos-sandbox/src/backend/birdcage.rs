@@ -93,7 +93,10 @@ impl Sandbox for BirdcageSandbox {
 
         let mut allow_read: Vec<PathBuf> = opts.allow_read.clone();
         for p in default_system_read_paths() {
-            allow_read.push(PathBuf::from(p));
+            let path = PathBuf::from(p);
+            if path.exists() {
+                allow_read.push(path);
+            }
         }
         allow_read.push(program.clone());
 

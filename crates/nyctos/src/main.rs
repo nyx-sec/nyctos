@@ -1674,6 +1674,25 @@ async fn drive_scan(
     // verifier can touch the already-running app. This pass is the
     // bridge from "Nyx found a risky source location" to "try this
     // concrete method/url/body/oracle against localhost".
+    let planning_auth_workspace_paths = workspaces_for_ai
+        .values()
+        .map(|workspace| workspace.workspace().to_path_buf())
+        .collect::<Vec<_>>();
+    let planning_capabilities = environment.as_ref().map(|env| {
+        live_planning::discover_env_capabilities(live_planning::EnvCapabilityDiscoveryInput {
+            target_urls: &live_target_urls,
+            auth_profiles: &auth_profiles,
+            auth_env_overrides: &auth_env_overrides,
+            browser_checks_enabled: config.run.browser_checks_enabled,
+            browser_available: config.run.browser_checks_enabled
+                && node_runtime::playwright_available(&planning_auth_workspace_paths),
+            seed_supported: env.seed_supported(),
+            reset_supported: env.reset_supported(),
+            exploit_mode_enabled: config.run.exploit_mode_enabled,
+            allow_state_changing: config.run.state_changing_live_probes_allowed(),
+            dry_run: config.run.exploit_dry_run,
+        })
+    });
     match ai_pipeline::run_live_test_plan_synthesis_pass(
         &config.ai,
         store,
@@ -1685,6 +1704,7 @@ async fn drive_scan(
         &auth_profiles,
         config.run.browser_checks_enabled,
         config.run.state_changing_live_probes_allowed(),
+        planning_capabilities.as_ref(),
         attack_plan_context.as_deref(),
         events.clone(),
     )

@@ -60,6 +60,7 @@ use nyctos_types::chain::{
     NODE_KIND_FRAMEWORK, NODE_KIND_SINK,
 };
 use nyctos_types::event::{AgentEvent, EventSink, RunEvent, SandboxEvent};
+use nyctos_types::live_plan::{EnvCapabilityReport, LiveTestPlan, NoPlanReason, NoPlanReasonCode};
 use nyctos_types::novel::{
     FileForReview, NovelFindingDiscoveryInput, PriorFinding, DEFAULT_FILES_PER_BATCH,
     DEFAULT_NOVEL_DISCOVERY_RUN_CAP_USD_MICROS, NOVEL_FINDING_DISCOVERY_PROMPT_VERSION,
@@ -701,6 +702,12 @@ pub struct LiveTestPlanSynthesisPassReport {
     pub spend_usd_micros: i64,
 }
 
+#[derive(Debug)]
+struct AiLivePlanCandidate {
+    candidate: PentestCandidateRecord,
+    fallback_no_plan: Option<LiveTestPlan>,
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct AttackPlanningPassReport {
     pub candidates_seen: u32,
@@ -934,6 +941,7 @@ pub async fn run_live_test_plan_synthesis_pass(
     auth_profiles: &[ProjectAuthProfile],
     browser_checks_enabled: bool,
     allow_state_changing: bool,
+    capabilities: Option<&EnvCapabilityReport>,
     attack_plan_context: Option<&str>,
     events: EventSink,
 ) -> anyhow::Result<LiveTestPlanSynthesisPassReport> {
@@ -953,29 +961,16 @@ pub async fn run_live_test_plan_synthesis_pass(
     }
     report.candidates_seen = candidates.len() as u32;
 
-    let empty_auth_env_overrides = std::collections::BTreeMap::new();
-    let capability_report =
-        live_planning::discover_env_capabilities(live_planning::EnvCapabilityDiscoveryInput {
-            target_urls,
-            auth_profiles,
-            auth_env_overrides: &empty_auth_env_overrides,
-            browser_checks_enabled,
-            browser_available: browser_checks_enabled
-                && crate::node_runtime::playwright_available(&[]),
-            seed_supported: false,
-            reset_supported: false,
-            exploit_mode_enabled: allow_state_changing,
-            allow_state_changing,
-            dry_run: false,
+    if let Some(capability_report) = capabilities {
+        let _ = events.send(AgentEvent::Run {
+            data: RunEvent::LiveVerificationCapabilities {
+                run_id: bundle.run_id.clone(),
+                project_id: bundle.project_id.clone(),
+                report: serde_json::to_value(capability_report).unwrap_or_default(),
+                ts_ms: now_epoch_ms(),
+            },
         });
-    let _ = events.send(AgentEvent::Run {
-        data: RunEvent::LiveVerificationCapabilities {
-            run_id: bundle.run_id.clone(),
-            project_id: bundle.project_id.clone(),
-            report: serde_json::to_value(&capability_report).unwrap_or_default(),
-            ts_ms: now_epoch_ms(),
-        },
-    });
+    }
     let synthesizer =
         live_planning::LiveTestPlanSynthesizer::new(live_planning::LiveTestPlanSynthesisContext {
             route_model,
@@ -983,27 +978,22 @@ pub async fn run_live_test_plan_synthesis_pass(
             auth_profiles,
             browser_checks_enabled,
             allow_state_changing,
-            capabilities: Some(&capability_report),
+            capabilities,
         });
     let mut ai_candidates = Vec::new();
     for candidate in candidates {
         let plan = synthesizer.synthesize(&candidate);
         let finished_at = now_epoch_ms();
         match plan {
-            nyctos_types::live_plan::LiveTestPlan::NoPlan(no_plan) => {
-                let reason = no_plan.no_plan_reason.message.clone();
-                let plan_blob =
-                    serde_json::to_string(&nyctos_types::live_plan::LiveTestPlan::NoPlan(no_plan))?;
-                store
-                    .pentest_candidates()
-                    .set_test_plan(&candidate.id, &plan_blob, "NeedsReview", None, finished_at)
-                    .await?;
-                store
-                    .pentest_candidates()
-                    .set_status(&candidate.id, "NeedsReview", Some(&reason), finished_at)
-                    .await?;
-                persist_no_plan_memory(store, &candidate, &reason, finished_at).await;
-                report.no_plan += 1;
+            LiveTestPlan::NoPlan(no_plan) => {
+                let fallback = LiveTestPlan::NoPlan(no_plan);
+                if fallback.no_plan_reason().is_some_and(should_try_ai_live_plan_after_no_plan) {
+                    ai_candidates
+                        .push(AiLivePlanCandidate { candidate, fallback_no_plan: Some(fallback) });
+                } else {
+                    persist_no_plan_candidate(store, &candidate, fallback, finished_at).await?;
+                    report.no_plan += 1;
+                }
             }
             executable => {
                 let plan_blob = serde_json::to_string(&executable)?;
@@ -1016,7 +1006,8 @@ pub async fn run_live_test_plan_synthesis_pass(
                         report.planned += 1;
                     }
                     Ok(None) => {
-                        ai_candidates.push(candidate);
+                        ai_candidates
+                            .push(AiLivePlanCandidate { candidate, fallback_no_plan: None });
                     }
                     Err(err) => {
                         tracing::warn!(
@@ -1024,14 +1015,14 @@ pub async fn run_live_test_plan_synthesis_pass(
                             error = %err,
                             "deterministic live test plan synthesis produced unusable plan"
                         );
-                        ai_candidates.push(candidate);
+                        ai_candidates
+                            .push(AiLivePlanCandidate { candidate, fallback_no_plan: None });
                     }
                 }
             }
         }
     }
-    let candidates = ai_candidates;
-    if candidates.is_empty() {
+    if ai_candidates.is_empty() {
         return Ok(report);
     }
 
@@ -1045,12 +1036,22 @@ pub async fn run_live_test_plan_synthesis_pass(
     .await?
     {
         Some(adapter) => adapter,
-        None => return Ok(report),
+        None => {
+            for queued in ai_candidates {
+                if let Some(no_plan) = queued.fallback_no_plan {
+                    persist_no_plan_candidate(store, &queued.candidate, no_plan, now_epoch_ms())
+                        .await?;
+                    report.no_plan += 1;
+                }
+            }
+            return Ok(report);
+        }
     };
 
     let runtime_name = adapter.name();
     let runtime_model = adapter.default_model().to_string();
-    for candidate in candidates {
+    for queued in ai_candidates {
+        let candidate = queued.candidate;
         let started_at = now_epoch_ms();
         let prompt = build_live_test_plan_prompt(
             &candidate,
@@ -1116,6 +1117,23 @@ pub async fn run_live_test_plan_synthesis_pass(
                 report.planned += 1;
             }
             Ok(None) => {
+                let reason = queued
+                    .fallback_no_plan
+                    .as_ref()
+                    .and_then(LiveTestPlan::no_plan_reason)
+                    .map(|reason| reason.message.clone())
+                    .unwrap_or_else(|| {
+                        "AI live test planning returned no executable plan".to_string()
+                    });
+                if let Some(fallback) = queued.fallback_no_plan {
+                    persist_no_plan_candidate(store, &candidate, fallback, finished_at).await?;
+                } else {
+                    store
+                        .pentest_candidates()
+                        .set_status(&candidate.id, "NeedsReview", Some(&reason), finished_at)
+                        .await?;
+                    persist_no_plan_memory(store, &candidate, &reason, finished_at).await;
+                }
                 report.no_plan += 1;
             }
             Err(err) => {
@@ -1130,6 +1148,41 @@ pub async fn run_live_test_plan_synthesis_pass(
         }
     }
     Ok(report)
+}
+
+async fn persist_no_plan_candidate(
+    store: &Store,
+    candidate: &PentestCandidateRecord,
+    plan: LiveTestPlan,
+    finished_at: i64,
+) -> anyhow::Result<()> {
+    let reason = plan
+        .no_plan_reason()
+        .map(|reason| reason.message.clone())
+        .unwrap_or_else(|| "candidate has no executable live test plan".to_string());
+    let plan_blob = serde_json::to_string(&plan)?;
+    store
+        .pentest_candidates()
+        .set_test_plan(&candidate.id, &plan_blob, "NeedsReview", None, finished_at)
+        .await?;
+    store
+        .pentest_candidates()
+        .set_status(&candidate.id, "NeedsReview", Some(&reason), finished_at)
+        .await?;
+    persist_no_plan_memory(store, candidate, &reason, finished_at).await;
+    Ok(())
+}
+
+fn should_try_ai_live_plan_after_no_plan(reason: &NoPlanReason) -> bool {
+    matches!(
+        reason.code,
+        NoPlanReasonCode::BadEndpoint
+            | NoPlanReasonCode::WeakOracle
+            | NoPlanReasonCode::NoExecutablePlan
+            | NoPlanReasonCode::UnsupportedClass
+            | NoPlanReasonCode::RouteNotInferred
+            | NoPlanReasonCode::Other
+    )
 }
 
 fn build_live_test_plan_prompt(
@@ -5835,6 +5888,33 @@ mod tests {
     }
 
     #[test]
+    fn live_test_plan_no_plan_policy_escalates_planner_gaps_only() {
+        for code in [
+            NoPlanReasonCode::BadEndpoint,
+            NoPlanReasonCode::WeakOracle,
+            NoPlanReasonCode::NoExecutablePlan,
+            NoPlanReasonCode::UnsupportedClass,
+            NoPlanReasonCode::RouteNotInferred,
+            NoPlanReasonCode::Other,
+        ] {
+            let reason = NoPlanReason::new(code, "planner needs source-aware help");
+            assert!(should_try_ai_live_plan_after_no_plan(&reason));
+        }
+
+        for code in [
+            NoPlanReasonCode::SetupMissing,
+            NoPlanReasonCode::StateChangingBlocked,
+            NoPlanReasonCode::TargetOutOfScope,
+            NoPlanReasonCode::DependencyReviewOnly,
+            NoPlanReasonCode::UnsafeProbe,
+            NoPlanReasonCode::BrowserDisabled,
+        ] {
+            let reason = NoPlanReason::new(code, "hard live verification blocker");
+            assert!(!should_try_ai_live_plan_after_no_plan(&reason));
+        }
+    }
+
+    #[test]
     fn live_test_plan_rejects_urls_outside_target_base() {
         let targets = vec!["http://localhost:8787".to_string()];
         let raw =
@@ -6248,6 +6328,7 @@ mod tests {
             &auth,
             false,
             false,
+            None,
             None,
             tx,
         )

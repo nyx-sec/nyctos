@@ -116,6 +116,9 @@ fn run(cfg: ShimConfig) -> ExitCode {
         Ok(c) => c,
         Err(e) => {
             eprintln!("nyx-sandbox-shim: birdcage spawn failed: {e}");
+            if cfg.write_status_fd {
+                write_report_status_to_fd3(nyctos_sandbox::shim::ShimStatus::Exited(3), &refused);
+            }
             return ExitCode::from(3);
         }
     };
@@ -123,7 +126,7 @@ fn run(cfg: ShimConfig) -> ExitCode {
     match child.wait() {
         Ok(status) => {
             if cfg.write_status_fd {
-                write_report_to_fd3(status, &refused);
+                write_report_status_to_fd3(shim_status_from(status), &refused);
             }
             exit_code_from(status)
         }
@@ -188,18 +191,23 @@ fn exit_code_from(status: std::process::ExitStatus) -> ExitCode {
 }
 
 #[cfg(unix)]
-fn write_report_to_fd3(status: std::process::ExitStatus, refusals: &[String]) {
-    use std::io::Write;
-    use std::os::fd::FromRawFd;
+fn shim_status_from(status: std::process::ExitStatus) -> nyctos_sandbox::shim::ShimStatus {
     use std::os::unix::process::ExitStatusExt;
 
-    use nyctos_sandbox::shim::{ShimReport, ShimStatus};
-
-    let status = if let Some(sig) = status.signal() {
-        ShimStatus::Signaled(sig)
+    if let Some(sig) = status.signal() {
+        nyctos_sandbox::shim::ShimStatus::Signaled(sig)
     } else {
-        ShimStatus::Exited(status.code().unwrap_or(-1))
-    };
+        nyctos_sandbox::shim::ShimStatus::Exited(status.code().unwrap_or(-1))
+    }
+}
+
+#[cfg(unix)]
+fn write_report_status_to_fd3(status: nyctos_sandbox::shim::ShimStatus, refusals: &[String]) {
+    use std::io::Write;
+    use std::os::fd::FromRawFd;
+
+    use nyctos_sandbox::shim::ShimReport;
+
     let report = ShimReport { status, refusals: refusals.to_vec() };
     let json = match serde_json::to_vec(&report) {
         Ok(b) => b,
@@ -215,4 +223,4 @@ fn write_report_to_fd3(status: std::process::ExitStatus, refusals: &[String]) {
 }
 
 #[cfg(not(unix))]
-fn write_report_to_fd3(_status: std::process::ExitStatus, _refusals: &[String]) {}
+fn write_report_status_to_fd3(_status: nyctos_sandbox::shim::ShimStatus, _refusals: &[String]) {}
