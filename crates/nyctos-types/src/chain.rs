@@ -9,7 +9,7 @@
 //!    These types are plain serde (no `ts-rs`); the chains explorer
 //!    reaches them through a separate surface.
 //!
-//! 2. [`ChainRecord`] — the on-the-wire shape of a `chains` table row.
+//! 2. [`ChainRecord`]: the on-the-wire shape of a `chains` table row.
 //!    Derives `ts-rs` so the SPA's chains explorer can name it
 //!    directly. The store-side `nyctos_core::store::chain::ChainStore`
 //!    reads and writes this shape.

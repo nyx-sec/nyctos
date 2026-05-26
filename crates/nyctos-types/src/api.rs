@@ -379,7 +379,7 @@ pub enum ReplayEventKind {
 
 /// FE-facing projection of one SSE frame from
 /// `POST /api/v1/findings/:id/replay`. The wire format is raw SSE
-/// (`event: <kind>\ndata: <line>\n\n`), not a JSON envelope — this
+/// (`event: <kind>\ndata: <line>\n\n`), not a JSON envelope; this
 /// struct exists purely to give ts-rs a generated TS shape so the
 /// FE can drop its hand-rolled interface. `data` is the SSE frame's
 /// `data:` body verbatim (newline-joined when the frame carried

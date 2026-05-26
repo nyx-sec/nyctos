@@ -395,7 +395,7 @@ inputs:
    scales linearly.
 
 A store error on the rate lookup degrades to the keyword + size
-heuristic — the pass still produces a useful ordering when the
+heuristic; the pass still produces a useful ordering when the
 findings table has not yet accumulated AI-promotion history.
 
 Exploration is the only `agent_loop` task. It runs against a

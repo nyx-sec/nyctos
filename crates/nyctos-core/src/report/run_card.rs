@@ -7,7 +7,7 @@
 //!   (derived from each finding's `payloads.lang` when present,
 //!   otherwise the file extension), plus a per-repo total.
 //! * spend: AI spend in micros split by `TaskKind` and folded into
-//!   `one_shot` vs `agent_loop` buckets matching the [`BudgetKind`]
+//!   `one_shot` vs `agent_loop` buckets matching the [`crate::store::BudgetKind`]
 //!   shape persisted on the wire.
 //! * timing: wall-clock per phase computed by min-start / max-finish
 //!   across the agent_trace rows for each [`TaskKind`], plus the
@@ -391,7 +391,7 @@ fn escape_html(input: &str) -> String {
 ///
 /// AI-controlled identifiers (run id, status, triggered_by, by-split
 /// keys, phase names) get wrapped in a CommonMark code span via
-/// [`markdown_code`] so a renderer with raw HTML enabled cannot lift an
+/// `markdown_code` so a renderer with raw HTML enabled cannot lift an
 /// `<img onerror=...>` straight into the operator's DOM.
 pub fn render_markdown(card: &RunCard) -> String {
     let mut out = String::new();

@@ -12,7 +12,7 @@
 //! budget defaults to 30 minutes and is overridable via
 //! `[performance] per_repo_timeout_secs`. A repo that exhausts its
 //! budget is recorded as
-//! [`RepoOutcome::Inconclusive(InconclusiveReason::StaticPassTimeout)`]
+//! [`RepoOutcome::Inconclusive`] with [`InconclusiveReason::StaticPassTimeout`]
 //! and never blocks the rest of the run.
 
 use std::path::Path;
@@ -176,7 +176,7 @@ pub enum ScanLaneError {
 }
 
 /// Static-pass scan lane. The default production impl wraps
-/// [`nyctos_nyx::NyxRunner`]; tests use synchronous stubs.
+/// `nyctos_nyx::NyxRunner`; tests use synchronous stubs.
 ///
 /// Implementations must drop into and out of any tokio runtime
 /// themselves; the dispatcher invokes `scan_blocking` from a rayon

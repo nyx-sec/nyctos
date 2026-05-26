@@ -29,7 +29,7 @@ impl WorkspaceHandle {
     /// Build a synthetic handle pointing at `path`, with no cleanup
     /// hook attached. Intended for binary / integration tests that
     /// need to fan out per-repo work without going through `ingest`.
-    /// Production code paths always go through [`ingest`] +
+    /// Production code paths always go through [`crate::repo::ingest`] +
     /// [`WorkspaceHandle::new`].
     #[cfg(any(test, feature = "test-util"))]
     pub fn for_local_path_test(

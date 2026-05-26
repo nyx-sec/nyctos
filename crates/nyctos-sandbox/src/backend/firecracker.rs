@@ -1,7 +1,7 @@
 //! Firecracker backend: Linux+KVM microVM via a thin `nyx-fc-runner`
 //! subprocess.
 //!
-//! Firecracker (https://github.com/firecracker-microvm/firecracker) is
+//! Firecracker (<https://github.com/firecracker-microvm/firecracker>) is
 //! AWS's minimal VMM, built on top of KVM. It boots a guest kernel +
 //! rootfs in tens of milliseconds and isolates the sandboxee in a
 //! separate kernel, network namespace, and devices set.

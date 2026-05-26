@@ -40,7 +40,7 @@ const DOWN_TIMEOUT: Duration = Duration::from_secs(60);
 /// Floor on the `docker compose` plugin version. `2.20` is the first
 /// release that emits the `--format json` `docker compose ps` rows the
 /// env-builder parses; older v2 releases fall back to a tab-separated
-/// shape the [`parse_ps_json`] reader does not handle, and v1
+/// shape the `parse_ps_json` reader does not handle, and v1
 /// `docker-compose` is missing the `docker compose ...` plugin
 /// invocation surface entirely.
 pub const MIN_COMPOSE_VERSION: &str = "2.20.0";
@@ -323,7 +323,7 @@ impl EnvBuilder {
 /// fallback that spawns a detached OS thread to run
 /// `docker compose down --volumes --remove-orphans` for operator-cancel
 /// and panic paths that bypass `down()`. The detached teardown is
-/// best-effort and capped at [`DOWN_TIMEOUT`] wall-clock; failures are
+/// best-effort and capped at `DOWN_TIMEOUT` wall-clock; failures are
 /// logged via `tracing::warn!` but not surfaced to the caller.
 #[derive(Debug)]
 pub struct RunningEnv {

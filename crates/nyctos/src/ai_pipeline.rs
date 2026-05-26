@@ -2084,7 +2084,7 @@ fn classify_node_kind(diag: &Diag) -> &'static str {
 /// `findings.attack_provenance` / `findings.prompt_version` (below
 /// PayloadSynthesis and SpecDerivation) and intentionally does not
 /// touch those columns on member findings. ChainReasoning is a graph-
-/// level synthesis pass — it does not produce the payload the verifier
+/// level synthesis pass; it does not produce the payload the verifier
 /// executes, nor the harness spec the verifier wraps the payload in,
 /// so the chain's prompt version is not the canonical attribution for
 /// any individual member finding. Per-chain provenance is recorded on
@@ -2753,7 +2753,7 @@ pub(crate) async fn drive_novel_finding_pass<R: AiRuntime + ?Sized>(
         // Historical AI-promotion rate per source path in this repo,
         // used to bias the priority heuristic toward files the verifier
         // has previously confirmed. A store error degrades to "no
-        // boost" rather than failing the pass — the keyword + size
+        // boost" rather than failing the pass; the keyword + size
         // heuristic still produces a usable ordering on its own.
         let promotion_rates =
             match store.findings().per_path_promotion_rate(&repo_bundle.repo).await {
@@ -3261,7 +3261,7 @@ pub async fn run_payload_verification_pass(
 
 /// Best-effort fan-out of a `SandboxEvent` over the run-wide bus. The
 /// underlying `broadcast::Sender::send` returns `Err` only when no
-/// receiver is alive, which is not actionable for the verifier pass —
+/// receiver is alive, which is not actionable for the verifier pass;
 /// log nothing and drop the error so the pass continues.
 fn emit_sandbox(events: &EventSink, event: SandboxEvent) {
     let _ = events.send(AgentEvent::Sandbox { data: event });
@@ -7448,7 +7448,7 @@ mod tests {
         let mut rates = HashMap::new();
         // Boost the otherwise-low-priority misc/notes.py path to a
         // near-ceiling rate. "misc/notes.py" matches "exec" in the
-        // keyword table (because the body contains "pass"? no — keyword
+        // keyword table (because the body contains "pass"? no; keyword
         // table operates on the lowercased path, which does contain "ex" but not
         // "exec"; the path "misc/notes.py" alone scores 0 for keywords).
         rates.insert("misc/notes.py".to_string(), 1.0);
@@ -8206,7 +8206,7 @@ mod tests {
         // backs `drive_verify_for_candidate`. Every covered cap must
         // also return a non-`OutputContains{ORACLE_FIRED}` (i.e.
         // non-default) oracle and a benign control distinct from the
-        // catch-all marker; every uncovered cap (XSS / SSRF — both
+        // catch-all marker; every uncovered cap (XSS / SSRF, both
         // need infra we do not have: DOM runtime, loopback listener)
         // must return `None` so the verifier skips it instead of
         // confirming on a generic template that has no chance of
@@ -9038,7 +9038,7 @@ mod tests {
             });
         }
 
-        // 1_000_001 / 3 = 333_333 with leftover 2 — first two rows get
+        // 1_000_001 / 3 = 333_333 with leftover 2; first two rows get
         // 333_334, third gets 333_333. Total stays exact.
         let cost = 1_000_001_i64;
         let tracker = Arc::new(InMemoryBudgetTracker::new());

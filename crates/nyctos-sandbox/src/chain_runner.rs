@@ -23,7 +23,7 @@
 //! Per-step isolation. Non-terminal steps run against an ephemeral COW
 //! snapshot of the chain workspace (via [`SandboxOpts::with_snapshot_from`]),
 //! so a step that wipes or rewrites `nyx_chain_*` files (or pre-writes
-//! the terminal `chain.sentinel`) only mutates its own snapshot — peer
+//! the terminal `chain.sentinel`) only mutates its own snapshot; peer
 //! steps and the terminal probe see the unmodified parent workspace.
 //! The terminal step deliberately runs against the parent workspace
 //! directly so its sink-probe sentinel write survives `Sandbox::wait`

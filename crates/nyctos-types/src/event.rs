@@ -136,7 +136,7 @@ pub enum RunEvent {
     /// snapshotted before the dispatcher saw a workspace. Emitted from
     /// the caller (CLI / API drive-scan path) *before* `RunStarted`, so
     /// subscribers connected at run start time can reconstruct the full
-    /// attempted-repo set from `RunStarted.repos` alone — the failing
+    /// attempted-repo set from `RunStarted.repos` alone; the failing
     /// repo is included there and `RepoIngestFailed` carries the
     /// upstream error string for UI surfacing.
     RepoIngestFailed { run_id: String, project_id: String, repo: String, message: String },

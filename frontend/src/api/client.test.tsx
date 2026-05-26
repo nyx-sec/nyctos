@@ -166,7 +166,7 @@ class FakeWebSocket {
     this.onclose?.({});
   }
 
-  // Test helpers — not part of the real WebSocket interface.
+  // Test helpers, not part of the real WebSocket interface.
   _emitOpen() {
     this.readyState = 1;
     this.onopen?.({});

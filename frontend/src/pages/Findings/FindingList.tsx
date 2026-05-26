@@ -319,7 +319,7 @@ export function chainLabelFor(chainId: string, summary: ChainSummary | undefined
     summary.rationale.length > CHAIN_RATIONALE_PREVIEW_CHARS
       ? `${summary.rationale.slice(0, CHAIN_RATIONALE_PREVIEW_CHARS)}…`
       : summary.rationale;
-  return `${base}${tag} — ${rationale}`;
+  return `${base}${tag} - ${rationale}`;
 }
 
 function groupRowsByChain(

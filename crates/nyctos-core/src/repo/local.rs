@@ -298,7 +298,7 @@ fn chmod_minus_w_recursive(root: &Path) -> std::io::Result<()> {
 }
 
 /// Recursively remove a directory whose contents may have been marked
-/// read-only by [`chmod_minus_w_recursive`]. Restores write permission
+/// read-only by `chmod_minus_w_recursive`. Restores write permission
 /// before delegating to `std::fs::remove_dir_all` so the unlink does
 /// not fail on platforms where read-only files are protected.
 pub fn force_remove_dir(path: &Path) -> std::io::Result<()> {

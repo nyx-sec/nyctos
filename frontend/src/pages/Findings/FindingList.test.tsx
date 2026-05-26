@@ -65,7 +65,7 @@ describe("FindingList chain summary helpers", () => {
         rationale: "controller in repo-a reaches sink in repo-b",
         crossRepo: true,
       }),
-    ).toBe("Chain abcd (cross-repo) — controller in repo-a reaches sink in repo-b");
+    ).toBe("Chain abcd (cross-repo) - controller in repo-a reaches sink in repo-b");
   });
 
   it("chainLabelFor truncates a long rationale to the preview window", () => {
@@ -74,7 +74,7 @@ describe("FindingList chain summary helpers", () => {
       rationale: long,
       crossRepo: false,
     });
-    expect(label.startsWith("Chain abcd — ")).toBe(true);
+    expect(label.startsWith("Chain abcd - ")).toBe(true);
     expect(label.endsWith("…")).toBe(true);
     expect(label.length).toBeLessThan(200);
   });

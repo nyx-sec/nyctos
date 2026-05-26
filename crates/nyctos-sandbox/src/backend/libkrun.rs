@@ -1,6 +1,6 @@
 //! libkrun backend: macOS-first microVM via libkrun + HVF.
 //!
-//! libkrun is a lightweight VMM (https://github.com/containers/libkrun)
+//! libkrun is a lightweight VMM (<https://github.com/containers/libkrun>)
 //! that boots a kernel under macOS Hypervisor.framework or Linux KVM.
 //! On macOS it is the strongest isolation tier we ship: birdcage's
 //! Seatbelt sandboxes only the calling process, while libkrun gives the

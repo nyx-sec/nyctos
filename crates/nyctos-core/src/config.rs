@@ -461,7 +461,7 @@ pub struct NyxConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct EnvConfig {
     /// Image-pull policy forwarded to `docker compose up --pull <policy>`.
-    /// `None` falls back to [`EnvPullPolicy::default`] (`Missing` — pull
+    /// `None` falls back to [`EnvPullPolicy::default`] (`Missing`: pull
     /// only when the local store is missing the image), matching the
     /// docker daemon's own default. Operators on a CI lane with a warm
     /// image cache can set `[env] pull_policy = "never"` to skip the

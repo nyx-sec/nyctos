@@ -54,7 +54,7 @@ sale, import, run, and otherwise exploit Your Contributions, alone or as part
 of the Project or any other product or service.
 
 This license includes the right to use Your Contributions in source-available,
-open-source, proprietary, commercial, enterprise, hosted, internal, and
+publicly licensed, proprietary, commercial, enterprise, hosted, internal, and
 production versions of the Project, under current or future licenses.
 
 ## 5. Patent License

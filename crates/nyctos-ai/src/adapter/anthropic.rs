@@ -65,7 +65,7 @@ pub struct Pricing {
 
 impl Pricing {
     /// Build a `Pricing` from operator-friendly per-million-token USD
-    /// rates. The micros math is identical to [`micros_per_token`];
+    /// rates. The micros math is identical to `micros_per_token`;
     /// callers in `nyctos-core::config` use this to convert a parsed
     /// `[ai.pricing.<model>]` block into the adapter's internal shape.
     pub const fn from_per_mtok_usd(
@@ -148,7 +148,7 @@ impl AnthropicSdkAdapter {
 
     /// Replace the per-model pricing override table. Keys are exact
     /// model ids (no prefix matching); values are operator-supplied
-    /// rates that win over [`builtin_pricing_for`] when they match.
+    /// rates that win over `builtin_pricing_for` when they match.
     /// Pass `HashMap::new()` (the default) to fall back to the
     /// built-in table everywhere.
     pub fn with_pricing_overrides(mut self, overrides: HashMap<String, Pricing>) -> Self {

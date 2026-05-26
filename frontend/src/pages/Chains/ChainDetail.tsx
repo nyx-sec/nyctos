@@ -237,7 +237,7 @@ function MemberRow({ memberId, runId, projectId, signal, signalsPending }: Membe
   }
   return (
     <span className="chain-detail__member chain-detail__member--missing">
-      <code>{memberId}</code> — linked record not found
+      <code>{memberId}</code> - linked record not found
     </span>
   );
 }

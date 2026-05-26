@@ -138,7 +138,7 @@ impl Diag {
         out
     }
 
-    /// Same set as [`flow_step_files`] but ranked for the SpecDerivation
+    /// Same set as `flow_step_files` but ranked for the SpecDerivation
     /// excerpt-selection heuristic. The first element is the preferred
     /// `call_site` candidate (best-ranked step in user code); the rest
     /// are ordered for the `framework` slot, with framework-y paths

@@ -103,18 +103,18 @@ pub enum ComposeError {
 }
 
 /// Find the canonical compose file for a single repo, if any. Walks
-/// the repo root first and then descends up to [`DETECT_MAX_DEPTH`]
+/// the repo root first and then descends up to `DETECT_MAX_DEPTH`
 /// levels through non-hot, non-dot subdirectories so compose files
 /// parked under `infra/`, `docker/`, or `deploy/compose/` still get
 /// picked up. Hot vendor / build directories listed in
-/// [`DETECT_SKIP_DIRS`] are skipped to keep the walk bounded on
+/// `DETECT_SKIP_DIRS` are skipped to keep the walk bounded on
 /// monorepos.
 ///
 /// Priority order:
 /// 1. Shallowest depth wins (root beats `infra/`, `infra/` beats
 ///    `infra/compose/`).
 /// 2. Within a depth, the canonical filename order in
-///    [`CANDIDATE_FILES`] applies (so `docker-compose.yml` wins over
+///    `CANDIDATE_FILES` applies (so `docker-compose.yml` wins over
 ///    `compose.yaml` parked next to it).
 /// 3. Within a depth, sibling directories are visited in lexicographic
 ///    order so the choice is deterministic across hosts.

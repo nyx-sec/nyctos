@@ -300,7 +300,7 @@ impl<'a> FindingStore<'a> {
     /// field is optional; combining them ANDs in SQLite, and an empty
     /// filter returns every active row (i.e. status != Quarantine
     /// unless [`FindingFilter::include_quarantine`] is set). Ordering
-    /// matches [`list_active_for_repo`] / [`list_by_run`]: most-recent
+    /// matches [`FindingStore::list_active_for_repo`] / [`FindingStore::list_by_run`]: most-recent
     /// `last_seen` first.
     pub async fn list_filtered(
         &self,
@@ -1070,7 +1070,7 @@ mod tests {
         let (_tmp, s) = fresh_store().await;
         seed(&s).await;
         // Path A: 1 AI-promoted (Open) row. With Laplace prior 5 the
-        // rate floats around 1/(1+5)=0.167 — non-zero, but well below
+        // rate floats around 1/(1+5)=0.167: non-zero, but well below
         // the full-confidence ceiling.
         let mut a = sample_finding("run-1", "repo-1", "hot.py", "rule-a");
         a.attack_provenance = Some("LlmSynthesised".to_string());

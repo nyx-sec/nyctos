@@ -4556,7 +4556,7 @@ async fn findings_for_run(
                 if current_ids.contains(fid) {
                     None
                 } else if prior_status.eq_ignore_ascii_case("Closed") {
-                    // Already closed in the prior run — not a regression.
+                    // Already closed in the prior run; not a regression.
                     None
                 } else {
                     Some(fid)
@@ -4592,7 +4592,7 @@ fn classify_current_row(
     // No prior membership row for this finding.
     if prior_known {
         // The prior run produced `run_findings` rows; the absence is
-        // authoritative — this finding is new in the current run.
+        // authoritative; this finding is new in the current run.
         return FindingDiffStatus::New;
     }
     // Pre-migration prior run (or no prior run at all). Fall back to

@@ -226,7 +226,7 @@ impl Store {
 
     /// Current applied schema version. Reads `meta.schema_version`, which
     /// is kept in sync with `MAX(_sqlx_migrations.version)` on every
-    /// `open` via [`populate_meta`]. In debug builds the two are
+    /// `open` via `populate_meta`. In debug builds the two are
     /// cross-checked; in release the `meta` row is authoritative.
     pub async fn schema_version(&self) -> Result<i64, StoreError> {
         let (meta_v,): (i64,) = sqlx::query_as("SELECT schema_version FROM meta WHERE id = 1")

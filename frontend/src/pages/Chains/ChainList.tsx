@@ -44,9 +44,9 @@ export function ChainList() {
     if (!runId) return "No completed runs yet";
     const total = chains.length;
     const crossRepo = chains.filter((c) => c.cross_repo).length;
-    if (total === 0) return `Run ${runId} — no chains`;
+    if (total === 0) return `Run ${runId} - no chains`;
     const tail = crossRepo > 0 ? `, ${crossRepo} cross-repo` : "";
-    return `Run ${runId} — ${total} ${total === 1 ? "chain" : "chains"}${tail}`;
+    return `Run ${runId} - ${total} ${total === 1 ? "chain" : "chains"}${tail}`;
   }, [isLoadingRuns, runId, chains]);
 
   return (
@@ -160,9 +160,9 @@ function ChainTable({ chains, projectId }: ChainTableProps) {
                 </td>
                 <td>{members.length}</td>
                 <td>
-                  {typeof evidence?.confidence === "number" ? `${evidence.confidence}%` : "—"}
+                  {typeof evidence?.confidence === "number" ? `${evidence.confidence}%` : "-"}
                 </td>
-                <td>{proofGaps.length > 0 ? proofGaps.length : "—"}</td>
+                <td>{proofGaps.length > 0 ? proofGaps.length : "-"}</td>
                 <td className="findings-table__rule" title={rationale ?? ""}>
                   {previewRationale(rationale)}
                 </td>
@@ -183,7 +183,7 @@ function chainHref(chainId: string, projectId: string | undefined): string {
 }
 
 function previewRationale(rationale: string | null): string {
-  if (!rationale) return "—";
+  if (!rationale) return "-";
   if (rationale.length <= RATIONALE_PREVIEW_CHARS) return rationale;
   return `${rationale.slice(0, RATIONALE_PREVIEW_CHARS)}…`;
 }

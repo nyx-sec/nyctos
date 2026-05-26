@@ -465,7 +465,7 @@ pub(crate) fn assert_git_path_allowed() -> Result<PathBuf, IngestError> {
 const GITHUB_USER_PROBE_URL: &str = "https://api.github.com/user";
 
 /// Query the GitHub API to check whether `token` carries any write
-/// scope. Used by [`ingest_git`] to refuse write-capable credentials
+/// scope. Used by `ingest_git` to refuse write-capable credentials
 /// before they touch the repo.
 ///
 /// Returns [`GhScopeCheck::NoScopeHeader`] when the response omits the
@@ -744,7 +744,7 @@ mod tests {
 
     #[test]
     fn version_satisfies_minimum_rejects_below_floor_patch() {
-        // CVE-2024-32002 was fixed in 2.45.1 — a 2.45.0 host must be
+        // CVE-2024-32002 was fixed in 2.45.1, so a 2.45.0 host must be
         // refused even though the minor matches.
         assert!(!version_satisfies_minimum((2, 45, 0)));
     }
@@ -969,7 +969,7 @@ mod tests {
             };
             let allowlist = git_binary_allowlist_from_raw(None).expect("default list");
             // If the resolved binary is not on the default list this
-            // is a packaging signal, not a test bug — surface it
+            // is a packaging signal, not a test bug; surface it
             // loudly under CI but skip otherwise so a homebrew /
             // pyenv-style dev box does not red the suite.
             if !path_on_allowlist(&resolved, &allowlist) {

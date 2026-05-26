@@ -22,7 +22,7 @@ use tokio::sync::broadcast;
 
 /// `true` when the CI lane has flipped strict mode on. Read once at
 /// test entry; the env-var check is `==` "1" so other truthy spellings
-/// (`true`, `yes`) intentionally do NOT flip the gate — CI owners
+/// (`true`, `yes`) intentionally do NOT flip the gate; CI owners
 /// should be explicit.
 fn require_claude_code() -> bool {
     std::env::var("NYCTOS_REQUIRE_CLAUDE_CODE").ok().as_deref() == Some("1")

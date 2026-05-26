@@ -9,7 +9,7 @@
 //! recommend.
 
 use std::io::{self, Read};
-use std::process::{Command, ExitCode};
+use std::process::ExitCode;
 
 use nyctos_sandbox::shim::ShimConfig;
 
@@ -31,16 +31,15 @@ fn main() -> ExitCode {
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn run(cfg: ShimConfig) -> ExitCode {
+    use birdcage::process::{Command, Stdio};
     use birdcage::{Birdcage, Exception, Sandbox};
 
     // Become our own process-group leader so the daemon's
     // BirdcageSandbox::kill can issue killpg(shim_pid, SIGKILL) and reap
     // the shim AND the sandboxee (and any helpers the sandboxee spawned)
-    // in one syscall. This is the macOS-portable half of the kill story;
-    // on Linux it composes with the PR_SET_PDEATHSIG block below as a
-    // defence-in-depth measure. EPERM here means the shim was already a
-    // pgrp leader (rare; the daemon would have to explicitly place us in
-    // our own group), which is the state we wanted anyway.
+    // in one syscall. EPERM here means the shim was already a pgrp leader
+    // (rare; the daemon would have to explicitly place us in our own
+    // group), which is the state we wanted anyway.
     unsafe {
         if libc::setsid() == -1 {
             let err = std::io::Error::last_os_error();
@@ -50,58 +49,36 @@ fn run(cfg: ShimConfig) -> ExitCode {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    if let Err(e) = prepare_linux_process_state(&cfg) {
+        eprintln!("nyx-sandbox-shim: {e}");
+        return ExitCode::from(3);
+    }
+
+    if cfg.write_status_fd {
+        // The shim still writes fd 3 after wait(), but the sandboxee must
+        // not inherit it and forge its own status frame.
+        set_status_fd_cloexec();
+    }
+
     let mut cmd = Command::new(&cfg.program);
     cmd.args(&cfg.args);
+    #[cfg(target_os = "macos")]
     if let Some(cwd) = &cfg.cwd {
         cmd.current_dir(cwd);
     }
-    cmd.env_clear();
-    for (k, v) in &cfg.env {
-        cmd.env(k, v);
+    #[cfg(target_os = "macos")]
+    {
+        cmd.env_clear();
+        for (k, v) in &cfg.env {
+            cmd.env(k, v);
+        }
     }
     // Inherit stdio so the parent (daemon) sees the sandboxee's output
     // directly through the pipes it already attached to the shim.
-    cmd.stdin(std::process::Stdio::null());
-    cmd.stdout(std::process::Stdio::inherit());
-    cmd.stderr(std::process::Stdio::inherit());
-
-    // Make the sandboxee die with the shim. Without this, a SIGKILL on
-    // the shim (issued by `BirdcageSandbox::kill` when the daemon
-    // cancels or a per-run timeout fires) reparents the grandchild to
-    // init/launchd and the sandboxee keeps running after the kill path
-    // returned. The pre_exec closure runs after fork in the child;
-    // PR_SET_PDEATHSIG survives the subsequent exec.
-    //
-    // Same closure also closes fd 3 in the sandboxee when the parent
-    // wired up a status pipe: fd 3 is the shim's own write end for the
-    // out-of-band ShimStatus frame and must not be visible to the
-    // sandboxee (otherwise the sandboxee could forge its own exit
-    // classification).
-    let close_status_fd = cfg.write_status_fd;
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        unsafe {
-            cmd.pre_exec(move || {
-                if close_status_fd {
-                    // SAFETY: close is async-signal-safe. EBADF (already
-                    // closed) is acceptable; we ignore the return code.
-                    libc::close(3);
-                }
-                #[cfg(target_os = "linux")]
-                {
-                    // SAFETY: prctl is async-signal-safe; pre_exec requires
-                    // we avoid the allocator and any non-async-signal-safe
-                    // call, which a bare FFI prctl satisfies.
-                    let ret = libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL as libc::c_ulong);
-                    if ret == -1 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                }
-                Ok(())
-            });
-        }
-    }
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::inherit());
+    cmd.stderr(Stdio::inherit());
 
     let mut sb = Birdcage::new();
     let mut refused: Vec<String> = Vec::new();
@@ -153,6 +130,34 @@ fn run(cfg: ShimConfig) -> ExitCode {
         Err(e) => {
             eprintln!("nyx-sandbox-shim: wait failed: {e}");
             ExitCode::from(4)
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn prepare_linux_process_state(cfg: &ShimConfig) -> Result<(), String> {
+    if let Some(cwd) = &cfg.cwd {
+        std::env::set_current_dir(cwd)
+            .map_err(|e| format!("failed to set cwd to {}: {e}", cwd.display()))?;
+    }
+
+    let keys: Vec<_> = std::env::vars_os().map(|(key, _)| key).collect();
+    for key in keys {
+        std::env::remove_var(key);
+    }
+    for (k, v) in &cfg.env {
+        std::env::set_var(k, v);
+    }
+
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_status_fd_cloexec() {
+    unsafe {
+        let flags = libc::fcntl(3, libc::F_GETFD);
+        if flags != -1 {
+            let _ = libc::fcntl(3, libc::F_SETFD, flags | libc::FD_CLOEXEC);
         }
     }
 }

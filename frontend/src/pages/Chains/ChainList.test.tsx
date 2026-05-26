@@ -83,7 +83,7 @@ describe("ChainList", () => {
     render(wrap(<ChainList />));
 
     await waitFor(() => {
-      expect(screen.getByText(/Run run-newest — 1 chain, 1 cross-repo/)).toBeInTheDocument();
+      expect(screen.getByText(/Run run-newest - 1 chain, 1 cross-repo/)).toBeInTheDocument();
     });
     expect(screen.getByText("cross-repo")).toBeInTheDocument();
     expect(screen.getByText(/cross-repo auth bypass/)).toBeInTheDocument();
@@ -134,7 +134,7 @@ describe("ChainList", () => {
     render(wrap(<ChainList />, "/chains?run_id=run-older"));
 
     await waitFor(() => {
-      expect(screen.getByText(/Run run-older — 1 chain/)).toBeInTheDocument();
+      expect(screen.getByText(/Run run-older - 1 chain/)).toBeInTheDocument();
     });
   });
 });

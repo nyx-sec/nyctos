@@ -11,7 +11,7 @@
 //! 1. **Escape suite gate.** An [`EscapeSuiteGate`] runs the
 //!    escape-regression suite before the AI driver starts. A red
 //!    fixture refuses dispatch with a banner that names the failing
-//!    test; the [`ClaudeCodeAdapter::agent_loop`] is never invoked.
+//!    test; `ClaudeCodeAdapter::agent_loop` is never invoked.
 //! 2. **Per-run hard cap.** The adapter checks the same
 //!    `(run_id, AgentLoop)` budget bucket every other task uses.
 //!    Default cap is $10 in USD micros tuned for Claude Opus

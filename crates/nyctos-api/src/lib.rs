@@ -1,6 +1,6 @@
 //! Loopback HTTP + WebSocket surface for the nyctos daemon.
 //!
-//! The binary in [`nyctos`] owns the long-lived daemon process and
+//! The `nyctos` binary owns the long-lived daemon process and
 //! wires three things into [`ServerState`]:
 //!
 //! - a connected [`nyctos_core::Store`] for read-only queries,

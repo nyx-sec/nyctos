@@ -35,7 +35,7 @@ const SYSTEM_PROMPT_V1: &str = include_str!("../prompts/novel_findings.v1.md");
 const SYSTEM_PROMPT_V1_STRICTER: &str = include_str!("../prompts/novel_findings.v1_stricter.md");
 
 /// Outcome of one `run` invocation. The binary turns every
-/// [`Discovered::candidates`] entry into a `candidate_findings` row
+/// `Discovered::candidates` entry into a `candidate_findings` row
 /// (quarantined until the verifier promotes it). `NoCandidates` is
 /// recorded only in the agent trace.
 #[derive(Debug, Clone)]
