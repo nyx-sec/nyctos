@@ -108,6 +108,14 @@ const LIVE_TEST_PLAN_PROMPT_VERSION: &str = "phase24.live_test_plan.v1";
 const LIVE_TEST_PLAN_EXCERPT_RADIUS: u32 = 18;
 const EXPLORATION_KNOWN_LEADS_MAX: usize = 24;
 
+/// Wall-clock cap for each unsafe attack-agent profile invocation.
+///
+/// The generic agent-loop adapters default to 15 minutes, but each
+/// attack specialist needs a deeper budget because the phase runs
+/// serially and failed profiles should not be clipped at the adapter
+/// default.
+const ATTACK_AGENT_PER_PASS_TIMEOUT_SECS: u64 = 30 * 60;
+
 /// `BudgetTracker` impl backed by the SQLite `budgets` table.
 ///
 /// `(run_id, kind)` rows are inserted lazily on first observation so
@@ -276,6 +284,7 @@ async fn selected_agent_loop_runtime(
     config: &AiConfig,
     store: &Store,
     run_cap_usd_micros: i64,
+    timeout: Option<std::time::Duration>,
 ) -> Option<Arc<dyn AiRuntime>> {
     let tracker: SharedBudgetTracker =
         Arc::new(BudgetStoreTracker::new(store.clone(), run_cap_usd_micros));
@@ -285,13 +294,16 @@ async fn selected_agent_loop_runtime(
                 Ok(a) => a,
                 Err(err) => {
                     tracing::info!(
-                        "ai exploration: selected Claude Code runtime unavailable ({err}); skipping pass"
+                        "selected Claude Code agent-loop runtime unavailable ({err}); skipping pass"
                     );
                     return None;
                 }
             };
             if let Some(model) = &config.model {
                 adapter = adapter.with_default_model(model.clone());
+            }
+            if let Some(timeout) = timeout {
+                adapter = adapter.with_timeout(timeout);
             }
             Some(wrap_runtime(adapter))
         }
@@ -300,7 +312,7 @@ async fn selected_agent_loop_runtime(
                 Ok(a) => a,
                 Err(err) => {
                     tracing::info!(
-                        "ai exploration: selected Codex runtime unavailable ({err}); skipping pass"
+                        "selected Codex agent-loop runtime unavailable ({err}); skipping pass"
                     );
                     return None;
                 }
@@ -308,17 +320,20 @@ async fn selected_agent_loop_runtime(
             if let Some(model) = &config.model {
                 adapter = adapter.with_default_model(model.clone());
             }
+            if let Some(timeout) = timeout {
+                adapter = adapter.with_timeout(timeout);
+            }
             Some(wrap_runtime(adapter))
         }
         ConfigAiRuntime::Anthropic => {
             tracing::info!(
-                "ai exploration: selected Anthropic API runtime does not support agent exploration; skipping pass"
+                "selected Anthropic API runtime does not support agent-loop tasks; skipping pass"
             );
             None
         }
         ConfigAiRuntime::LocalLlm => {
             tracing::info!(
-                "ai exploration: selected local-llm runtime does not support repository exploration agents; skipping pass"
+                "selected local-llm runtime does not support agent-loop tasks; skipping pass"
             );
             None
         }
@@ -1922,8 +1937,13 @@ pub async fn run_chain_reasoning_pass(
 
     let started_at = now_epoch_ms();
     let (outcome, runtime_name, runtime_model) = if let Some(agent_adapter) =
-        selected_agent_loop_runtime(config, store, config.default_run_budget_usd_micros_resolved())
-            .await
+        selected_agent_loop_runtime(
+            config,
+            store,
+            config.default_run_budget_usd_micros_resolved(),
+            None,
+        )
+        .await
     {
         let workspace_roots = chain_reasoning_workspaces(workspaces);
         let runtime_name = agent_adapter.name();
@@ -4080,7 +4100,7 @@ pub async fn run_ai_exploration_pass(
         config.exploration_run_cap_usd_micros_resolved(DEFAULT_EXPLORATION_RUN_CAP_USD_MICROS);
     let soft_cap_usd_micros =
         config.exploration_soft_cap_usd_micros_resolved(DEFAULT_EXPLORATION_SOFT_CAP_USD_MICROS);
-    let adapter = match selected_agent_loop_runtime(config, store, run_cap_usd_micros).await {
+    let adapter = match selected_agent_loop_runtime(config, store, run_cap_usd_micros, None).await {
         Some(adapter) => adapter,
         None => return Ok(AiExplorationPassReport::default()),
     };
@@ -4243,6 +4263,7 @@ pub async fn run_attack_agent_pass(
         config,
         store,
         config.default_run_budget_usd_micros_resolved(),
+        Some(std::time::Duration::from_secs(ATTACK_AGENT_PER_PASS_TIMEOUT_SECS)),
     )
     .await
     {

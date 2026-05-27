@@ -394,6 +394,7 @@ and workspaces, plus the current candidates and verified
 vulnerabilities. Findings from earlier passes can therefore become
 context for later passes. Each pass writes its own trace artifact
 directory and records an `agent_profile` in the trace verifier blob.
+Each pass has a 30-minute agent-loop wall-clock cap.
 
 Response: `{ "run_id": "run-..." }`.
 

@@ -251,7 +251,9 @@ including findings produced by earlier attack passes. The prompt also
 warns that dev mailers, mock payment providers, localhost-only services,
 seed credentials, debug routes, and synthetic fixtures are not
 production vulnerabilities by themselves unless the same trust boundary
-is production-relevant or the behavior creates a real local risk.
+is production-relevant or the behavior creates a real local risk. Each
+attack pass gets a 30-minute agent-loop wall-clock cap, so an individual
+specialist is not stopped by the generic 15-minute adapter default.
 
 Optional scanner findings are persisted as pentest candidates. Live web
 findings still pass live verification before surfacing as verified

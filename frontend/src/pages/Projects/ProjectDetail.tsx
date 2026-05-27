@@ -38,8 +38,8 @@ import { applyEvent, type RepoLiveState, type RepoLiveStatus } from "../Repos/re
 import {
   launchProfileDraftError,
   launchProfileFromDraft,
-  profileDraftFromLaunchAndRuntime,
   ProjectRuntimeProfileForm,
+  profileDraftFromLaunchAndRuntime,
   type RuntimeProfileDraft,
   runtimeProfileFromDraft,
 } from "./ProjectRuntimeProfileForm";
@@ -65,6 +65,8 @@ interface ProjectOverviewProps {
   live: LiveMap;
   launchProfile: ProjectLaunchProfile | null;
   canStartPentest: boolean;
+  projectSetupRunning: boolean;
+  onAiSetupClick: () => void;
   runsPending: boolean;
   reposPending: boolean;
   vulnerabilitiesPending: boolean;
@@ -331,21 +333,7 @@ export function ProjectDetail({ view = "overview" }: ProjectDetailProps = {}) {
             actions={
               <>
                 <Button
-                  variant={canStartPentest ? "default" : "primary"}
-                  onClick={onAiSetupClick}
-                  disabled={repos.isPending || projectSetupRunning}
-                  title={
-                    repos.isPending
-                      ? "Checking repositories before AI setup"
-                      : rows.length === 0
-                        ? "Add a repository to use AI setup mode"
-                        : undefined
-                  }
-                >
-                  {projectSetupRunning ? "Setting up..." : "AI setup"}
-                </Button>
-                <Button
-                  variant={canStartPentest ? "primary" : "default"}
+                  variant="primary"
                   onClick={() => setShowPentestOptions(true)}
                   disabled={!canStartPentest || startPentest.isPending}
                 >
@@ -397,6 +385,8 @@ export function ProjectDetail({ view = "overview" }: ProjectDetailProps = {}) {
             live={live}
             launchProfile={launchProfile}
             canStartPentest={canStartPentest}
+            projectSetupRunning={projectSetupRunning}
+            onAiSetupClick={onAiSetupClick}
             runsPending={runningRuns.isPending || succeededRuns.isPending || failedRuns.isPending}
             reposPending={repos.isPending}
             vulnerabilitiesPending={vulnerabilities.isPending}
@@ -538,6 +528,8 @@ function ProjectOverview({
   live,
   launchProfile,
   canStartPentest,
+  projectSetupRunning,
+  onAiSetupClick,
   runsPending,
   reposPending,
   vulnerabilitiesPending,
@@ -582,6 +574,8 @@ function ProjectOverview({
             <ReadinessPanel
               readiness={readiness}
               canStartPentest={canStartPentest}
+              projectSetupRunning={projectSetupRunning}
+              onAiSetupClick={onAiSetupClick}
               reposPending={reposPending}
             />
           )}
@@ -757,12 +751,34 @@ function CurrentRunPanel({
 function ReadinessPanel({
   readiness,
   canStartPentest,
+  projectSetupRunning,
+  onAiSetupClick,
   reposPending,
 }: {
   readiness: ReadinessCheck[];
   canStartPentest: boolean;
+  projectSetupRunning: boolean;
+  onAiSetupClick: () => void;
   reposPending: boolean;
 }) {
+  const aiSetupDisabled = reposPending || projectSetupRunning;
+  const aiSetupLabel = projectSetupRunning ? "Setting up..." : "AI setup";
+  const aiSetupTitle = reposPending ? "Checking repositories before AI setup" : undefined;
+  const aiSetupButton = (
+    <Button
+      className={
+        canStartPentest ? "project-readiness__compact-action" : "project-readiness__action-button"
+      }
+      variant={canStartPentest ? "default" : "primary"}
+      size={canStartPentest ? "sm" : "md"}
+      onClick={onAiSetupClick}
+      disabled={aiSetupDisabled}
+      title={aiSetupTitle}
+    >
+      {aiSetupLabel}
+    </Button>
+  );
+
   return (
     <>
       <div className="project-panel__header">
@@ -770,9 +786,12 @@ function ReadinessPanel({
           <p className="project-panel__eyebrow">Readiness</p>
           <h2>{canStartPentest ? "Ready to test" : "Setup needed"}</h2>
         </div>
-        <Badge tone={canStartPentest ? "success" : "warning"}>
-          {reposPending ? "Checking" : canStartPentest ? "Ready" : "Blocked"}
-        </Badge>
+        <div className="project-readiness__header-actions">
+          {canStartPentest && aiSetupButton}
+          <Badge tone={canStartPentest ? "success" : "warning"}>
+            {reposPending ? "Checking" : canStartPentest ? "Ready" : "Blocked"}
+          </Badge>
+        </div>
       </div>
       <ul className="project-readiness__list">
         {readiness.map((check) => (
@@ -791,6 +810,7 @@ function ReadinessPanel({
           </li>
         ))}
       </ul>
+      {!canStartPentest && <div className="project-readiness__action">{aiSetupButton}</div>}
     </>
   );
 }

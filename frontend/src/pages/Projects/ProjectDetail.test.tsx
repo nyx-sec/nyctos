@@ -175,6 +175,35 @@ describe("ProjectDetail", () => {
     );
   });
 
+  it("keeps Start pentest primary and moves AI setup into readiness", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      if (url === "/api/v1/projects/proj-1") return jsonResponse(readyProject());
+      if (url === "/api/v1/projects/proj-1/repos") return jsonResponse(repos());
+      if (url === "/api/v1/projects/proj-1/vulnerabilities") return jsonResponse([]);
+      if (url === "/api/v1/projects/proj-1/integrations") return jsonResponse([]);
+      if (url === "/api/v1/projects/proj-1/setup/ai") return jsonResponse({ jobs: [] });
+      if (url.startsWith("/api/v1/runs?")) return jsonResponse([]);
+      throw new Error(`unexpected url ${url}`);
+    });
+
+    render(wrap(<ProjectDetail />));
+
+    const title = await screen.findByRole("heading", { name: "Demo App" });
+    const projectHeader = title.closest(".page-header");
+    expect(projectHeader).not.toBeNull();
+    if (!projectHeader) throw new Error("missing project header");
+
+    const startPentest = screen.getByRole("button", { name: "Start pentest" });
+    expect(projectHeader).toContainElement(startPentest);
+    expect(startPentest).toHaveClass("btn--primary");
+
+    const aiSetup = screen.getByRole("button", { name: "AI setup" });
+    expect(projectHeader).not.toContainElement(aiSetup);
+    expect(aiSetup).toHaveClass("btn--sm");
+    expect(aiSetup.closest(".project-readiness__header-actions")).not.toBeNull();
+  });
+
   it("updates Start pentest copy as options are selected", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
       const url = typeof input === "string" ? input : (input as Request).url;

@@ -2361,6 +2361,14 @@
   margin-top: auto;
 }
 
+.project-readiness__header-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  justify-content: flex-end;
+}
+
 .project-readiness__list {
   border: 1px solid var(--border-light);
   border-radius: var(--radius-sm);
@@ -2433,6 +2441,23 @@
 .project-readiness__list a:hover,
 .project-activity__header > a:hover {
   text-decoration: underline;
+}
+
+.project-readiness__action {
+  align-items: center;
+  border-top: 1px solid var(--border-light);
+  display: flex;
+  justify-content: flex-start;
+  margin-top: auto;
+  padding-top: var(--space-4);
+}
+
+.project-readiness__action-button {
+  min-width: min(220px, 100%);
+}
+
+.project-readiness__compact-action {
+  flex: 0 0 auto;
 }
 
 .project-attention__count {

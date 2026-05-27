@@ -238,7 +238,9 @@ Wire shape:
    `AiError::Transport` with the captured stderr.
 
 Default model: `claude-opus-4-7`. Default wall-clock timeout: 15
-minutes. Capability flags: `supports_agent_loop = true`,
+minutes, with host phases able to override it; the unsafe attack-agent
+phase uses 30 minutes per pass. Capability flags:
+`supports_agent_loop = true`,
 `supports_prompt_cache = true`,
 `supports_deterministic_sampling = false`. `one_shot` returns
 `AiError::UnsupportedMode("one_shot")`.
@@ -251,6 +253,9 @@ Spawns the installed `codex` CLI and consumes the JSONL stream emitted
 by `codex exec`. This adapter is optional and depends on the user's own
 Codex installation and authentication. `nyx-agent doctor` reports the
 resolved binary and version when present.
+
+Default wall-clock timeout: 15 minutes, with host phases able to
+override it; the unsafe attack-agent phase uses 30 minutes per pass.
 
 ### Adapters on the roadmap
 
