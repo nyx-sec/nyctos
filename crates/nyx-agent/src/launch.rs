@@ -670,7 +670,18 @@ fn command_for_step(
     env_overrides: &HashMap<String, String>,
     workspaces: &HashMap<String, WorkspaceHandle>,
 ) -> anyhow::Result<Command> {
-    let mut cmd = Command::new("sh");
+    // Run launch commands through the operator's login shell ($SHELL) rather
+    // than a bare `sh -lc`. On macOS `sh -l` sources /etc/profile, which runs
+    // path_helper and rebuilds PATH from /etc/paths (system dirs first) — that
+    // shadows Homebrew/nvm with a stale /usr/local/bin/node, so `npm run dev`
+    // resolves a different node than the operator's terminal. Their real shell
+    // sources the same profile their terminal does (e.g. ~/.zprofile), so the
+    // command sees the same PATH/node. Falls back to `sh` when SHELL is unset.
+    let shell = std::env::var("SHELL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "sh".to_string());
+    let mut cmd = Command::new(shell);
     cmd.arg("-lc").arg(&step.command);
     if let Some(dir) = working_dir_for_step(step, workspaces) {
         cmd.current_dir(dir);
