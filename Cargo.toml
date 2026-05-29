@@ -14,7 +14,7 @@ members = [
 exclude = ["fuzz"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.88"
 license = "AGPL-3.0-or-later"
@@ -24,13 +24,13 @@ homepage = "https://nyxsec.dev/agent"
 readme = "README.md"
 
 [workspace.dependencies]
-nyx-agent-ai = { version = "0.1.0", path = "crates/nyx-agent-ai" }
-nyx-agent-api = { version = "0.1.0", path = "crates/nyx-agent-api" }
-nyx-agent-core = { version = "0.1.0", path = "crates/nyx-agent-core" }
-nyx-agent-nyx = { version = "0.1.0", path = "crates/nyx-agent-nyx" }
-nyx-agent-sandbox = { version = "0.1.0", path = "crates/nyx-agent-sandbox" }
-nyx-agent-types = { version = "0.1.0", path = "crates/nyx-agent-types" }
-nyx-agent-ui = { version = "0.1.0", path = "crates/nyx-agent-ui" }
+nyx-agent-ai = { version = "0.1.1", path = "crates/nyx-agent-ai" }
+nyx-agent-api = { version = "0.1.1", path = "crates/nyx-agent-api" }
+nyx-agent-core = { version = "0.1.1", path = "crates/nyx-agent-core" }
+nyx-agent-nyx = { version = "0.1.1", path = "crates/nyx-agent-nyx" }
+nyx-agent-sandbox = { version = "0.1.1", path = "crates/nyx-agent-sandbox" }
+nyx-agent-types = { version = "0.1.1", path = "crates/nyx-agent-types" }
+nyx-agent-ui = { version = "0.1.1", path = "crates/nyx-agent-ui" }
 tokio = { version = "1.52", features = ["full"] }
 axum = { version = "0.8.9", features = ["ws"] }
 tower-http = { version = "0.6", features = ["trace"] }
