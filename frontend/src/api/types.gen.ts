@@ -396,6 +396,16 @@ ai_provider?: string,
  */
 ai_model?: string,
 /**
+ * Optional reasoning effort for CLI-backed runtimes (matches
+ * `[ai].effort`).
+ */
+ai_effort?: string,
+/**
+ * Optional context-window hint in tokens for CLI-backed runtimes
+ * (matches `[ai].context_window`).
+ */
+ai_context_window?: number,
+/**
  * Optional non-secret base URL for local OpenAI-compatible
  * runtimes. Bearer tokens stay in the OS keychain.
  */
@@ -451,6 +461,23 @@ export type SetupRequest = {
  */
 ai_runtime: string,
 /**
+ * Optional model override. Omitted leaves `[ai].model` unchanged;
+ * `null` or an empty string clears it.
+ */
+ai_model?: string | null,
+/**
+ * Optional reasoning effort for CLI-backed runtimes. Omitted
+ * leaves `[ai].effort` unchanged; `null` or an empty string
+ * clears it.
+ */
+ai_effort?: string | null,
+/**
+ * Optional context-window hint in tokens for CLI-backed runtimes.
+ * Omitted leaves `[ai].context_window` unchanged; `null` clears
+ * it.
+ */
+ai_context_window?: number | null,
+/**
  * Anthropic API key. Required when `ai_runtime = "anthropic"`.
  * Persisted to the OS keychain; never written to TOML or logs.
  */
@@ -493,6 +520,21 @@ export type DoctorRequest = {
  * runtime depends on (e.g. CLI runtimes look for their binary).
  */
 ai_runtime: string,
+/**
+ * Unsaved CLI model supplied by the UI for this check. Doctor
+ * accepts but does not persist this field.
+ */
+ai_model?: string,
+/**
+ * Unsaved CLI reasoning effort supplied by the UI for this check.
+ * Doctor accepts but does not persist this field.
+ */
+ai_effort?: string,
+/**
+ * Unsaved CLI context-window hint supplied by the UI for this
+ * check. Doctor accepts but does not persist this field.
+ */
+ai_context_window?: number,
 /**
  * Unsaved Anthropic API key supplied by the UI for this check.
  * The daemon only tests whether a non-empty key was provided; it

@@ -72,6 +72,27 @@ const BACKEND_CHOICES: { value: SandboxBackendChoice; label: string; body: strin
 const AI_VALUES = AI_CHOICES.map((choice) => choice.value);
 const BACKEND_VALUES = BACKEND_CHOICES.map((choice) => choice.value);
 
+type CliEffortChoice = "" | "low" | "medium" | "high" | "xhigh" | "max";
+type CliContextWindowChoice = "" | "272000" | "1000000";
+
+const EFFORT_CHOICES: { value: CliEffortChoice; label: string }[] = [
+  { value: "", label: "CLI default" },
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
+  { value: "xhigh", label: "Extra high" },
+  { value: "max", label: "Max" },
+];
+
+const CONTEXT_CHOICES: { value: CliContextWindowChoice; label: string }[] = [
+  { value: "", label: "CLI default" },
+  { value: "272000", label: "Standard" },
+  { value: "1000000", label: "1M tokens" },
+];
+
+const CLAUDE_MODEL_SUGGESTIONS = ["opus", "sonnet", "claude-opus-4-8", "claude-sonnet-4-6"];
+const CODEX_MODEL_SUGGESTIONS = ["gpt-5.5", "gpt-5.4"];
+
 export function Settings() {
   const status = useSetupStatus();
   const submit = useSubmitSetup();
@@ -82,6 +103,9 @@ export function Settings() {
   const [anthropicApiKey, setAnthropicApiKey] = useState("");
   const [localLlmUrl, setLocalLlmUrl] = useState("");
   const [localLlmToken, setLocalLlmToken] = useState("");
+  const [aiModel, setAiModel] = useState("");
+  const [aiEffort, setAiEffort] = useState<CliEffortChoice>("");
+  const [aiContextWindow, setAiContextWindow] = useState<CliContextWindowChoice>("");
   const [budgetEnabled, setBudgetEnabled] = useState(false);
   const [budgetUsd, setBudgetUsd] = useState("25");
   const { showToast } = useToast();
@@ -91,6 +115,9 @@ export function Settings() {
     setAiRuntime(coerceAiRuntime(status.data.ai_runtime));
     setSandboxBackend(coerceSandboxBackend(status.data.sandbox_backend));
     setLocalLlmUrl(status.data.ai_api_base ?? "");
+    setAiModel(status.data.ai_model ?? "");
+    setAiEffort(coerceCliEffort(status.data.ai_effort));
+    setAiContextWindow(coerceCliContextWindow(status.data.ai_context_window));
     setAnthropicApiKey("");
     setLocalLlmToken("");
     const budgetMicros = status.data.default_run_budget_usd_micros;
@@ -141,6 +168,9 @@ export function Settings() {
     anthropicApiKey,
     localLlmUrl,
     localLlmToken,
+    aiModel,
+    aiEffort,
+    aiContextWindow,
     budgetEnabled,
     budgetUsd,
   });
@@ -149,6 +179,9 @@ export function Settings() {
   async function saveSettings() {
     const body: {
       ai_runtime: AiRuntimeChoice;
+      ai_model?: string | null;
+      ai_effort?: string | null;
+      ai_context_window?: number | null;
       anthropic_api_key?: string;
       local_llm_url?: string;
       local_llm_token?: string;
@@ -170,6 +203,11 @@ export function Settings() {
         body.local_llm_token = localLlmToken.trim();
       }
     }
+    if (isCliRuntime(aiRuntime) || isCliRuntime(currentRuntime)) {
+      body.ai_model = aiModel.trim() || null;
+      body.ai_effort = aiEffort || null;
+      body.ai_context_window = aiContextWindow ? Number(aiContextWindow) : null;
+    }
     await submit.mutateAsync(body);
     showToast("Settings saved.", { tone: "success" });
   }
@@ -182,11 +220,20 @@ export function Settings() {
       local_llm_url: aiRuntime === "local-llm" ? localLlmUrl.trim() || undefined : undefined,
       local_llm_token:
         aiRuntime === "local-llm" && localLlmToken.trim() ? localLlmToken.trim() : undefined,
+      ai_model: isCliRuntime(aiRuntime) ? aiModel.trim() || undefined : undefined,
+      ai_effort: isCliRuntime(aiRuntime) ? aiEffort || undefined : undefined,
+      ai_context_window:
+        isCliRuntime(aiRuntime) && aiContextWindow ? Number(aiContextWindow) : undefined,
       sandbox_backend: sandboxBackend,
     });
   }
 
   function chooseAiRuntime(next: AiRuntimeChoice) {
+    if (next !== aiRuntime && isCliRuntime(next)) {
+      setAiModel("");
+      setAiEffort("");
+      setAiContextWindow("");
+    }
     setAiRuntime(next);
     doctor.reset();
   }
@@ -205,6 +252,9 @@ export function Settings() {
 
       <dl className="settings-summary-list" aria-label="Current settings">
         <SummaryItem label="AI" value={runtimeLabel(data?.ai_runtime)} />
+        <SummaryItem label="Model" value={modelSummary(data)} />
+        <SummaryItem label="Effort" value={effortSummary(data)} />
+        <SummaryItem label="Context" value={contextSummary(data)} />
         <SummaryItem label="Backend" value={backendLabel(data?.sandbox_backend)} />
         <SummaryItem label="Budget" value={budgetSummary(data)} />
       </dl>
@@ -326,11 +376,58 @@ export function Settings() {
             </>
           )}
 
-          {(aiRuntime === "claude-code" || aiRuntime === "codex") && (
-            <p className="settings-page__hint">
-              Optional local CLI adapter. Nyx Agent does not include or resell model access; use
-              only with provider-authorized credentials and terms.
-            </p>
+          {isCliRuntime(aiRuntime) && (
+            <>
+              <div className="settings-form-grid settings-form-grid--cli">
+                <div className="setup-field">
+                  <label htmlFor="settings-ai-model">Model</label>
+                  <input
+                    id="settings-ai-model"
+                    list={`settings-ai-models-${aiRuntime}`}
+                    placeholder="CLI default"
+                    value={aiModel}
+                    onChange={(e) => setAiModel(e.target.value)}
+                  />
+                  <datalist id={`settings-ai-models-${aiRuntime}`}>
+                    {modelSuggestions(aiRuntime).map((model) => (
+                      <option key={model} value={model} />
+                    ))}
+                  </datalist>
+                </div>
+                <div className="setup-field">
+                  <label htmlFor="settings-ai-effort">Effort</label>
+                  <select
+                    id="settings-ai-effort"
+                    value={aiEffort}
+                    onChange={(e) => setAiEffort(coerceCliEffort(e.target.value))}
+                  >
+                    {effortChoices(aiRuntime).map((choice) => (
+                      <option key={choice.value || "default"} value={choice.value}>
+                        {choice.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="setup-field">
+                  <label htmlFor="settings-ai-context">Context window</label>
+                  <select
+                    id="settings-ai-context"
+                    value={aiContextWindow}
+                    onChange={(e) => setAiContextWindow(coerceCliContextWindow(e.target.value))}
+                  >
+                    {CONTEXT_CHOICES.map((choice) => (
+                      <option key={choice.value || "default"} value={choice.value}>
+                        {choice.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <p className="settings-page__hint">
+                Optional local CLI adapter. Nyx Agent does not include or resell model access; use
+                only with provider-authorized credentials and terms.
+              </p>
+            </>
           )}
         </SettingsSection>
 
@@ -502,6 +599,21 @@ function coerceSandboxBackend(value: string | undefined): SandboxBackendChoice {
     : "auto";
 }
 
+function coerceCliEffort(value: string | undefined): CliEffortChoice {
+  return EFFORT_CHOICES.some((choice) => choice.value === value) ? (value as CliEffortChoice) : "";
+}
+
+function coerceCliContextWindow(value: string | number | undefined): CliContextWindowChoice {
+  const normalized = typeof value === "number" ? String(value) : value;
+  return CONTEXT_CHOICES.some((choice) => choice.value === normalized)
+    ? (normalized as CliContextWindowChoice)
+    : "";
+}
+
+function isCliRuntime(value: AiRuntimeChoice): boolean {
+  return value === "claude-code" || value === "codex";
+}
+
 function runtimeLabel(value: string | undefined): string {
   return AI_CHOICES.find((choice) => choice.value === value)?.label ?? value ?? "None";
 }
@@ -513,6 +625,30 @@ function backendLabel(value: string | undefined): string {
 function budgetSummary(data: SetupStatusResponse | undefined): string {
   const micros = data?.default_run_budget_usd_micros;
   return typeof micros === "number" && micros > 0 ? formatBudgetUsd(micros) : "Unlimited";
+}
+
+function modelSummary(data: SetupStatusResponse | undefined): string {
+  return data?.ai_model?.trim() || "CLI default";
+}
+
+function effortSummary(data: SetupStatusResponse | undefined): string {
+  const effort = coerceCliEffort(data?.ai_effort);
+  return EFFORT_CHOICES.find((choice) => choice.value === effort)?.label ?? "CLI default";
+}
+
+function contextSummary(data: SetupStatusResponse | undefined): string {
+  const context = coerceCliContextWindow(data?.ai_context_window);
+  return CONTEXT_CHOICES.find((choice) => choice.value === context)?.label ?? "CLI default";
+}
+
+function effortChoices(runtime: AiRuntimeChoice): { value: CliEffortChoice; label: string }[] {
+  return runtime === "codex"
+    ? EFFORT_CHOICES.filter((choice) => choice.value !== "max")
+    : EFFORT_CHOICES;
+}
+
+function modelSuggestions(runtime: AiRuntimeChoice): string[] {
+  return runtime === "claude-code" ? CLAUDE_MODEL_SUGGESTIONS : CODEX_MODEL_SUGGESTIONS;
 }
 
 function scanLimit(data: SetupStatusResponse | undefined): string {
@@ -555,6 +691,9 @@ function hasChanges(
     anthropicApiKey: string;
     localLlmUrl: string;
     localLlmToken: string;
+    aiModel: string;
+    aiEffort: CliEffortChoice;
+    aiContextWindow: CliContextWindowChoice;
     budgetEnabled: boolean;
     budgetUsd: string;
   },
@@ -562,11 +701,16 @@ function hasChanges(
   const currentBudget = data?.default_run_budget_usd_micros;
   const currentBudgetEnabled = typeof currentBudget === "number" && currentBudget > 0;
   const nextBudget = form.budgetEnabled ? budgetUsdToMicros(form.budgetUsd) : null;
+  const cliSettingsApply = isCliRuntime(form.aiRuntime) || isCliRuntime(currentRuntime);
   return (
     form.aiRuntime !== currentRuntime ||
     form.sandboxBackend !== currentBackend ||
     form.budgetEnabled !== currentBudgetEnabled ||
     (form.budgetEnabled && nextBudget !== currentBudget) ||
+    (cliSettingsApply &&
+      (form.aiModel.trim() !== (data?.ai_model ?? "") ||
+        form.aiEffort !== coerceCliEffort(data?.ai_effort) ||
+        form.aiContextWindow !== coerceCliContextWindow(data?.ai_context_window))) ||
     (form.aiRuntime === "anthropic" && form.anthropicApiKey.trim().length > 0) ||
     (form.aiRuntime === "local-llm" &&
       (form.localLlmUrl.trim() !== (data?.ai_api_base ?? "") ||

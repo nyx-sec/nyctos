@@ -370,6 +370,8 @@ async fn setup_status(State(s): State<ServerState>) -> Result<Json<SetupStatusRe
         ai_runtime: ai_runtime_label(cfg.ai.runtime).to_string(),
         ai_provider: cfg.ai.provider.clone(),
         ai_model: cfg.ai.model.clone(),
+        ai_effort: cfg.ai.effort.clone(),
+        ai_context_window: cfg.ai.context_window,
         ai_api_base: cfg.ai.api_base.clone(),
         default_run_budget_usd_micros: cfg.ai.default_run_budget_usd_micros,
         sandbox_backend: sandbox_backend_label(cfg.sandbox.backend).to_string(),
@@ -423,6 +425,9 @@ async fn submit_setup(
 
     let ai_runtime = parse_ai_runtime(&req.ai_runtime)?;
     let sandbox_backend = parse_sandbox_backend(&req.sandbox_backend)?;
+    let ai_model = parse_optional_string_patch(req.ai_model);
+    let ai_effort = parse_optional_effort_patch(req.ai_effort, ai_runtime)?;
+    let ai_context_window = parse_optional_context_window_patch(req.ai_context_window)?;
     let default_run_budget_usd_micros = parse_optional_positive_micros(
         req.default_run_budget_usd_micros,
         "default_run_budget_usd_micros",
@@ -480,6 +485,15 @@ async fn submit_setup(
     }
 
     cfg.ai.runtime = ai_runtime;
+    if let Some(next) = ai_model {
+        cfg.ai.model = next;
+    }
+    if let Some(next) = ai_effort {
+        cfg.ai.effort = next;
+    }
+    if let Some(next) = ai_context_window {
+        cfg.ai.context_window = next;
+    }
     cfg.ai.provider = match ai_runtime {
         AiRuntime::None => None,
         AiRuntime::Anthropic => Some("anthropic".to_string()),
@@ -522,6 +536,56 @@ fn parse_optional_positive_micros(raw: Option<i64>, field: &str) -> Result<Optio
             Err(ApiError::BadRequest(format!("{field} must be a positive integer or null")))
         }
         other => Ok(other),
+    }
+}
+
+fn parse_optional_string_patch(raw: Option<Option<String>>) -> Option<Option<String>> {
+    raw.map(|value| value.and_then(|v| non_empty_trimmed(&v).map(str::to_string)))
+}
+
+fn parse_optional_effort_patch(
+    raw: Option<Option<String>>,
+    ai_runtime: AiRuntime,
+) -> Result<Option<Option<String>>, ApiError> {
+    let Some(value) = raw else {
+        return Ok(None);
+    };
+    let Some(raw_effort) = value else {
+        return Ok(Some(None));
+    };
+    let Some(trimmed) = non_empty_trimmed(&raw_effort) else {
+        return Ok(Some(None));
+    };
+    let effort = trimmed.to_ascii_lowercase();
+    let valid = matches!(effort.as_str(), "low" | "medium" | "high" | "xhigh" | "max");
+    if !valid {
+        return Err(ApiError::BadRequest(format!("unknown ai_effort `{trimmed}`")));
+    }
+    if effort == "max" && matches!(ai_runtime, AiRuntime::Codex) {
+        return Err(ApiError::BadRequest(
+            "ai_effort = \"max\" is only supported by the Claude Code runtime".to_string(),
+        ));
+    }
+    Ok(Some(Some(effort)))
+}
+
+fn parse_optional_context_window_patch(
+    raw: Option<Option<u32>>,
+) -> Result<Option<Option<u32>>, ApiError> {
+    match raw {
+        Some(Some(0)) => {
+            Err(ApiError::BadRequest("ai_context_window must be positive or null".to_string()))
+        }
+        other => Ok(other),
+    }
+}
+
+fn non_empty_trimmed(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
     }
 }
 

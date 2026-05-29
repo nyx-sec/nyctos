@@ -53,6 +53,16 @@ pub struct SetupStatusResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub ai_model: Option<String>,
+    /// Optional reasoning effort for CLI-backed runtimes (matches
+    /// `[ai].effort`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub ai_effort: Option<String>,
+    /// Optional context-window hint in tokens for CLI-backed runtimes
+    /// (matches `[ai].context_window`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub ai_context_window: Option<u32>,
     /// Optional non-secret base URL for local OpenAI-compatible
     /// runtimes. Bearer tokens stay in the OS keychain.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -97,6 +107,23 @@ pub struct SetupRequest {
     /// complete. BYOK/local secrets are stored out-of-band via
     /// `secrets`, not in the TOML.
     pub ai_runtime: String,
+    /// Optional model override. Omitted leaves `[ai].model` unchanged;
+    /// `null` or an empty string clears it.
+    #[serde(default)]
+    #[ts(optional, type = "string | null")]
+    pub ai_model: Option<Option<String>>,
+    /// Optional reasoning effort for CLI-backed runtimes. Omitted
+    /// leaves `[ai].effort` unchanged; `null` or an empty string
+    /// clears it.
+    #[serde(default)]
+    #[ts(optional, type = "string | null")]
+    pub ai_effort: Option<Option<String>>,
+    /// Optional context-window hint in tokens for CLI-backed runtimes.
+    /// Omitted leaves `[ai].context_window` unchanged; `null` clears
+    /// it.
+    #[serde(default)]
+    #[ts(optional, type = "number | null")]
+    pub ai_context_window: Option<Option<u32>>,
     /// Anthropic API key. Required when `ai_runtime = "anthropic"`.
     /// Persisted to the OS keychain; never written to TOML or logs.
     #[serde(default)]
@@ -137,6 +164,21 @@ pub struct DoctorRequest {
     /// AI runtime being verified. Doctor only inspects what the chosen
     /// runtime depends on (e.g. CLI runtimes look for their binary).
     pub ai_runtime: String,
+    /// Unsaved CLI model supplied by the UI for this check. Doctor
+    /// accepts but does not persist this field.
+    #[serde(default)]
+    #[ts(optional)]
+    pub ai_model: Option<String>,
+    /// Unsaved CLI reasoning effort supplied by the UI for this check.
+    /// Doctor accepts but does not persist this field.
+    #[serde(default)]
+    #[ts(optional)]
+    pub ai_effort: Option<String>,
+    /// Unsaved CLI context-window hint supplied by the UI for this
+    /// check. Doctor accepts but does not persist this field.
+    #[serde(default)]
+    #[ts(optional)]
+    pub ai_context_window: Option<u32>,
     /// Unsaved Anthropic API key supplied by the UI for this check.
     /// The daemon only tests whether a non-empty key was provided; it
     /// does not persist this field from `/setup/doctor`.

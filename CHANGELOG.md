@@ -6,6 +6,10 @@ All notable changes to Nyx Agent are documented here. The format is based on [Ke
 
 Changes for the next Nyx Agent release will land here before a version is cut.
 
+### Added
+
+- **CLI AI runtime tuning.** Settings now lets operators configure model, reasoning effort, and context window for Codex CLI and Claude Code CLI; the saved config is forwarded to the corresponding CLI adapters and documented in the runtime/config guides.
+
 ## [0.1.0] - 2026-05-29
 
 The initial crates.io release turns Nyx Agent into the installable product layer around `nyx`: a local CLI, loopback daemon, embedded dashboard, SQLite product store, and packaged UI assets that work from `cargo install nyx-agent`.

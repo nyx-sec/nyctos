@@ -97,6 +97,9 @@ describe("Settings page", () => {
       ...defaultStatus(),
       ai_runtime: "claude-code",
       ai_provider: "claude-code",
+      ai_model: "opus",
+      ai_effort: "high",
+      ai_context_window: 1000000,
       sandbox_backend: "birdcage",
       ui_listen_addr: "127.0.0.1:9999",
       ui_open_browser: false,
@@ -110,6 +113,9 @@ describe("Settings page", () => {
     await waitForSettings();
 
     expect(screen.getAllByText(/Claude Code CLI/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("opus").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("High").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("1M tokens").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Birdcage").length).toBeGreaterThan(0);
     expect(screen.getByText("127.0.0.1:9999")).toBeInTheDocument();
     expect(screen.getAllByText("Unlimited").length).toBeGreaterThan(0);
@@ -159,6 +165,15 @@ describe("Settings page", () => {
     await waitForSettings();
 
     fireEvent.click(screen.getByRole("radio", { name: /Claude Code CLI/i }));
+    fireEvent.change(screen.getByLabelText("Model"), {
+      target: { value: "opus" },
+    });
+    fireEvent.change(screen.getByLabelText("Effort"), {
+      target: { value: "high" },
+    });
+    fireEvent.change(screen.getByLabelText("Context window"), {
+      target: { value: "1000000" },
+    });
     fireEvent.click(screen.getByRole("radio", { name: /Docker/i }));
     fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
 
@@ -170,6 +185,9 @@ describe("Settings page", () => {
     const submit = recorded.find((call) => call.method === "POST" && call.url.endsWith("/setup"))!;
     expect(JSON.parse(submit.body!)).toEqual({
       ai_runtime: "claude-code",
+      ai_model: "opus",
+      ai_effort: "high",
+      ai_context_window: 1000000,
       default_run_budget_usd_micros: null,
       sandbox_backend: "docker",
       i_own_this: true,
@@ -191,6 +209,9 @@ describe("Settings page", () => {
     const submit = recorded.find((call) => call.method === "POST" && call.url.endsWith("/setup"))!;
     expect(JSON.parse(submit.body!)).toEqual({
       ai_runtime: "codex",
+      ai_model: null,
+      ai_effort: null,
+      ai_context_window: null,
       default_run_budget_usd_micros: null,
       sandbox_backend: "auto",
       i_own_this: true,

@@ -81,6 +81,12 @@ pub async fn build_agent_runtime_from_ai_config(
             if let Some(model) = &ai.model {
                 adapter = adapter.with_default_model(model.clone());
             }
+            if let Some(effort) = &ai.effort {
+                adapter = adapter.with_effort(effort.clone());
+            }
+            if let Some(context_window) = ai.context_window {
+                adapter = adapter.with_context_window(context_window);
+            }
             Ok(wrap_runtime(adapter))
         }
         ConfigAiRuntime::Codex => {
@@ -89,6 +95,12 @@ pub async fn build_agent_runtime_from_ai_config(
                 .map_err(|err| AuthSetupAgentError::Unavailable(err.to_string()))?;
             if let Some(model) = &ai.model {
                 adapter = adapter.with_default_model(model.clone());
+            }
+            if let Some(effort) = &ai.effort {
+                adapter = adapter.with_effort(effort.clone());
+            }
+            if let Some(context_window) = ai.context_window {
+                adapter = adapter.with_context_window(context_window);
             }
             Ok(wrap_runtime(adapter))
         }

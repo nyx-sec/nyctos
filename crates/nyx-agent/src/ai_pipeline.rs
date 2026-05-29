@@ -259,6 +259,12 @@ async fn selected_one_shot_runtime(
             if let Some(model) = &config.model {
                 adapter = adapter.with_default_model(model.clone());
             }
+            if let Some(effort) = &config.effort {
+                adapter = adapter.with_effort(effort.clone());
+            }
+            if let Some(context_window) = config.context_window {
+                adapter = adapter.with_context_window(context_window);
+            }
             Ok(Some(wrap_runtime(adapter)))
         }
         ConfigAiRuntime::Codex => {
@@ -274,6 +280,12 @@ async fn selected_one_shot_runtime(
             };
             if let Some(model) = &config.model {
                 adapter = adapter.with_default_model(model.clone());
+            }
+            if let Some(effort) = &config.effort {
+                adapter = adapter.with_effort(effort.clone());
+            }
+            if let Some(context_window) = config.context_window {
+                adapter = adapter.with_context_window(context_window);
             }
             Ok(Some(wrap_runtime(adapter)))
         }
@@ -302,6 +314,12 @@ async fn selected_agent_loop_runtime(
             if let Some(model) = &config.model {
                 adapter = adapter.with_default_model(model.clone());
             }
+            if let Some(effort) = &config.effort {
+                adapter = adapter.with_effort(effort.clone());
+            }
+            if let Some(context_window) = config.context_window {
+                adapter = adapter.with_context_window(context_window);
+            }
             if let Some(timeout) = timeout {
                 adapter = adapter.with_timeout(timeout);
             }
@@ -319,6 +337,12 @@ async fn selected_agent_loop_runtime(
             };
             if let Some(model) = &config.model {
                 adapter = adapter.with_default_model(model.clone());
+            }
+            if let Some(effort) = &config.effort {
+                adapter = adapter.with_effort(effort.clone());
+            }
+            if let Some(context_window) = config.context_window {
+                adapter = adapter.with_context_window(context_window);
             }
             if let Some(timeout) = timeout {
                 adapter = adapter.with_timeout(timeout);

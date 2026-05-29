@@ -2931,7 +2931,7 @@
   border: 1px solid var(--border);
   border-radius: var(--radius);
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   margin: 0;
   min-width: 0;
   overflow: hidden;
@@ -3245,6 +3245,10 @@
 
 .settings-form-grid--two {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.settings-form-grid--cli {
+  grid-template-columns: minmax(220px, 1.4fr) repeat(2, minmax(160px, 1fr));
 }
 
 .settings-budget-row {
@@ -5356,6 +5360,7 @@
   .settings-summary-list,
   .settings-choice-grid,
   .settings-choice-grid--backend,
+  .settings-form-grid--cli,
   .settings-form-grid--two,
   .settings-kv,
   .runtime-profile-grid,

@@ -217,6 +217,16 @@ pub enum SandboxBackend {
 pub struct AiConfig {
     pub provider: Option<String>,
     pub model: Option<String>,
+    /// Optional reasoning effort for CLI-backed AI runtimes. The daemon
+    /// validates values written through the UI, then forwards the string
+    /// to the selected local CLI using that CLI's native flag/config key.
+    #[serde(default)]
+    pub effort: Option<String>,
+    /// Optional context-window hint in tokens for CLI-backed runtimes.
+    /// For Claude Code this maps to model aliases such as `opus[1m]`;
+    /// for Codex this maps to `model_context_window`.
+    #[serde(default)]
+    pub context_window: Option<u32>,
     pub api_base: Option<String>,
     /// Operator-selected AI runtime. The wizard writes this; the run
     /// dispatcher reads it to pick which provider client to build.
@@ -291,6 +301,8 @@ impl Default for AiConfig {
         Self {
             provider: None,
             model: None,
+            effort: None,
+            context_window: None,
             api_base: None,
             runtime: AiRuntime::default(),
             max_concurrent_one_shot: default_max_concurrent_one_shot(),

@@ -13,8 +13,11 @@ allow_network = false
 backend = "auto"
 
 [ai]
-provider = "codex"
-runtime = "codex"
+provider = "claude-code"
+model = "claude-opus-4-8"
+effort = "xhigh"
+context_window = 1000000
+runtime = "claude-code"
 max_concurrent_one_shot = 4
 
 [ai.pricing]

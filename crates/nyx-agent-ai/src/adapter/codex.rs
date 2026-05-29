@@ -87,6 +87,8 @@ pub struct CodexCliAdapter {
     binary: CodexBinary,
     tracker: SharedBudgetTracker,
     default_model: String,
+    effort: Option<String>,
+    context_window: Option<u32>,
     timeout: Duration,
 }
 
@@ -96,6 +98,8 @@ impl CodexCliAdapter {
             binary,
             tracker,
             default_model: CODEX_DEFAULT_MODEL_LABEL.to_string(),
+            effort: None,
+            context_window: None,
             timeout: Duration::from_secs(15 * 60),
         }
     }
@@ -109,6 +113,21 @@ impl CodexCliAdapter {
         let model = model.into();
         if !model.trim().is_empty() {
             self.default_model = model;
+        }
+        self
+    }
+
+    pub fn with_effort(mut self, effort: impl Into<String>) -> Self {
+        let effort = effort.into();
+        if !effort.trim().is_empty() {
+            self.effort = Some(effort);
+        }
+        self
+    }
+
+    pub fn with_context_window(mut self, context_window: u32) -> Self {
+        if context_window > 0 {
+            self.context_window = Some(context_window);
         }
         self
     }
@@ -150,6 +169,12 @@ impl CodexCliAdapter {
             .arg("--dangerously-bypass-approvals-and-sandbox");
         if let Some(model) = model.filter(|m| !m.trim().is_empty()) {
             cmd.arg("--model").arg(model);
+        }
+        if let Some(effort) = self.effort.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+            cmd.arg("-c").arg(codex_config_string("model_reasoning_effort", effort));
+        }
+        if let Some(context_window) = self.context_window.filter(|v| *v > 0) {
+            cmd.arg("-c").arg(format!("model_context_window={context_window}"));
         }
         if let Some(dir) = working_directory.filter(|d| !d.trim().is_empty()) {
             cmd.current_dir(dir);
@@ -350,8 +375,13 @@ impl AiRuntime for CodexCliAdapter {
             });
         }
 
+        let model = self.model_for_prompt(None);
         let run = self
-            .run_exec(&render_agent_prompt(&task), None, task.working_directory.as_deref())
+            .run_exec(
+                &render_agent_prompt(&task),
+                model.as_deref(),
+                task.working_directory.as_deref(),
+            )
             .await?;
         for text in &run.messages {
             let _ = sink.send(AgentEvent::Ai {
@@ -402,6 +432,11 @@ impl AiRuntime for CodexCliAdapter {
     fn cost_estimate(&self, _prompt: &Prompt) -> Option<CostEstimate> {
         None
     }
+}
+
+fn codex_config_string(key: &str, value: &str) -> String {
+    let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("{key}=\"{escaped}\"")
 }
 
 fn render_one_shot_prompt(prompt: &Prompt) -> String {
@@ -749,6 +784,43 @@ printf '%s\n' '{"type":"turn.completed","model":"gpt-5.5","usage":{"input_tokens
         assert_eq!(resp.cache.unwrap().cache_read_tokens, 3);
         assert_eq!(resp.cost_usd_micros, 321);
         assert_eq!(tracker.spent("run-codex-1", BudgetKind::OneShot), 321);
+    }
+
+    #[tokio::test]
+    async fn one_shot_forwards_model_effort_and_context_to_cli() {
+        let script = r#"#!/bin/sh
+found_model=0
+found_effort=0
+found_context=0
+prev=
+for arg in "$@"; do
+  if [ "$prev" = "--model" ] && [ "$arg" = "gpt-5.5" ]; then found_model=1; fi
+  if [ "$prev" = "-c" ] && [ "$arg" = 'model_reasoning_effort="xhigh"' ]; then found_effort=1; fi
+  if [ "$prev" = "-c" ] && [ "$arg" = "model_context_window=1000000" ]; then found_context=1; fi
+  prev="$arg"
+done
+[ "$found_model" = 1 ] || exit 7
+[ "$found_effort" = 1 ] || exit 8
+[ "$found_context" = 1 ] || exit 9
+cat >/dev/null
+printf '%s\n' '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"ok"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
+"#;
+        let (_dir, binary) = fake_cli_script(script);
+        let tracker = Arc::new(InMemoryBudgetTracker::new());
+        let adapter = CodexCliAdapter::new(binary, tracker.clone() as SharedBudgetTracker)
+            .with_default_model("gpt-5.5")
+            .with_effort("xhigh")
+            .with_context_window(1_000_000);
+        let (tx, _rx) = broadcast::channel::<AgentEvent>(4);
+
+        let resp = adapter
+            .one_shot(sample_prompt(), budget(BudgetKind::OneShot, 10_000), tx)
+            .await
+            .expect("one_shot");
+
+        assert_eq!(resp.model, "gpt-5.5");
+        assert_eq!(resp.content, "ok");
     }
 
     #[tokio::test]

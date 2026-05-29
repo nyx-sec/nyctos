@@ -82,6 +82,8 @@ fails the load rather than silently going to default.
 |------------------------------------|------------------|---------|----------------------------------------------------------------------------------------------------------|
 | `provider`                         | string (optional)| unset   | Free-form provider tag surfaced in the UI.                                                               |
 | `model`                            | string (optional)| unset   | Model identifier (e.g. `claude-opus-4-7`).                                                               |
+| `effort`                           | string (optional)| unset   | CLI-backed runtime reasoning effort (`low`, `medium`, `high`, `xhigh`; Claude Code also accepts `max`). |
+| `context_window`                   | u32 (optional)   | unset   | CLI-backed runtime context-window hint in tokens. `1_000_000` requests Claude Code 1M aliases and Codex 1M context when available. |
 | `api_base`                         | string (optional)| unset   | Base URL for local OpenAI-compatible runtimes.                                                           |
 | `runtime`                          | enum             | `none`  | AI runtime selection. See below.                                                                         |
 | `max_concurrent_one_shot`          | u32              | `4`     | Cap on in-flight `one_shot` AI calls per run, shared across payload synthesis, spec derivation, and chain reasoning. `0` floors to `1` to avoid a deadlocked semaphore acquire. |

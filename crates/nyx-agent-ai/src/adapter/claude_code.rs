@@ -131,6 +131,8 @@ pub struct ClaudeCodeAdapter {
     binary: ClaudeBinary,
     tracker: SharedBudgetTracker,
     default_model: String,
+    effort: Option<String>,
+    context_window: Option<u32>,
     /// Wall-clock cap on a single agent-loop invocation. Defaults to
     /// 15 minutes; operators can override via `with_timeout`.
     timeout: Duration,
@@ -145,6 +147,8 @@ impl ClaudeCodeAdapter {
             binary,
             tracker,
             default_model: "claude-opus-4-7".to_string(),
+            effort: None,
+            context_window: None,
             timeout: Duration::from_secs(15 * 60),
         }
     }
@@ -157,6 +161,21 @@ impl ClaudeCodeAdapter {
 
     pub fn with_default_model(mut self, model: impl Into<String>) -> Self {
         self.default_model = model.into();
+        self
+    }
+
+    pub fn with_effort(mut self, effort: impl Into<String>) -> Self {
+        let effort = effort.into();
+        if !effort.trim().is_empty() {
+            self.effort = Some(effort);
+        }
+        self
+    }
+
+    pub fn with_context_window(mut self, context_window: u32) -> Self {
+        if context_window > 0 {
+            self.context_window = Some(context_window);
+        }
         self
     }
 
@@ -198,7 +217,8 @@ impl AiRuntime for ClaudeCodeAdapter {
         budget: Budget,
         sink: EventSink,
     ) -> Result<Response, AiError> {
-        let model = prompt.model.clone().unwrap_or_else(|| self.default_model.clone());
+        let requested_model = prompt.model.clone().unwrap_or_else(|| self.default_model.clone());
+        let model = claude_model_for_context(&requested_model, self.context_window);
 
         // Mirror the Anthropic adapter's cap semantics for structured
         // one-shot work: the effective ceiling is the tighter of the
@@ -229,6 +249,7 @@ impl AiRuntime for ClaudeCodeAdapter {
             .arg("1")
             .arg("--model")
             .arg(&model)
+            .args(effort_args(self.effort.as_deref()))
             // TODO(release-hardening): make this opt-in/configured before
             // shipping beyond local testing.
             .arg("--dangerously-skip-permissions")
@@ -438,6 +459,7 @@ impl AiRuntime for ClaudeCodeAdapter {
             .await
             .map_err(|e| AiError::Transport(format!("write agent_task.md: {e}")))?;
 
+        let model = claude_model_for_context(&self.default_model, self.context_window);
         let mut cmd = Command::new(&self.binary.path);
         cmd.arg("--print")
             .arg("--output-format")
@@ -445,6 +467,9 @@ impl AiRuntime for ClaudeCodeAdapter {
             .arg("--verbose")
             .arg("--max-turns")
             .arg(task.max_turns.to_string())
+            .arg("--model")
+            .arg(&model)
+            .args(effort_args(self.effort.as_deref()))
             // TODO(release-hardening): make this opt-in/configured before
             // shipping beyond local testing.
             .arg("--dangerously-skip-permissions")
@@ -623,7 +648,7 @@ impl AiRuntime for ClaudeCodeAdapter {
         Ok(AgentResult {
             prompt_version: task.prompt_version,
             task_id: task.task_id,
-            model: self.default_model.clone(),
+            model,
             final_message,
             turns,
             usage,
@@ -635,6 +660,23 @@ impl AiRuntime for ClaudeCodeAdapter {
 
     fn cost_estimate(&self, _prompt: &Prompt) -> Option<CostEstimate> {
         None
+    }
+}
+
+fn effort_args(effort: Option<&str>) -> Vec<&str> {
+    match effort.map(str::trim).filter(|v| !v.is_empty()) {
+        Some(effort) => vec!["--effort", effort],
+        None => Vec::new(),
+    }
+}
+
+fn claude_model_for_context(model: &str, context_window: Option<u32>) -> String {
+    let trimmed = model.trim();
+    let without_suffix = trimmed.strip_suffix("[1m]").unwrap_or(trimmed);
+    match context_window {
+        Some(window) if window >= 1_000_000 => format!("{without_suffix}[1m]"),
+        Some(_) => without_suffix.to_string(),
+        None => trimmed.to_string(),
     }
 }
 
@@ -947,6 +989,46 @@ printf '%s\n' '{"type":"result","result":"{\"ok\":true}","model":"claude-sonnet-
         assert_eq!(resp.cache.unwrap().cache_creation_tokens, 4);
         assert_eq!(resp.cost_usd_micros, 1_234);
         assert_eq!(tracker.spent("run-claude-1", BudgetKind::OneShot), 1_234);
+    }
+
+    #[tokio::test]
+    async fn one_shot_forwards_model_effort_and_context_to_cli() {
+        let script = r#"#!/bin/sh
+found_model=0
+found_effort=0
+prev=
+for arg in "$@"; do
+  if [ "$prev" = "--model" ] && [ "$arg" = "opus[1m]" ]; then found_model=1; fi
+  if [ "$prev" = "--effort" ] && [ "$arg" = "xhigh" ]; then found_effort=1; fi
+  prev="$arg"
+done
+[ "$found_model" = 1 ] || exit 7
+[ "$found_effort" = 1 ] || exit 8
+cat >/dev/null
+printf '%s\n' '{"type":"result","result":"done","usage":{"input_tokens":1,"output_tokens":1}}'
+"#;
+        let (_dir, binary) = fake_cli_script(script);
+        let tracker = Arc::new(InMemoryBudgetTracker::new());
+        let adapter = ClaudeCodeAdapter::new(binary, tracker.clone() as SharedBudgetTracker)
+            .with_default_model("opus")
+            .with_effort("xhigh")
+            .with_context_window(1_000_000);
+        let (tx, _rx) = broadcast::channel::<AgentEvent>(4);
+        let prompt = Prompt {
+            prompt_version: "v1".to_string(),
+            task_id: "t".to_string(),
+            model: None,
+            system: "s".to_string(),
+            user: "u".to_string(),
+            max_output_tokens: 8,
+            temperature: 0.0,
+            seed: None,
+        };
+
+        let resp = adapter.one_shot(prompt, one_shot_budget(10_000), tx).await.expect("one_shot");
+
+        assert_eq!(resp.model, "opus[1m]");
+        assert_eq!(resp.content, "done");
     }
 
     #[tokio::test]

@@ -503,9 +503,11 @@ section (defined at `crates/nyx-agent-core/src/config.rs:166`):
 
 ```toml
 [ai]
-provider = "anthropic"
-model = "claude-opus-4-7"
-runtime = "anthropic"               # none | anthropic | local-llm | claude-code | codex
+provider = "claude-code"
+model = "opus"
+effort = "high"
+context_window = 1_000_000
+runtime = "claude-code"             # none | anthropic | local-llm | claude-code | codex
 max_concurrent_one_shot = 4
 # Optional. Omit for unlimited AI runs.
 default_run_budget_usd_micros = 25_000_000  # $25.00 per run
@@ -515,6 +517,8 @@ default_run_budget_usd_micros = 25_000_000  # $25.00 per run
 |----------------------------------|----------------------------------------|------------------------------------------------------|
 | `provider`                       | `None`                                 | Free-form provider hint surfaced by the wizard.      |
 | `model`                          | `None`                                 | Per-run model override; tasks may still pick a model per prompt. |
+| `effort`                         | `None`                                 | Optional CLI reasoning effort. Claude Code receives `--effort`; Codex receives `model_reasoning_effort`. |
+| `context_window`                 | `None`                                 | Optional CLI context-window hint in tokens. Claude Code maps `1_000_000` to `[1m]` model aliases; Codex receives `model_context_window`. |
 | `api_base`                       | `None`                                 | Endpoint URL for `local-llm`.                        |
 | `runtime`                        | `none`                                 | One of `none`, `anthropic`, `local-llm`, `claude-code`, `codex`. |
 | `max_concurrent_one_shot`        | `4`                                    | In-flight one-shot fan-out. Floored to `1`.          |
