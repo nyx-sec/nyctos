@@ -2949,7 +2949,7 @@ dependencies = [
 
 [[package]]
 name = "nyx-agent-ai"
-version = "0.1.1"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "blake3",
@@ -2967,7 +2967,7 @@ dependencies = [
 
 [[package]]
 name = "nyx-agent-api"
-version = "0.1.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -2996,7 +2996,7 @@ dependencies = [
 
 [[package]]
 name = "nyx-agent-core"
-version = "0.1.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "blake3",
@@ -3023,7 +3023,7 @@ dependencies = [
 
 [[package]]
 name = "nyx-agent-nyx"
-version = "0.1.1"
+version = "0.1.0"
 dependencies = [
  "nyx-agent-core",
  "nyx-agent-types",
@@ -3038,7 +3038,7 @@ dependencies = [
 
 [[package]]
 name = "nyx-agent-sandbox"
-version = "0.1.1"
+version = "0.1.0"
 dependencies = [
  "birdcage",
  "libc",
@@ -3057,7 +3057,7 @@ dependencies = [
 
 [[package]]
 name = "nyx-agent-types"
-version = "0.1.1"
+version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -3068,7 +3068,7 @@ dependencies = [
 
 [[package]]
 name = "nyx-agent-ui"
-version = "0.1.1"
+version = "0.1.0"
 dependencies = [
  "axum",
  "mime_guess",
@@ -6511,7 +6511,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.1.1"
+version = "0.1.0"
 dependencies = [
  "nyx-agent-types",
  "proc-macro2",
