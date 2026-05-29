@@ -4,7 +4,14 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
+description = "Implementation-detail sandbox runners used by nyx-agent verification and replay tasks."
+readme = "README.md"
+documentation = "https://docs.rs/nyx-agent-sandbox"
+keywords = ["security", "pentest", "sandbox", "process", "internal"]
+categories = ["security", "development-tools", "os", "filesystem", "command-line-utilities"]
 
 [[bin]]
 name = "nyx-sandbox-shim"
@@ -15,8 +22,8 @@ name = "escape-attempt"
 path = "src/bin/escape_attempt.rs"
 
 [dependencies]
-nyx-agent-types = { path = "../nyx-agent-types" }
-nyx-agent-core = { path = "../nyx-agent-core" }
+nyx-agent-types = { workspace = true }
+nyx-agent-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_norway = { workspace = true }

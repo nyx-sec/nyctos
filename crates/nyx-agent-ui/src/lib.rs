@@ -1,10 +1,13 @@
 //! Embedded single-page UI for the nyx-agent daemon.
 //!
-//! The `dist/` directory is populated by `build.rs`:
-//! * release builds run the Vite pipeline in `<repo>/frontend/` and
-//!   copy the output here;
-//! * other profiles drop a tiny stub `index.html` so the daemon's `/`
-//!   route still returns something usable.
+//! This crate is published so the `nyx-agent` binary can be installed
+//! from crates.io with versioned internal dependencies. It is an
+//! implementation detail of Nyx Agent, not a stable public API.
+//!
+//! `build.rs` prepares the asset directory under `OUT_DIR`:
+//! * release builds from a repository checkout run the Vite pipeline;
+//! * release builds from crates.io use the packaged prebuilt `dist/`;
+//! * debug builds use a tiny stub page.
 //!
 //! Consumers wire [`spa_handler`] as the Axum fallback so any path
 //! outside `/api/v1/...` resolves to either the matching asset or the
@@ -19,7 +22,7 @@ use axum::{
 use rust_embed::RustEmbed;
 
 #[derive(RustEmbed)]
-#[folder = "dist/"]
+#[folder = "$OUT_DIR/nyx-agent-ui-dist/"]
 pub struct UiAssets;
 
 /// Bootstrap context passed into the SPA at request time. Currently

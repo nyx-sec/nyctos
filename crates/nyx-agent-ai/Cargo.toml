@@ -4,11 +4,18 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
+description = "Implementation-detail AI runtime adapters, prompts, and automation helpers for nyx-agent."
+readme = "README.md"
+documentation = "https://docs.rs/nyx-agent-ai"
+keywords = ["security", "pentest", "llm", "automation", "internal"]
+categories = ["security", "development-tools", "web-programming::http-client", "asynchronous", "command-line-utilities"]
 
 [dependencies]
-nyx-agent-nyx = { path = "../nyx-agent-nyx" }
-nyx-agent-types = { path = "../nyx-agent-types" }
+nyx-agent-nyx = { workspace = true }
+nyx-agent-types = { workspace = true }
 async-trait = "0.1"
 blake3 = { workspace = true }
 reqwest = { workspace = true }

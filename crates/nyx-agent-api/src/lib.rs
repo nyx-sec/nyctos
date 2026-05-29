@@ -1,5 +1,9 @@
 //! Loopback HTTP + WebSocket surface for the nyx-agent daemon.
 //!
+//! This crate is published so the `nyx-agent` binary can be installed
+//! from crates.io with versioned internal dependencies. It is an
+//! implementation detail of Nyx Agent, not a stable public API.
+//!
 //! The `nyx-agent` binary owns the long-lived daemon process and
 //! wires three things into [`ServerState`]:
 //!

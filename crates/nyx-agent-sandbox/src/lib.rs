@@ -3,6 +3,10 @@
 //! call). The trait stays independent of every other nyx-agent crate so a
 //! future VM backend can ship without dragging core/api/ai changes along.
 //!
+//! This crate is published so the `nyx-agent` binary can be installed
+//! from crates.io with versioned internal dependencies. It is an
+//! implementation detail of Nyx Agent, not a stable public API.
+//!
 //! Backends shipped today:
 //!
 //! * `process`: fork+exec with no isolation upgrade. The unhardened

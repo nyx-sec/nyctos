@@ -4,8 +4,16 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
+description = "Implementation-detail embedded single-page dashboard assets for nyx-agent."
+readme = "README.md"
+documentation = "https://docs.rs/nyx-agent-ui"
+keywords = ["security", "pentest", "dashboard", "frontend", "internal"]
+categories = ["security", "development-tools", "web-programming", "web-programming::http-server", "gui"]
 build = "build.rs"
+include = ["Cargo.toml", "README.md", "build.rs", "src/**", "dist/**"]
 
 [dependencies]
 axum = { workspace = true }

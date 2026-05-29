@@ -4,12 +4,19 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
+description = "Implementation-detail loopback HTTP API and WebSocket server for nyx-agent."
+readme = "README.md"
+documentation = "https://docs.rs/nyx-agent-api"
+keywords = ["security", "pentest", "api", "websocket", "internal"]
+categories = ["security", "development-tools", "web-programming::http-server", "web-programming::websocket", "network-programming"]
 
 [dependencies]
-nyx-agent-core = { path = "../nyx-agent-core" }
-nyx-agent-sandbox = { path = "../nyx-agent-sandbox" }
-nyx-agent-types = { path = "../nyx-agent-types" }
+nyx-agent-core = { workspace = true }
+nyx-agent-sandbox = { workspace = true }
+nyx-agent-types = { workspace = true }
 anyhow = { workspace = true }
 async-stream = "0.3"
 axum = { workspace = true }

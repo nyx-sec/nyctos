@@ -4,7 +4,14 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
+description = "Implementation-detail serde and TypeScript wire types shared by nyx-agent crates."
+readme = "README.md"
+documentation = "https://docs.rs/nyx-agent-types"
+keywords = ["security", "pentest", "types", "typescript", "internal"]
+categories = ["security", "development-tools", "data-structures", "encoding", "web-programming"]
 
 [dependencies]
 serde = { workspace = true }

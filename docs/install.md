@@ -1,24 +1,33 @@
 # Install
 
-This page walks through building Nyx Agent from source and wiring its
-external dependencies. The shipping binary is `nyx-agent`; the product
-brand is "Nyx Agent". Both names appear here for the reasons explained in
+This page walks through installing Nyx Agent and wiring its external
+dependencies. The shipping binary is `nyx-agent`; the product brand is
+"Nyx Agent". Both names appear here for the reasons explained in
 `README.md`.
-
-Nyx Agent has no prebuilt packages yet. Every install is a source build
-against the workspace in this repository.
 
 ## Prerequisites
 
 | Component | Version | Notes |
 |---|---|---|
-| Rust toolchain | 1.83 or newer, channel `stable` | Pinned in `rust-toolchain.toml`. `rustup` picks it up automatically on first `cargo` invocation. |
+| Rust toolchain | 1.88 or newer, channel `stable` | Required by `Cargo.toml`. Repository checkouts use `rust-toolchain.toml`; `rustup` picks it up automatically on first `cargo` invocation. |
 | `nyx` static scanner | 0.7.0 or newer | External GPL-3.0-or-later binary spawned as a subprocess. See [Install the `nyx` scanner](#install-the-nyx-scanner). |
-| Node.js + `npm` | Node 18+ | Required only for `cargo build --release` (the release build bundles the SPA). Debug builds ship a stub page and skip Node. |
+| Node.js + pnpm | Node 18+ | Required only when rebuilding the SPA from a repository checkout. `cargo install nyx-agent` uses packaged dashboard assets and does not need Node or pnpm. |
 | AI runtime | optional | Static scans work without any model provider. Optional paths are direct BYOK APIs, local OpenAI-compatible endpoints, and provider-authorized local CLIs. |
 | SQLite | bundled | Linked into the binary via SQLx; no system SQLite needed. |
 
 Linux and macOS are the supported targets. Windows is untested.
+
+## Install from crates.io
+
+```bash
+cargo install nyx-agent
+nyx-agent doctor
+nyx-agent serve
+```
+
+The published crate includes the prebuilt dashboard assets. Installing from
+crates.io does not run the frontend build and does not require a `frontend/`
+checkout, Node, or pnpm.
 
 ## Build from source
 
@@ -29,23 +38,24 @@ cargo build --release
 ```
 
 `cargo build --release` runs `crates/nyx-agent-ui/build.rs`, which
-invokes `npm ci --silent` and `npm run build` inside `frontend/`,
-then mirrors `frontend/dist/` into `crates/nyx-agent-ui/dist/` so
-`rust_embed` can pick the assets up at compile time. A release build
-fails loudly if Node is missing or the frontend build errors out: we
-never want to ship a release binary with a stub UI.
+invokes `pnpm install --frozen-lockfile` when needed and
+`pnpm run build` inside `frontend/`, then copies `frontend/dist/`
+into Cargo's `OUT_DIR` so `rust_embed` can pick the assets up at
+compile time. If the frontend build is unavailable but packaged
+`crates/nyx-agent-ui/dist/` assets exist, the build uses those
+prebuilt assets instead.
 
 If you build the SPA out-of-band (e.g. a CI job that prepopulates
 `crates/nyx-agent-ui/dist/`), set `NYX_AGENT_SKIP_FRONTEND_BUILD=1` to skip
-the npm step:
+the frontend build step:
 
 ```bash
 NYX_AGENT_SKIP_FRONTEND_BUILD=1 cargo build --release
 ```
 
 Debug builds (`cargo build`, `cargo run`, `cargo nextest run`) write
-a tiny stub `index.html` instead, so `/` keeps returning a usable
-page in CI environments without Node.
+a tiny stub `index.html` into `OUT_DIR`, so `/` keeps returning a
+usable page in CI environments without Node.
 
 The resulting binary lives at `target/release/nyx-agent`. Copy it
 onto your `PATH` or invoke it directly.

@@ -1,6 +1,9 @@
-// Shared serde structs, enums, and event-bus types used by every other
-// nyx-agent crate. No logic lives here. Each placeholder module gets
-// populated by the phase that owns its surface area.
+//! Shared serde structs, enums, and event-bus types used by every other
+//! nyx-agent crate.
+//!
+//! This crate is published so the `nyx-agent` binary can be installed
+//! from crates.io with versioned internal dependencies. It is an
+//! implementation detail of Nyx Agent, not a stable public API.
 
 pub mod agent;
 pub mod api;

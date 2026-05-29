@@ -5,7 +5,7 @@
 
   <p>
     <a href="LICENSE.md"><img alt="License: AGPLv3-or-later" src="https://img.shields.io/badge/license-AGPLv3--or--later-0f172a?style=flat-square" /></a>
-    <a href="https://www.rust-lang.org/"><img alt="Rust 2024" src="https://img.shields.io/badge/rust-2024-f97316?style=flat-square&logo=rust&logoColor=white" /></a>
+    <a href="https://www.rust-lang.org/"><img alt="Rust 1.88+" src="https://img.shields.io/badge/rust-1.88%2B-f97316?style=flat-square&logo=rust&logoColor=white" /></a>
     <a href="https://pnpm.io/"><img alt="pnpm frontend" src="https://img.shields.io/badge/pnpm-frontend-facc15?style=flat-square&logo=pnpm&logoColor=111827" /></a>
     <a href="https://github.com/nyx-sec/nyx"><img alt="nyx scanner" src="https://img.shields.io/badge/scanner-nyx-2563eb?style=flat-square" /></a>
   </p>
@@ -22,8 +22,8 @@ Nyx Agent is the product layer around `nyx` for live, local pentesting. Point it
 The dashboard is built for the part that usually gets messy: deciding what is real, what already has proof, and what still needs a harder look.
 
 ```bash
-cargo run --bin nyx-agent -- scan ./apps/web --target-url http://127.0.0.1:3000
-cargo run --bin nyx-agent -- serve
+nyx-agent scan ./apps/web --target-url http://127.0.0.1:3000
+nyx-agent serve
 ```
 
 The target stays local. The API binds to loopback by default. The run history, traces, evidence, and triage state live in the Nyx Agent product store.
@@ -138,16 +138,27 @@ startup_timeout_secs = 45
 
 For live testing, use `127.0.0.1`, `localhost`, or another dev host you control. Use seeded accounts and throwaway databases for destructive runs.
 
-## Install from source
+## Install
 
-Nyx Agent is pre-MVP. The core loop works, but packaging is still moving.
+Install the released CLI and daemon from crates.io:
+
+```bash
+cargo install nyx-agent
+nyx-agent doctor
+nyx-agent serve
+```
+
+The crates.io package includes the prebuilt dashboard assets, so users do not
+need Node or pnpm to install Nyx Agent. You still need the separate `nyx`
+static scanner on `PATH` or configured with `[nyx].binary_path`.
+
+For development from a repository checkout:
 
 ```bash
 cargo build --workspace
 cargo run --bin nyx-agent -- doctor
-cargo run --bin nyx-agent-api
-npm --prefix frontend install
-npm --prefix frontend run dev
+pnpm --dir frontend install
+pnpm --dir frontend run dev
 ```
 
 Useful checks while working on the repo:
@@ -173,7 +184,7 @@ Nyx Agent is free and open source under AGPLv3-or-later. Commercial licenses,
 paid support, onboarding help, private policy packs, and enterprise terms are
 available for teams that need proprietary embedding, hosted resale, custom
 support obligations, or license comfort. See [LICENSE.md](LICENSE.md) or contact
-<email being setup>.
+<licensing@nyx.dev>.
 
 Nyx Agent does not include or resell model access. AI runtimes are optional
 BYOK/local connectors; users are responsible for complying with the terms for

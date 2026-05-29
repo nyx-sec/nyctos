@@ -1,28 +1,30 @@
 # Frontend SPA workflow
 
 The `nyx-agent` daemon serves a single-page UI at `/`. The
-`nyx-agent-ui` crate embeds the SPA assets via `rust_embed`, and the
-embed contents depend on the cargo build profile.
+`nyx-agent-ui` crate embeds the SPA assets via `rust_embed`. The build
+script prepares the asset tree under Cargo's `OUT_DIR` so normal builds
+and Cargo's publish verifier never mutate the package source directory.
 
 ## Release builds
 
-`cargo build --release` (or any profile equal to `release`) runs the
-real frontend build inside `crates/nyx-agent-ui/build.rs`:
+`cargo build --release` (or any profile equal to `release`) from a
+repository checkout runs the real frontend build inside
+`crates/nyx-agent-ui/build.rs`:
 
-1. `npm ci --silent` in `frontend/` if `node_modules/` is absent.
-2. `npm run build`, producing `frontend/dist/`.
-3. The dist tree is mirrored into `crates/nyx-agent-ui/dist/` so
+1. `pnpm install --frozen-lockfile` in `frontend/` if dependencies are absent.
+2. `pnpm run build`, producing `frontend/dist/`.
+3. The dist tree is copied into `OUT_DIR/nyx-agent-ui-dist/` so
    `rust_embed` picks it up at compile time.
 
-A release build with a missing or broken `frontend/` checkout fails
-the build script with a panic. Set `NYX_AGENT_SKIP_FRONTEND_BUILD=1` to
-opt out and ship the stub instead (used by environments that build
-the SPA separately and prepopulate `crates/nyx-agent-ui/dist/`).
+Published crates include prebuilt assets under `crates/nyx-agent-ui/dist/`.
+When a release build runs without a repository-level `frontend/` checkout
+or when `NYX_AGENT_SKIP_FRONTEND_BUILD=1` is set, the build script copies
+those packaged assets instead. A release build never ships the debug stub.
 
 ## Debug builds
 
 `cargo run` and `cargo build` (no `--release`) write a tiny stub
-`index.html` into `crates/nyx-agent-ui/dist/` that explains the
+`index.html` into `OUT_DIR/nyx-agent-ui-dist/` that explains the
 situation and points at `/api/v1/health`. The stub keeps `GET /`
 returning a usable page in CI environments without Node installed.
 
@@ -35,7 +37,7 @@ For an iterative dev loop, run two processes side by side:
 cargo run -p nyx-agent -- serve
 
 # Terminal 2: Vite dev server on 127.0.0.1:5173, proxying /api to 8765.
-cd frontend && npm install && npm run dev
+cd frontend && pnpm install && pnpm run dev
 ```
 
 Open `http://127.0.0.1:5173/` for the hot-reload SPA. The daemon at

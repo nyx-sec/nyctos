@@ -1,4 +1,8 @@
 //! Config, state, logging, and persistence surface shared by every binary.
+//!
+//! This crate is published so the `nyx-agent` binary can be installed
+//! from crates.io with versioned internal dependencies. It is an
+//! implementation detail of Nyx Agent, not a stable public API.
 
 pub mod config;
 pub mod event_log;

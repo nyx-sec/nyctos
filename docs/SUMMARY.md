@@ -24,6 +24,8 @@ Both names appear in these pages for the reasons explained in
 - [state-dir.md](state-dir.md): on-disk layout of the state
   directory: SQLite file, logs, repo workspaces, repro bundles,
   bearer token, plus permissions and override flags.
+- [product-store.md](product-store.md): local SQLite product store
+  contents, schema ownership, and reset behaviour.
 
 ## Architecture
 
@@ -92,6 +94,8 @@ chain runner all operate per project, so a multi-repo product
   cache after editing a `sqlx::query!` / `query_as!` call.
 - [dev/frontend.md](dev/frontend.md): release vs debug SPA embed
   behaviour and the two-terminal Vite dev loop.
+- [release.md](release.md): crates.io preflight checks, frontend
+  asset sync, and multi-crate publish order.
 
 ## Conventions
 

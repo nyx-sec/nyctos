@@ -8,8 +8,8 @@ import { ProjectAddModal } from "./ProjectAddModal";
 import {
   emptyRuntimeProfileDraft,
   launchProfileFromDraft,
-  profileDraftFromLaunchAndRuntime,
   ProjectRuntimeProfileForm,
+  profileDraftFromLaunchAndRuntime,
   type RuntimeProfileDraft,
   runtimeProfileFromDraft,
 } from "./ProjectRuntimeProfileForm";

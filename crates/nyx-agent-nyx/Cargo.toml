@@ -4,11 +4,18 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
+description = "Implementation-detail subprocess driver for the upstream nyx static scanner."
+readme = "README.md"
+documentation = "https://docs.rs/nyx-agent-nyx"
+keywords = ["security", "pentest", "scanner", "static-analysis", "internal"]
+categories = ["security", "development-tools", "command-line-utilities", "parser-implementations", "text-processing"]
 
 [dependencies]
-nyx-agent-core = { path = "../nyx-agent-core" }
-nyx-agent-types = { path = "../nyx-agent-types" }
+nyx-agent-core = { workspace = true }
+nyx-agent-types = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 semver = { workspace = true }

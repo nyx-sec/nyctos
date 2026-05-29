@@ -1,5 +1,9 @@
 //! `AiRuntime` trait + concrete vendor adapters.
 //!
+//! This crate is published so the `nyx-agent` binary can be installed
+//! from crates.io with versioned internal dependencies. It is an
+//! implementation detail of Nyx Agent, not a stable public API.
+//!
 //! Ships the trait, the `BudgetTracker` host port, the direct-HTTP
 //! Anthropic Messages adapter, the OpenAI-compatible local-LLM
 //! adapter, and the Claude Code / Codex CLI all-in-one drivers.
