@@ -192,8 +192,8 @@ prebuilt assets in `crates/nyx-agent-ui/dist/`.
 
 SQLx offline mode is enabled by default in CI. If you regenerate
 queries locally, follow the `sqlx prepare` recipe in `README.md`
-("Working with the SQLite store") and commit the resulting `.sqlx/`
-diff.
+("Working with the SQLite store") and commit the resulting
+`crates/nyx-agent-core/.sqlx/` diff.
 
 ## Related pages
 

@@ -270,12 +270,13 @@ jobs:
           git diff --exit-code frontend/src/api/types.gen.ts
 
       - name: SQLx cache is up to date
+        working-directory: crates/nyx-agent-core
         run: |
           rm -f /tmp/sqlx-prepare.db
           export DATABASE_URL="sqlite:///tmp/sqlx-prepare.db?mode=rwc"
           sqlx database create
-          sqlx migrate run --source crates/nyx-agent-core/migrations
-          cargo sqlx prepare --workspace --check
+          sqlx migrate run --source migrations
+          cargo sqlx prepare --check
 
       - name: Missing instrumentation lint
         run: bash .ci/missing-instrument.sh
