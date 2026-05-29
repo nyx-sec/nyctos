@@ -563,7 +563,9 @@ export function getProjectSetupJob(
 }
 
 export function listProjectSetupJobs(projectId: string): Promise<ProjectSetupJobListResponse> {
-  return request<ProjectSetupJobListResponse>(`/projects/${encodeURIComponent(projectId)}/setup/ai`);
+  return request<ProjectSetupJobListResponse>(
+    `/projects/${encodeURIComponent(projectId)}/setup/ai`,
+  );
 }
 
 export function useProjectSetupJobs(projectId: string | undefined, enabled = true) {
